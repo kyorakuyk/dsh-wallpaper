@@ -40,18 +40,6 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const totalCost = sessionCost(props.messages)
   const tokenCount = usageTokenCount(props.usage)
 
-  if (props.collapsed) return <button
-    type="button"
-    className={`dsh-chat-collapsed dsh-chat-collapsed--${props.layout ?? 'floating'} dsh-chat-collapsed--${props.expandDirection ?? 'center'} dsh-theme-${props.backend === 'harness' ? 'harness' : 'deepseek'}`}
-    data-interaction-region="chat-collapsed"
-    onClick={props.onExpand}
-    aria-label="展开 AI 对话"
-  >
-    <span className="dsh-chat-collapsed__sigil"><Icon name="spark" size={15} /></span>
-    {(props.layout ?? 'floating') === 'floating' && <span className="dsh-chat-collapsed__label">{backend.shortName}</span>}
-    <Icon name="chevron-up" size={16} />
-  </button>
-
   const submit = () => {
     const text = draft.trim()
     if (!text || busy || props.disabled) return
@@ -63,6 +51,18 @@ export function ConversationBubble(props: ConversationBubbleProps) {
     if (!props.historyExpanded) return
     historyRef.current?.scrollTo({ top: historyRef.current.scrollHeight, behavior: 'smooth' })
   }, [props.historyExpanded, props.messages.length, props.streamingText])
+
+  if (props.collapsed) return <button
+    type="button"
+    className={`dsh-chat-collapsed dsh-chat-collapsed--${props.layout ?? 'floating'} dsh-chat-collapsed--${props.expandDirection ?? 'center'} dsh-theme-${props.backend === 'harness' ? 'harness' : 'deepseek'}`}
+    data-interaction-region="chat-collapsed"
+    onClick={props.onExpand}
+    aria-label="展开 AI 对话"
+  >
+    <span className="dsh-chat-collapsed__sigil"><Icon name="spark" size={15} /></span>
+    {(props.layout ?? 'floating') === 'floating' && <span className="dsh-chat-collapsed__label">{backend.shortName}</span>}
+    <Icon name="chevron-up" size={16} />
+  </button>
 
   return <section
     className={`conversation-shell dsh-chat dsh-theme-${props.backend === 'harness' ? 'harness' : 'deepseek'} ${props.historyExpanded ? 'expanded' : ''} ${busy ? 'dsh-chat--busy' : ''}`}
@@ -116,7 +116,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           }}
           placeholder={composerPlaceholder(Boolean(props.disabled), props.activity)}
           disabled={props.disabled}
-          rows={2}
+          rows={3}
           aria-label="输入消息"
         />
         {busy
