@@ -41,7 +41,7 @@ use windows::{
             SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
             PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SEND_MESSAGE_TIMEOUT_FLAGS, SMTO_NORMAL,
             SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-            SW_SHOWNA, WM_CONTEXTMENU, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONDBLCLK,
+            HWND_NOTOPMOST, HWND_TOPMOST, SW_SHOWNA, WM_CONTEXTMENU, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONDBLCLK,
             WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP,
             WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_NCHITTEST,
             WM_POWERBROADCAST, WM_SETTINGCHANGE, WM_WTSSESSION_CHANGE, WS_BORDER, WS_CAPTION,
@@ -1227,6 +1227,34 @@ pub fn show_interaction(app: &tauri::AppHandle, request_focus: bool) -> Result<(
         .get_webview_window("interaction")
         .ok_or("interaction window missing")?;
     window.show().map_err(|e| e.to_string())?;
+    let hwnd = HWND(window.hwnd().map_err(|error| error.to_string())?.0);
+    unsafe {
+        // Win+D and Explorer's WorkerW reshuffle can leave a WS_EX_TOOLWINDOW
+        // below the desktop icon host even while IsWindowVisible is true.
+        // Pulse through TOPMOST and immediately return to a normal top-level
+        // window: this raises it above Explorer without making it permanently
+        // float over applications.
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+        )
+        .map_err(|error| error.to_string())?;
+        SetWindowPos(
+            hwnd,
+            Some(HWND_NOTOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+        )
+        .map_err(|error| error.to_string())?;
+    }
     if request_focus {
         if let Ok(mut deadline) = INTERACTION_REVEAL_GRACE
             .get_or_init(|| RwLock::new(None))
@@ -1234,7 +1262,6 @@ pub fn show_interaction(app: &tauri::AppHandle, request_focus: bool) -> Result<(
         {
             *deadline = Some(std::time::Instant::now() + std::time::Duration::from_millis(900));
         }
-        let hwnd = HWND(window.hwnd().map_err(|error| error.to_string())?.0);
         // A tray command runs while Shell_TrayWnd owns the foreground. Calling
         // the Win32 foreground API from that input callback transfers the
         // activation to our compact interaction HWND before the monitor can
