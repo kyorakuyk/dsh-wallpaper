@@ -1,0 +1,764 @@
+/* ===== dsh-wallpaper 全局样式 =====
+   设计目标：透明/沉浸式壁纸层，主题色由 persona 驱动（--persona-primary）。 */
+
+:root {
+  --persona-primary: #4da6ff;
+  --persona-accent: #7fc4ff;
+  --persona-glow: rgba(77, 166, 255, 0.18);
+  --radius: 16px;
+  --font: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+.wallpaper-root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: var(--font);
+  color: #fff;
+  background: transparent;
+}
+
+html[data-surface='interaction'], html[data-surface='interaction'] body, html[data-surface='interaction'] #root { background: transparent !important; }
+.surface-interaction { overflow: visible; }
+.surface-interaction .conversation-shell { bottom: 18px; width: calc(100% - 32px); }
+.surface-interaction .settings-panel { position: fixed; }
+
+.scene {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+/* ===== 睡眠场景 ===== */
+.scene-sleep {
+  background: linear-gradient(180deg, #0b1026 0%, #131b3c 55%, #1c2a52 100%);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+/* 用户素材模式：整幅睡眠场景图全屏铺满 */
+.sleep-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 0;
+}
+
+.sleep-art-veil {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 12, 30, 0.28);
+  z-index: 1;
+}
+
+.sleep-bg {
+  position: absolute;
+  inset: 0;
+}
+
+.stars {
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(1.5px 1.5px at 12% 18%, #fff8, transparent),
+    radial-gradient(1px 1px at 32% 9%, #fff6, transparent),
+    radial-gradient(2px 2px at 55% 22%, #fffa, transparent),
+    radial-gradient(1px 1px at 74% 12%, #fff5, transparent),
+    radial-gradient(1.5px 1.5px at 88% 26%, #fff7, transparent),
+    radial-gradient(1px 1px at 20% 35%, #fff4, transparent),
+    radial-gradient(2px 2px at 66% 34%, #fff6, transparent);
+  opacity: 0.7;
+  animation: twinkle 4s ease-in-out infinite alternate;
+}
+
+@keyframes twinkle {
+  from { opacity: 0.4; }
+  to { opacity: 0.9; }
+}
+
+.moon {
+  position: absolute;
+  top: 8%;
+  right: 12%;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #fffbe8, #ffe9a8 70%);
+  box-shadow: 0 0 40px 12px rgba(255, 233, 168, 0.35);
+}
+
+.bed {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, 80vw);
+  height: 46%;
+}
+
+.bed-frame {
+  position: absolute;
+  bottom: 0;
+  width: 100%;
+  height: 26px;
+  background: #4a3b2f;
+  border-radius: 6px;
+}
+
+.bed-mattress {
+  position: absolute;
+  bottom: 22px;
+  left: 4%;
+  width: 92%;
+  height: 60px;
+  background: #e8e2d8;
+  border-radius: 10px;
+}
+
+.pillow {
+  position: absolute;
+  bottom: 66px;
+  left: 8%;
+  width: 130px;
+  height: 52px;
+  background: #f4eef0;
+  border-radius: 14px;
+  transform: rotate(-3deg);
+}
+
+.blanket {
+  position: absolute;
+  bottom: 28px;
+  left: 10%;
+  width: 80%;
+  height: 44px;
+  background: linear-gradient(90deg, var(--persona-primary), var(--persona-accent));
+  border-radius: 12px;
+  opacity: 0.9;
+}
+
+.sleeping-whale {
+  position: absolute;
+  bottom: 66px;
+  left: 50%;
+  transform: translateX(-50%) scale(0.8);
+  width: 200px;
+  height: 200px;
+  object-fit: contain;
+  filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.45));
+  animation: breathing 3.6s ease-in-out infinite;
+}
+
+@keyframes breathing {
+  0%, 100% { transform: translateX(-50%) scale(0.8) translateY(0); }
+  50% { transform: translateX(-50%) scale(0.82) translateY(-3px); }
+}
+
+.sleep-zzz {
+  position: absolute;
+  bottom: 38%;
+  right: 22%;
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--persona-accent);
+  opacity: 0.85;
+  animation: floatzz 3s ease-in-out infinite;
+  z-index: 2;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+
+@keyframes floatzz {
+  0%, 100% { transform: translateY(0); opacity: 0.5; }
+  50% { transform: translateY(-12px); opacity: 0.95; }
+}
+
+.sleep-hint {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.4);
+  font-size: 13px;
+  color: #fffb;
+  z-index: 3;
+}
+
+/* ===== 苏醒场景 ===== */
+.scene-wake {
+  background: linear-gradient(180deg, #0b1026 0%, #1c2a52 45%, #2a3d6b 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 用户素材模式：整幅苏醒场景图，随步骤渐显放大 */
+.wake-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.9s cubic-bezier(0.34, 1.2, 0.64, 1), filter 0.6s;
+}
+
+.wake-art-0 { transform: scale(1.0); filter: brightness(0.72); }
+.wake-art-1 { transform: scale(1.02); filter: brightness(0.82); }
+.wake-art-2 { transform: scale(1.04); filter: brightness(0.92); }
+.wake-art-3 { transform: scale(1.06); filter: brightness(1); }
+
+/* 帧序列动画：全屏铺满，当前帧淡入 */
+.wake-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.5s ease;
+  z-index: 0;
+}
+
+.wake-frame.active {
+  opacity: 1;
+  z-index: 1;
+}
+
+.wake-art-progress {
+  position: absolute;
+  bottom: 12%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 220px;
+  z-index: 2;
+}
+
+.wake-art-progress .wake-progress-fill {
+  height: 4px;
+  width: 100%;
+  background: var(--persona-primary);
+  border-radius: 2px;
+}
+
+.wake-art-progress span {
+  font-size: 18px;
+  font-weight: 600;
+  color: #fff;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+
+.wake-bg {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 30%, var(--persona-glow), transparent 60%);
+}
+
+.wake-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+}
+
+.wake-whale {
+  width: 300px;
+  height: 300px;
+  object-fit: contain;
+  filter: drop-shadow(0 10px 30px rgba(0, 0, 0, 0.5));
+  transition: transform 0.9s cubic-bezier(0.34, 1.3, 0.64, 1), opacity 0.6s;
+}
+
+.wake-whale-0 { transform: translateY(6px) rotate(-4deg); opacity: 0.92; }
+.wake-whale-1 { transform: translateY(0) rotate(0); opacity: 1; }
+.wake-whale-2 { transform: translateY(-14px); opacity: 1; }
+.wake-whale-3 { transform: translateY(-30px) scale(1.04); opacity: 1; }
+
+.wake-label {
+  font-size: 22px;
+  font-weight: 600;
+  color: #fff;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+.wake-progress {
+  width: 200px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.18);
+  overflow: hidden;
+}
+
+.wake-progress-fill {
+  height: 100%;
+  background: var(--persona-primary);
+  transition: width 0.9s ease;
+}
+
+/* ===== 待机场景 ===== */
+.scene-idle {
+  background: transparent;
+}
+
+.idle-bg {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 90% at 15% 10%, var(--persona-glow), transparent 55%),
+    radial-gradient(100% 80% at 85% 85%, var(--persona-glow), transparent 50%),
+    linear-gradient(160deg, #10162e88, #1a224488);
+  backdrop-filter: blur(2px);
+}
+
+/* 背景插画模式：全屏铺满，轻微暗化保证立绘/气泡可读 */
+.idle-bg-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 0;
+  filter: brightness(0.92) saturate(1.05);
+}
+
+.idle-bg-image ~ * {
+  position: relative;
+  z-index: 1;
+}
+
+.portrait-slot {
+  position: absolute;
+  right: 6%;
+  bottom: 4%;
+  width: 300px;
+  height: 420px;
+  cursor: pointer;
+  transition: transform 0.25s ease;
+}
+
+.portrait-slot:hover { transform: translateY(-6px) scale(1.02); }
+
+.portrait {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  /* 降低亮度与饱和，柔和融入背景 */
+  filter: drop-shadow(0 12px 32px rgba(0, 0, 0, 0.45)) brightness(0.9) saturate(0.92);
+  pointer-events: none;
+}
+
+/* JPG 整图立绘：圆角 + 底部淡出，避免生硬方块感 */
+.portrait-asset {
+  object-fit: cover;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  mask-image: linear-gradient(180deg, #000 82%, transparent 100%);
+  -webkit-mask-image: linear-gradient(180deg, #000 82%, transparent 100%);
+}
+
+.portrait-glow {
+  position: absolute;
+  inset: -14%;
+  background: radial-gradient(60% 50% at 50% 70%, var(--persona-glow), transparent 70%);
+  z-index: -1;
+}
+
+/* 立绘底部渐隐遮罩：让立绘底部融入背景，不生硬 */
+.portrait-fade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 34%;
+  background: linear-gradient(180deg, transparent 0%, rgba(10, 14, 32, 0.55) 100%);
+  border-radius: 0 0 20px 20px;
+  pointer-events: none;
+}
+
+/* ===== 气泡 ===== */
+.bubble {
+  position: absolute;
+  top: 12%;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(520px, 60vw);
+  padding: 14px 22px;
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--persona-primary);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 24px var(--persona-glow);
+  font-size: 18px;
+  line-height: 1.6;
+  color: #fff;
+  animation: bubbleIn 0.5s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+/* 气泡在立绘内：定位在立绘上方（大肥鱼头部附近） */
+.portrait-slot > .bubble {
+  top: -12%;
+  left: 50%;
+  max-width: 320px;
+  font-size: 15px;
+  padding: 10px 16px;
+  z-index: 2;
+  animation: bubbleInTop 0.5s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+@keyframes bubbleInTop {
+  from { opacity: 0; transform: translateX(-50%) translateY(8px) scale(0.94); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+
+@keyframes bubbleIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(12px) scale(0.94); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+
+.bubble-tail {
+  position: absolute;
+  bottom: -10px;
+  left: 24%;
+  width: 0;
+  height: 0;
+  border-left: 10px solid transparent;
+  border-right: 10px solid transparent;
+  border-top: 12px solid var(--persona-primary);
+}
+
+/* DSH 上线询问 */
+.harness-prompt {
+  position: absolute;
+  bottom: 22%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-radius: 12px;
+  background: rgba(20, 24, 44, 0.85);
+  border: 1px solid var(--persona-primary);
+  backdrop-filter: blur(10px);
+  font-size: 14px;
+  z-index: 5;
+}
+
+.harness-prompt button {
+  padding: 5px 12px;
+  border: none;
+  border-radius: 8px;
+  background: var(--persona-primary);
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.harness-prompt button + button {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+/* 连接状态角标 */
+.conn-badge {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  backdrop-filter: blur(8px);
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.conn-badge.on { color: #6dffa8; }
+.conn-badge.off { color: #ffd0a0; }
+
+/* ===== 会话窗 ===== */
+.scene-chat {
+  background: rgba(14, 18, 34, 0.88);
+  backdrop-filter: blur(16px);
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  background: rgba(0, 0, 0, 0.35);
+  border-bottom: 1px solid var(--persona-primary);
+}
+
+.chat-title { font-size: 15px; font-weight: 600; }
+
+.chat-close {
+  border: none;
+  background: transparent;
+  color: #fff;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 8px;
+}
+
+.chat-close:hover { background: rgba(255, 255, 255, 0.12); }
+
+.chat-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+
+.chat-body p { margin: 0; color: #fffd; font-size: 15px; }
+
+.chat-body code {
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 14px;
+  color: var(--persona-accent);
+}
+
+.chat-actions { display: flex; gap: 10px; }
+
+.chat-actions button {
+  padding: 8px 20px;
+  border: none;
+  border-radius: 10px;
+  background: var(--persona-primary);
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.chat-actions button + button { background: rgba(255, 255, 255, 0.16); }
+
+/* ===== 托盘角标（网页预览用：右下角小圆点）===== */
+.tray-zone {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  cursor: pointer;
+  z-index: 50;
+  transition: background 0.2s;
+}
+
+.tray-zone:hover { background: rgba(255, 255, 255, 0.35); }
+
+/* ===== 设置面板 ===== */
+.settings-panel {
+  position: absolute;
+  right: 16px;
+  top: 16px;
+  width: 340px;
+  max-height: calc(100% - 32px);
+  overflow-y: auto;
+  background: rgba(16, 20, 38, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  backdrop-filter: blur(18px);
+  z-index: 100;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  color: #eee;
+  font-size: 13px;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  font-weight: 600;
+}
+
+.settings-close {
+  border: none;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.settings-section { padding: 12px 16px; border-bottom: 1px solid rgba(255, 255, 255, 0.07); }
+
+.settings-section h4 { margin: 0 0 10px; font-size: 13px; color: var(--persona-accent); }
+
+.persona-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.persona-option {
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: #eee;
+  cursor: pointer;
+  font-size: 12px;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.persona-option.active {
+  border-color: var(--opt-color, var(--persona-primary));
+  background: color-mix(in srgb, var(--opt-color, var(--persona-primary)) 22%, transparent);
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  color: #ddd;
+}
+
+.setting-row select, .setting-row input[type='range'] { flex: 1; }
+
+.setting-row input[type='text'] {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.08);
+  color: #eee;
+  font-size: 12px;
+  outline: none;
+}
+
+.setting-row input[type='text']:focus { border-color: var(--persona-primary); }
+
+.conn-state {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  margin: 6px 0;
+}
+
+.conn-state.on { color: #6dffa8; }
+.conn-state.off { color: #ffd0a0; }
+
+.setting-btn {
+  width: 100%;
+  padding: 9px;
+  border: none;
+  border-radius: 10px;
+  background: var(--persona-primary);
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  margin: 4px 0;
+}
+
+.settings-hint { color: #999; font-size: 11px; line-height: 1.5; margin-top: 8px; }
+
+.settings-footer {
+  padding: 10px 16px;
+  text-align: right;
+  color: #777;
+  font-size: 11px;
+}
+
+/* ===== 中央可交互会话气泡 ===== */
+.conversation-shell {
+  position: absolute;
+  left: 50%;
+  bottom: 7%;
+  width: min(680px, calc(100vw - 48px));
+  transform: translateX(-50%);
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  filter: drop-shadow(0 18px 40px rgba(0, 0, 0, 0.42));
+}
+
+.history-handle {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-bottom: 0;
+  border-radius: 12px 12px 0 0;
+  padding: 6px 18px;
+  color: #dce9ff;
+  background: rgba(13, 20, 39, 0.86);
+  cursor: pointer;
+}
+
+.conversation-history {
+  width: 100%;
+  max-height: min(52vh, 520px);
+  overflow-y: auto;
+  padding: 18px;
+  box-sizing: border-box;
+  background: rgba(10, 16, 31, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-bottom: 0;
+  backdrop-filter: blur(22px);
+}
+
+.empty-history { color: #aeb9cc; text-align: center; }
+.chat-message { max-width: 82%; margin: 10px 0; padding: 10px 14px; border-radius: 14px; background: rgba(255, 255, 255, 0.09); }
+.chat-message.user { margin-left: auto; background: color-mix(in srgb, var(--persona-primary) 42%, rgba(15, 24, 45, 0.9)); }
+.chat-message p { margin: 4px 0; white-space: pre-wrap; }
+.chat-message small { color: #aeb9cc; }
+.typing-caret { display: inline-block; width: 7px; height: 1em; margin-left: 3px; background: var(--persona-accent); animation: blink 0.8s infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+.conversation-card {
+  width: 100%;
+  border: 1px solid var(--persona-primary);
+  border-radius: 18px;
+  background: rgba(14, 21, 40, 0.92);
+  backdrop-filter: blur(24px);
+  overflow: hidden;
+}
+
+.conversation-shell.expanded .conversation-card { border-radius: 0 0 18px 18px; }
+.conversation-card header, .conversation-card footer { display: flex; align-items: center; gap: 10px; padding: 9px 14px; color: #cbd7ea; font-size: 12px; }
+.conversation-card header { border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
+.conversation-card header > button { margin-left: auto; border: 0; background: transparent; color: #fff; font-size: 20px; cursor: pointer; }
+.conversation-card textarea { width: 100%; box-sizing: border-box; resize: none; border: 0; outline: 0; padding: 14px 16px; background: transparent; color: #fff; font: inherit; line-height: 1.5; }
+.conversation-card footer { border-top: 1px solid rgba(255, 255, 255, 0.08); }
+.conversation-card footer button { margin-left: auto; border: 0; border-radius: 9px; padding: 7px 18px; background: var(--persona-primary); color: #fff; cursor: pointer; }
+.conversation-card footer button:disabled { opacity: 0.45; cursor: default; }
+.billing-badge { color: #ffd166; }
+.activity-dot { padding: 2px 8px; border-radius: 999px; background: rgba(255,255,255,.08); }
+.activity-dot.thinking, .activity-dot.streaming { color: #8de6ff; }
+
+.auth-overlay { position: absolute; inset: 0; z-index: 120; display: grid; place-items: center; background: rgba(4, 8, 18, 0.78); backdrop-filter: blur(16px); }
+.auth-card { width: min(520px, calc(100vw - 40px)); padding: 28px; border-radius: 20px; background: #121a31; border: 1px solid var(--persona-primary); text-align: center; }
+.auth-card button, .setting-btn.secondary { border: 1px solid rgba(255,255,255,.2); background: rgba(255,255,255,.09); }
+.model-rule { display: grid; grid-template-columns: 1fr 1fr 1.4fr 1fr auto; gap: 5px; margin: 7px 0; }
+.model-rule input, .model-rule select, .model-rule button { min-width: 0; padding: 5px; border-radius: 6px; border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.07); color: #eee; }
+
+.effort-high .portrait-glow { opacity: 1.35; animation: focusPulse 2.4s ease-in-out infinite; }
+.effort-max .portrait-glow { opacity: 1.8; animation: focusPulse 1.2s ease-in-out infinite; }
+@keyframes focusPulse { 50% { transform: scale(1.08); filter: saturate(1.35); } }
+
+.runtime-notice { position: absolute; left: 50%; top: 20px; z-index: 140; transform: translateX(-50%); max-width: min(720px, calc(100vw - 40px)); padding: 10px 14px; border: 1px solid rgba(255, 190, 120, .55); border-radius: 12px; background: rgba(42, 24, 20, .92); color: #ffe1c0; box-shadow: 0 12px 30px rgba(0,0,0,.38); }
+.runtime-notice button { margin-left: 12px; border: 0; background: transparent; color: inherit; cursor: pointer; }
+
+@media (max-width: 760px) {
+  .conversation-shell { bottom: 3%; width: calc(100vw - 24px); }
+  .model-rule { grid-template-columns: 1fr 1fr; }
+}

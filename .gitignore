@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build outputs
+wallpaper/dist/
+wallpaper/src-tauri/target/
+bridge/lib/
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/

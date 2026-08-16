@@ -1,0 +1,6 @@
+packages:
+  - wallpaper
+  - bridge
+
+onlyBuiltDependencies:
+  - esbuild

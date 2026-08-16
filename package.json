@@ -1,0 +1,21 @@
+{
+  "name": "@dsh-external/dsh-wallpaper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Interactive desktop wallpaper for DeepSeek Harness — 鲸鱼娘交互壁纸框架",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm -C wallpaper dev",
+    "build": "pnpm -C wallpaper build",
+    "preview": "pnpm -C wallpaper preview",
+    "typecheck": "pnpm -C wallpaper typecheck && pnpm -C bridge typecheck",
+    "test": "pnpm -C wallpaper exec vitest run && pnpm -C bridge test",
+    "tauri": "pnpm -C wallpaper tauri",
+    "desktop:dev": "pnpm -C wallpaper tauri dev",
+    "desktop:build": "pnpm -C wallpaper tauri build"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "vitest": "^4.1.10"
+  }
+}
