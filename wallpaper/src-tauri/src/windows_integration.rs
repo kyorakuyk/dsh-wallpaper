@@ -23,7 +23,7 @@ use windows::{
                 DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
             },
             Gdi::{ClientToScreen, CombineRgn, CreateRectRgn, DeleteObject, GetMonitorInfoW,
-                MonitorFromWindow, ScreenToClient, SetWindowRgn, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, RGN_OR},
+                MonitorFromWindow, SetWindowRgn, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, RGN_OR},
         },
         System::{
             RemoteDesktop::{
@@ -34,11 +34,10 @@ use windows::{
         },
         UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         UI::Shell::{SHAppBarMessage, ABM_GETSTATE, ABM_GETTASKBARPOS, ABS_AUTOHIDE, APPBARDATA},
-        UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON},
         UI::WindowsAndMessaging::{
             EnumChildWindows, EnumWindows, FindWindowExW, FindWindowW, GetClassNameW, GetClientRect,
-            GetCursorPos, GetDesktopWindow, GetForegroundWindow, GetParent, GetWindowLongPtrW, GetWindowRect,
-            GetWindowThreadProcessId, IsWindow, IsWindowVisible, SendMessageTimeoutW, SendMessageW, SetForegroundWindow, SetParent, SetWindowLongPtrW,
+            GetDesktopWindow, GetForegroundWindow, GetParent, GetWindowLongPtrW, GetWindowRect,
+            GetWindowThreadProcessId, IsWindow, IsWindowVisible, SendMessageTimeoutW, SetForegroundWindow, SetParent, SetWindowLongPtrW,
             SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
             PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SEND_MESSAGE_TIMEOUT_FLAGS, SMTO_NORMAL,
             SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
@@ -66,18 +65,6 @@ static INTERACTION_BOUNDS_SYNC_QUEUED: AtomicBool = AtomicBool::new(false);
 #[cfg(windows)]
 static INTERACTION_REVEAL_GRACE: OnceLock<RwLock<Option<std::time::Instant>>> = OnceLock::new();
 
-#[cfg(windows)]
-static INNER_WORKSPACE_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-#[cfg(windows)]
-#[repr(C)]
-struct ListViewHitTestInfo {
-    point: POINT,
-    flags: u32,
-    item: i32,
-    sub_item: i32,
-    group: i32,
-}
 
 const MAX_INTERACTION_REGIONS: usize = 128;
 const MIN_SCALE_FACTOR: f64 = 0.5;
@@ -1365,68 +1352,6 @@ pub fn start_foreground_monitor(app: tauri::AppHandle) {
     });
 }
 
-#[cfg(windows)]
-fn desktop_list_view() -> Option<HWND> {
-    enumerate_desktop_windows().ok()?.into_iter().find_map(|item| {
-        if !item.candidate.hosts_desktop_icons { return None; }
-        let def_view = unsafe { FindWindowExW(Some(item.hwnd), None, windows::core::w!("SHELLDLL_DefView"), PCWSTR::null()) }.ok()?;
-        unsafe { FindWindowExW(Some(def_view), None, windows::core::w!("SysListView32"), PCWSTR::null()) }.ok().filter(|hwnd| !hwnd.0.is_null())
-    })
-}
-
-#[cfg(windows)]
-fn cursor_is_over_desktop_blank() -> bool {
-    let Some(list_view) = desktop_list_view() else { return false; };
-    let mut point = POINT::default();
-    unsafe {
-        if GetCursorPos(&mut point).is_err() || !ScreenToClient(list_view, &mut point).as_bool() {
-            return false;
-        }
-        let mut hit = ListViewHitTestInfo { point, flags: 0, item: -1, sub_item: 0, group: 0 };
-        const LVM_FIRST: u32 = 0x1000;
-        const LVM_HITTEST: u32 = LVM_FIRST + 18;
-        let result = SendMessageW(list_view, LVM_HITTEST, Some(WPARAM(0)), Some(LPARAM(&mut hit as *mut _ as isize)));
-        result.0 == -1 && hit.item == -1
-    }
-}
-
-#[cfg(windows)]
-pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
-    std::thread::spawn(move || {
-        let mut was_down = false;
-        let mut last_blank_click: Option<(std::time::Instant, POINT)> = None;
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            if app.get_webview_window("background").is_none() { break; }
-            let down = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0;
-            if down && !was_down {
-                let foreground = unsafe { GetForegroundWindow() };
-                let on_desktop = foreground == unsafe { GetDesktopWindow() }
-                    || is_desktop_foreground_class(window_class(foreground).as_deref());
-                if on_desktop && cursor_is_over_desktop_blank() {
-                    let mut point = POINT::default();
-                    unsafe { let _ = GetCursorPos(&mut point); }
-                    let now = std::time::Instant::now();
-                    let is_double = last_blank_click.is_some_and(|(at, previous)| {
-                        now.duration_since(at) <= std::time::Duration::from_millis(500)
-                            && (point.x - previous.x).abs() <= 6
-                            && (point.y - previous.y).abs() <= 6
-                    });
-                    if is_double {
-                        last_blank_click = None;
-                        let entering = !INNER_WORKSPACE_ACTIVE.fetch_xor(true, Ordering::AcqRel);
-                        let _ = app.emit("desktop-workspace-toggle", if entering { "enter" } else { "leave" });
-                    } else {
-                        last_blank_click = Some((now, point));
-                    }
-                } else {
-                    last_blank_click = None;
-                }
-            }
-            was_down = down;
-        }
-    });
-}
 
 #[cfg(windows)]
 pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<String, String> {

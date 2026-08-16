@@ -493,7 +493,6 @@ pub fn run() {
                 log::warn!("session notification failed: {error}");
             }
             windows_integration::start_foreground_monitor(app.handle().clone());
-            windows_integration::start_desktop_workspace_monitor(app.handle().clone());
             start_harness_monitor(app.handle().clone());
             let menu = MenuBuilder::new(app)
                 .text("show", "显示对话")
