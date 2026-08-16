@@ -24,6 +24,7 @@ import { chooseAppearanceImportFolder, chooseAppearanceImportPaths, nativeAppear
 import { appCoreClient } from './runtime/appCoreClient.ts'
 import { useInteractionLayout } from './runtime/useInteractionLayout.ts'
 import type { InteractionState } from './runtime/interactionLayout.ts'
+import type { DesktopWorkspace } from './runtime/desktopWorkspace.ts'
 
 const registry = new PersonaRegistry()
 
@@ -47,6 +48,7 @@ export function App({ surface = 'combined' }: AppProps) {
   const [usage, setUsage] = useState<TokenUsage>()
   const [conversationGeneration, setConversationGeneration] = useState(0)
   const [interactionState, setInteractionState] = useState<InteractionState>('collapsed')
+  const [workspace, setWorkspace] = useState<DesktopWorkspace>('front')
   const adapterRef = useRef<ChatAdapter>(new PreviewAdapter(settings.defaultBackend))
   const runtimeRef = useRef(runtime)
   runtimeRef.current = runtime
@@ -75,6 +77,26 @@ export function App({ surface = 'combined' }: AppProps) {
     anchor: settings.floatingAnchor,
     refreshKey: `${showSettings}:${showAppearance}:${runtime.historyExpanded}:${runtime.phase}`,
   })
+
+  const enterInnerWorkspace = () => {
+    setWorkspace('entering-inner')
+    setInteractionState('expanded')
+    baseDispatch({ type: 'OPEN_CHAT' })
+    dispatchCore('open-chat')
+    window.setTimeout(() => setWorkspace('inner'), 280)
+  }
+
+  const leaveInnerWorkspace = () => {
+    setWorkspace('leaving-inner')
+    setShowSettings(false)
+    setShowAppearance(false)
+    window.setTimeout(() => {
+      setWorkspace('front')
+      setInteractionState(settings.interactionLayout === 'taskbar-docked' ? 'collapsed' : 'expanded')
+      baseDispatch({ type: 'CLOSE_CHAT' })
+      dispatchCore('close-chat')
+    }, 220)
+  }
 
   const refreshAppearance = async () => {
     try {
@@ -255,6 +277,16 @@ export function App({ surface = 'combined' }: AppProps) {
   }, [interactionSurface])
 
   useEffect(() => {
+    if (!nativeRuntime.isNative || !interactionSurface) return
+    let dispose: () => void = () => undefined
+    void import('@tauri-apps/api/event').then(({ listen }) => listen<'enter' | 'leave'>('desktop-workspace-toggle', (event) => {
+      if (event.payload === 'enter') enterInnerWorkspace()
+      else leaveInnerWorkspace()
+    })).then((unlisten) => { dispose = unlisten })
+    return () => dispose()
+  }, [interactionSurface, settings.interactionLayout])
+
+  useEffect(() => {
     if (!nativeAppearance.isNative) return
     void refreshAppearance()
   }, [surface])
@@ -317,6 +349,7 @@ export function App({ surface = 'combined' }: AppProps) {
       if (event.altKey && event.key.toLowerCase() === 'w') { baseDispatch({ type: 'LOCK' }); dispatchCore('lock') }
       if (event.key === 'Escape') {
         if (runtime.phase === 'locked') { baseDispatch({ type: 'UNLOCK', playWake: settings.playWakeOnEveryUnlock && settings.animationsEnabled && !settings.skipWakeAnimation }); dispatchCore('unlock', { playWake: settings.playWakeOnEveryUnlock && settings.animationsEnabled && !settings.skipWakeAnimation }) }
+        else if (workspace === 'inner' || workspace === 'entering-inner') leaveInnerWorkspace()
         else if (showSettings || showAppearance || interactionState === 'expanded') {
           setShowSettings(false); setShowAppearance(false); setInteractionState('collapsed')
           baseDispatch({ type: 'CLOSE_CHAT' }); dispatchCore('close-chat')
@@ -324,7 +357,7 @@ export function App({ surface = 'combined' }: AppProps) {
       }
     }
     window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey)
-  }, [runtime.phase, settings])
+  }, [runtime.phase, settings, workspace, showSettings, showAppearance, interactionState])
 
   const changeBackend = (backend: WallpaperSettings['defaultBackend']) => {
     patchRuntime({ backend })
@@ -338,10 +371,10 @@ export function App({ surface = 'combined' }: AppProps) {
     return <IdleScene persona={{ ...persona, bubbles, assets: { ...persona.assets, portrait: resolvedPersona ?? persona.assets.portrait } }} bubbleText={runtime.activity === 'thinking' ? '正在认真思考…' : bubbles.morning} showHarnessPrompt={interactionSurface && showHarnessPrompt} harnessOnline={runtime.harness !== 'offline'} backgroundUrl={resolvedBackground ?? (background?.path ? assetUrl(background.path) : undefined)} onOpenChat={() => { if (interactionSurface) { baseDispatch({ type: 'OPEN_CHAT' }); dispatchCore('open-chat') } }} onSwitchToHarness={() => changeBackend('harness')} onDismissHarnessPrompt={() => setShowHarnessPrompt(false)} />
   }, [background?.path, bubbles, persona, resolvedBackground, resolvedPersona, runtime, settings, showHarnessPrompt])
 
-  return <div className={`wallpaper-root surface-${surface} effort-${runtime.reasoningEffort ?? 'normal'}`}>
+  return <div className={`wallpaper-root surface-${surface} effort-${runtime.reasoningEffort ?? 'normal'} workspace-${workspace}`} data-workspace={workspace}>
     {sceneSurface && scene}
     {interactionSurface && <>
-      <ConversationBubble backend={runtime.backend} activity={runtime.activity} modelLabel={modelLabel} messages={messages} streamingText={streamingText} historyExpanded={runtime.historyExpanded} usage={usage} collapsed={interactionState === 'collapsed'} layout={settings.interactionLayout} expandDirection={interactionDirection} onExpand={() => { setInteractionState('expanded'); baseDispatch({ type: 'OPEN_CHAT' }); dispatchCore('open-chat') }} disabled={runtime.backend === 'deepseek-web' || (runtime.backend === 'harness' && runtime.harness !== 'bridge-ready')} onToggleHistory={() => { baseDispatch({ type: 'TOGGLE_HISTORY' }); dispatchCore('toggle-history') }} onSend={(text) => { void adapterRef.current.send(text).then(() => { if (adapterRef.current instanceof NativeChatAdapter) { const id = adapterRef.current.conversationId(); if (id) saveConversationPointer(runtime.backend, id) } }) }} onStop={() => void adapterRef.current.stop()} onClose={() => { setShowSettings(false); setShowAppearance(false); setInteractionState('collapsed'); baseDispatch({ type: 'CLOSE_CHAT' }); dispatchCore('close-chat') }} />
+      {(settings.interactionLayout === 'taskbar-docked' || workspace !== 'front') && <ConversationBubble backend={runtime.backend} activity={runtime.activity} modelLabel={modelLabel} messages={messages} streamingText={streamingText} historyExpanded={runtime.historyExpanded} usage={usage} collapsed={settings.interactionLayout === 'taskbar-docked' && interactionState === 'collapsed'} layout={settings.interactionLayout} expandDirection={interactionDirection} onExpand={() => { setInteractionState('expanded'); if (workspace === 'front') enterInnerWorkspace(); else { baseDispatch({ type: 'OPEN_CHAT' }); dispatchCore('open-chat') } }} disabled={runtime.backend === 'deepseek-web' || (runtime.backend === 'harness' && runtime.harness !== 'bridge-ready')} onToggleHistory={() => { baseDispatch({ type: 'TOGGLE_HISTORY' }); dispatchCore('toggle-history') }} onSend={(text) => { void adapterRef.current.send(text).then(() => { if (adapterRef.current instanceof NativeChatAdapter) { const id = adapterRef.current.conversationId(); if (id) saveConversationPointer(runtime.backend, id) } }) }} onStop={() => void adapterRef.current.stop()} onClose={() => { leaveInnerWorkspace() }} />}
       {runtime.error && runtime.phase !== 'error' && <div className="runtime-notice" role="status">{runtime.error}<button onClick={() => patchRuntime({ error: undefined })}>×</button></div>}
       {interactionState === 'expanded' && <button className="tray-zone" data-interaction-region="settings-trigger" onClick={() => { setShowAppearance(false); setShowSettings((value) => !value) }} title="设置" aria-label="设置" />}
       {interactionState === 'expanded' && <button className="tray-zone appearance-trigger" data-interaction-region="appearance-trigger" onClick={() => { setShowSettings(false); setShowAppearance((value) => !value); void refreshAppearance() }} title="外观" aria-label="外观">◈</button>}

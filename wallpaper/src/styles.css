@@ -19,6 +19,29 @@
   background: transparent;
 }
 
+.surface-background::after {
+  position: absolute;
+  z-index: 70;
+  inset: 7%;
+  border: 1px solid transparent;
+  border-radius: 44px;
+  content: '';
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 260ms ease, border-color 260ms ease, box-shadow 260ms ease, backdrop-filter 260ms ease;
+}
+.surface-background.workspace-entering-inner::after,
+.surface-background.workspace-inner::after {
+  border-color: rgba(175, 216, 255, .18);
+  box-shadow: inset 0 0 80px rgba(125, 190, 255, .07), 0 0 70px rgba(45, 116, 190, .08);
+  opacity: 1;
+  backdrop-filter: blur(2px);
+}
+.surface-interaction.workspace-entering-inner .conversation-shell { animation: workspace-focus-in 280ms cubic-bezier(.2,.8,.2,1) both; }
+.surface-interaction.workspace-leaving-inner .conversation-shell { animation: workspace-focus-out 220ms ease both; }
+@keyframes workspace-focus-in { from { opacity: 0; transform: scale(.94); filter: blur(14px); } to { opacity: 1; transform: scale(1); filter: blur(0); } }
+@keyframes workspace-focus-out { to { opacity: 0; transform: scale(.97); filter: blur(10px); } }
+
 html[data-surface='interaction'], html[data-surface='interaction'] body, html[data-surface='interaction'] #root { background: transparent !important; }
 .surface-interaction { overflow: visible; }
 .surface-interaction .conversation-shell { inset: 0; width: 100%; transform: none; }
