@@ -33,6 +33,13 @@ fn dispatch_tray_ui_action(app: &tauri::AppHandle, action: AppAction) {
     // interaction surface; once focused, the normal foreground monitor takes over.
     core.dispatch(AppAction::DesktopForegroundChanged(true));
     let snapshot = core.dispatch(action);
+    log::info!(
+        "tray interaction request: phase={:?} visible={} settings={} desktop={}",
+        snapshot.phase,
+        snapshot.interaction.visible,
+        snapshot.interaction.settings_open,
+        snapshot.interaction.desktop_foreground
+    );
     if snapshot.interaction.visible {
         let _ = windows_integration::show_interaction(app, true);
     }

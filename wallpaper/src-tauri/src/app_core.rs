@@ -215,14 +215,6 @@ impl AppCore {
             }
             AppAction::DesktopForegroundChanged(desktop_foreground) => {
                 state.interaction.desktop_foreground = desktop_foreground;
-                if !desktop_foreground {
-                    // Returning to the desktop may restore the collapsed surface, but never
-                    // reopen chat, history, or settings that had been visible before.
-                    close_transient_surfaces(&mut state);
-                    if state.phase == SystemPhase::Chatting {
-                        state.phase = SystemPhase::Idle;
-                    }
-                }
             }
             AppAction::SelectBackend(backend) => state.backend = backend,
             AppAction::SetActivity(activity) => state.activity = activity,
@@ -273,12 +265,34 @@ mod tests {
         assert_eq!(snapshot.wallpaper_host, status);
         assert_eq!(snapshot.revision, 1);
     }
+
+    #[test]
+    fn explicit_chat_stays_visible_after_the_desktop_loses_foreground() {
+        let core = AppCore::default();
+        core.dispatch(AppAction::BootReady { play_wake: false });
+        core.dispatch(AppAction::OpenChat);
+        let snapshot = core.dispatch(AppAction::DesktopForegroundChanged(false));
+        assert_eq!(snapshot.phase, SystemPhase::Chatting);
+        assert!(snapshot.interaction.visible);
+    }
+
+    #[test]
+    fn explicit_settings_stay_visible_after_the_desktop_loses_foreground() {
+        let core = AppCore::default();
+        core.dispatch(AppAction::BootReady { play_wake: false });
+        core.dispatch(AppAction::OpenSettings);
+        let snapshot = core.dispatch(AppAction::DesktopForegroundChanged(false));
+        assert!(snapshot.interaction.settings_open);
+        assert!(snapshot.interaction.visible);
+    }
 }
 
 fn can_show_interaction(state: &AppSnapshot) -> bool {
     state.interaction.enabled
-        && state.interaction.desktop_foreground
         && matches!(state.phase, SystemPhase::Idle | SystemPhase::Chatting)
+        && (state.interaction.desktop_foreground
+            || state.phase == SystemPhase::Chatting
+            || state.interaction.settings_open)
 }
 
 fn recompute_interaction_visibility(state: &mut AppSnapshot) {
