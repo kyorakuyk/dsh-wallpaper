@@ -11,7 +11,7 @@
   },
   "app": {
     "windows": [
-      { "label": "background", "title": "DSH Wallpaper", "url": "index.html?surface=background", "fullscreen": true, "decorations": false, "resizable": false, "focus": false, "skipTaskbar": true },
+      { "label": "background", "title": "DSH Wallpaper", "url": "index.html?surface=background", "fullscreen": false, "width": 1920, "height": 1080, "decorations": false, "resizable": false, "focus": false, "skipTaskbar": true },
       { "label": "interaction", "title": "DSH Wallpaper Chat", "width": 760, "height": 720, "decorations": false, "transparent": true, "alwaysOnTop": true, "skipTaskbar": true, "visible": false }
     ],
     "security": { "csp": null }

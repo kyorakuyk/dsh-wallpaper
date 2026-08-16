@@ -109,6 +109,7 @@ async fn probe_harness() -> serde_json::Value {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // DPI 感知已在 main.rs 进程入口设置（Per-Monitor DPI Aware）。
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::new().build())
         .manage(chat::ChatState::default())
@@ -120,14 +121,12 @@ pub fn run() {
             // 避免 Tauri 的可见性状态与原生窗口不一致导致壁纸层不可见。
             let bg_handle = background.clone();
             std::thread::spawn(move || {
-                // SetParent 后 WebView2 需要重新显示 + 触发重绘（resize 一次强制重新合成）。
-                std::thread::sleep(std::time::Duration::from_millis(800));
-                let _ = bg_handle.show();
-                // 触发一次 resize，强制 WebView2 重新合成渲染表面
-                if let Ok(size) = bg_handle.inner_size() {
-                    let _ = bg_handle.set_size(tauri::LogicalSize::new(size.width as f64 + 1.0, size.height as f64));
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    let _ = bg_handle.set_size(tauri::LogicalSize::new(size.width as f64, size.height as f64));
+                // 首次启动存在 WebView 初始化竞态：多次延迟 show() 确保最终可见。
+                // Tauri 稳定后强制原生物理全屏（避免逻辑/物理像素混淆导致非全屏）。
+                for delay_ms in [600u64, 1500, 3000, 5000] {
+                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                    let _ = windows_integration::force_fullscreen(&bg_handle);
+                    let _ = bg_handle.show();
                 }
             });
             if let Err(error) = windows_integration::register_session_events(app.handle()) { log::warn!("session notification failed: {error}"); }

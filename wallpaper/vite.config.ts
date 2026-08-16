@@ -35,10 +35,10 @@ function runtimeAssetsOnly() {
 }
 
 // 壁纸前端构建配置：
-// - base './' 让产物可被任意壁纸引擎/静态服务器加载（相对路径）
+// - base '/' 让产物用绝对路径（Tauri tauri://localhost 下相对路径 './' 解析有问题）
 // - 全屏沉浸式，无边框
 export default defineConfig({
-  base: './',
+  base: '/',
   publicDir: false,
   plugins: [react(), runtimeAssetsOnly()],
   build: {

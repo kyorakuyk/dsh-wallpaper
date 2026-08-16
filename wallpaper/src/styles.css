@@ -306,7 +306,8 @@ html[data-surface='interaction'], html[data-surface='interaction'] body, html[da
 
 /* ===== 待机场景 ===== */
 .scene-idle {
-  background: transparent;
+  /* 不透明深色底：即使背景图加载失败也不透出白色窗口底 */
+  background: linear-gradient(160deg, #0d1428, #131b3c 60%, #1a2244);
 }
 
 .idle-bg {

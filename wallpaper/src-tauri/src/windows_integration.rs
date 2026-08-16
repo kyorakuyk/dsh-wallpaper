@@ -17,7 +17,8 @@ use windows::{
             PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SWP_NOACTIVATE, SWP_NOMOVE,
             SWP_NOSIZE, WM_NCDESTROY, WM_POWERBROADCAST, WM_USER, WM_WTSSESSION_CHANGE,
             WTS_SESSION_LOCK, WTS_SESSION_UNLOCK, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-            GetClientRect, ShowWindow, SW_SHOWNA, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
+            ShowWindow, SW_SHOWNA, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
+            GetAncestor, GA_ROOT,
         },
     },
 };
@@ -41,40 +42,43 @@ unsafe extern "system" fn find_wallpaper_worker(window: HWND, lparam: LPARAM) ->
 }
 
 #[cfg(windows)]
+pub fn force_fullscreen(window: &WebviewWindow) -> Result<(), String> {
+    let hwnd = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
+    unsafe {
+        // Tauri 的 hwnd() 可能返回 webview 子窗口；取顶层根窗口再操作。
+        let root = windows::Win32::UI::WindowsAndMessaging::GetAncestor(hwnd, windows::Win32::UI::WindowsAndMessaging::GA_ROOT);
+        let target = if root.0.is_null() { hwnd } else { root };
+        let width = GetSystemMetrics(SM_CXSCREEN);
+        let height = GetSystemMetrics(SM_CYSCREEN);
+        log::info!("force_fullscreen: hwnd=0x{:X} root=0x{:X} → {}x{}", hwnd.0 as usize, target.0 as usize, width, height);
+        let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
+            target, None, 0, 0, width, height,
+            SWP_NOACTIVATE,
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn force_fullscreen(_: &WebviewWindow) -> Result<(), String> { Ok(()) }
+
+#[cfg(windows)]
 pub fn attach_to_workerw(window: &WebviewWindow) -> Result<(), String> {
     let hwnd = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
     unsafe {
         let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_TOOLWINDOW.0 as isize | WS_EX_NOACTIVATE.0 as isize);
-        // 1) 请求 Progman 创建壁纸层 WorkerW（发送两次，兼容不同 shell 状态）。
-        let progman = FindWindowW(windows::core::w!("Progman"), PCWSTR::null()).map_err(|e| e.to_string())?;
-        let _ = PostMessageW(Some(progman), WM_USER + 0x052C, WPARAM(0xD), LPARAM(0));
-        let _ = PostMessageW(Some(progman), WM_USER + 0x052C, WPARAM(0xD), LPARAM(1));
-        // 2) 枚举找「不含桌面图标的 WorkerW」作为壁纸层宿主。
-        let mut worker = HWND::default();
-        let _ = EnumWindows(Some(find_wallpaper_worker), LPARAM((&mut worker as *mut HWND) as isize));
-        if worker.0.is_null() {
-            // 3a) 无壁纸层 WorkerW（罕见）：保持顶层置底，至少可见。
-            log::info!("未找到壁纸层 WorkerW，保持顶层置底");
+        // 稳定方案：不 SetParent（WebView2 挂 WorkerW 渲染不稳定）。
+        // 初始把窗口排在「Progman 之后」（= 桌面图标之上、其他窗口之下）。
+        // 注意：不做周期置底守护——反复 SetWindowPos 会触发 WebView 重排导致内容丢失，
+        // 且 FindWindowW 失败时回退 HWND_BOTTOM 会把窗口压到桌面层之下消失。
+        if let Ok(progman) = FindWindowW(windows::core::w!("Progman"), PCWSTR::null()) {
             let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
-                hwnd, Some(HWND_BOTTOM), 0, 0, 0, 0,
+                hwnd, Some(progman), 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             );
-        } else {
-            // 3b) 挂到壁纸层 WorkerW：真壁纸（图标之下、切窗不消失、不占任务栏）。
-            log::info!("已挂载到壁纸层 WorkerW: 0x{:X}", worker.0 as usize);
-            // 先显示再 SetParent：WebView2 在可见状态下重挂父窗口更稳定。
-            let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_SHOWNA);
-            SetParent(hwnd, Some(worker)).map_err(|e| e.to_string())?;
-            // WorkerW 的 client rect 可能未初始化（0x0），用屏幕尺寸铺满。
-            let width = windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(windows::Win32::UI::WindowsAndMessaging::SM_CXSCREEN);
-            let height = windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(windows::Win32::UI::WindowsAndMessaging::SM_CYSCREEN);
-            let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
-                hwnd, Some(HWND_BOTTOM), 0, 0, width, height,
-                SWP_NOACTIVATE,
-            );
-            let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_SHOWNA);
         }
+        let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_SHOWNA);
     }
     Ok(())
 }
