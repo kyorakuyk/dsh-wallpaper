@@ -50,14 +50,21 @@ pub fn force_fullscreen(window: &WebviewWindow) -> Result<(), String> {
         let target = if root.0.is_null() { hwnd } else { root };
         // 清除边框样式：WS_CAPTION|WS_THICKFRAME|WS_BORDER|WS_DLGFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX
         let style = GetWindowLongPtrW(target, GWL_STYLE);
-        let border_mask = (0x00C00000u32 | 0x00040000u32 | 0x00800000u32 | 0x00400000u32 | 0x00020000u32 | 0x00010000u32) as isize; // CAPTION THICKFRAME BORDER DLGFRAME MINIMIZE MAXIMIZE
+        let border_mask = (0x00C00000u32 | 0x00040000u32 | 0x00800000u32 | 0x00400000u32 | 0x00020000u32 | 0x00010000u32) as isize;
         SetWindowLongPtrW(target, GWL_STYLE, style & !border_mask);
-        // 物理全屏（DPI-aware 下 GetSystemMetrics 返回物理像素）
-        let width = GetSystemMetrics(SM_CXSCREEN);
-        let height = GetSystemMetrics(SM_CYSCREEN);
-        log::info!("force_fullscreen: target=0x{:X} → {}x{}", target.0 as usize, width, height);
+        // 工作区尺寸（不含任务栏）——壁纸覆盖工作区，任务栏保持可见
+        let mut wa = windows::Win32::Foundation::RECT::default();
+        let _ = windows::Win32::UI::WindowsAndMessaging::SystemParametersInfoW(
+            windows::Win32::UI::WindowsAndMessaging::SPI_GETWORKAREA,
+            0,
+            Some(&mut wa as *mut _ as *mut core::ffi::c_void),
+            windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        );
+        let width = wa.right - wa.left;
+        let height = wa.bottom - wa.top;
+        log::info!("force_workarea: target=0x{:X} → {}x{}", target.0 as usize, width, height);
         let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
-            target, None, 0, 0, width, height,
+            target, None, wa.left, wa.top, width, height,
             SWP_NOACTIVATE,
         );
     }
@@ -101,20 +108,39 @@ pub fn attach_to_workerw(window: &WebviewWindow) -> Result<(), String> {
             );
         }
         let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_SHOWNA);
-        // 4) 延迟 resize 触发 WebView2 重新合成（修复灰屏；物理像素 ±1px 不膨胀）
+        // 4) 延迟守护线程：反复把窗口设为「工作区尺寸」（不含任务栏）+ Progman 之上。
+        //    Tauri 可能在窗口初始化后恢复自身尺寸（fullscreen/初始尺寸），
+        //    多次 SetWindowPos 确保最终工作区尺寸生效；同时 ±1px 触发 WebView2 重绘。
         let resize_hwnd = hwnd.0 as isize;
         std::thread::spawn(move || {
-            for delay_ms in [800u64, 2000, 4000] {
+            for delay_ms in [500u64, 1200, 2500, 5000] {
                 std::thread::sleep(std::time::Duration::from_millis(delay_ms));
                 unsafe {
                     let target = HWND(resize_hwnd as *mut core::ffi::c_void);
+                    let progman = FindWindowW(windows::core::w!("Progman"), PCWSTR::null())
+                        .map(|h| h.0 as isize)
+                        .unwrap_or(0);
+                    let anchor = if progman != 0 { Some(HWND(progman as *mut core::ffi::c_void)) } else { None };
+                    // 工作区尺寸（重新获取，防分辨率变化）
+                    let mut wa = windows::Win32::Foundation::RECT::default();
+                    let _ = windows::Win32::UI::WindowsAndMessaging::SystemParametersInfoW(
+                        windows::Win32::UI::WindowsAndMessaging::SPI_GETWORKAREA,
+                        0,
+                        Some(&mut wa as *mut _ as *mut core::ffi::c_void),
+                        windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+                    );
+                    let w = wa.right - wa.left;
+                    let h = wa.bottom - wa.top;
+                    log::info!("守护线程: work_area={}x{} anchor=0x{:X} target=0x{:X}", w, h, anchor.map(|a| a.0 as usize).unwrap_or(0), target.0 as usize);
+                    // 先 ±1px 触发 WebView 重绘
                     let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
-                        target, None, work_area.left, work_area.top, width + 1, height,
+                        target, anchor, wa.left, wa.top, w + 1, h,
                         SWP_NOACTIVATE,
                     );
                     std::thread::sleep(std::time::Duration::from_millis(50));
+                    // 再设回精确工作区尺寸
                     let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
-                        target, None, work_area.left, work_area.top, width, height,
+                        target, anchor, wa.left, wa.top, w, h,
                         SWP_NOACTIVATE,
                     );
                 }
