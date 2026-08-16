@@ -46,9 +46,10 @@ fn show_deepseek_login(app: tauri::AppHandle) -> Result<(), String> {
     }
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("deepseek-webview2");
     std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
-    WebviewWindowBuilder::new(&app, "deepseek-login", WebviewUrl::External("https://chat.deepseek.com".parse().map_err(|e| format!("DeepSeek URL 无效：{e}"))?))
+    let login = WebviewWindowBuilder::new(&app, "deepseek-login", WebviewUrl::External("https://chat.deepseek.com".parse().map_err(|e| format!("DeepSeek URL 无效：{e}"))?))
         .title("DeepSeek 登录")
         .inner_size(980.0, 760.0)
+        .decorations(true) // 带系统标题栏与关闭按钮
         .data_directory(data_dir)
         .on_navigation(|url| matches!(url.host_str(), Some("chat.deepseek.com") | Some("deepseek.com") | Some("www.deepseek.com")))
         .build().map_err(|e| e.to_string())?;
@@ -115,6 +116,20 @@ pub fn run() {
         .setup(|app| {
             let background = app.get_webview_window("background").expect("background window");
             if let Err(error) = windows_integration::attach_to_workerw(&background) { log::warn!("WorkerW attach failed: {error}"); }
+            // SetParent 到 WorkerW 后，等 WebView 完成初始化再通过 Tauri 重新显示，
+            // 避免 Tauri 的可见性状态与原生窗口不一致导致壁纸层不可见。
+            let bg_handle = background.clone();
+            std::thread::spawn(move || {
+                // SetParent 后 WebView2 需要重新显示 + 触发重绘（resize 一次强制重新合成）。
+                std::thread::sleep(std::time::Duration::from_millis(800));
+                let _ = bg_handle.show();
+                // 触发一次 resize，强制 WebView2 重新合成渲染表面
+                if let Ok(size) = bg_handle.inner_size() {
+                    let _ = bg_handle.set_size(tauri::LogicalSize::new(size.width as f64 + 1.0, size.height as f64));
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    let _ = bg_handle.set_size(tauri::LogicalSize::new(size.width as f64, size.height as f64));
+                }
+            });
             if let Err(error) = windows_integration::register_session_events(app.handle()) { log::warn!("session notification failed: {error}"); }
             windows_integration::start_foreground_monitor(app.handle().clone());
             if app.get_webview_window("interaction").is_none() {

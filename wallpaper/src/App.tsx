@@ -88,7 +88,8 @@ export function App({ surface = 'combined' }: AppProps) {
 
   useEffect(() => {
     if (!nativeRuntime.isNative || surface !== 'background') return
-    const onOpen = () => { void nativeRuntime.showInteraction() }
+    // 壁纸层点击立绘：在壁纸内打开会话浮层（OPEN_CHAT），不弹独立窗口。
+    const onOpen = () => { baseDispatch({ type: 'OPEN_CHAT' }) }
     window.addEventListener('pointerup', onOpen)
     return () => window.removeEventListener('pointerup', onOpen)
   }, [surface])
@@ -135,12 +136,11 @@ export function App({ surface = 'combined' }: AppProps) {
 
   return <div className={`wallpaper-root surface-${surface} effort-${runtime.reasoningEffort ?? 'normal'}`}>
     {sceneSurface && scene}
-    {interactionSurface && <>
-      {(surface === 'interaction' || runtime.phase === 'chatting') && <ConversationBubble backend={runtime.backend} activity={runtime.activity} modelLabel={modelLabel} messages={messages} streamingText={streamingText} historyExpanded={runtime.historyExpanded} usage={usage} disabled={runtime.backend === 'harness' && runtime.harness !== 'bridge-ready'} onToggleHistory={() => baseDispatch({ type: 'TOGGLE_HISTORY' })} onSend={(text) => void adapterRef.current.send(text)} onStop={() => void adapterRef.current.stop()} onClose={() => { baseDispatch({ type: 'CLOSE_CHAT' }); if (surface === 'interaction') void nativeRuntime.hideInteraction() }} />}
-      {runtime.error && runtime.phase !== 'error' && <div className="runtime-notice" role="status">{runtime.error}<button onClick={() => patchRuntime({ error: undefined })}>×</button></div>}
-      <button className="tray-zone" onClick={() => setShowSettings((value) => !value)} title="设置" aria-label="设置" />
-      {showSettings && <SettingsPanel settings={settings} harnessStatus={runtime.harness} onChange={(next) => { setSettings(next); saveSettings(next); if (nativeRuntime.isNative && next.lockScreenEnabled !== settings.lockScreenEnabled) void nativeRuntime.setLockScreen(next.lockScreenEnabled).catch((error) => patchRuntime({ error: String(error) })); if (nativeRuntime.isNative && next.autostart !== settings.autostart) void nativeRuntime.setAutostart(next.autostart).catch((error) => patchRuntime({ error: String(error) })) }} onRequestDeepSeekLogin={() => { baseDispatch({ type: 'AUTH_REQUIRED' }); void nativeRuntime.requestDeepSeekLogin() }} onConfigureApiKey={() => { const key = window.prompt('输入 DeepSeek API Key。密钥只会写入 Windows 凭据管理器，不进入前端存储。'); if (key) void nativeRuntime.saveApiKey(key).catch((error) => patchRuntime({ error: String(error) })) }} onClose={() => setShowSettings(false)} />}
-      {runtime.phase === 'auth-required' && <div className="auth-overlay"><div className="auth-card"><h2>DeepSeek 网页登录</h2><p>桌面版会显示 DeepSeek 官方登录窗口，登录态由 WebView2 保存。</p><button onClick={() => baseDispatch({ type: 'AUTH_READY' })}>我已完成登录</button></div></div>}
-    </>}
+    {/* 会话浮层：interaction 窗口常显；壁纸层在 chatting 时内嵌显示（嵌入壁纸背景） */}
+    {(surface === 'interaction' || runtime.phase === 'chatting') && <ConversationBubble backend={runtime.backend} activity={runtime.activity} modelLabel={modelLabel} messages={messages} streamingText={streamingText} historyExpanded={runtime.historyExpanded} usage={usage} disabled={runtime.backend === 'harness' && runtime.harness !== 'bridge-ready'} onToggleHistory={() => baseDispatch({ type: 'TOGGLE_HISTORY' })} onSend={(text) => void adapterRef.current.send(text)} onStop={() => void adapterRef.current.stop()} onClose={() => { baseDispatch({ type: 'CLOSE_CHAT' }); if (surface === 'interaction') void nativeRuntime.hideInteraction() }} />}
+    {runtime.error && runtime.phase !== 'error' && <div className="runtime-notice" role="status">{runtime.error}<button onClick={() => patchRuntime({ error: undefined })}>×</button></div>}
+    <button className="tray-zone" onClick={() => setShowSettings((value) => !value)} title="设置" aria-label="设置" />
+    {showSettings && <SettingsPanel settings={settings} harnessStatus={runtime.harness} onChange={(next) => { setSettings(next); saveSettings(next); if (nativeRuntime.isNative && next.lockScreenEnabled !== settings.lockScreenEnabled) void nativeRuntime.setLockScreen(next.lockScreenEnabled).catch((error) => patchRuntime({ error: String(error) })); if (nativeRuntime.isNative && next.autostart !== settings.autostart) void nativeRuntime.setAutostart(next.autostart).catch((error) => patchRuntime({ error: String(error) })) }} onRequestDeepSeekLogin={() => { baseDispatch({ type: 'AUTH_REQUIRED' }); void nativeRuntime.requestDeepSeekLogin() }} onConfigureApiKey={() => { const key = window.prompt('输入 DeepSeek API Key。密钥只会写入 Windows 凭据管理器，不进入前端存储。'); if (key) void nativeRuntime.saveApiKey(key).catch((error) => patchRuntime({ error: String(error) })) }} onClose={() => setShowSettings(false)} />}
+    {runtime.phase === 'auth-required' && <div className="auth-overlay"><div className="auth-card"><h2>DeepSeek 网页登录</h2><p>桌面版会显示 DeepSeek 官方登录窗口，登录态由 WebView2 保存。</p><button onClick={() => baseDispatch({ type: 'AUTH_READY' })}>我已完成登录</button></div></div>}
   </div>
 }
