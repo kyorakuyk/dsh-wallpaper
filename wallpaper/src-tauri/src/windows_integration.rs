@@ -1204,6 +1204,11 @@ pub fn apply_interaction_placement(
             SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW,
         )
         .map_err(|error| error.to_string())?;
+        // SetWindowRgn is expressed in window-local coordinates, but Windows
+        // offsets an existing region when this top-level window is moved from
+        // its former full-work-area position. Clear it before the WebView
+        // publishes fresh local component rectangles for the new viewport.
+        let _ = SetWindowRgn(hwnd, None, true);
         Ok(InteractionPlacement { x, y, width, height })
     }
 }
