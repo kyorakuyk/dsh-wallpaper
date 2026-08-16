@@ -357,4 +357,27 @@ type AppearanceEvent =
 6. 自包含主题导出器。
 7. 单元测试、损坏恢复和全新目录导入 E2E。
 
+## 11. 里桌面组件扩展边界
+
+主题包负责声明视觉素材与设计 token；可执行桌面组件必须作为独立 Widget 插件安装，不能借主题包夹带脚本。建议公开接口：
+
+```ts
+interface DesktopWidgetPlugin {
+  manifest: WidgetManifest
+  create(context: WidgetContext): DesktopWidget
+}
+
+interface WidgetContext {
+  workspace: 'front' | 'inner'
+  geometry: DesktopGeometry
+  theme: Readonly<ThemeTokens>
+  storage: WidgetStorage
+  events: WidgetEventBus
+}
+```
+
+`WidgetManifest` 至少声明插件 ID、版本、宿主兼容范围、默认/最小/最大尺寸、默认锚点、设置 schema、权限和支持的工作区。官方默认组件与用户插件沿用“官方基线不与用户包并列”的原则，但在组件管理页明确展示来源。
+
+权限默认全部关闭；网络、文件选择、通知和 DSH 能力必须逐项声明并由宿主代理。组件不得直接读取 API Key、Cookie、网页登录态或 bridge token。布局和启用状态由宿主版本化保存，插件卸载后保留设置需要用户明确选择。
+
 任何子任务都不得绕过统一 `AppearanceApi` 直接修改运行中的 React 状态或用户素材目录。
