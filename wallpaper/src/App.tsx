@@ -22,6 +22,8 @@ import type { AppearanceAssetSummary, AppearanceThemeSummary, AssetClassificatio
 import type { AppearanceSlot } from './appearance/theme/index.ts'
 import { chooseAppearanceImportFolder, chooseAppearanceImportPaths, nativeAppearance } from './native/appearance.ts'
 import { appCoreClient } from './runtime/appCoreClient.ts'
+import { useInteractionLayout } from './runtime/useInteractionLayout.ts'
+import type { InteractionState } from './runtime/interactionLayout.ts'
 
 const registry = new PersonaRegistry()
 
@@ -44,6 +46,7 @@ export function App({ surface = 'combined' }: AppProps) {
   const [streamingText, setStreamingText] = useState('')
   const [usage, setUsage] = useState<TokenUsage>()
   const [conversationGeneration, setConversationGeneration] = useState(0)
+  const [interactionState, setInteractionState] = useState<InteractionState>('collapsed')
   const adapterRef = useRef<ChatAdapter>(new PreviewAdapter(settings.defaultBackend))
   const runtimeRef = useRef(runtime)
   runtimeRef.current = runtime
@@ -65,6 +68,13 @@ export function App({ surface = 'combined' }: AppProps) {
   const modelLabel = runtime.model ?? (tier === 'pro' ? 'Pro · 成年形态' : 'Flash · 幼年形态')
   const sceneSurface = surface !== 'interaction'
   const interactionSurface = surface !== 'background'
+  const interactionDirection = useInteractionLayout({
+    enabled: surface === 'interaction',
+    layout: settings.interactionLayout,
+    state: interactionState,
+    anchor: settings.floatingAnchor,
+    refreshKey: `${showSettings}:${showAppearance}:${runtime.historyExpanded}:${runtime.phase}`,
+  })
 
   const refreshAppearance = async () => {
     try {
@@ -160,6 +170,7 @@ export function App({ surface = 'combined' }: AppProps) {
       if (!snapshot.interaction.desktopForeground || snapshot.privacyScreen) {
         setShowSettings(false)
         setShowAppearance(false)
+        setInteractionState('collapsed')
       }
     }
     void Promise.all([
@@ -218,6 +229,7 @@ export function App({ surface = 'combined' }: AppProps) {
     void nativeRuntime.listenSystem((event) => {
       if (!appCoreClient.native && (event === 'locked' || event === 'suspend')) baseDispatch({ type: 'LOCK' })
       if (event === 'unlocked' || event === 'resume') {
+        setInteractionState('collapsed')
         if (settings.conversationPolicy === 'new-on-unlock') setConversationGeneration((value) => value + 1)
         if (!appCoreClient.native) baseDispatch({ type: 'UNLOCK', playWake: settings.playWakeOnEveryUnlock && settings.animationsEnabled && !settings.skipWakeAnimation })
       }
@@ -230,7 +242,7 @@ export function App({ surface = 'combined' }: AppProps) {
     let unsubscribe: () => void = () => undefined
     void nativeRuntime.listenTray((event) => {
       if (event.type === 'backend') changeBackend(event.backend)
-      else { setShowAppearance(false); setShowSettings(true) }
+      else { setInteractionState('expanded'); setShowAppearance(false); setShowSettings(true) }
     }).then((dispose) => { unsubscribe = dispose })
     return () => unsubscribe()
   }, [interactionSurface])
@@ -257,10 +269,12 @@ export function App({ surface = 'combined' }: AppProps) {
     const observer = new MutationObserver(publish)
     observer.observe(document.body, { attributes: true, childList: true, subtree: true })
     window.addEventListener('resize', publish)
+    window.addEventListener('dsh-interaction-placement', publish)
     publish()
     return () => {
       observer.disconnect()
       window.removeEventListener('resize', publish)
+      window.removeEventListener('dsh-interaction-placement', publish)
       cancelAnimationFrame(frame)
       void publishInteractionRegions({ revision: ++revision, scaleFactor: window.devicePixelRatio || 1, regions: [] })
     }
@@ -296,8 +310,10 @@ export function App({ surface = 'combined' }: AppProps) {
       if (event.altKey && event.key.toLowerCase() === 'w') { baseDispatch({ type: 'LOCK' }); dispatchCore('lock') }
       if (event.key === 'Escape') {
         if (runtime.phase === 'locked') { baseDispatch({ type: 'UNLOCK', playWake: settings.playWakeOnEveryUnlock && settings.animationsEnabled && !settings.skipWakeAnimation }); dispatchCore('unlock', { playWake: settings.playWakeOnEveryUnlock && settings.animationsEnabled && !settings.skipWakeAnimation }) }
-        else if (runtime.phase === 'chatting') { baseDispatch({ type: 'CLOSE_CHAT' }); dispatchCore('close-chat') }
-        else { setShowSettings(false); setShowAppearance(false) }
+        else if (showSettings || showAppearance || interactionState === 'expanded') {
+          setShowSettings(false); setShowAppearance(false); setInteractionState('collapsed')
+          baseDispatch({ type: 'CLOSE_CHAT' }); dispatchCore('close-chat')
+        }
       }
     }
     window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey)
@@ -318,10 +334,10 @@ export function App({ surface = 'combined' }: AppProps) {
   return <div className={`wallpaper-root surface-${surface} effort-${runtime.reasoningEffort ?? 'normal'}`}>
     {sceneSurface && scene}
     {interactionSurface && <>
-      <ConversationBubble backend={runtime.backend} activity={runtime.activity} modelLabel={modelLabel} messages={messages} streamingText={streamingText} historyExpanded={runtime.historyExpanded} usage={usage} disabled={runtime.backend === 'deepseek-web' || (runtime.backend === 'harness' && runtime.harness !== 'bridge-ready')} onToggleHistory={() => { baseDispatch({ type: 'TOGGLE_HISTORY' }); dispatchCore('toggle-history') }} onSend={(text) => { void adapterRef.current.send(text).then(() => { if (adapterRef.current instanceof NativeChatAdapter) { const id = adapterRef.current.conversationId(); if (id) saveConversationPointer(runtime.backend, id) } }) }} onStop={() => void adapterRef.current.stop()} onClose={() => { baseDispatch({ type: 'CLOSE_CHAT' }); dispatchCore('close-chat') }} />
+      <ConversationBubble backend={runtime.backend} activity={runtime.activity} modelLabel={modelLabel} messages={messages} streamingText={streamingText} historyExpanded={runtime.historyExpanded} usage={usage} collapsed={interactionState === 'collapsed'} layout={settings.interactionLayout} expandDirection={interactionDirection} onExpand={() => { setInteractionState('expanded'); baseDispatch({ type: 'OPEN_CHAT' }); dispatchCore('open-chat') }} disabled={runtime.backend === 'deepseek-web' || (runtime.backend === 'harness' && runtime.harness !== 'bridge-ready')} onToggleHistory={() => { baseDispatch({ type: 'TOGGLE_HISTORY' }); dispatchCore('toggle-history') }} onSend={(text) => { void adapterRef.current.send(text).then(() => { if (adapterRef.current instanceof NativeChatAdapter) { const id = adapterRef.current.conversationId(); if (id) saveConversationPointer(runtime.backend, id) } }) }} onStop={() => void adapterRef.current.stop()} onClose={() => { setShowSettings(false); setShowAppearance(false); setInteractionState('collapsed'); baseDispatch({ type: 'CLOSE_CHAT' }); dispatchCore('close-chat') }} />
       {runtime.error && runtime.phase !== 'error' && <div className="runtime-notice" role="status">{runtime.error}<button onClick={() => patchRuntime({ error: undefined })}>×</button></div>}
-      <button className="tray-zone" data-interaction-region="settings-trigger" onClick={() => { setShowAppearance(false); setShowSettings((value) => !value) }} title="设置" aria-label="设置" />
-      <button className="tray-zone appearance-trigger" data-interaction-region="appearance-trigger" onClick={() => { setShowSettings(false); setShowAppearance((value) => !value); void refreshAppearance() }} title="外观" aria-label="外观">◈</button>
+      {interactionState === 'expanded' && <button className="tray-zone" data-interaction-region="settings-trigger" onClick={() => { setShowAppearance(false); setShowSettings((value) => !value) }} title="设置" aria-label="设置" />}
+      {interactionState === 'expanded' && <button className="tray-zone appearance-trigger" data-interaction-region="appearance-trigger" onClick={() => { setShowSettings(false); setShowAppearance((value) => !value); void refreshAppearance() }} title="外观" aria-label="外观">◈</button>}
       {showSettings && <div data-interaction-region="settings-panel"><SettingsPanel settings={settings} harnessStatus={runtime.harness} onChange={(next) => { setSettings(next); saveSettings(next); if (nativeRuntime.isNative && next.lockScreenEnabled !== settings.lockScreenEnabled) void nativeRuntime.setLockScreen(next.lockScreenEnabled).catch((error) => patchRuntime({ error: String(error) })); if (nativeRuntime.isNative && next.autostart !== settings.autostart) void nativeRuntime.setAutostart(next.autostart).catch((error) => patchRuntime({ error: String(error) })) }} onRequestDeepSeekLogin={() => { baseDispatch({ type: 'AUTH_REQUIRED' }); void nativeRuntime.requestDeepSeekLogin() }} onConfigureApiKey={() => { const key = window.prompt('输入 DeepSeek API Key。密钥只会写入 Windows 凭据管理器，不进入前端存储。'); if (key) void nativeRuntime.saveApiKey(key).catch((error) => patchRuntime({ error: String(error) })) }} onClose={() => setShowSettings(false)} /></div>}
       <AppearanceDrawer open={showAppearance} themes={appearanceThemes} assets={appearanceAssets} activeThemeId={appearanceTheme?.id ?? ''} activeThemeVersion={appearanceTheme?.version ?? ''} overrides={appearanceOverrides} busy={appearanceBusy} notice={appearanceNotice} onClose={() => setShowAppearance(false)} onImport={() => { void importAppearance(chooseAppearanceImportPaths) }} onImportFolder={() => { void importAppearance(chooseAppearanceImportFolder) }} onExport={() => setAppearanceNotice({ tone: 'info', message: '主题导出需要名称与版本信息，完整导出表单将在下一步接入。' })} onReviewInbox={() => undefined} onClassify={(request) => { void classifyAppearance(request) }} onActivateTheme={(themeId, version) => { void mutateAppearance(() => nativeAppearance.activateTheme(themeId, version)) }} onSetOverride={(slot, assetId) => { void mutateAppearance(() => nativeAppearance.setOverride(slot, assetId)) }} onClearOverride={(slot) => { void mutateAppearance(() => nativeAppearance.clearOverride(slot)) }} />
       {runtime.phase === 'auth-required' && <div className="auth-overlay" data-interaction-region="auth"><div className="auth-card"><h2>DeepSeek 网页登录</h2><p>桌面版会显示 DeepSeek 官方登录窗口，登录态由 WebView2 保存。</p><button onClick={() => { baseDispatch({ type: 'AUTH_READY' }); dispatchCore('auth-ready') }}>我已完成登录</button></div></div>}

@@ -2,8 +2,9 @@
 
 import type { BackendMode, ConversationPolicy, ModelTierRule } from '../domain/types.ts'
 import type { PersonaBubbles } from '../persona/types.ts'
+import type { InteractionLayout } from '../runtime/interactionLayout.ts'
 
-export const SETTINGS_VERSION = 2
+export const SETTINGS_VERSION = 3
 export const assetUrl = (path: string): string => `${import.meta.env.BASE_URL}${path.replace(/^\//, '')}`
 const CONVERSATION_KEY = 'dsh-wallpaper:conversations:v1'
 
@@ -45,6 +46,8 @@ export interface WallpaperSettings {
   background: BackgroundId
   historyStartsExpanded: boolean
   animationIntensity: 'low' | 'normal' | 'high'
+  interactionLayout: InteractionLayout
+  floatingAnchor: { x: number; y: number }
   deepseekApi: ApiSettings
 }
 
@@ -65,10 +68,12 @@ export const DEFAULT_SETTINGS: WallpaperSettings = {
   background: 'workspace',
   historyStartsExpanded: false,
   animationIntensity: 'normal',
+  interactionLayout: 'floating',
+  floatingAnchor: { x: 0.5, y: 0.56 },
   deepseekApi: { baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
 }
 
-const KEY = 'dsh-wallpaper:settings:v2'
+const KEY = 'dsh-wallpaper:settings:v3'
 
 function migrate(raw: unknown): WallpaperSettings {
   if (raw === null || typeof raw !== 'object') return structuredClone(DEFAULT_SETTINGS)
@@ -87,7 +92,7 @@ function migrate(raw: unknown): WallpaperSettings {
 
 export function loadSettings(): WallpaperSettings {
   try {
-    const raw = localStorage.getItem(KEY) ?? localStorage.getItem('dsh-wallpaper:settings')
+    const raw = localStorage.getItem(KEY) ?? localStorage.getItem('dsh-wallpaper:settings:v2') ?? localStorage.getItem('dsh-wallpaper:settings')
     if (raw) return migrate(JSON.parse(raw))
   } catch {
     /* 忽略损坏的配置 */

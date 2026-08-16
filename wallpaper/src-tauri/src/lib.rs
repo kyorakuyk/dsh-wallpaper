@@ -225,6 +225,24 @@ fn update_interaction_regions(
 }
 
 #[tauri::command]
+fn get_desktop_geometry(app: tauri::AppHandle) -> Result<windows_integration::DesktopGeometry, String> {
+    let window = app
+        .get_webview_window("interaction")
+        .or_else(|| app.get_webview_window("background"))
+        .ok_or("desktop window missing")?;
+    windows_integration::desktop_geometry(&window)
+}
+
+#[tauri::command]
+fn apply_interaction_placement(
+    app: tauri::AppHandle,
+    placement: windows_integration::InteractionPlacement,
+) -> Result<windows_integration::InteractionPlacement, String> {
+    let window = app.get_webview_window("interaction").ok_or("interaction window missing")?;
+    windows_integration::apply_interaction_placement(&window, placement)
+}
+
+#[tauri::command]
 async fn send_chat(
     app: tauri::AppHandle,
     state: tauri::State<'_, chat::ChatState>,
@@ -418,6 +436,8 @@ pub fn run() {
             show_interaction,
             hide_interaction,
             update_interaction_regions,
+            get_desktop_geometry,
+            apply_interaction_placement,
             send_chat,
             cancel_chat,
             connect_harness,

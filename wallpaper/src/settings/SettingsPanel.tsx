@@ -25,6 +25,11 @@ export function SettingsPanel({ settings, harnessStatus, onChange, onRequestDeep
         <div className={`conn-state ${harnessStatus === 'bridge-ready' ? 'on' : 'off'}`}>{harnessStatus === 'bridge-ready' ? '● DSH 壁纸桥接已就绪' : harnessStatus === 'web-only' ? '◐ DSH 在线，但未安装壁纸桥接' : '○ DSH 离线'}</div>
       </div>
       <div className="settings-section">
+        <h4>交互布局</h4>
+        <label className="setting-row">气泡位置：<select value={settings.interactionLayout} onChange={(event) => set({ interactionLayout: event.target.value as WallpaperSettings['interactionLayout'] })}><option value="floating">中央悬浮</option><option value="taskbar-docked">任务栏停靠</option></select></label>
+        <div className="settings-hint">任务栏停靠会自动识别上下左右位置；自动隐藏时仍保留安全触发间距。</div>
+      </div>
+      <div className="settings-section">
         <h4>DeepSeek 连接</h4>
         <button className="setting-btn" onClick={onRequestDeepSeekLogin}>扫码登录 / 重新登录网页桥接</button>
         <label className="setting-row">API 地址：<input type="text" value={settings.deepseekApi.baseUrl} onChange={(event) => set({ deepseekApi: { ...settings.deepseekApi, baseUrl: event.target.value } })} /></label>
@@ -51,4 +56,3 @@ export function SettingsPanel({ settings, harnessStatus, onChange, onRequestDeep
     </div>
   )
 }
-

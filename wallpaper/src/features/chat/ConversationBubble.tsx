@@ -13,6 +13,10 @@ export interface ConversationBubbleProps {
   historyExpanded: boolean
   usage?: TokenUsage
   disabled?: boolean
+  collapsed?: boolean
+  layout?: 'floating' | 'taskbar-docked'
+  expandDirection?: 'up' | 'down' | 'left' | 'right' | 'center'
+  onExpand?: () => void
   onToggleHistory: () => void
   onSend: (text: string) => void
   onStop: () => void
@@ -35,6 +39,18 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const backend = BACKEND_PRESENTATION[props.backend]
   const totalCost = sessionCost(props.messages)
   const tokenCount = usageTokenCount(props.usage)
+
+  if (props.collapsed) return <button
+    type="button"
+    className={`dsh-chat-collapsed dsh-chat-collapsed--${props.layout ?? 'floating'} dsh-chat-collapsed--${props.expandDirection ?? 'center'} dsh-theme-${props.backend === 'harness' ? 'harness' : 'deepseek'}`}
+    data-interaction-region="chat-collapsed"
+    onClick={props.onExpand}
+    aria-label="展开 AI 对话"
+  >
+    <span className="dsh-chat-collapsed__sigil"><Icon name="spark" size={15} /></span>
+    {(props.layout ?? 'floating') === 'floating' && <span className="dsh-chat-collapsed__label">{backend.shortName}</span>}
+    <Icon name="chevron-up" size={16} />
+  </button>
 
   const submit = () => {
     const text = draft.trim()

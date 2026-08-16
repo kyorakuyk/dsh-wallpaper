@@ -22,7 +22,8 @@ use windows::{
             Dwm::{
                 DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
             },
-            Gdi::{ClientToScreen, CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_OR},
+            Gdi::{ClientToScreen, CombineRgn, CreateRectRgn, DeleteObject, GetMonitorInfoW,
+                MonitorFromWindow, SetWindowRgn, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, RGN_OR},
         },
         System::{
             RemoteDesktop::{
@@ -32,6 +33,7 @@ use windows::{
             Threading::GetCurrentProcessId,
         },
         UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+        UI::Shell::{SHAppBarMessage, ABM_GETSTATE, ABM_GETTASKBARPOS, ABS_AUTOHIDE, APPBARDATA},
         UI::WindowsAndMessaging::{
             EnumChildWindows, EnumWindows, FindWindowExW, FindWindowW, GetClassNameW, GetClientRect,
             GetDesktopWindow, GetForegroundWindow, GetParent, GetWindowLongPtrW, GetWindowRect,
@@ -102,6 +104,44 @@ pub struct InteractionRegionUpdateResult {
     pub stale: bool,
 }
 
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeometryRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskbarGeometry {
+    pub edge: String,
+    pub bounds: Option<GeometryRect>,
+    pub auto_hide: bool,
+    pub visible: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopGeometry {
+    pub monitor_id: String,
+    pub monitor_bounds: GeometryRect,
+    pub work_area: GeometryRect,
+    pub scale_factor: f64,
+    pub taskbar: TaskbarGeometry,
+    pub revision: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InteractionPlacement {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
 static INTERACTION_REGIONS: OnceLock<RwLock<InteractionRegionState>> = OnceLock::new();
 
 #[cfg(windows)]
@@ -110,8 +150,72 @@ static DESKTOP_FOREGROUND_STATE: OnceLock<RwLock<Option<bool>>> = OnceLock::new(
 #[cfg(windows)]
 static WALLPAPER_HOST_STATUS: OnceLock<RwLock<WallpaperHostStatus>> = OnceLock::new();
 
+#[cfg(windows)]
+static GEOMETRY_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn interaction_regions() -> &'static RwLock<InteractionRegionState> {
     INTERACTION_REGIONS.get_or_init(|| RwLock::new(InteractionRegionState::default()))
+}
+
+fn geometry_rect(rect: RECT) -> GeometryRect {
+    GeometryRect {
+        x: rect.left,
+        y: rect.top,
+        width: rect.right - rect.left,
+        height: rect.bottom - rect.top,
+    }
+}
+
+#[cfg(windows)]
+pub fn desktop_geometry(window: &WebviewWindow) -> Result<DesktopGeometry, String> {
+    let hwnd = HWND(window.hwnd().map_err(|error| error.to_string())?.0);
+    unsafe {
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return Err("无法读取显示器工作区".into());
+        }
+
+        let mut appbar = APPBARDATA {
+            cbSize: std::mem::size_of::<APPBARDATA>() as u32,
+            ..Default::default()
+        };
+        let has_taskbar = SHAppBarMessage(ABM_GETTASKBARPOS, &mut appbar) != 0;
+        let auto_hide = SHAppBarMessage(ABM_GETSTATE, &mut appbar) & ABS_AUTOHIDE as usize != 0;
+        let taskbar_bounds = has_taskbar.then(|| geometry_rect(appbar.rc));
+        let edge = if !has_taskbar {
+            "unknown"
+        } else if appbar.rc.top <= info.rcMonitor.top && appbar.rc.bottom < info.rcMonitor.bottom {
+            "top"
+        } else if appbar.rc.bottom >= info.rcMonitor.bottom && appbar.rc.top > info.rcMonitor.top {
+            "bottom"
+        } else if appbar.rc.left <= info.rcMonitor.left {
+            "left"
+        } else {
+            "right"
+        };
+        Ok(DesktopGeometry {
+            monitor_id: format!("monitor-{:X}", monitor.0 as usize),
+            monitor_bounds: geometry_rect(info.rcMonitor),
+            work_area: geometry_rect(info.rcWork),
+            scale_factor: window.scale_factor().unwrap_or(1.0),
+            taskbar: TaskbarGeometry {
+                edge: edge.into(),
+                bounds: taskbar_bounds,
+                auto_hide,
+                visible: has_taskbar && !auto_hide,
+            },
+            revision: GEOMETRY_REVISION.fetch_add(1, Ordering::Relaxed) + 1,
+        })
+    }
+}
+
+#[cfg(not(windows))]
+pub fn desktop_geometry(_: &tauri::WebviewWindow) -> Result<DesktopGeometry, String> {
+    Err("desktop geometry only supports Windows".into())
 }
 
 #[cfg(windows)]
@@ -1032,17 +1136,27 @@ pub fn configure_desktop_interaction(window: &WebviewWindow) -> Result<(), Strin
 }
 
 #[cfg(windows)]
+pub fn notify_desktop_geometry_changed(app: &tauri::AppHandle) {
+    let _ = app.emit("desktop-geometry-changed", ());
+}
+
+#[cfg(windows)]
 fn size_interaction_to_desktop(hwnd: HWND) -> Result<(), String> {
-    let progman = unsafe { FindWindowW(windows::core::w!("Progman"), PCWSTR::null()) }
-        .map_err(|error| error.to_string())?;
-    let mut bounds = RECT::default();
-    unsafe { GetClientRect(progman, &mut bounds) }.map_err(|error| error.to_string())?;
     unsafe {
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return Err("无法读取交互窗口工作区".into());
+        }
+        let bounds = info.rcWork;
         SetWindowPos(
             hwnd,
             None,
-            0,
-            0,
+            bounds.left,
+            bounds.top,
             bounds.right - bounds.left,
             bounds.bottom - bounds.top,
             SWP_NOACTIVATE | SWP_NOZORDER,
@@ -1050,6 +1164,53 @@ fn size_interaction_to_desktop(hwnd: HWND) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(windows)]
+pub fn apply_interaction_placement(
+    window: &WebviewWindow,
+    requested: InteractionPlacement,
+) -> Result<InteractionPlacement, String> {
+    let hwnd = HWND(window.hwnd().map_err(|error| error.to_string())?.0);
+    unsafe {
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return Err("无法读取交互窗口工作区".into());
+        }
+        let work_width = info.rcWork.right - info.rcWork.left;
+        let work_height = info.rcWork.bottom - info.rcWork.top;
+        let min_width = 48.min(work_width.max(1));
+        let min_height = 40.min(work_height.max(1));
+        let max_width = ((work_width as f64 * 0.9).round() as i32).max(min_width);
+        let max_height = ((work_height as f64 * 0.9).round() as i32).max(min_height);
+        let width = requested.width.clamp(min_width, max_width);
+        let height = requested.height.clamp(min_height, max_height);
+        let x = requested.x.clamp(0, (work_width - width).max(0));
+        let y = requested.y.clamp(0, (work_height - height).max(0));
+        SetWindowPos(
+            hwnd,
+            None,
+            info.rcWork.left + x,
+            info.rcWork.top + y,
+            width,
+            height,
+            SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW,
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(InteractionPlacement { x, y, width, height })
+    }
+}
+
+#[cfg(not(windows))]
+pub fn apply_interaction_placement(
+    _: &WebviewWindow,
+    _: InteractionPlacement,
+) -> Result<InteractionPlacement, String> {
+    Err("interaction placement only supports Windows".into())
 }
 
 #[cfg(windows)]
@@ -1119,7 +1280,9 @@ pub fn start_foreground_monitor(app: tauri::AppHandle) {
             hide_interaction(&app);
         }
 
-        let _ = INTERACTION_BOUNDS_SYNC_QUEUED.swap(false, Ordering::AcqRel);
+        if INTERACTION_BOUNDS_SYNC_QUEUED.swap(false, Ordering::AcqRel) {
+            notify_desktop_geometry_changed(&app);
+        }
         if app.get_webview_window("interaction").is_none() {
             break;
         }

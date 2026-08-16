@@ -21,7 +21,7 @@
 
 html[data-surface='interaction'], html[data-surface='interaction'] body, html[data-surface='interaction'] #root { background: transparent !important; }
 .surface-interaction { overflow: visible; }
-.surface-interaction .conversation-shell { bottom: 18px; width: calc(100% - 32px); }
+.surface-interaction .conversation-shell { inset: 0; width: 100%; transform: none; }
 .surface-interaction .settings-panel { position: fixed; }
 
 .scene {

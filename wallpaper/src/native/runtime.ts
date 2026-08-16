@@ -7,6 +7,24 @@ export interface NativeSendOptions {
   model?: string
 }
 
+export interface GeometryRect { x: number; y: number; width: number; height: number }
+export interface DesktopGeometry {
+  monitorId: string
+  monitorBounds: GeometryRect
+  workArea: GeometryRect
+  scaleFactor: number
+  taskbar: {
+    edge: 'top' | 'bottom' | 'left' | 'right' | 'hidden' | 'unknown'
+    bounds?: GeometryRect
+    autoHide: boolean
+    visible: boolean
+  }
+  revision: number
+}
+export interface InteractionPlacement extends GeometryRect {
+  expandDirection?: 'up' | 'down' | 'left' | 'right' | 'center'
+}
+
 export interface NativeRuntime {
   isNative: boolean
   setLockScreen(enabled: boolean): Promise<string>
@@ -24,6 +42,8 @@ export interface NativeRuntime {
   hideInteraction(): Promise<void>
   listenTray(listener: (event: { type: 'backend'; backend: BackendMode } | { type: 'settings' }) => void): Promise<() => void>
   probeHarness(): Promise<HarnessStatus>
+  desktopGeometry(): Promise<DesktopGeometry | undefined>
+  applyInteractionPlacement(placement: InteractionPlacement): Promise<InteractionPlacement | undefined>
 }
 
 async function tauriAvailable(): Promise<boolean> {
@@ -107,5 +127,15 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) return { availability: 'offline' }
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<HarnessStatus>('probe_harness')
+  },
+  async desktopGeometry() {
+    if (!await tauriAvailable()) return undefined
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<DesktopGeometry>('get_desktop_geometry')
+  },
+  async applyInteractionPlacement(placement) {
+    if (!await tauriAvailable()) return placement
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<InteractionPlacement>('apply_interaction_placement', { placement })
   },
 }
