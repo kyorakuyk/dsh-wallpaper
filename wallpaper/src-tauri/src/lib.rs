@@ -6,7 +6,7 @@ mod windows_integration;
 use app_core::{Activity, AppAction, AppCore, AppSnapshot, BackendMode, HarnessAvailability};
 use std::sync::{OnceLock, RwLock};
 use tauri::menu::MenuBuilder;
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 fn emit_app_snapshot(app: &tauri::AppHandle, snapshot: &AppSnapshot) {
@@ -20,6 +20,21 @@ fn dispatch_ui_action(app: &tauri::AppHandle, action: AppAction, request_focus: 
     let snapshot = core.dispatch(action);
     if snapshot.interaction.visible {
         let _ = windows_integration::show_interaction(app, request_focus);
+    }
+    emit_app_snapshot(app, &snapshot);
+}
+
+fn dispatch_tray_ui_action(app: &tauri::AppHandle, action: AppAction) {
+    let Some(core) = app.try_state::<AppCore>() else {
+        return;
+    };
+    // Opening the tray menu temporarily makes Shell_TrayWnd the foreground
+    // window. Treat an explicit tray command as user intent to reveal the
+    // interaction surface; once focused, the normal foreground monitor takes over.
+    core.dispatch(AppAction::DesktopForegroundChanged(true));
+    let snapshot = core.dispatch(action);
+    if snapshot.interaction.visible {
+        let _ = windows_integration::show_interaction(app, true);
     }
     emit_app_snapshot(app, &snapshot);
 }
@@ -491,14 +506,14 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => {
-                        dispatch_ui_action(app, AppAction::OpenChat, true);
+                        dispatch_tray_ui_action(app, AppAction::OpenChat);
                     }
                     "hide" => dispatch_ui_action(app, AppAction::CloseChat, false),
                     "deepseek-web" | "deepseek-api" | "harness" => {
                         let _ = app.emit("tray-backend", event.id().as_ref());
                     }
                     "settings" => {
-                        dispatch_ui_action(app, AppAction::OpenSettings, true);
+                        dispatch_tray_ui_action(app, AppAction::OpenSettings);
                     }
                     "lock" => {
                         #[cfg(windows)]
@@ -510,6 +525,11 @@ pub fn run() {
                     }
                     "quit" => app.exit(0),
                     _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if matches!(event, TrayIconEvent::DoubleClick { button: MouseButton::Left, .. }) {
+                        dispatch_tray_ui_action(tray.app_handle(), AppAction::OpenChat);
+                    }
                 });
             if let Some(icon) = app.default_window_icon() {
                 tray = tray.icon(icon.clone());

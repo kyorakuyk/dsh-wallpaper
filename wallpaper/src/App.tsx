@@ -167,6 +167,13 @@ export function App({ surface = 'combined' }: AppProps) {
         historyExpanded: snapshot.interaction.historyExpanded,
         error: snapshot.error,
       })
+      if (snapshot.interaction.settingsOpen) {
+        setInteractionState('expanded')
+        setShowAppearance(false)
+        setShowSettings(true)
+      } else if (snapshot.phase === 'chatting') {
+        setInteractionState('expanded')
+      }
       if (!snapshot.interaction.desktopForeground || snapshot.privacyScreen) {
         setShowSettings(false)
         setShowAppearance(false)
