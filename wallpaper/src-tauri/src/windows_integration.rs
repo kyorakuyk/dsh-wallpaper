@@ -37,7 +37,7 @@ use windows::{
         UI::WindowsAndMessaging::{
             EnumChildWindows, EnumWindows, FindWindowExW, FindWindowW, GetClassNameW, GetClientRect,
             GetDesktopWindow, GetForegroundWindow, GetParent, GetWindowLongPtrW, GetWindowRect,
-            GetWindowThreadProcessId, IsWindow, IsWindowVisible, SendMessageTimeoutW, SetParent, SetWindowLongPtrW,
+            GetWindowThreadProcessId, IsWindow, IsWindowVisible, SendMessageTimeoutW, SetForegroundWindow, SetParent, SetWindowLongPtrW,
             SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
             PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SEND_MESSAGE_TIMEOUT_FLAGS, SMTO_NORMAL,
             SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
@@ -61,6 +61,9 @@ static WALLPAPER_RECOVERY_QUEUED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(windows)]
 static INTERACTION_BOUNDS_SYNC_QUEUED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(windows)]
+static INTERACTION_REVEAL_GRACE: OnceLock<RwLock<Option<std::time::Instant>>> = OnceLock::new();
 
 const MAX_INTERACTION_REGIONS: usize = 128;
 const MIN_SCALE_FACTOR: f64 = 0.5;
@@ -1220,7 +1223,23 @@ pub fn show_interaction(app: &tauri::AppHandle, request_focus: bool) -> Result<(
         .ok_or("interaction window missing")?;
     window.show().map_err(|e| e.to_string())?;
     if request_focus {
-        window.set_focus().map_err(|e| e.to_string())?;
+        if let Ok(mut deadline) = INTERACTION_REVEAL_GRACE
+            .get_or_init(|| RwLock::new(None))
+            .write()
+        {
+            *deadline = Some(std::time::Instant::now() + std::time::Duration::from_millis(900));
+        }
+        let hwnd = HWND(window.hwnd().map_err(|error| error.to_string())?.0);
+        // A tray command runs while Shell_TrayWnd owns the foreground. Calling
+        // the Win32 foreground API from that input callback transfers the
+        // activation to our compact interaction HWND before the monitor can
+        // interpret the taskbar as an unrelated application.
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOWNA);
+            if !SetForegroundWindow(hwnd).as_bool() {
+                window.set_focus().map_err(|e| e.to_string())?;
+            }
+        }
     }
     Ok(())
 }
@@ -1245,9 +1264,19 @@ pub fn start_foreground_monitor(app: tauri::AppHandle) {
             }
         }
         let ours = process_id == unsafe { GetCurrentProcessId() };
+        let foreground_class = window_class(foreground);
         let shell = foreground == unsafe { GetDesktopWindow() }
-            || is_desktop_foreground_class(window_class(foreground).as_deref());
+            || is_desktop_foreground_class(foreground_class.as_deref());
+        let reveal_grace = INTERACTION_REVEAL_GRACE
+            .get_or_init(|| RwLock::new(None))
+            .read()
+            .ok()
+            .and_then(|deadline| *deadline)
+            .is_some_and(|deadline| std::time::Instant::now() <= deadline);
+        let tray_transition = reveal_grace
+            && matches!(foreground_class.as_deref(), Some("Shell_TrayWnd") | Some("NotifyIconOverflowWindow"));
         let desktop_foreground = shell
+            || tray_transition
             || (ours
                 && app
                     .get_webview_window("interaction")
