@@ -53,6 +53,8 @@ fn show_deepseek_login(app: tauri::AppHandle) -> Result<(), String> {
         .data_directory(data_dir)
         .on_navigation(|url| matches!(url.host_str(), Some("chat.deepseek.com") | Some("deepseek.com") | Some("www.deepseek.com")))
         .build().map_err(|e| e.to_string())?;
+    // 关闭后允许重建（Tauri 默认销毁窗口）
+    let _ = login;
     Ok(())
 }
 

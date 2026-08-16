@@ -13,12 +13,13 @@ use windows::{
         UI::WindowsAndMessaging::{
             EnumWindows, FindWindowExW, FindWindowW, GetDesktopWindow, GetForegroundWindow,
             GetWindowLongPtrW, GetWindowThreadProcessId, PostMessageW, SetParent,
-            SetWindowLongPtrW, GWL_EXSTYLE, HWND_BOTTOM,
+            SetWindowLongPtrW, GWL_EXSTYLE, GWL_STYLE, HWND_BOTTOM,
             PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SWP_NOACTIVATE, SWP_NOMOVE,
             SWP_NOSIZE, WM_NCDESTROY, WM_POWERBROADCAST, WM_USER, WM_WTSSESSION_CHANGE,
             WTS_SESSION_LOCK, WTS_SESSION_UNLOCK, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
             ShowWindow, SW_SHOWNA, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
-            GetAncestor, GA_ROOT,
+            GetAncestor, GA_ROOT, SystemParametersInfoW, SPI_GETWORKAREA,
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
         },
     },
 };
@@ -45,12 +46,16 @@ unsafe extern "system" fn find_wallpaper_worker(window: HWND, lparam: LPARAM) ->
 pub fn force_fullscreen(window: &WebviewWindow) -> Result<(), String> {
     let hwnd = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
     unsafe {
-        // Tauri 的 hwnd() 可能返回 webview 子窗口；取顶层根窗口再操作。
         let root = windows::Win32::UI::WindowsAndMessaging::GetAncestor(hwnd, windows::Win32::UI::WindowsAndMessaging::GA_ROOT);
         let target = if root.0.is_null() { hwnd } else { root };
+        // 清除边框样式：WS_CAPTION|WS_THICKFRAME|WS_BORDER|WS_DLGFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX
+        let style = GetWindowLongPtrW(target, GWL_STYLE);
+        let border_mask = (0x00C00000u32 | 0x00040000u32 | 0x00800000u32 | 0x00400000u32 | 0x00020000u32 | 0x00010000u32) as isize; // CAPTION THICKFRAME BORDER DLGFRAME MINIMIZE MAXIMIZE
+        SetWindowLongPtrW(target, GWL_STYLE, style & !border_mask);
+        // 物理全屏（DPI-aware 下 GetSystemMetrics 返回物理像素）
         let width = GetSystemMetrics(SM_CXSCREEN);
         let height = GetSystemMetrics(SM_CYSCREEN);
-        log::info!("force_fullscreen: hwnd=0x{:X} root=0x{:X} → {}x{}", hwnd.0 as usize, target.0 as usize, width, height);
+        log::info!("force_fullscreen: target=0x{:X} → {}x{}", target.0 as usize, width, height);
         let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
             target, None, 0, 0, width, height,
             SWP_NOACTIVATE,
@@ -66,19 +71,55 @@ pub fn force_fullscreen(_: &WebviewWindow) -> Result<(), String> { Ok(()) }
 pub fn attach_to_workerw(window: &WebviewWindow) -> Result<(), String> {
     let hwnd = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
     unsafe {
-        let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_TOOLWINDOW.0 as isize | WS_EX_NOACTIVATE.0 as isize);
-        // 稳定方案：不 SetParent（WebView2 挂 WorkerW 渲染不稳定）。
-        // 初始把窗口排在「Progman 之后」（= 桌面图标之上、其他窗口之下）。
-        // 注意：不做周期置底守护——反复 SetWindowPos 会触发 WebView 重排导致内容丢失，
-        // 且 FindWindowW 失败时回退 HWND_BOTTOM 会把窗口压到桌面层之下消失。
+        // 1) 扩展样式：TOOLWINDOW + NOACTIVATE（不抢焦点、不进任务栏）
+        let exstyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, exstyle | WS_EX_TOOLWINDOW.0 as isize | WS_EX_NOACTIVATE.0 as isize);
+        // 2) 清除窗口边框样式（解决"四周有边框"）
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let border_mask = (0x00C00000u32 | 0x00040000u32 | 0x00800000u32 | 0x00400000u32 | 0x00020000u32 | 0x00010000u32) as isize;
+        SetWindowLongPtrW(hwnd, GWL_STYLE, style & !border_mask);
+        // 3) 工作区尺寸（不含任务栏）+ Progman 之上（Z 序：桌面图标上、普通窗口下）
+        //    注意：WebView2 挂 WorkerW 渲染灰屏（DComp 不兼容），故不挂载。
+        let mut work_area = windows::Win32::Foundation::RECT::default();
+        let _ = windows::Win32::UI::WindowsAndMessaging::SystemParametersInfoW(
+            windows::Win32::UI::WindowsAndMessaging::SPI_GETWORKAREA,
+            0,
+            Some(&mut work_area as *mut _ as *mut core::ffi::c_void),
+            windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        );
+        let width = work_area.right - work_area.left;
+        let height = work_area.bottom - work_area.top;
         if let Ok(progman) = FindWindowW(windows::core::w!("Progman"), PCWSTR::null()) {
             let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
-                hwnd, Some(progman), 0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                hwnd, Some(progman), work_area.left, work_area.top, width, height,
+                SWP_NOACTIVATE,
+            );
+        } else {
+            let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
+                hwnd, None, work_area.left, work_area.top, width, height,
+                SWP_NOACTIVATE,
             );
         }
         let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_SHOWNA);
+        // 4) 延迟 resize 触发 WebView2 重新合成（修复灰屏；物理像素 ±1px 不膨胀）
+        let resize_hwnd = hwnd.0 as isize;
+        std::thread::spawn(move || {
+            for delay_ms in [800u64, 2000, 4000] {
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                unsafe {
+                    let target = HWND(resize_hwnd as *mut core::ffi::c_void);
+                    let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
+                        target, None, work_area.left, work_area.top, width + 1, height,
+                        SWP_NOACTIVATE,
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
+                        target, None, work_area.left, work_area.top, width, height,
+                        SWP_NOACTIVATE,
+                    );
+                }
+            }
+        });
     }
     Ok(())
 }
