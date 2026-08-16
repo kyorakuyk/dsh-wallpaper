@@ -1,0 +1,125 @@
+.dsh-glass {
+  position: relative;
+  box-sizing: border-box;
+  color: var(--dsh-text);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.055), transparent 38%),
+    var(--dsh-glass-fill);
+  border: 1px solid var(--dsh-glass-border);
+  box-shadow: var(--dsh-inner-highlight), var(--dsh-shadow-resting);
+  -webkit-backdrop-filter: blur(var(--dsh-glass-blur)) saturate(var(--dsh-glass-saturate));
+  backdrop-filter: blur(var(--dsh-glass-blur)) saturate(var(--dsh-glass-saturate));
+}
+
+.dsh-glass--soft { background-color: var(--dsh-glass-fill-soft); }
+.dsh-glass--strong { background-color: var(--dsh-glass-fill-strong); }
+.dsh-glass--floating { box-shadow: var(--dsh-inner-highlight), var(--dsh-shadow-floating); }
+
+.dsh-button {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: var(--dsh-space-2);
+  box-sizing: border-box;
+  padding: 7px 13px;
+  border: 1px solid transparent;
+  border-radius: var(--dsh-radius-sm);
+  font: 600 13px/1 var(--dsh-font-sans);
+  color: var(--dsh-text-strong);
+  cursor: pointer;
+  transition:
+    transform var(--dsh-duration-fast) var(--dsh-ease-standard),
+    color var(--dsh-duration-fast) ease,
+    border-color var(--dsh-duration-fast) ease,
+    background var(--dsh-duration-fast) ease,
+    box-shadow var(--dsh-duration-fast) ease;
+}
+
+.dsh-button:hover:not(:disabled) { transform: translateY(-1px); }
+.dsh-button:active:not(:disabled) { transform: translateY(0); }
+.dsh-button:focus-visible { outline: 2px solid var(--dsh-accent-soft); outline-offset: 2px; }
+.dsh-button:disabled { cursor: default; opacity: 0.42; }
+.dsh-button--primary {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--dsh-accent) 92%, white 8%), var(--dsh-accent));
+  box-shadow: 0 7px 20px color-mix(in srgb, var(--dsh-accent) 28%, transparent);
+}
+.dsh-button--secondary { background: rgba(255, 255, 255, 0.09); border-color: rgba(255, 255, 255, 0.11); }
+.dsh-button--ghost { background: transparent; color: var(--dsh-text-muted); }
+.dsh-button--ghost:hover:not(:disabled) { color: var(--dsh-text-strong); background: rgba(255, 255, 255, 0.075); }
+.dsh-button--danger { background: rgba(191, 54, 67, 0.18); border-color: rgba(255, 128, 139, 0.28); color: #ffd9dc; }
+.dsh-button--icon { width: 34px; padding: 0; border-radius: var(--dsh-radius-pill); }
+
+.dsh-popover { position: relative; display: inline-flex; }
+.dsh-popover__panel {
+  position: absolute;
+  z-index: 300;
+  bottom: calc(100% + var(--dsh-space-2));
+  min-width: 220px;
+  padding: var(--dsh-space-2);
+  border-radius: var(--dsh-radius-md);
+  animation: dsh-popover-in var(--dsh-duration-normal) var(--dsh-ease-expressive);
+}
+.dsh-popover__panel--start { left: 0; }
+.dsh-popover__panel--center { left: 50%; transform: translateX(-50%); }
+.dsh-popover__panel--end { right: 0; }
+
+.dsh-menu { display: grid; gap: 2px; min-width: 200px; }
+.dsh-menu__label { padding: 6px 9px 5px; color: var(--dsh-text-faint); font: 600 11px/1.2 var(--dsh-font-sans); letter-spacing: 0.05em; text-transform: uppercase; }
+.dsh-menu__separator { height: 1px; margin: 5px 7px; background: var(--dsh-glass-divider); }
+.dsh-menu__item {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--dsh-text);
+  font: 500 13px/1.25 var(--dsh-font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+.dsh-menu__item:hover:not(:disabled), .dsh-menu__item[aria-checked='true'] { background: rgba(255, 255, 255, 0.08); color: var(--dsh-text-strong); }
+.dsh-menu__item:focus-visible { outline: 2px solid var(--dsh-accent-soft); outline-offset: -2px; }
+.dsh-menu__item:disabled { opacity: 0.42; cursor: default; }
+.dsh-menu__shortcut { color: var(--dsh-text-faint); font-size: 11px; }
+
+.dsh-drawer {
+  position: fixed;
+  z-index: 280;
+  top: var(--dsh-space-4);
+  right: var(--dsh-space-4);
+  bottom: var(--dsh-space-4);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(420px, calc(100vw - 32px));
+  overflow: hidden;
+  border-radius: var(--dsh-radius-lg);
+  animation: dsh-drawer-in var(--dsh-duration-slow) var(--dsh-ease-expressive);
+}
+.dsh-drawer__header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 18px 15px 22px; border-bottom: 1px solid var(--dsh-glass-divider); }
+.dsh-drawer__title { margin: 0; color: var(--dsh-text-strong); font: 650 16px/1.2 var(--dsh-font-sans); }
+.dsh-drawer__description { margin: 5px 0 0; color: var(--dsh-text-muted); font: 12px/1.45 var(--dsh-font-sans); }
+.dsh-drawer__body { min-height: 0; overflow: auto; padding: 18px 22px; }
+.dsh-drawer__footer { padding: 14px 22px; border-top: 1px solid var(--dsh-glass-divider); }
+
+.dsh-toast-viewport { position: fixed; z-index: 360; top: 18px; left: 50%; display: grid; width: min(520px, calc(100vw - 32px)); gap: 8px; transform: translateX(-50%); pointer-events: none; }
+.dsh-toast { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: start; gap: 10px; padding: 12px 14px; border-radius: var(--dsh-radius-md); pointer-events: auto; animation: dsh-toast-in var(--dsh-duration-normal) var(--dsh-ease-expressive); }
+.dsh-toast__title { margin: 0 0 3px; color: var(--dsh-text-strong); font: 600 13px/1.35 var(--dsh-font-sans); }
+.dsh-toast__message { margin: 0; color: var(--dsh-text-muted); font: 12px/1.45 var(--dsh-font-sans); }
+.dsh-toast--success .dsh-toast__icon { color: var(--dsh-success); }
+.dsh-toast--warning .dsh-toast__icon { color: var(--dsh-warning); }
+.dsh-toast--error .dsh-toast__icon { color: var(--dsh-danger); }
+
+@keyframes dsh-popover-in { from { opacity: 0; translate: 0 5px; } }
+@keyframes dsh-drawer-in { from { opacity: 0; transform: translateX(24px); } }
+@keyframes dsh-toast-in { from { opacity: 0; transform: translateY(-8px) scale(0.98); } }
+
+@media (forced-colors: active) {
+  .dsh-glass, .dsh-button, .dsh-menu__item { forced-color-adjust: auto; }
+}

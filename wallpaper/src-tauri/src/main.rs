@@ -5,7 +5,9 @@ fn main() {
     // 否则 Windows 做 DPI 虚拟化，屏幕被当作 1707x1067，物理全屏无法正确建立。
     #[cfg(windows)]
     unsafe {
-        use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE, SetProcessDpiAwarenessContext};
+        use windows::Win32::UI::HiDpi::{
+            SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
+        };
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
     }
     dsh_wallpaper_lib::run()

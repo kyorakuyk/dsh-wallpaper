@@ -5,14 +5,14 @@
   "identifier": "com.dsh.wallpaper",
   "build": {
     "beforeDevCommand": "pnpm dev",
-    "devUrl": "http://127.0.0.1:5177",
+    "devUrl": "http://127.0.0.1:5187",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
-      { "label": "background", "title": "DSH Wallpaper", "url": "index.html?surface=background", "fullscreen": false, "width": 1280, "height": 720, "decorations": false, "resizable": false, "focus": false, "skipTaskbar": true, "transparent": false },
-      { "label": "interaction", "title": "DSH Wallpaper Chat", "width": 760, "height": 720, "decorations": false, "transparent": true, "alwaysOnTop": true, "skipTaskbar": true, "visible": false }
+      { "label": "background", "title": "DSH Wallpaper", "url": "index.html?surface=background", "fullscreen": false, "width": 1280, "height": 720, "decorations": false, "resizable": false, "focus": false, "skipTaskbar": true, "transparent": false, "visible": false },
+      { "label": "interaction", "title": "DSH Wallpaper Interaction", "url": "index.html?surface=interaction", "fullscreen": false, "width": 1280, "height": 720, "decorations": false, "resizable": false, "focus": true, "skipTaskbar": true, "transparent": true, "visible": false }
     ],
     "security": { "csp": null }
   },

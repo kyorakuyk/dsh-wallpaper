@@ -39,7 +39,10 @@ function runtimeAssetsOnly() {
 // - 全屏沉浸式，无边框
 export default defineConfig({
   base: '/',
-  publicDir: false,
+  // Keep the curated built-in assets available during `tauri dev`. The build
+  // plugin below still replaces dist/personas with the explicit runtime list,
+  // so candidate/source artwork is not shipped in release bundles.
+  publicDir: 'public',
   plugins: [react(), runtimeAssetsOnly()],
   build: {
     outDir: 'dist',
@@ -47,7 +50,8 @@ export default defineConfig({
     sourcemap: false,
   },
   server: {
-    port: 5177,
+    port: 5187,
+    strictPort: true,
     host: '127.0.0.1',
     // Windows 下编辑工具的临时文件/Tauri 构建产物会触发 EBUSY 崩溃，忽略它们
     watch: {

@@ -3,6 +3,5 @@
   "identifier": "default",
   "description": "Wallpaper windows",
   "windows": ["background", "interaction", "deepseek-login"],
-  "permissions": ["core:default", "core:event:default", "core:window:default"]
+  "permissions": ["core:default", "core:event:default", "core:window:default", "dialog:allow-open"]
 }
-

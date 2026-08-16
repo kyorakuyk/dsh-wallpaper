@@ -1,5 +1,15 @@
+use std::sync::{OnceLock, RwLock};
+
+use serde::{Deserialize, Serialize};
+
 #[cfg(windows)]
-use tauri::{Emitter, Manager, WebviewWindow};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(windows)]
+use crate::app_core::{AppAction, AppCore, WallpaperHostMode, WallpaperHostStatus};
+
+#[cfg(windows)]
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 #[cfg(windows)]
 use windows::{
@@ -7,152 +17,843 @@ use windows::{
     Storage::StorageFile,
     System::UserProfile::{LockScreen, UserProfilePersonalizationSettings},
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, WPARAM},
-        System::{RemoteDesktop::{WTSRegisterSessionNotification, WTSUnRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION}, Threading::GetCurrentProcessId},
+        Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Graphics::{
+            Dwm::{
+                DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+            },
+            Gdi::{ClientToScreen, CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_OR},
+        },
+        System::{
+            RemoteDesktop::{
+                WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
+                NOTIFY_FOR_THIS_SESSION,
+            },
+            Threading::GetCurrentProcessId,
+        },
         UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         UI::WindowsAndMessaging::{
-            EnumWindows, FindWindowExW, FindWindowW, GetDesktopWindow, GetForegroundWindow,
-            GetWindowLongPtrW, GetWindowThreadProcessId, PostMessageW, SetParent,
-            SetWindowLongPtrW, GWL_EXSTYLE, GWL_STYLE, HWND_BOTTOM,
-            PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SWP_NOACTIVATE, SWP_NOMOVE,
-            SWP_NOSIZE, WM_NCDESTROY, WM_POWERBROADCAST, WM_USER, WM_WTSSESSION_CHANGE,
-            WTS_SESSION_LOCK, WTS_SESSION_UNLOCK, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-            ShowWindow, SW_SHOWNA, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
-            GetAncestor, GA_ROOT, SystemParametersInfoW, SPI_GETWORKAREA,
-            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+            EnumChildWindows, EnumWindows, FindWindowExW, FindWindowW, GetClassNameW, GetClientRect,
+            GetDesktopWindow, GetForegroundWindow, GetParent, GetWindowLongPtrW, GetWindowRect,
+            GetWindowThreadProcessId, IsWindow, IsWindowVisible, SendMessageTimeoutW, SetParent, SetWindowLongPtrW,
+            SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
+            PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SEND_MESSAGE_TIMEOUT_FLAGS, SMTO_NORMAL,
+            SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+            SW_SHOWNA, WM_CONTEXTMENU, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONDBLCLK,
+            WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP,
+            WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_NCHITTEST,
+            WM_POWERBROADCAST, WM_SETTINGCHANGE, WM_WTSSESSION_CHANGE, WS_BORDER, WS_CAPTION,
+            WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP,
+            WS_CHILD, WS_DLGFRAME, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_NOACTIVATE,
+            WS_EX_STATICEDGE, WS_EX_TOOLWINDOW, WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
+            WS_POPUP, WS_SYSMENU, WS_THICKFRAME, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
         },
     },
 };
 
 #[cfg(windows)]
-unsafe extern "system" fn find_wallpaper_worker(window: HWND, lparam: LPARAM) -> BOOL {
-    // 标准壁纸层算法：枚举 WorkerW，跳过「含 SHELLDLL_DefView 的图标层」，
-    // 第一个不含它的 WorkerW 就是壁纸层宿主（Progman 收到 0x052C 后创建）。
-    let mut class = [0u16; 64];
-    let len = windows::Win32::UI::WindowsAndMessaging::GetClassNameW(window, &mut class);
-    if len == 0 { return BOOL(1); }
-    let class_name = String::from_utf16_lossy(&class[..len as usize]);
-    if class_name != "WorkerW" { return BOOL(1); }
-    let shell_view = FindWindowExW(Some(window), None, windows::core::w!("SHELLDLL_DefView"), PCWSTR::null());
-    if shell_view.is_err() {
-        // 这个 WorkerW 不含桌面图标层 → 壁纸层宿主
-        *(lparam.0 as *mut HWND) = window;
-        return BOOL(0);
+const PROGMAN_SPAWN_WORKERW: u32 = 0x052C;
+
+#[cfg(windows)]
+static WALLPAPER_RECOVERY_QUEUED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(windows)]
+static INTERACTION_BOUNDS_SYNC_QUEUED: AtomicBool = AtomicBool::new(false);
+
+const MAX_INTERACTION_REGIONS: usize = 128;
+const MIN_SCALE_FACTOR: f64 = 0.5;
+const MAX_SCALE_FACTOR: f64 = 8.0;
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InteractionRegionInput {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PhysicalInteractionRegion {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+impl PhysicalInteractionRegion {
+    fn contains(self, x: i32, y: i32) -> bool {
+        x >= self.left && x < self.right && y >= self.top && y < self.bottom
     }
-    BOOL(1)
+}
+
+#[derive(Clone, Debug, Default)]
+struct InteractionRegionState {
+    revision: u64,
+    scale_factor: f64,
+    regions: Vec<PhysicalInteractionRegion>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InteractionRegionUpdateResult {
+    pub revision: u64,
+    pub region_count: usize,
+    pub stale: bool,
+}
+
+static INTERACTION_REGIONS: OnceLock<RwLock<InteractionRegionState>> = OnceLock::new();
+
+#[cfg(windows)]
+static DESKTOP_FOREGROUND_STATE: OnceLock<RwLock<Option<bool>>> = OnceLock::new();
+
+#[cfg(windows)]
+static WALLPAPER_HOST_STATUS: OnceLock<RwLock<WallpaperHostStatus>> = OnceLock::new();
+
+fn interaction_regions() -> &'static RwLock<InteractionRegionState> {
+    INTERACTION_REGIONS.get_or_init(|| RwLock::new(InteractionRegionState::default()))
 }
 
 #[cfg(windows)]
-pub fn force_fullscreen(window: &WebviewWindow) -> Result<(), String> {
-    let hwnd = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
+fn desktop_foreground_state() -> &'static RwLock<Option<bool>> {
+    DESKTOP_FOREGROUND_STATE.get_or_init(|| RwLock::new(None))
+}
+
+#[cfg(windows)]
+fn wallpaper_host_status_state() -> &'static RwLock<WallpaperHostStatus> {
+    WALLPAPER_HOST_STATUS.get_or_init(|| RwLock::new(WallpaperHostStatus::default()))
+}
+
+#[cfg(windows)]
+fn publish_wallpaper_host_status(
+    app: &tauri::AppHandle,
+    mode: WallpaperHostMode,
+    recovered: bool,
+    error: Option<String>,
+) {
+    let status = wallpaper_host_status_state()
+        .write()
+        .map(|mut status| {
+            let mode_changed = status.mode != mode;
+            let error_changed = status.last_error != error;
+            if mode_changed || error_changed || recovered {
+                status.generation = status.generation.saturating_add(1);
+            }
+            if recovered {
+                status.recovery_count = status.recovery_count.saturating_add(1);
+            }
+            status.mode = mode;
+            status.last_error = error;
+            status.clone()
+        })
+        .unwrap_or_else(|_| WallpaperHostStatus {
+            mode: WallpaperHostMode::Unavailable,
+            generation: 0,
+            recovery_count: 0,
+            last_error: Some("wallpaper host status state poisoned".into()),
+        });
+    if let Some(core) = app.try_state::<AppCore>() {
+        let before = core.snapshot().wallpaper_host;
+        if before != status {
+            match status.mode {
+                WallpaperHostMode::WorkerW => log::info!(
+                    "wallpaper host ready: mode=workerw generation={} recoveries={}",
+                    status.generation,
+                    status.recovery_count
+                ),
+                WallpaperHostMode::ProgmanFallback => log::warn!(
+                    "wallpaper host degraded: mode=progman generation={} recoveries={}",
+                    status.generation,
+                    status.recovery_count
+                ),
+                WallpaperHostMode::Recovering => log::warn!(
+                    "wallpaper host recovering: generation={} recoveries={}",
+                    status.generation,
+                    status.recovery_count
+                ),
+                WallpaperHostMode::Unavailable => log::error!(
+                    "wallpaper host unavailable: {}",
+                    status.last_error.as_deref().unwrap_or("unknown error")
+                ),
+                WallpaperHostMode::Starting => {}
+            }
+            let snapshot = core.dispatch(AppAction::SetWallpaperHost(status));
+            let _ = app.emit("app-snapshot", &snapshot);
+        }
+    }
+}
+
+fn scale_interaction_region(
+    region: InteractionRegionInput,
+    scale_factor: f64,
+) -> Option<PhysicalInteractionRegion> {
+    if !scale_factor.is_finite()
+        || !(MIN_SCALE_FACTOR..=MAX_SCALE_FACTOR).contains(&scale_factor)
+        || !region.x.is_finite()
+        || !region.y.is_finite()
+        || !region.width.is_finite()
+        || !region.height.is_finite()
+        || region.width <= 0.0
+        || region.height <= 0.0
+    {
+        return None;
+    }
+    let left = (region.x * scale_factor).floor();
+    let top = (region.y * scale_factor).floor();
+    let right = ((region.x + region.width) * scale_factor).ceil();
+    let bottom = ((region.y + region.height) * scale_factor).ceil();
+    if left < i32::MIN as f64
+        || top < i32::MIN as f64
+        || right > i32::MAX as f64
+        || bottom > i32::MAX as f64
+        || right <= left
+        || bottom <= top
+    {
+        return None;
+    }
+    Some(PhysicalInteractionRegion {
+        left: left as i32,
+        top: top as i32,
+        right: right as i32,
+        bottom: bottom as i32,
+    })
+}
+
+fn point_hits_interaction_region(regions: &[PhysicalInteractionRegion], x: i32, y: i32) -> bool {
+    regions.iter().any(|region| region.contains(x, y))
+}
+
+pub fn update_interaction_regions(
+    regions: Vec<InteractionRegionInput>,
+    scale_factor: f64,
+    revision: u64,
+) -> Result<InteractionRegionUpdateResult, String> {
+    if regions.len() > MAX_INTERACTION_REGIONS {
+        return Err(format!(
+            "interaction region count exceeds {MAX_INTERACTION_REGIONS}"
+        ));
+    }
+    if !scale_factor.is_finite() || !(MIN_SCALE_FACTOR..=MAX_SCALE_FACTOR).contains(&scale_factor) {
+        return Err(format!("invalid interaction scale factor: {scale_factor}"));
+    }
+    let physical_regions: Vec<_> = regions
+        .into_iter()
+        .enumerate()
+        .map(|(index, region)| {
+            scale_interaction_region(region, scale_factor)
+                .ok_or_else(|| format!("invalid interaction region at index {index}"))
+        })
+        .collect::<Result<_, _>>()?;
+    let mut state = interaction_regions()
+        .write()
+        .map_err(|_| "interaction region state poisoned".to_string())?;
+    if revision < state.revision {
+        return Ok(InteractionRegionUpdateResult {
+            revision: state.revision,
+            region_count: state.regions.len(),
+            stale: true,
+        });
+    }
+    state.revision = revision;
+    state.scale_factor = scale_factor;
+    state.regions = physical_regions;
+    let regions_for_window = state.regions.clone();
+    drop(state);
+    #[cfg(windows)]
+    apply_interaction_window_region(&regions_for_window)?;
+    Ok(InteractionRegionUpdateResult {
+        revision,
+        region_count: regions_for_window.len(),
+        stale: false,
+    })
+}
+
+#[cfg(windows)]
+fn apply_interaction_window_region(regions: &[PhysicalInteractionRegion]) -> Result<(), String> {
+    let Some(hwnd) = interaction_window_hwnd() else {
+        return Ok(());
+    };
     unsafe {
-        let root = windows::Win32::UI::WindowsAndMessaging::GetAncestor(hwnd, windows::Win32::UI::WindowsAndMessaging::GA_ROOT);
-        let target = if root.0.is_null() { hwnd } else { root };
-        // 清除边框样式：WS_CAPTION|WS_THICKFRAME|WS_BORDER|WS_DLGFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX
-        let style = GetWindowLongPtrW(target, GWL_STYLE);
-        let border_mask = (0x00C00000u32 | 0x00040000u32 | 0x00800000u32 | 0x00400000u32 | 0x00020000u32 | 0x00010000u32) as isize;
-        SetWindowLongPtrW(target, GWL_STYLE, style & !border_mask);
-        // 工作区尺寸（不含任务栏）——壁纸覆盖工作区，任务栏保持可见
-        let mut wa = windows::Win32::Foundation::RECT::default();
-        let _ = windows::Win32::UI::WindowsAndMessaging::SystemParametersInfoW(
-            windows::Win32::UI::WindowsAndMessaging::SPI_GETWORKAREA,
-            0,
-            Some(&mut wa as *mut _ as *mut core::ffi::c_void),
-            windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-        );
-        let width = wa.right - wa.left;
-        let height = wa.bottom - wa.top;
-        log::info!("force_workarea: target=0x{:X} → {}x{}", target.0 as usize, width, height);
-        let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
-            target, None, wa.left, wa.top, width, height,
-            SWP_NOACTIVATE,
-        );
+        let combined = CreateRectRgn(0, 0, 0, 0);
+        if combined.is_invalid() {
+            return Err("无法创建交互窗口区域".into());
+        }
+        for region in regions {
+            let part = CreateRectRgn(region.left, region.top, region.right, region.bottom);
+            if !part.is_invalid() {
+                let _ = CombineRgn(Some(combined), Some(combined), Some(part), RGN_OR);
+                let _ = DeleteObject(part.into());
+            }
+        }
+        if SetWindowRgn(hwnd, Some(combined), true) == 0 {
+            let _ = DeleteObject(combined.into());
+            return Err("无法更新交互窗口区域".into());
+        }
+        // On success ownership of the region belongs to Windows.
     }
     Ok(())
 }
 
-#[cfg(not(windows))]
-pub fn force_fullscreen(_: &WebviewWindow) -> Result<(), String> { Ok(()) }
+#[cfg(windows)]
+static INTERACTION_WINDOW_HWND: OnceLock<RwLock<Option<isize>>> = OnceLock::new();
+
+#[cfg(windows)]
+fn interaction_window_hwnd() -> Option<HWND> {
+    INTERACTION_WINDOW_HWND
+        .get_or_init(|| RwLock::new(None))
+        .read()
+        .ok()
+        .and_then(|value| *value)
+        .map(|value| HWND(value as *mut core::ffi::c_void))
+}
+
+#[cfg(windows)]
+fn remember_interaction_window(hwnd: HWND) {
+    if let Ok(mut value) = INTERACTION_WINDOW_HWND
+        .get_or_init(|| RwLock::new(None))
+        .write()
+    {
+        *value = Some(hwnd.0 as isize);
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DesktopWindowCandidate {
+    is_worker: bool,
+    hosts_desktop_icons: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WallpaperHostAction {
+    None,
+    Resize,
+    Reattach,
+    Recreate,
+}
+
+fn is_valid_wallpaper_parent_class(class: Option<&str>) -> bool {
+    matches!(class, Some("WorkerW") | Some("Progman"))
+}
+
+fn is_desktop_foreground_class(class: Option<&str>) -> bool {
+    // Explorer can own several WorkerW windows. Win+D is free to activate any
+    // of them, so comparing against FindWindowW("WorkerW") (the first match)
+    // incorrectly hides the overlay on otherwise valid desktop surfaces.
+    matches!(class, Some("WorkerW") | Some("Progman"))
+}
+
+fn should_upgrade_wallpaper_parent(current_class: Option<&str>, worker_available: bool) -> bool {
+    current_class == Some("Progman") && worker_available
+}
+
+fn select_wallpaper_worker(candidates: &[DesktopWindowCandidate]) -> Option<usize> {
+    let icon_host = candidates
+        .iter()
+        .position(|candidate| candidate.hosts_desktop_icons);
+    let ordered_worker = icon_host.and_then(|icon_host| {
+        candidates
+            .iter()
+            .enumerate()
+            .skip(icon_host + 1)
+            .find_map(|(index, candidate)| {
+                (candidate.is_worker && !candidate.hosts_desktop_icons).then_some(index)
+            })
+    });
+    ordered_worker.or_else(|| {
+        candidates
+            .iter()
+            .enumerate()
+            .find_map(|(index, candidate)| {
+                (candidate.is_worker && !candidate.hosts_desktop_icons).then_some(index)
+            })
+    })
+}
+
+fn decide_wallpaper_host_action(
+    background_exists: bool,
+    parent_exists: bool,
+    parent_is_worker: bool,
+    size_matches: bool,
+) -> WallpaperHostAction {
+    if !background_exists {
+        WallpaperHostAction::Recreate
+    } else if !parent_exists || !parent_is_worker {
+        WallpaperHostAction::Reattach
+    } else if !size_matches {
+        WallpaperHostAction::Resize
+    } else {
+        WallpaperHostAction::None
+    }
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+struct EnumeratedWindow {
+    hwnd: HWND,
+    candidate: DesktopWindowCandidate,
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn collect_desktop_windows(window: HWND, lparam: LPARAM) -> BOOL {
+    let windows = &mut *(lparam.0 as *mut Vec<EnumeratedWindow>);
+    let mut class = [0u16; 64];
+    let class_len = GetClassNameW(window, &mut class);
+    let is_worker =
+        class_len > 0 && String::from_utf16_lossy(&class[..class_len as usize]) == "WorkerW";
+    // `FindWindowExW` returns `Ok(HWND(0))` when no matching child exists in
+    // windows-rs.  Checking only `Result::is_ok()` therefore marks every
+    // top-level window as an icon host and makes WorkerW selection fail.
+    let hosts_desktop_icons = FindWindowExW(
+        Some(window),
+        None,
+        windows::core::w!("SHELLDLL_DefView"),
+        PCWSTR::null(),
+    )
+    .ok()
+    .map(|hwnd| !hwnd.0.is_null())
+    .unwrap_or(false);
+    windows.push(EnumeratedWindow {
+        hwnd: window,
+        candidate: DesktopWindowCandidate {
+            is_worker,
+            hosts_desktop_icons,
+        },
+    });
+    BOOL(1)
+}
+
+#[cfg(windows)]
+fn enumerate_desktop_windows() -> Result<Vec<EnumeratedWindow>, String> {
+    let mut windows = Vec::new();
+    unsafe {
+        EnumWindows(
+            Some(collect_desktop_windows),
+            LPARAM(&mut windows as *mut Vec<EnumeratedWindow> as isize),
+        )
+        .map_err(|error| format!("无法枚举 Windows 桌面窗口：{error}"))?;
+    }
+    Ok(windows)
+}
+
+#[cfg(windows)]
+fn locate_wallpaper_worker() -> Result<HWND, String> {
+    let windows = enumerate_desktop_windows()?;
+    let candidates: Vec<_> = windows.iter().map(|item| item.candidate).collect();
+    select_wallpaper_worker(&candidates)
+        .map(|index| windows[index].hwnd)
+        .ok_or_else(|| "Explorer 未枚举独立 WorkerW 壁纸宿主".to_string())
+}
+
+#[cfg(windows)]
+fn request_wallpaper_worker() -> Result<HWND, String> {
+    let progman = unsafe { FindWindowW(windows::core::w!("Progman"), PCWSTR::null()) }
+        .map_err(|error| format!("无法找到 Explorer Progman 窗口：{error}"))?;
+
+    unsafe {
+        let mut message_result = 0usize;
+        let _ = SendMessageTimeoutW(
+            progman,
+            PROGMAN_SPAWN_WORKERW,
+            WPARAM(0),
+            LPARAM(0),
+            SMTO_NORMAL,
+            1_000,
+            Some(&mut message_result),
+        );
+    }
+
+    if let Ok(worker) = locate_wallpaper_worker() {
+        if unsafe { IsWindowVisible(worker).as_bool() } {
+            return Ok(worker);
+        }
+        if unsafe { IsWindowVisible(progman).as_bool() } {
+            return Ok(progman);
+        }
+    }
+
+    // Windows 11 的新版 Explorer 使用 0xD 参数的两步协议。
+    unsafe {
+        for lparam in [0isize, 1] {
+            let mut message_result = 0usize;
+            let _ = SendMessageTimeoutW(
+                progman,
+                PROGMAN_SPAWN_WORKERW,
+                WPARAM(0xD),
+                LPARAM(lparam),
+                SEND_MESSAGE_TIMEOUT_FLAGS(SMTO_NORMAL.0),
+                1_000,
+                Some(&mut message_result),
+            );
+        }
+    }
+    if let Ok(worker) = locate_wallpaper_worker() {
+        if unsafe { IsWindowVisible(worker).as_bool() } {
+            return Ok(worker);
+        }
+        if unsafe { IsWindowVisible(progman).as_bool() } {
+            return Ok(progman);
+        }
+    }
+
+    // 部分 Windows 11 Explorer 版本确实不创建独立 WorkerW。只有标准和
+    // Win11 两套协议均失败后才降级到 Progman，仍保持为桌面子窗口，
+    // 不回退为普通顶层窗口。
+    if !progman.0.is_null() {
+        log::warn!(
+            "Explorer 未枚举独立 WorkerW，暂以 Progman 作为壁纸降级宿主：0x{:X}",
+            progman.0 as usize
+        );
+        return Ok(progman);
+    }
+    Err("Explorer 未提供 WorkerW 或 Progman 壁纸宿主".to_string())
+}
+
+#[cfg(windows)]
+fn window_class(hwnd: HWND) -> Option<String> {
+    let mut class = [0u16; 64];
+    let class_len = unsafe { GetClassNameW(hwnd, &mut class) };
+    (class_len > 0).then(|| String::from_utf16_lossy(&class[..class_len as usize]))
+}
+
+#[cfg(windows)]
+fn resize_wallpaper_to_parent(background: HWND, worker: HWND) -> Result<(), String> {
+    let mut bounds = RECT::default();
+    unsafe { GetClientRect(worker, &mut bounds) }
+        .map_err(|error| format!("无法读取 WorkerW 尺寸：{error}"))?;
+    let width = bounds.right - bounds.left;
+    let height = bounds.bottom - bounds.top;
+    if width <= 0 || height <= 0 {
+        return Err(format!("WorkerW 客户区尺寸无效：{width}x{height}"));
+    }
+    unsafe {
+        SetWindowPos(
+            background,
+            None,
+            0,
+            0,
+            width,
+            height,
+            SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW,
+        )
+        .map_err(|error| format!("无法调整 WorkerW 子窗口尺寸：{error}"))?;
+
+        // SetWindowPos sizes the outer HWND, while WebView2 renders inside its
+        // client area. Tauri's hidden drag/resize frame can survive the style
+        // conversion and shrink that client area by several DPI-scaled pixels.
+        // Measure the real client origin/size and compensate the outer window
+        // so the WebView client exactly covers the desktop host client area.
+        let mut child_client = RECT::default();
+        GetClientRect(background, &mut child_client)
+            .map_err(|error| format!("无法读取壁纸客户区尺寸：{error}"))?;
+        let child_width = child_client.right - child_client.left;
+        let child_height = child_client.bottom - child_client.top;
+        let mut parent_origin = POINT::default();
+        let mut child_origin = POINT::default();
+        if !ClientToScreen(worker, &mut parent_origin).as_bool()
+            || !ClientToScreen(background, &mut child_origin).as_bool()
+        {
+            return Err("无法换算壁纸客户区坐标".into());
+        }
+        let inset_x = child_origin.x - parent_origin.x;
+        let inset_y = child_origin.y - parent_origin.y;
+        let extra_width = width - child_width;
+        let extra_height = height - child_height;
+        if inset_x != 0 || inset_y != 0 || extra_width != 0 || extra_height != 0 {
+            SetWindowPos(
+                background,
+                None,
+                -inset_x,
+                -inset_y,
+                width + extra_width,
+                height + extra_height,
+                SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW,
+            )
+            .map_err(|error| format!("无法补偿壁纸客户区边框：{error}"))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn place_wallpaper_behind_desktop_icons(background: HWND, parent: HWND) -> Result<(), String> {
+    if window_class(parent).as_deref() != Some("Progman") {
+        return Ok(());
+    }
+    let icon_view = unsafe {
+        FindWindowExW(
+            Some(parent),
+            None,
+            windows::core::w!("SHELLDLL_DefView"),
+            PCWSTR::null(),
+        )
+    }
+    .ok()
+    .filter(|hwnd| !hwnd.0.is_null())
+    .ok_or("Progman 中缺少 SHELLDLL_DefView")?;
+    unsafe {
+        // hWndInsertAfter places the wallpaper immediately behind the icon
+        // view in the child Z-order, while remaining above Progman's painted
+        // system wallpaper background.
+        SetWindowPos(
+            background,
+            Some(icon_view),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+        )
+        .map_err(|error| format!("无法将壁纸放到桌面图标层后方：{error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn attach_hwnd_to_workerw(background: HWND) -> Result<HWND, String> {
+    let worker = request_wallpaper_worker()?;
+    unsafe {
+        let exstyle = GetWindowLongPtrW(background, GWL_EXSTYLE);
+        SetWindowLongPtrW(
+            background,
+            GWL_EXSTYLE,
+            (exstyle
+                & !(WS_EX_CLIENTEDGE.0 as isize
+                    | WS_EX_DLGMODALFRAME.0 as isize
+                    | WS_EX_STATICEDGE.0 as isize
+                    | WS_EX_WINDOWEDGE.0 as isize))
+                | WS_EX_TOOLWINDOW.0 as isize,
+        );
+
+        let style = GetWindowLongPtrW(background, GWL_STYLE);
+        SetWindowLongPtrW(
+            background,
+            GWL_STYLE,
+            (style
+                & !(WS_POPUP.0 as isize
+                    | WS_BORDER.0 as isize
+                    | WS_CAPTION.0 as isize
+                    | WS_DLGFRAME.0 as isize
+                    | WS_MAXIMIZEBOX.0 as isize
+                    | WS_MINIMIZEBOX.0 as isize
+                    | WS_SYSMENU.0 as isize
+                    | WS_THICKFRAME.0 as isize))
+                | WS_CHILD.0 as isize,
+        );
+
+        // Tauri's window starts life as a top-level Win11 window. DWM can keep
+        // its rounded clipping region even after SetParent, leaving the desktop
+        // visible around the corners. Explicitly opt out before sizing it.
+        let corner_preference = DWMWCP_DONOTROUND;
+        let _ = DwmSetWindowAttribute(
+            background,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            std::ptr::from_ref(&corner_preference).cast(),
+            std::mem::size_of_val(&corner_preference) as u32,
+        );
+
+        // SetParent 返回「上一个父窗口」。顶层窗口的上一个父窗口为 NULL，
+        // windows-rs 会把这种成功情况包装为 Err，因此以 GetParent 的实际结果为准。
+        let _ = SetParent(background, Some(worker));
+        let actual_parent = GetParent(background).ok();
+        if actual_parent != Some(worker) {
+            return Err(format!(
+                "无法将背景窗口附着到 WorkerW：期望 0x{:X}，实际 0x{:X}",
+                worker.0 as usize,
+                actual_parent.map(|parent| parent.0 as usize).unwrap_or(0)
+            ));
+        }
+        SetWindowPos(
+            background,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOZORDER,
+        )
+        .map_err(|error| format!("无法刷新壁纸子窗口样式：{error}"))?;
+    }
+    resize_wallpaper_to_parent(background, worker)?;
+    place_wallpaper_behind_desktop_icons(background, worker)?;
+    unsafe {
+        let _ = ShowWindow(background, SW_SHOWNA);
+    }
+    log::info!(
+        "background 0x{:X} attached to WorkerW 0x{:X}",
+        background.0 as usize,
+        worker.0 as usize
+    );
+    Ok(worker)
+}
 
 #[cfg(windows)]
 pub fn attach_to_workerw(window: &WebviewWindow) -> Result<(), String> {
-    let hwnd = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
-    unsafe {
-        // 1) 扩展样式：TOOLWINDOW + NOACTIVATE（不抢焦点、不进任务栏）
-        let exstyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, exstyle | WS_EX_TOOLWINDOW.0 as isize | WS_EX_NOACTIVATE.0 as isize);
-        // 2) 清除窗口边框样式（解决"四周有边框"）
-        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-        let border_mask = (0x00C00000u32 | 0x00040000u32 | 0x00800000u32 | 0x00400000u32 | 0x00020000u32 | 0x00010000u32) as isize;
-        SetWindowLongPtrW(hwnd, GWL_STYLE, style & !border_mask);
-        // 3) 工作区尺寸（不含任务栏）+ Progman 之上（Z 序：桌面图标上、普通窗口下）
-        //    注意：WebView2 挂 WorkerW 渲染灰屏（DComp 不兼容），故不挂载。
-        let mut work_area = windows::Win32::Foundation::RECT::default();
-        let _ = windows::Win32::UI::WindowsAndMessaging::SystemParametersInfoW(
-            windows::Win32::UI::WindowsAndMessaging::SPI_GETWORKAREA,
-            0,
-            Some(&mut work_area as *mut _ as *mut core::ffi::c_void),
-            windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-        );
-        let width = work_area.right - work_area.left;
-        let height = work_area.bottom - work_area.top;
-        if let Ok(progman) = FindWindowW(windows::core::w!("Progman"), PCWSTR::null()) {
-            let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
-                hwnd, Some(progman), work_area.left, work_area.top, width, height,
-                SWP_NOACTIVATE,
-            );
+    window
+        .set_ignore_cursor_events(false)
+        .map_err(|error| format!("无法启用桌面交互：{error}"))?;
+    let background = HWND(window.hwnd().map_err(|error| error.to_string())?.0);
+    attach_hwnd_to_workerw(background).map(|_| ())
+}
+
+#[cfg(windows)]
+fn inspect_wallpaper_host(window: Option<&WebviewWindow>) -> (WallpaperHostAction, Option<HWND>) {
+    let Some(window) = window else {
+        return (WallpaperHostAction::Recreate, None);
+    };
+    let Ok(raw) = window.hwnd() else {
+        return (WallpaperHostAction::Recreate, None);
+    };
+    let background = HWND(raw.0);
+    if !unsafe { IsWindow(Some(background)).as_bool() } {
+        return (WallpaperHostAction::Recreate, Some(background));
+    }
+    let parent = unsafe { GetParent(background) }.ok();
+    let parent_exists = parent
+        .map(|hwnd| unsafe { IsWindow(Some(hwnd)).as_bool() })
+        .unwrap_or(false);
+    let parent_class = parent.and_then(window_class);
+    let parent_is_worker = is_valid_wallpaper_parent_class(parent_class.as_deref())
+        && parent
+            .map(|hwnd| unsafe { IsWindowVisible(hwnd).as_bool() })
+            .unwrap_or(false);
+    let worker_available =
+        parent_class.as_deref() == Some("Progman")
+            && locate_wallpaper_worker()
+                .map(|worker| unsafe { IsWindowVisible(worker).as_bool() })
+                .unwrap_or(false);
+
+    let size_matches = parent
+        .filter(|_| parent_exists && parent_is_worker)
+        .and_then(|worker| {
+            let mut parent_rect = RECT::default();
+            let mut child_rect = RECT::default();
+            unsafe {
+                GetClientRect(worker, &mut parent_rect).ok()?;
+                GetClientRect(background, &mut child_rect).ok()?;
+            }
+            Some(
+                parent_rect.right - parent_rect.left == child_rect.right - child_rect.left
+                    && parent_rect.bottom - parent_rect.top == child_rect.bottom - child_rect.top,
+            )
+        })
+        .unwrap_or(false);
+
+    (
+        if should_upgrade_wallpaper_parent(parent_class.as_deref(), worker_available) {
+            WallpaperHostAction::Reattach
         } else {
-            let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
-                hwnd, None, work_area.left, work_area.top, width, height,
-                SWP_NOACTIVATE,
-            );
+            decide_wallpaper_host_action(true, parent_exists, parent_is_worker, size_matches)
+        },
+        parent,
+    )
+}
+
+#[cfg(windows)]
+fn create_background_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
+    WebviewWindowBuilder::new(
+        app,
+        "background",
+        WebviewUrl::App("index.html?surface=combined".into()),
+    )
+    .title("DSH Wallpaper")
+    .inner_size(1280.0, 720.0)
+    .decorations(false)
+    .resizable(false)
+    .focusable(true)
+    .skip_taskbar(true)
+    .visible(false)
+    .build()
+    .map_err(|error| format!("无法重建背景 WebView：{error}"))
+}
+
+#[cfg(windows)]
+fn recover_wallpaper_host(app: &tauri::AppHandle) -> Result<(), String> {
+    let existing = app.get_webview_window("background");
+    let (action, parent) = inspect_wallpaper_host(existing.as_ref());
+    if action != WallpaperHostAction::None {
+        publish_wallpaper_host_status(app, WallpaperHostMode::Recovering, false, None);
+    }
+    let result = match action {
+        WallpaperHostAction::None => Ok(()),
+        WallpaperHostAction::Resize => {
+            let window = existing.ok_or("background window missing")?;
+            let background = HWND(window.hwnd().map_err(|error| error.to_string())?.0);
+            resize_wallpaper_to_parent(background, parent.ok_or("WorkerW parent missing")?)
         }
-        let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_SHOWNA);
-        // 4) 延迟守护线程：反复把窗口设为「工作区尺寸」（不含任务栏）+ Progman 之上。
-        //    Tauri 可能在窗口初始化后恢复自身尺寸（fullscreen/初始尺寸），
-        //    多次 SetWindowPos 确保最终工作区尺寸生效；同时 ±1px 触发 WebView2 重绘。
-        let resize_hwnd = hwnd.0 as isize;
-        std::thread::spawn(move || {
-            for delay_ms in [500u64, 1200, 2500, 5000] {
-                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-                unsafe {
-                    let target = HWND(resize_hwnd as *mut core::ffi::c_void);
-                    let progman = FindWindowW(windows::core::w!("Progman"), PCWSTR::null())
-                        .map(|h| h.0 as isize)
-                        .unwrap_or(0);
-                    let anchor = if progman != 0 { Some(HWND(progman as *mut core::ffi::c_void)) } else { None };
-                    // 工作区尺寸（重新获取，防分辨率变化）
-                    let mut wa = windows::Win32::Foundation::RECT::default();
-                    let _ = windows::Win32::UI::WindowsAndMessaging::SystemParametersInfoW(
-                        windows::Win32::UI::WindowsAndMessaging::SPI_GETWORKAREA,
-                        0,
-                        Some(&mut wa as *mut _ as *mut core::ffi::c_void),
-                        windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-                    );
-                    let w = wa.right - wa.left;
-                    let h = wa.bottom - wa.top;
-                    log::info!("守护线程: work_area={}x{} anchor=0x{:X} target=0x{:X}", w, h, anchor.map(|a| a.0 as usize).unwrap_or(0), target.0 as usize);
-                    // 先 ±1px 触发 WebView 重绘
-                    let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
-                        target, anchor, wa.left, wa.top, w + 1, h,
-                        SWP_NOACTIVATE,
-                    );
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    // 再设回精确工作区尺寸
-                    let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
-                        target, anchor, wa.left, wa.top, w, h,
-                        SWP_NOACTIVATE,
-                    );
+        WallpaperHostAction::Reattach => {
+            let window = existing.ok_or("background window missing")?;
+            attach_to_workerw(&window)
+        }
+        WallpaperHostAction::Recreate => {
+            if let Some(window) = existing {
+                let _ = window.destroy();
+            }
+            let window = create_background_window(app)?;
+            attach_to_workerw(&window)?;
+            register_session_events(app)?;
+            Ok(())
+        }
+    };
+    match &result {
+        Ok(()) => {
+            if let Some(window) = app.get_webview_window("background") {
+                let mode = window
+                    .hwnd()
+                    .ok()
+                    .and_then(|raw| unsafe { GetParent(HWND(raw.0)) }.ok())
+                    .and_then(window_class)
+                    .map(|class| {
+                        if class == "WorkerW" {
+                            WallpaperHostMode::WorkerW
+                        } else {
+                            WallpaperHostMode::ProgmanFallback
+                        }
+                    })
+                    .unwrap_or(WallpaperHostMode::Unavailable);
+                publish_wallpaper_host_status(app, mode, action != WallpaperHostAction::None, None);
+            }
+        }
+        Err(error) => publish_wallpaper_host_status(
+            app,
+            WallpaperHostMode::Unavailable,
+            false,
+            Some(error.clone()),
+        ),
+    }
+    result
+}
+
+#[cfg(windows)]
+pub fn start_wallpaper_host(app: tauri::AppHandle) -> Result<(), String> {
+    recover_wallpaper_host(&app)?;
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        if WALLPAPER_RECOVERY_QUEUED.swap(true, Ordering::AcqRel) {
+            continue;
+        }
+        let recovery_app = app.clone();
+        if let Err(error) = app.run_on_main_thread(move || {
+            let (action, _) =
+                inspect_wallpaper_host(recovery_app.get_webview_window("background").as_ref());
+            if action != WallpaperHostAction::None {
+                if let Err(error) = recover_wallpaper_host(&recovery_app) {
+                    log::error!("wallpaper host recovery failed: {error}");
                 }
             }
-        });
-    }
+            WALLPAPER_RECOVERY_QUEUED.store(false, Ordering::Release);
+        }) {
+            WALLPAPER_RECOVERY_QUEUED.store(false, Ordering::Release);
+            log::error!("unable to schedule wallpaper host recovery: {error}");
+        }
+    });
     Ok(())
 }
 
 #[cfg(windows)]
 pub fn register_session_events(app: &tauri::AppHandle) -> Result<(), String> {
-    let window = app.get_webview_window("background").ok_or("background window missing")?;
+    let window = app
+        .get_webview_window("background")
+        .ok_or("background window missing")?;
     let hwnd = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
     let app_ptr = Box::into_raw(Box::new(app.clone())) as usize;
     unsafe {
@@ -168,6 +869,20 @@ pub fn register_session_events(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 #[cfg(windows)]
+fn dispatch_system_action(app: &tauri::AppHandle, action: AppAction) {
+    let Some(core) = app.try_state::<AppCore>() else {
+        return;
+    };
+    let snapshot = core.dispatch(action);
+    if snapshot.interaction.visible {
+        let _ = show_interaction(app, false);
+    } else {
+        hide_interaction(app);
+    }
+    let _ = app.emit("app-snapshot", &snapshot);
+}
+
+#[cfg(windows)]
 unsafe extern "system" fn session_subclass_proc(
     hwnd: HWND,
     message: u32,
@@ -179,13 +894,27 @@ unsafe extern "system" fn session_subclass_proc(
     let app = &*(app_ptr as *const tauri::AppHandle);
     match message {
         WM_WTSSESSION_CHANGE => match wparam.0 as u32 {
-            WTS_SESSION_LOCK => { hide_interaction(app); let _ = app.emit("system-session", "locked"); }
-            WTS_SESSION_UNLOCK => { let _ = app.emit("system-session", "unlocked"); }
+            WTS_SESSION_LOCK => {
+                hide_interaction(app);
+                dispatch_system_action(app, AppAction::Lock);
+                let _ = app.emit("system-session", "locked");
+            }
+            WTS_SESSION_UNLOCK => {
+                dispatch_system_action(app, AppAction::Unlock { play_wake: true });
+                let _ = app.emit("system-session", "unlocked");
+            }
             _ => {}
         },
         WM_POWERBROADCAST => match wparam.0 as u32 {
-            PBT_APMSUSPEND => { hide_interaction(app); let _ = app.emit("system-session", "suspend"); }
-            PBT_APMRESUMEAUTOMATIC => { let _ = app.emit("system-session", "resume"); }
+            PBT_APMSUSPEND => {
+                hide_interaction(app);
+                dispatch_system_action(app, AppAction::Lock);
+                let _ = app.emit("system-session", "suspend");
+            }
+            PBT_APMRESUMEAUTOMATIC => {
+                dispatch_system_action(app, AppAction::Unlock { play_wake: true });
+                let _ = app.emit("system-session", "resume");
+            }
             _ => {}
         },
         WM_NCDESTROY => {
@@ -199,74 +928,273 @@ unsafe extern "system" fn session_subclass_proc(
 }
 
 #[cfg(windows)]
-pub fn show_interaction(app: &tauri::AppHandle) -> Result<(), String> {
-    let window = app.get_webview_window("interaction").ok_or("interaction window missing")?;
+unsafe extern "system" fn interaction_subclass_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    subclass_id: usize,
+    root_hwnd_value: usize,
+) -> LRESULT {
+    match message {
+        WM_NCHITTEST => {
+            let packed = lparam.0 as u32;
+            let screen_x = (packed as u16 as i16) as i32;
+            let screen_y = ((packed >> 16) as u16 as i16) as i32;
+            let root_hwnd = if root_hwnd_value == 0 {
+                hwnd
+            } else {
+                HWND(root_hwnd_value as *mut core::ffi::c_void)
+            };
+            let mut origin = POINT::default();
+            if ClientToScreen(root_hwnd, &mut origin).as_bool() {
+                let local_x = screen_x - origin.x;
+                let local_y = screen_y - origin.y;
+                let hit = interaction_regions()
+                    .read()
+                    .map(|state| point_hits_interaction_region(&state.regions, local_x, local_y))
+                    .unwrap_or(false);
+                // Progman fallback cannot use HTTRANSPARENT: Windows may skip
+                // Explorer's sibling icon view and hit an application behind
+                // the desktop. Mouse messages outside hot regions are instead
+                // forwarded explicitly to the native desktop list view above.
+                let _ = hit;
+            } else {
+                return DefSubclassProc(hwnd, message, wparam, lparam);
+            }
+        }
+        WM_DPICHANGED | WM_DISPLAYCHANGE | WM_SETTINGCHANGE => {
+            // 这些消息可能在 Explorer 仍在更新布局时到达，由后台健康检查
+            // 在下一轮主线程同步 Overlay 尺寸，避免在窗口过程中重入。
+            INTERACTION_BOUNDS_SYNC_QUEUED.store(true, Ordering::Release);
+        }
+        WM_NCDESTROY => {
+            let _ = RemoveWindowSubclass(hwnd, Some(interaction_subclass_proc), subclass_id);
+        }
+        _ => {}
+    }
+    DefSubclassProc(hwnd, message, wparam, lparam)
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn install_interaction_subclass_on_child(
+    child: HWND,
+    root_hwnd: LPARAM,
+) -> BOOL {
+    // WebView2 creates several nested Chrome HWNDs. Mouse messages land on the
+    // deepest render widget, so subclassing only the outer Tauri HWND cannot
+    // make the unused desktop area transparent.
+    let _ = SetWindowSubclass(
+        child,
+        Some(interaction_subclass_proc),
+        2,
+        root_hwnd.0 as usize,
+    );
+    BOOL(1)
+}
+
+#[cfg(windows)]
+fn install_desktop_hit_testing(root_hwnd: HWND) -> Result<(), String> {
+    unsafe {
+        if !SetWindowSubclass(
+            root_hwnd,
+            Some(interaction_subclass_proc),
+            2,
+            root_hwnd.0 as usize,
+        )
+        .as_bool()
+        {
+            return Err("无法安装桌面交互命中测试".into());
+        }
+        let _ = EnumChildWindows(
+            Some(root_hwnd),
+            Some(install_interaction_subclass_on_child),
+            LPARAM(root_hwnd.0 as isize),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn configure_desktop_interaction(window: &WebviewWindow) -> Result<(), String> {
+    let hwnd = HWND(window.hwnd().map_err(|error| error.to_string())?.0);
+    remember_interaction_window(hwnd);
+    unsafe {
+        let exstyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, exstyle | WS_EX_TOOLWINDOW.0 as isize);
+    }
+    size_interaction_to_desktop(hwnd)?;
+    let regions = interaction_regions()
+        .read()
+        .map(|state| state.regions.clone())
+        .unwrap_or_default();
+    apply_interaction_window_region(&regions)
+}
+
+#[cfg(windows)]
+fn size_interaction_to_desktop(hwnd: HWND) -> Result<(), String> {
+    let progman = unsafe { FindWindowW(windows::core::w!("Progman"), PCWSTR::null()) }
+        .map_err(|error| error.to_string())?;
+    let mut bounds = RECT::default();
+    unsafe { GetClientRect(progman, &mut bounds) }.map_err(|error| error.to_string())?;
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            bounds.right - bounds.left,
+            bounds.bottom - bounds.top,
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn show_interaction(app: &tauri::AppHandle, request_focus: bool) -> Result<(), String> {
+    let window = app
+        .get_webview_window("interaction")
+        .ok_or("interaction window missing")?;
     window.show().map_err(|e| e.to_string())?;
-    window.set_focus().map_err(|e| e.to_string())
+    if request_focus {
+        window.set_focus().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
 pub fn hide_interaction(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("interaction") { let _ = window.hide(); }
+    if let Some(window) = app.get_webview_window("interaction") {
+        let _ = window.hide();
+    }
 }
 
 #[cfg(windows)]
 pub fn start_foreground_monitor(app: tauri::AppHandle) {
     std::thread::spawn(move || {
-        let mut hidden_by_monitor = false;
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(650));
-            let foreground = unsafe { GetForegroundWindow() };
-            let mut process_id = 0u32;
-            if !foreground.0.is_null() { unsafe { GetWindowThreadProcessId(foreground, Some(&mut process_id)); } }
-            let ours = process_id == unsafe { GetCurrentProcessId() };
-            let shell = unsafe {
-                foreground == GetDesktopWindow()
-                    || FindWindowW(windows::core::w!("Progman"), PCWSTR::null()).map(|window| window == foreground).unwrap_or(false)
-                    || FindWindowW(windows::core::w!("WorkerW"), PCWSTR::null()).map(|window| window == foreground).unwrap_or(false)
-            };
-            if !ours && !shell && !foreground.0.is_null() && !hidden_by_monitor {
-                if app.get_webview_window("interaction").and_then(|window| window.is_visible().ok()).unwrap_or(false) {
-                    hide_interaction(&app);
-                    hidden_by_monitor = true;
-                }
-            } else if shell && hidden_by_monitor {
-                let _ = show_interaction(&app);
-                hidden_by_monitor = false;
+      loop {
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        let foreground = unsafe { GetForegroundWindow() };
+        let mut process_id = 0u32;
+        if !foreground.0.is_null() {
+            unsafe {
+                GetWindowThreadProcessId(foreground, Some(&mut process_id));
             }
-            if app.get_webview_window("background").is_none() { break; }
         }
+        let ours = process_id == unsafe { GetCurrentProcessId() };
+        let shell = foreground == unsafe { GetDesktopWindow() }
+            || is_desktop_foreground_class(window_class(foreground).as_deref());
+        let desktop_foreground = shell
+            || (ours
+                && app
+                    .get_webview_window("interaction")
+                    .and_then(|window| window.hwnd().ok())
+                    .map(|hwnd| HWND(hwnd.0) == foreground)
+                    .unwrap_or(false));
+        if let Some(core) = app.try_state::<AppCore>() {
+            let changed = desktop_foreground_state()
+                .write()
+                .map(|mut previous| {
+                    if *previous == Some(desktop_foreground) {
+                        false
+                    } else {
+                        *previous = Some(desktop_foreground);
+                        true
+                    }
+                })
+                .unwrap_or(true);
+            if changed {
+                let snapshot =
+                    core.dispatch(AppAction::DesktopForegroundChanged(desktop_foreground));
+                if snapshot.interaction.visible {
+                    let _ = show_interaction(&app, false);
+                } else {
+                    hide_interaction(&app);
+                }
+                let _ = app.emit("app-snapshot", &snapshot);
+            }
+        } else if !desktop_foreground {
+            hide_interaction(&app);
+        }
+
+        let _ = INTERACTION_BOUNDS_SYNC_QUEUED.swap(false, Ordering::AcqRel);
+        if app.get_webview_window("interaction").is_none() {
+            break;
+        }
+      }
     });
 }
 
 #[cfg(windows)]
 pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<String, String> {
-    let backup_file = app.path().app_config_dir().map_err(|e| e.to_string())?.join("lock-screen-backup.txt");
+    let backup_file = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| e.to_string())?
+        .join("lock-screen-backup.txt");
     if enabled {
-        if !UserProfilePersonalizationSettings::IsSupported().map_err(|e| e.to_string())? { return Err("当前 Windows 策略不允许应用修改锁屏图片".into()); }
+        if !UserProfilePersonalizationSettings::IsSupported().map_err(|e| e.to_string())? {
+            return Err("当前 Windows 策略不允许应用修改锁屏图片".into());
+        }
         if !backup_file.exists() {
             if let Ok(uri) = LockScreen::OriginalImageFile() {
                 if let Ok(original) = uri.AbsoluteUri() {
-                    if let Some(parent) = backup_file.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
-                    std::fs::write(&backup_file, original.to_string()).map_err(|e| e.to_string())?;
+                    if let Some(parent) = backup_file.parent() {
+                        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                    }
+                    std::fs::write(&backup_file, original.to_string())
+                        .map_err(|e| e.to_string())?;
                 }
             }
         }
-        let path = app.path().resolve("personas/wake-frames/variant-anima/sleep.png", tauri::path::BaseDirectory::Resource).map_err(|e| e.to_string())?;
+        let path = app
+            .path()
+            .resolve(
+                "personas/wake-frames/variant-anima/sleep.png",
+                tauri::path::BaseDirectory::Resource,
+            )
+            .map_err(|e| e.to_string())?;
         let path_string = HSTRING::from(path.to_string_lossy().as_ref());
-        let file = StorageFile::GetFileFromPathAsync(&path_string).map_err(|e| e.to_string())?.get().map_err(|e| e.to_string())?;
+        let file = StorageFile::GetFileFromPathAsync(&path_string)
+            .map_err(|e| e.to_string())?
+            .get()
+            .map_err(|e| e.to_string())?;
         let settings = UserProfilePersonalizationSettings::Current().map_err(|e| e.to_string())?;
-        let changed = settings.TrySetLockScreenImageAsync(&file).map_err(|e| e.to_string())?.get().map_err(|e| e.to_string())?;
-        if !changed { return Err("Windows 或组织策略拒绝修改锁屏图片".into()); }
+        let changed = settings
+            .TrySetLockScreenImageAsync(&file)
+            .map_err(|e| e.to_string())?
+            .get()
+            .map_err(|e| e.to_string())?;
+        if !changed {
+            return Err("Windows 或组织策略拒绝修改锁屏图片".into());
+        }
         Ok("锁屏图片已设置；密码页继续由 Windows 原生模糊处理。".into())
     } else {
-        let original = std::fs::read_to_string(&backup_file).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        let original = std::fs::read_to_string(&backup_file)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
         if let Some(original) = original {
-            let path = original.strip_prefix("file:///").or_else(|| original.strip_prefix("file://")).unwrap_or(&original).replace('/', "\\");
+            let path = original
+                .strip_prefix("file:///")
+                .or_else(|| original.strip_prefix("file://"))
+                .unwrap_or(&original)
+                .replace('/', "\\");
             if std::path::Path::new(&path).exists() {
-                let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path)).map_err(|e| e.to_string())?.get().map_err(|e| e.to_string())?;
-                let settings = UserProfilePersonalizationSettings::Current().map_err(|e| e.to_string())?;
-                if settings.TrySetLockScreenImageAsync(&file).map_err(|e| e.to_string())?.get().map_err(|e| e.to_string())? {
+                let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path))
+                    .map_err(|e| e.to_string())?
+                    .get()
+                    .map_err(|e| e.to_string())?;
+                let settings =
+                    UserProfilePersonalizationSettings::Current().map_err(|e| e.to_string())?;
+                if settings
+                    .TrySetLockScreenImageAsync(&file)
+                    .map_err(|e| e.to_string())?
+                    .get()
+                    .map_err(|e| e.to_string())?
+                {
                     let _ = std::fs::remove_file(&backup_file);
                     return Ok("已恢复接管前的静态锁屏图片。".into());
                 }
@@ -277,14 +1205,203 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
 }
 
 #[cfg(not(windows))]
-pub fn attach_to_workerw(_: &tauri::WebviewWindow) -> Result<(), String> { Err("WorkerW only exists on Windows".into()) }
+pub fn attach_to_workerw(_: &tauri::WebviewWindow) -> Result<(), String> {
+    Err("WorkerW only exists on Windows".into())
+}
 #[cfg(not(windows))]
-pub fn register_session_events(_: &tauri::AppHandle) -> Result<(), String> { Ok(()) }
+pub fn start_wallpaper_host(_: tauri::AppHandle) -> Result<(), String> {
+    Ok(())
+}
 #[cfg(not(windows))]
-pub async fn set_lock_screen(_: &tauri::AppHandle, _: bool) -> Result<String, String> { Err("Lock screen integration only supports Windows".into()) }
+pub fn register_session_events(_: &tauri::AppHandle) -> Result<(), String> {
+    Ok(())
+}
 #[cfg(not(windows))]
-pub fn show_interaction(_: &tauri::AppHandle) -> Result<(), String> { Ok(()) }
+pub async fn set_lock_screen(_: &tauri::AppHandle, _: bool) -> Result<String, String> {
+    Err("Lock screen integration only supports Windows".into())
+}
+#[cfg(not(windows))]
+pub fn configure_desktop_interaction(_: &tauri::WebviewWindow) -> Result<(), String> {
+    Ok(())
+}
+#[cfg(not(windows))]
+pub fn show_interaction(_: &tauri::AppHandle, _: bool) -> Result<(), String> {
+    Ok(())
+}
 #[cfg(not(windows))]
 pub fn hide_interaction(_: &tauri::AppHandle) {}
 #[cfg(not(windows))]
 pub fn start_foreground_monitor(_: tauri::AppHandle) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candidate(is_worker: bool, hosts_desktop_icons: bool) -> DesktopWindowCandidate {
+        DesktopWindowCandidate {
+            is_worker,
+            hosts_desktop_icons,
+        }
+    }
+
+    #[test]
+    fn prefers_the_non_icon_worker_after_the_icon_host() {
+        let candidates = [
+            candidate(true, false),
+            candidate(false, false),
+            candidate(true, true),
+            candidate(true, false),
+        ];
+        assert_eq!(select_wallpaper_worker(&candidates), Some(3));
+    }
+
+    #[test]
+    fn selects_a_non_icon_worker_even_when_it_precedes_the_icon_host() {
+        let candidates = [
+            candidate(true, false),
+            candidate(true, true),
+            candidate(false, false),
+        ];
+        assert_eq!(select_wallpaper_worker(&candidates), Some(0));
+    }
+
+    #[test]
+    fn never_selects_the_desktop_icon_worker() {
+        let candidates = [candidate(false, false), candidate(true, true)];
+        assert_eq!(select_wallpaper_worker(&candidates), None);
+    }
+
+    #[test]
+    fn accepts_progman_only_as_a_valid_desktop_parent() {
+        assert!(is_valid_wallpaper_parent_class(Some("WorkerW")));
+        assert!(is_valid_wallpaper_parent_class(Some("Progman")));
+        assert!(!is_valid_wallpaper_parent_class(Some("Chrome_WidgetWin_1")));
+        assert!(!is_valid_wallpaper_parent_class(None));
+    }
+
+    #[test]
+    fn recognizes_every_explorer_desktop_host_as_foreground() {
+        assert!(is_desktop_foreground_class(Some("WorkerW")));
+        assert!(is_desktop_foreground_class(Some("Progman")));
+        assert!(!is_desktop_foreground_class(Some("Shell_TrayWnd")));
+        assert!(!is_desktop_foreground_class(Some("Chrome_WidgetWin_1")));
+        assert!(!is_desktop_foreground_class(None));
+    }
+
+    #[test]
+    fn upgrades_a_progman_fallback_when_workerw_appears() {
+        assert!(should_upgrade_wallpaper_parent(Some("Progman"), true));
+        assert!(!should_upgrade_wallpaper_parent(Some("Progman"), false));
+        assert!(!should_upgrade_wallpaper_parent(Some("WorkerW"), true));
+    }
+
+    #[test]
+    fn host_action_is_noop_only_for_a_valid_sized_worker_parent() {
+        assert_eq!(
+            decide_wallpaper_host_action(true, true, true, true),
+            WallpaperHostAction::None
+        );
+        assert_eq!(
+            decide_wallpaper_host_action(true, true, true, false),
+            WallpaperHostAction::Resize
+        );
+        assert_eq!(
+            decide_wallpaper_host_action(true, false, false, false),
+            WallpaperHostAction::Reattach
+        );
+        assert_eq!(
+            decide_wallpaper_host_action(false, false, false, false),
+            WallpaperHostAction::Recreate
+        );
+    }
+
+    #[test]
+    fn scales_logical_interaction_regions_outward_to_physical_pixels() {
+        assert_eq!(
+            scale_interaction_region(
+                InteractionRegionInput {
+                    x: 10.25,
+                    y: 20.5,
+                    width: 100.1,
+                    height: 40.2,
+                },
+                1.5,
+            ),
+            Some(PhysicalInteractionRegion {
+                left: 15,
+                top: 30,
+                right: 166,
+                bottom: 92,
+            })
+        );
+    }
+
+    #[test]
+    fn hit_test_uses_half_open_rectangles() {
+        let region = PhysicalInteractionRegion {
+            left: 10,
+            top: 20,
+            right: 30,
+            bottom: 40,
+        };
+        assert!(point_hits_interaction_region(&[region], 10, 20));
+        assert!(point_hits_interaction_region(&[region], 29, 39));
+        assert!(!point_hits_interaction_region(&[region], 30, 39));
+        assert!(!point_hits_interaction_region(&[region], 29, 40));
+    }
+
+    #[test]
+    fn empty_regions_make_the_entire_overlay_transparent() {
+        assert!(!point_hits_interaction_region(&[], 100, 100));
+    }
+
+    #[test]
+    fn rejects_invalid_regions_and_scale_factors() {
+        assert!(scale_interaction_region(
+            InteractionRegionInput {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 10.0,
+            },
+            1.0,
+        )
+        .is_none());
+        assert!(scale_interaction_region(
+            InteractionRegionInput {
+                x: 0.0,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0,
+            },
+            f64::NAN,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn stale_region_updates_cannot_replace_newer_geometry() {
+        let current_revision = interaction_regions()
+            .read()
+            .expect("interaction region state")
+            .revision;
+        let newer = current_revision.saturating_add(100);
+        let first = update_interaction_regions(
+            vec![InteractionRegionInput {
+                x: 1.0,
+                y: 2.0,
+                width: 3.0,
+                height: 4.0,
+            }],
+            1.0,
+            newer,
+        )
+        .expect("new region update");
+        assert!(!first.stale);
+        let stale =
+            update_interaction_regions(Vec::new(), 1.0, newer - 1).expect("stale region update");
+        assert!(stale.stale);
+        assert_eq!(stale.revision, newer);
+        assert_eq!(stale.region_count, 1);
+    }
+}

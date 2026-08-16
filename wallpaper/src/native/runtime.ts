@@ -15,10 +15,11 @@ export interface NativeRuntime {
   requestDeepSeekLogin(): Promise<void>
   listenSystem(listener: (event: 'locked' | 'unlocked' | 'suspend' | 'resume') => void): Promise<() => void>
   listenChat(listener: (event: ChatEvent) => void): Promise<() => void>
-  sendChat(mode: BackendMode, text: string, options?: NativeSendOptions): Promise<void>
+  sendChat(mode: BackendMode, text: string, options?: NativeSendOptions): Promise<string | undefined>
   cancelChat(mode: BackendMode): Promise<void>
   connectHarness(resumeSessionId?: string): Promise<string>
   harnessHistory(): Promise<ChatMessage[]>
+  apiHistory(conversationId: string): Promise<ChatMessage[]>
   showInteraction(): Promise<void>
   hideInteraction(): Promise<void>
   listenTray(listener: (event: { type: 'backend'; backend: BackendMode } | { type: 'settings' }) => void): Promise<() => void>
@@ -63,7 +64,7 @@ export const nativeRuntime: NativeRuntime = {
   },
   async sendChat(mode, text, options) {
     const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('send_chat', { mode, text, conversationId: options?.conversationId, baseUrl: options?.baseUrl, model: options?.model })
+    return (await invoke<string | null>('send_chat', { mode, text, conversationId: options?.conversationId, baseUrl: options?.baseUrl, model: options?.model })) ?? undefined
   },
   async cancelChat(mode) {
     if (!await tauriAvailable()) return
@@ -78,6 +79,12 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     const result = await invoke<{ messages: Array<{ id: string; role: 'user' | 'assistant'; content: string }> }>('harness_history')
     return result.messages.map((message) => ({ ...message, createdAt: Date.now() }))
+  },
+  async apiHistory(conversationId) {
+    if (!await tauriAvailable()) return []
+    const { invoke } = await import('@tauri-apps/api/core')
+    const result = await invoke<{ messages: Array<{ role: 'user' | 'assistant'; content: string }> }>('api_history', { conversationId })
+    return result.messages.map((message) => ({ ...message, id: crypto.randomUUID(), createdAt: Date.now() }))
   },
   async showInteraction() {
     if (!await tauriAvailable()) return
