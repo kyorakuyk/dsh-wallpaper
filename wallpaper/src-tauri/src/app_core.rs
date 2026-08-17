@@ -68,7 +68,7 @@ pub struct WallpaperHostStatus {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InteractionState {
-    /// Persistent user preference. Foreground changes must not overwrite it.
+    /// Explicit user choice. Only tray/settings controls may change it.
     pub enabled: bool,
     /// Derived visibility of the transparent interaction surface.
     pub visible: bool,
@@ -267,31 +267,30 @@ mod tests {
     }
 
     #[test]
-    fn explicit_chat_hides_when_the_desktop_loses_foreground() {
+    fn explicit_chat_stays_visible_when_the_desktop_loses_foreground() {
         let core = AppCore::default();
         core.dispatch(AppAction::BootReady { play_wake: false });
         core.dispatch(AppAction::OpenChat);
         let snapshot = core.dispatch(AppAction::DesktopForegroundChanged(false));
         assert_eq!(snapshot.phase, SystemPhase::Chatting);
-        assert!(!snapshot.interaction.visible);
+        assert!(snapshot.interaction.visible);
         assert_eq!(snapshot.phase, SystemPhase::Chatting);
     }
 
     #[test]
-    fn legacy_settings_state_does_not_keep_the_desktop_overlay_visible() {
+    fn settings_state_does_not_hide_an_explicitly_visible_overlay() {
         let core = AppCore::default();
         core.dispatch(AppAction::BootReady { play_wake: false });
         core.dispatch(AppAction::OpenSettings);
         let snapshot = core.dispatch(AppAction::DesktopForegroundChanged(false));
         assert!(snapshot.interaction.settings_open);
-        assert!(!snapshot.interaction.visible);
+        assert!(snapshot.interaction.visible);
     }
 }
 
 fn can_show_interaction(state: &AppSnapshot) -> bool {
     state.interaction.enabled
         && matches!(state.phase, SystemPhase::Idle | SystemPhase::Chatting)
-        && state.interaction.desktop_foreground
 }
 
 fn recompute_interaction_visibility(state: &mut AppSnapshot) {

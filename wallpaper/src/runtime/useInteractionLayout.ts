@@ -13,6 +13,15 @@ export function useInteractionLayout(options: {
 
   useEffect(() => {
     if (!options.enabled || !nativeRuntime.isNative) return
+    // The floating workspace has a permanently desktop-sized native host.
+    // Moving it again after React mounts causes a visible right/left snap as
+    // WorkerW, WebView and CSS each report a different intermediate size.
+    // Its child controls already use CSS viewport coordinates, so only docked
+    // capsules need native placement updates.
+    if (options.layout === 'floating') {
+      setDirection('center')
+      return
+    }
     let cancelled = false
     let frame = 0
     const apply = async () => {
@@ -42,6 +51,7 @@ export function useInteractionLayout(options: {
 
   useEffect(() => {
     if (!options.enabled || !nativeRuntime.isNative) return
+    if (options.layout === 'floating') return
     let dispose: () => void = () => undefined
     void import('@tauri-apps/api/event').then(({ listen }) => listen('desktop-geometry-changed', () => {
       void nativeRuntime.desktopGeometry().then((geometry) => {

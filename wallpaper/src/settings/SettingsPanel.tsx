@@ -15,6 +15,8 @@ export interface SettingsPanelProps {
   onRequestDeepSeekLogin: () => void
   onConfigureApiKey: () => void
   onClose: () => void
+  interactionEnabled: boolean
+  onSetInteractionEnabled: (enabled: boolean) => void
   translucentTb: { installed: boolean; running: boolean; source?: string }
   onRefreshTranslucentTb: () => void
   onLaunchTranslucentTb: () => void
@@ -97,13 +99,16 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
       {page === 'general' && <>
         <Card title="交互方式" description="决定会话气泡如何出现在桌面上。">
+          <Field title="中央会话窗" detail="关闭后仅可通过托盘右键或此处重新显示；不会因失焦、切换应用或按 Esc 自动消失。"><Toggle label="显示中央会话窗" checked={props.interactionEnabled} onChange={props.onSetInteractionEnabled} /></Field>
           <Field title="气泡布局" detail="中央悬浮始终展开；任务栏停靠以胶囊按钮唤起。"><Choice label="气泡布局" value={settings.interactionLayout} onChange={(value) => set({ interactionLayout: value as WallpaperSettings['interactionLayout'] })} options={[{ value: 'floating', label: '中央玻璃悬浮' }, { value: 'taskbar-docked', label: '任务栏停靠胶囊' }]} /></Field>
           <Field title="历史抽屉默认展开" detail="启动或解锁后直接显示最近的对话。"><Toggle label="历史抽屉默认展开" checked={settings.historyStartsExpanded} onChange={(value) => set({ historyStartsExpanded: value })} /></Field>
         </Card>
         <Card title="会话生命周期"><Field title="新会话策略" detail="每个后端分别保留自己的最近会话。"><Choice label="新会话策略" value={settings.conversationPolicy} onChange={(value) => set({ conversationPolicy: value as WallpaperSettings['conversationPolicy'] })} options={[{ value: 'resume-last', label: '恢复最近会话' }, { value: 'new-on-unlock', label: '每次解锁新建' }, { value: 'daily', label: '每日新建' }]} /></Field></Card>
-        <Card title="高级外观" description="仅调整立绘内的环境渐变层；固定的脚底向上融合层保持不变。">
+        <Card title="高级外观" description="环境渐变只作用于立绘；会话窗使用独立的亚克力透明度。">
           <Field title="环境渐变长度" detail={`从暗侧向亮侧延伸至 ${settings.portraitAmbientLength}%`}><input type="range" min="35" max="100" step="1" value={settings.portraitAmbientLength} onChange={(event) => set({ portraitAmbientLength: Number(event.target.value) })} /></Field>
           <Field title="环境渐变强度" detail={`${Math.round(settings.portraitAmbientStrength * 100)}%`}><input type="range" min="0" max="1" step="0.01" value={settings.portraitAmbientStrength} onChange={(event) => set({ portraitAmbientStrength: Number(event.target.value) })} /></Field>
+          <Field title="中央会话窗透明度" detail={`${Math.round(settings.conversationOpacity * 100)}% · 仅影响亚克力底色，不影响文字可读性`}><input type="range" min="0.2" max="0.96" step="0.01" value={settings.conversationOpacity} onChange={(event) => set({ conversationOpacity: Number(event.target.value) })} /></Field>
+          <Field title="中央会话窗磨砂" detail={`${settings.conversationBlur}px · 0 为纯透明玻璃，数值越高背景越柔和`}><input type="range" min="0" max="40" step="1" value={settings.conversationBlur} onChange={(event) => set({ conversationBlur: Number(event.target.value) })} /></Field>
         </Card>
       </>}
 

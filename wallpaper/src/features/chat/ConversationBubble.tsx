@@ -16,6 +16,9 @@ export interface ConversationBubbleProps {
   collapsed?: boolean
   layout?: 'floating' | 'taskbar-docked'
   expandDirection?: 'up' | 'down' | 'left' | 'right' | 'center'
+  persistent?: boolean
+  acrylicOpacity?: number
+  acrylicBlur?: number
   onExpand?: () => void
   onToggleHistory: () => void
   onSend: (text: string) => void
@@ -39,6 +42,9 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const backend = BACKEND_PRESENTATION[props.backend]
   const totalCost = sessionCost(props.messages)
   const tokenCount = usageTokenCount(props.usage)
+  // An empty drawer has no information value and turns the workspace into a
+  // large blank panel. It appears only once there is transcript content.
+  const showHistory = props.historyExpanded && (props.messages.length > 0 || Boolean(props.streamingText))
 
   const submit = () => {
     const text = draft.trim()
@@ -65,19 +71,16 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   </button>
 
   return <section
-    className={`conversation-shell dsh-chat dsh-theme-${props.backend === 'harness' ? 'harness' : 'deepseek'} ${props.historyExpanded ? 'expanded' : ''} ${busy ? 'dsh-chat--busy' : ''}`}
+    className={`conversation-shell dsh-chat dsh-theme-${props.backend === 'harness' ? 'harness' : 'deepseek'} ${showHistory ? 'expanded' : ''} ${busy ? 'dsh-chat--busy' : ''}`}
+    data-persistent={props.persistent ? 'true' : undefined}
+    style={{ ['--dsh-chat-acrylic-opacity' as string]: (props.acrylicOpacity ?? .74).toFixed(2), ['--dsh-chat-acrylic-blur' as string]: `${props.acrylicBlur ?? 19}px` }}
     data-dsh-theme={props.backend === 'harness' ? 'harness' : 'deepseek'}
     data-interaction-region="chat"
     aria-label="AI 对话"
   >
-    {props.historyExpanded && <Glass className="dsh-chat__history-wrap" strength="strong" elevation="floating">
+    {showHistory && <Glass className="dsh-chat__history-wrap" strength="strong" elevation="floating">
       <div className="dsh-chat__history" ref={historyRef} aria-label="当前会话记录" aria-live="polite">
-        {props.messages.length === 0 && !props.streamingText && <div className="dsh-chat__empty">
-          <Icon name="spark" size={22} />
-          <strong>会话还很安静</strong>
-          <p>写下一个想法，大肥鱼会在这里陪你整理。</p>
-        </div>}
-        {props.messages.map((message) => <article key={message.id} className={`dsh-chat__message dsh-chat__message--${message.role}`}>
+        {props.messages.map((message, index) => <article key={message.id} className={`dsh-chat__message dsh-chat__message--${message.role}`} style={{ ['--message-index' as string]: String(Math.max(0, props.messages.length - index - 1)) }}>
           <span className="dsh-chat__message-label">{message.role === 'user' ? '你' : '大肥鱼'}</span>
           <p className="dsh-chat__message-body">{message.content}</p>
           <UsageLine usage={message.usage} />
@@ -100,7 +103,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
         <span className="dsh-chat__status" title={backend.name}>
           <span className="dsh-chat__status-dot" />{ACTIVITY_LABEL[props.activity]}
         </span>
-        <Button variant="ghost" iconOnly onClick={props.onClose} aria-label="收起对话"><Icon name="close" /></Button>
+        {!props.persistent && <Button variant="ghost" iconOnly onClick={props.onClose} aria-label="收起对话"><Icon name="close" /></Button>}
       </header>
 
       <form className="dsh-chat__composer" onSubmit={(event) => { event.preventDefault(); submit() }}>
@@ -129,8 +132,8 @@ export function ConversationBubble(props: ConversationBubbleProps) {
         {props.backend === 'deepseek-api' && <><span className="dsh-chat__separator" /><span className="dsh-chat__billing">API 计费</span></>}
         {tokenCount !== undefined && <><span className="dsh-chat__separator" /><span>{tokenCount} tokens</span></>}
         {totalCost > 0 && <><span className="dsh-chat__separator" /><span>会话 {formatCost(totalCost)}</span></>}
-        <Button className="dsh-chat__history-button" variant="ghost" onClick={props.onToggleHistory} aria-expanded={props.historyExpanded}>
-          <Icon name="history" size={14} />{props.historyExpanded ? '收起记录' : '会话记录'}<Icon name="chevron-up" size={13} />
+        <Button className="dsh-chat__history-button" variant="ghost" onClick={props.onToggleHistory} aria-expanded={showHistory}>
+          <Icon name="history" size={14} />{showHistory ? '收起记录' : '会话记录'}<Icon name="chevron-up" size={13} />
         </Button>
       </footer>
     </Glass>

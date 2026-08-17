@@ -18,6 +18,8 @@ export interface IdleSceneProps {
   backgroundUrl?: string
   portraitAmbientLength?: number
   portraitAmbientStrength?: number
+  /** 进入里桌面后由中央会话窗承担沟通入口，避免双气泡并存。 */
+  hideBubble?: boolean
   onOpenChat: () => void
   onSwitchToHarness: () => void
   onDismissHarnessPrompt: () => void
@@ -31,6 +33,7 @@ export function IdleScene({
   backgroundUrl = '',
   portraitAmbientLength = 82,
   portraitAmbientStrength = .72,
+  hideBubble = false,
   onOpenChat,
   onSwitchToHarness,
   onDismissHarnessPrompt,
@@ -62,7 +65,7 @@ export function IdleScene({
         />
         <div className="portrait-environment" aria-hidden="true"><i className="portrait-glow" /><i className="portrait-rim" /><i className="portrait-fade" /><i className="portrait-contact" /></div>
         {/* 气泡定位在立绘头部上方（跟随大肥鱼） */}
-        <Bubble text={bubbleText} theme={persona.theme} from="top" />
+        {!hideBubble && <Bubble text={bubbleText} theme={persona.theme} from="top" />}
       </div>
       {/* DSH 上线询问 */}
       {showHarnessPrompt && (

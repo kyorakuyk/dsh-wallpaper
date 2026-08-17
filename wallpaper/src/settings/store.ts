@@ -4,7 +4,7 @@ import type { BackendMode, ConversationPolicy, ModelTierRule } from '../domain/t
 import type { PersonaBubbles } from '../persona/types.ts'
 import type { InteractionLayout } from '../runtime/interactionLayout.ts'
 
-export const SETTINGS_VERSION = 5
+export const SETTINGS_VERSION = 7
 export const assetUrl = (path: string): string => `${import.meta.env.BASE_URL}${path.replace(/^\//, '')}`
 const CONVERSATION_KEY = 'dsh-wallpaper:conversations:v1'
 
@@ -50,6 +50,10 @@ export interface WallpaperSettings {
   floatingAnchor: { x: number; y: number }
   portraitAmbientLength: number
   portraitAmbientStrength: number
+  /** 中央会话窗的亚克力不透明度（0=最通透，1=最实）。 */
+  conversationOpacity: number
+  /** 中央会话窗背景模糊半径（px）。 */
+  conversationBlur: number
   deepseekApi: ApiSettings
 }
 
@@ -71,13 +75,15 @@ export const DEFAULT_SETTINGS: WallpaperSettings = {
   historyStartsExpanded: false,
   animationIntensity: 'normal',
   interactionLayout: 'floating',
-  floatingAnchor: { x: 0.5, y: 0.56 },
+  floatingAnchor: { x: 0.5, y: 0.62 },
   portraitAmbientLength: 82,
   portraitAmbientStrength: 0.72,
+  conversationOpacity: 0.74,
+  conversationBlur: 19,
   deepseekApi: { baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
 }
 
-const KEY = 'dsh-wallpaper:settings:v5'
+const KEY = 'dsh-wallpaper:settings:v6'
 
 function migrate(raw: unknown): WallpaperSettings {
   if (raw === null || typeof raw !== 'object') return structuredClone(DEFAULT_SETTINGS)
@@ -92,13 +98,15 @@ function migrate(raw: unknown): WallpaperSettings {
     bubbleOverrides: value.bubbleOverrides ?? {},
     portraitAmbientLength: typeof value.portraitAmbientLength === 'number' ? Math.min(100, Math.max(35, value.portraitAmbientLength)) : DEFAULT_SETTINGS.portraitAmbientLength,
     portraitAmbientStrength: typeof value.portraitAmbientStrength === 'number' ? Math.min(1, Math.max(0, value.portraitAmbientStrength)) : DEFAULT_SETTINGS.portraitAmbientStrength,
+    conversationOpacity: typeof value.conversationOpacity === 'number' ? Math.min(.96, Math.max(.2, value.conversationOpacity)) : DEFAULT_SETTINGS.conversationOpacity,
+    conversationBlur: typeof value.conversationBlur === 'number' ? Math.min(40, Math.max(0, value.conversationBlur)) : DEFAULT_SETTINGS.conversationBlur,
     deepseekApi: { ...DEFAULT_SETTINGS.deepseekApi, ...(value.deepseekApi ?? {}) },
   }
 }
 
 export function loadSettings(): WallpaperSettings {
   try {
-    const raw = localStorage.getItem(KEY) ?? localStorage.getItem('dsh-wallpaper:settings:v4') ?? localStorage.getItem('dsh-wallpaper:settings:v3') ?? localStorage.getItem('dsh-wallpaper:settings:v2') ?? localStorage.getItem('dsh-wallpaper:settings')
+  const raw = localStorage.getItem(KEY) ?? localStorage.getItem('dsh-wallpaper:settings:v6') ?? localStorage.getItem('dsh-wallpaper:settings:v5') ?? localStorage.getItem('dsh-wallpaper:settings:v4') ?? localStorage.getItem('dsh-wallpaper:settings:v3') ?? localStorage.getItem('dsh-wallpaper:settings:v2') ?? localStorage.getItem('dsh-wallpaper:settings')
     if (raw) return migrate(JSON.parse(raw))
   } catch {
     /* 忽略损坏的配置 */

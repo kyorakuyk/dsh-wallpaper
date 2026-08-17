@@ -29,20 +29,25 @@ use windows::{
             },
         },
         System::{
+            Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED},
             RemoteDesktop::{
                 WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
                 NOTIFY_FOR_THIS_SESSION,
             },
             Threading::GetCurrentProcessId,
         },
-        UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+        UI::{
+            Accessibility::{CUIAutomation, IUIAutomation, UIA_ListItemControlTypeId},
+            Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON},
+            Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+        },
         UI::Shell::{SHAppBarMessage, ABM_GETSTATE, ABM_GETTASKBARPOS, ABS_AUTOHIDE, APPBARDATA},
         UI::WindowsAndMessaging::{
-            EnumChildWindows, EnumWindows, FindWindowExW, FindWindowW, GetClassNameW,
+            EnumChildWindows, EnumWindows, FindWindowExW, FindWindowW, GetClassNameW, GetCursorPos,
             GetClientRect, GetDesktopWindow, GetForegroundWindow, GetParent, GetWindowLongPtrW,
             GetWindowRect, GetWindowThreadProcessId, IsWindow, IsWindowVisible,
-            SendMessageTimeoutW, SetForegroundWindow, SetParent, SetWindowLongPtrW, SetWindowPos,
-            ShowWindow, GWL_EXSTYLE, GWL_STYLE, HWND_NOTOPMOST, HWND_TOPMOST,
+            SendMessageTimeoutW, SetParent, SetWindowLongPtrW, SetWindowPos,
+            ShowWindow, GWL_EXSTYLE, GWL_STYLE, HWND_TOP,
             PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SEND_MESSAGE_TIMEOUT_FLAGS, SMTO_NORMAL,
             SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
             SW_HIDE, SW_SHOWNA, WM_ACTIVATE, WM_CONTEXTMENU, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONDBLCLK,
@@ -68,6 +73,9 @@ static INTERACTION_BOUNDS_SYNC_QUEUED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(windows)]
 static INTERACTION_REVEAL_GRACE: OnceLock<RwLock<Option<std::time::Instant>>> = OnceLock::new();
+
+#[cfg(windows)]
+static INNER_WORKSPACE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[cfg(windows)]
 static INTERACTION_REVEAL_PENDING: AtomicBool = AtomicBool::new(false);
@@ -610,18 +618,20 @@ fn prepare_hidden_interaction_window(hwnd: HWND) -> Result<(), String> {
             std::mem::size_of_val(&border_color) as u32,
         );
         let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let is_desktop_child = GetParent(hwnd).ok().is_some();
         SetWindowLongPtrW(
             hwnd,
             GWL_STYLE,
             (style
-                & !(WS_BORDER.0 as isize
+                & !(WS_POPUP.0 as isize
+                    | WS_BORDER.0 as isize
                     | WS_CAPTION.0 as isize
                     | WS_DLGFRAME.0 as isize
                     | WS_MAXIMIZEBOX.0 as isize
                     | WS_MINIMIZEBOX.0 as isize
                     | WS_SYSMENU.0 as isize
                     | WS_THICKFRAME.0 as isize))
-                | WS_POPUP.0 as isize,
+                | if is_desktop_child { WS_CHILD.0 as isize } else { WS_POPUP.0 as isize },
         );
         let exstyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         SetWindowLongPtrW(
@@ -657,25 +667,20 @@ fn reveal_interaction_window(request_focus: bool) -> Result<(), String> {
         return Ok(());
     };
     unsafe {
-        // Tao may reapply the default DWM attributes during activation. Keep
-        // the transparent host visually frameless every time it is revealed.
-        let corner_preference = DWMWCP_DONOTROUND;
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE,
-            std::ptr::from_ref(&corner_preference).cast(),
-            std::mem::size_of_val(&corner_preference) as u32,
-        );
-        let border_color = DWMWA_COLOR_NONE;
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_BORDER_COLOR,
-            std::ptr::from_ref(&border_color).cast(),
-            std::mem::size_of_val(&border_color) as u32,
-        );
+        // Activation can restore Tao's native caption/frame after the window
+        // was initially configured. Reapply *both* the popup style and the
+        // component-only region immediately before making it visible. DWM
+        // color alone cannot remove the "DSH Wallpaper Interaction" caption.
+        prepare_hidden_interaction_window(hwnd)?;
+        let regions = interaction_regions()
+            .read()
+            .map_err(|_| "interaction region state poisoned".to_string())?
+            .regions
+            .clone();
+        apply_interaction_window_region(&regions)?;
         SetWindowPos(
             hwnd,
-            Some(HWND_TOPMOST),
+            Some(HWND_TOP),
             0,
             0,
             0,
@@ -683,19 +688,10 @@ fn reveal_interaction_window(request_focus: bool) -> Result<(), String> {
             SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
         )
         .map_err(|error| error.to_string())?;
-        SetWindowPos(
-            hwnd,
-            Some(HWND_NOTOPMOST),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-        )
-        .map_err(|error| error.to_string())?;
-        if request_focus {
-            let _ = SetForegroundWindow(hwnd);
-        }
+        // This is a WorkerW child rather than an always-on-top popup. Normal
+        // application windows must cover it; the desktop hit region remains
+        // usable when Explorer is foreground.
+        let _ = request_focus;
     }
     Ok(())
 }
@@ -825,6 +821,55 @@ fn locate_wallpaper_worker() -> Result<HWND, String> {
     select_wallpaper_worker(&candidates)
         .map(|index| windows[index].hwnd)
         .ok_or_else(|| "Explorer 未枚举独立 WorkerW 壁纸宿主".to_string())
+}
+
+/// The icon view is owned by Explorer. We only change its visibility while the
+/// user is in the inner workspace: no files, positions, or Explorer settings
+/// are altered. It is always restored before a normal application exit.
+#[cfg(windows)]
+fn desktop_icon_list_view() -> Option<HWND> {
+    enumerate_desktop_windows().ok()?.into_iter().find_map(|item| {
+        if !item.candidate.hosts_desktop_icons {
+            return None;
+        }
+        let def_view = unsafe {
+            FindWindowExW(
+                Some(item.hwnd),
+                None,
+                windows::core::w!("SHELLDLL_DefView"),
+                PCWSTR::null(),
+            )
+        }
+        .ok()
+        .filter(|hwnd| !hwnd.0.is_null())?;
+        unsafe {
+            FindWindowExW(
+                Some(def_view),
+                None,
+                windows::core::w!("SysListView32"),
+                PCWSTR::null(),
+            )
+        }
+        .ok()
+        .filter(|hwnd| !hwnd.0.is_null())
+    })
+}
+
+#[cfg(windows)]
+fn set_desktop_icons_visible(visible: bool) -> Result<(), String> {
+    let icon_view = desktop_icon_list_view().ok_or("未找到 Explorer 桌面图标层")?;
+    unsafe {
+        let _ = ShowWindow(icon_view, if visible { SW_SHOWNA } else { SW_HIDE });
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn restore_desktop_icons() {
+    INNER_WORKSPACE_ACTIVE.store(false, Ordering::Release);
+    if let Err(error) = set_desktop_icons_visible(true) {
+        log::warn!("未能恢复 Explorer 桌面图标：{error}");
+    }
 }
 
 #[cfg(windows)]
@@ -1402,7 +1447,9 @@ pub fn configure_desktop_interaction(window: &WebviewWindow) -> Result<(), Strin
     let hwnd = HWND(window.hwnd().map_err(|error| error.to_string())?.0);
     remember_interaction_window(hwnd);
     prepare_hidden_interaction_window(hwnd)?;
-    size_interaction_to_desktop(hwnd)?;
+    let worker = attach_hwnd_to_workerw(hwnd)?;
+    resize_wallpaper_to_parent(hwnd, worker)?;
+    unsafe { let _ = ShowWindow(hwnd, SW_HIDE); }
     let regions = interaction_regions()
         .read()
         .map(|state| state.regions.clone())
@@ -1460,8 +1507,11 @@ pub fn apply_interaction_placement(
         let work_height = info.rcWork.bottom - info.rcWork.top;
         let min_width = 48.min(work_width.max(1));
         let min_height = 40.min(work_height.max(1));
-        let max_width = ((work_width as f64 * 0.9).round() as i32).max(min_width);
-        let max_height = ((work_height as f64 * 0.9).round() as i32).max(min_height);
+        // The floating workspace is a transparent desktop host, not a normal
+        // dialog: it needs the complete work area so the history can dissolve
+        // into the screen edge.
+        let max_width = work_width.max(min_width);
+        let max_height = work_height.max(min_height);
         let width = requested.width.clamp(min_width, max_width);
         let height = requested.height.clamp(min_height, max_height);
         let x = requested.x.clamp(0, (work_width - width).max(0));
@@ -1537,6 +1587,12 @@ pub fn apply_interaction_placement(
 
 #[cfg(windows)]
 pub fn show_interaction(app: &tauri::AppHandle, request_focus: bool) -> Result<(), String> {
+    // Conversation is rendered by the already attached WorkerW background
+    // host. Keeping a second WebView2 host in the desktop hierarchy causes
+    // duplicate rendering and competing layout updates.
+    let _ = (app, request_focus);
+    return Ok(());
+    #[allow(unreachable_code)]
     let window = app
         .get_webview_window("interaction")
         .ok_or("interaction window missing")?;
@@ -1588,6 +1644,9 @@ pub fn show_interaction(app: &tauri::AppHandle, request_focus: bool) -> Result<(
 
 #[cfg(windows)]
 pub fn hide_interaction(app: &tauri::AppHandle) {
+    let _ = app;
+    return;
+    #[allow(unreachable_code)]
     INTERACTION_REVEAL_PENDING.store(false, Ordering::Release);
     INTERACTION_REVEAL_FOCUS.store(false, Ordering::Release);
     if let Some(window) = app.get_webview_window("interaction") {
@@ -1653,11 +1712,11 @@ pub fn start_foreground_monitor(app: tauri::AppHandle) {
             if changed {
                 let snapshot =
                     core.dispatch(AppAction::DesktopForegroundChanged(desktop_foreground));
-                if snapshot.interaction.visible {
-                    let _ = show_interaction(&app, false);
-                } else {
-                    hide_interaction(&app);
-                }
+                // Foreground changes are informative only.  Re-showing or
+                // hiding the WebView here makes the composition flicker and,
+                // more importantly, turns an ordinary focus change into an
+                // implicit visibility command.  Explicit tray/settings
+                // commands and privacy transitions own that responsibility.
                 let _ = app.emit("app-snapshot", &snapshot);
             }
         } else if !desktop_foreground {
@@ -1669,6 +1728,89 @@ pub fn start_foreground_monitor(app: tauri::AppHandle) {
         }
         if app.get_webview_window("interaction").is_none() {
             break;
+        }
+    });
+}
+
+/// Uses UI Automation, rather than ListView messages with a pointer owned by
+/// Explorer, to distinguish desktop icons from empty desktop space. This is a
+/// supported cross-process accessibility boundary and never consumes input.
+#[cfg(windows)]
+fn cursor_is_over_desktop_blank(automation: &IUIAutomation) -> bool {
+    let mut point = POINT::default();
+    unsafe {
+        if GetCursorPos(&mut point).is_err() {
+            return false;
+        }
+        let Ok(element) = automation.ElementFromPoint(point) else {
+            return false;
+        };
+        // ElementFromPoint can return an icon label/text child rather than the
+        // ListItem itself. Check the short parent chain before considering the
+        // point blank; no Explorer memory or window messages are involved.
+        let walker = automation.ControlViewWalker().ok();
+        let mut current = Some(element);
+        for _ in 0..4 {
+            let Some(element) = current else { break; };
+            if element.CurrentControlType().ok() == Some(UIA_ListItemControlTypeId) {
+                return false;
+            }
+            current = walker.as_ref().and_then(|tree| tree.GetParentElement(&element).ok());
+        }
+        true
+    }
+}
+
+#[cfg(windows)]
+pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        // UIA requires COM initialization on the monitor thread. A prior COM
+        // mode is harmless: UIA can still be created on that thread.
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let automation = unsafe {
+            CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+        };
+        let Ok(automation) = automation else {
+            log::warn!("无法初始化 Windows UI Automation；表/里桌面双击切换暂不可用");
+            return;
+        };
+        log::info!("表/里桌面双击监控已启动（UI Automation）");
+
+        let mut was_down = false;
+        let mut last_blank_click: Option<std::time::Instant> = None;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(16));
+            if app.get_webview_window("background").is_none() {
+                break;
+            }
+            let down = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0;
+            if down && !was_down {
+                let foreground = unsafe { GetForegroundWindow() };
+                let on_desktop = foreground == unsafe { GetDesktopWindow() }
+                    || is_desktop_foreground_class(window_class(foreground).as_deref());
+                if on_desktop && cursor_is_over_desktop_blank(&automation) {
+                    let now = std::time::Instant::now();
+                    if last_blank_click.is_some_and(|previous| now.duration_since(previous) <= std::time::Duration::from_millis(500)) {
+                        last_blank_click = None;
+                        let entering = !INNER_WORKSPACE_ACTIVE.fetch_xor(true, Ordering::AcqRel);
+                        if let Err(error) = set_desktop_icons_visible(!entering) {
+                            // If Explorer has restarted or the icon view cannot
+                            // be found, preserve a truthful state and do not
+                            // enter a half-working inner desktop.
+                            INNER_WORKSPACE_ACTIVE.store(false, Ordering::Release);
+                            log::warn!("无法切换表/里桌面图标层：{error}");
+                            continue;
+                        }
+                        log::info!("桌面空白双击：切换至{}桌面", if entering { "里" } else { "表" });
+                        let _ = app.emit("desktop-workspace-toggle", if entering { "enter" } else { "leave" });
+                    } else {
+                        last_blank_click = Some(now);
+                    }
+                } else {
+                    last_blank_click = None;
+                }
+            }
+            was_down = down;
         }
     });
 }

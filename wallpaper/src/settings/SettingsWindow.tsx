@@ -15,6 +15,7 @@ import './SettingsWindow.css'
 export function SettingsWindow() {
   const [settings, setSettings] = useState<WallpaperSettings>(() => loadSettings())
   const [harness, setHarness] = useState<'offline' | 'web-only' | 'bridge-ready'>('offline')
+  const [interactionEnabled, setInteractionEnabled] = useState(true)
   const [translucentTb, setTranslucentTb] = useState<TranslucentTbStatus>({ installed: false, running: false })
   const [notice, setNotice] = useState<string>()
   const [appearanceAssets, setAppearanceAssets] = useState<AppearanceAssetSummary[]>([])
@@ -27,7 +28,7 @@ export function SettingsWindow() {
 
   const refreshTranslucentTb = () => void nativeRuntime.translucentTbStatus().then(setTranslucentTb).catch((error) => setNotice(String(error)))
   useEffect(() => {
-    void appCoreClient.snapshot().then((snapshot) => setHarness(snapshot.harness))
+    void appCoreClient.snapshot().then((snapshot) => { setHarness(snapshot.harness); setInteractionEnabled(snapshot.interaction.enabled) })
     refreshTranslucentTb()
     refreshAppearance()
     const current = getCurrentWindow()
@@ -104,6 +105,8 @@ export function SettingsWindow() {
         const key = window.prompt('输入 DeepSeek API Key。密钥只会写入 Windows 凭据管理器。')
         if (key) void nativeRuntime.saveApiKey(key).catch((error) => setNotice(String(error)))
       }}
+      interactionEnabled={interactionEnabled}
+      onSetInteractionEnabled={(enabled) => void appCoreClient.setInteractionEnabled(enabled).then((snapshot) => setInteractionEnabled(snapshot.interaction.enabled)).catch((error) => setNotice(String(error)))}
       onClose={close}
     />
   </main>

@@ -26,11 +26,16 @@ export function computeInteractionPlacement(
   const margin = request.safeMarginDip ?? 12
   const collapsedWidth = request.layout === 'taskbar-docked' ? 52 : 188
   const collapsedHeight = request.layout === 'taskbar-docked' ? 52 : 48
-  const width = request.state === 'collapsed' ? collapsedWidth : clamp(workWidthDip * 0.34, 360, 680)
+  // The central workspace uses a desktop-sized transparent host.  Only the
+  // React-published component regions accept input, while the full height lets
+  // the transcript fade naturally into the top of the desktop.
+  const width = request.state === 'collapsed' ? collapsedWidth : request.layout === 'floating'
+    ? workWidthDip
+    : clamp(workWidthDip * 0.34, 360, 680)
   const height = request.state === 'collapsed'
     ? collapsedHeight
     : request.layout === 'floating'
-      ? clamp(workHeightDip * 0.3, 250, 420)
+    ? workHeightDip
       : clamp(workHeightDip * 0.42, 260, 620)
 
   let x = (workWidthDip - width) / 2
@@ -38,9 +43,8 @@ export function computeInteractionPlacement(
   let expandDirection: InteractionPlacement['expandDirection'] = 'center'
 
   if (request.layout === 'floating') {
-    const anchor = request.anchor ?? { x: 0.5, y: 0.56 }
-    x = clamp(anchor.x * workWidthDip - width / 2, margin, workWidthDip - width - margin)
-    y = clamp(anchor.y * workHeightDip - height / 2, margin, workHeightDip - height - margin)
+    x = 0
+    y = 0
   } else {
     const edge = geometry.taskbar.edge === 'unknown' || geometry.taskbar.edge === 'hidden'
       ? 'bottom'

@@ -565,10 +565,11 @@ pub fn run() {
             if let Some(background) = app.get_webview_window("background") {
                 let _ = background;
             }
+            // The WorkerW background host is the single desktop WebView. The
+            // retired interaction window stays hidden so it cannot reload as a
+            // duplicate wallpaper or race the host's position.
             if let Some(interaction) = app.get_webview_window("interaction") {
-                if let Err(error) = windows_integration::configure_desktop_interaction(&interaction) {
-                    log::error!("desktop interaction configuration failed: {error}");
-                }
+                let _ = interaction.hide();
             }
             if let Some(settings) = app.get_webview_window("settings") {
                 if let Err(error) = windows_integration::configure_settings_window(&settings) {
@@ -579,10 +580,11 @@ pub fn run() {
                 log::warn!("session notification failed: {error}");
             }
             windows_integration::start_foreground_monitor(app.handle().clone());
+            windows_integration::start_desktop_workspace_monitor(app.handle().clone());
             start_harness_monitor(app.handle().clone());
             let menu = MenuBuilder::new(app)
-                .text("show", "显示对话")
-                .text("hide", "隐藏对话")
+                .text("show", "显示中央会话窗")
+                .text("hide", "隐藏中央会话窗")
                 .separator()
                 .text("deepseek-web", "DeepSeek 网页模式")
                 .text("deepseek-api", "DeepSeek API 模式")
@@ -599,9 +601,12 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => {
+                        if let Some(core) = app.try_state::<AppCore>() {
+                            core.dispatch(AppAction::SetInteractionEnabled(true));
+                        }
                         dispatch_tray_ui_action(app, AppAction::OpenChat);
                     }
-                    "hide" => dispatch_ui_action(app, AppAction::CloseChat, false),
+                    "hide" => dispatch_ui_action(app, AppAction::SetInteractionEnabled(false), false),
                     "deepseek-web" | "deepseek-api" | "harness" => {
                         let _ = app.emit("tray-backend", event.id().as_ref());
                     }
@@ -618,7 +623,11 @@ pub fn run() {
                                 .spawn();
                         }
                     }
-                    "quit" => app.exit(0),
+                    "quit" => {
+                        #[cfg(windows)]
+                        windows_integration::restore_desktop_icons();
+                        app.exit(0)
+                    },
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {

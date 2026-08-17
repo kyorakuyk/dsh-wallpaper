@@ -48,6 +48,7 @@ export function App({ surface = 'combined' }: AppProps) {
   const [conversationGeneration, setConversationGeneration] = useState(0)
   const [interactionState, setInteractionState] = useState<InteractionState>('collapsed')
   const [workspace, setWorkspace] = useState<DesktopWorkspace>('front')
+  const [innerHistoryExpanded, setInnerHistoryExpanded] = useState(false)
   const adapterRef = useRef<ChatAdapter>(new PreviewAdapter(settings.defaultBackend))
   const runtimeRef = useRef(runtime)
   runtimeRef.current = runtime
@@ -67,11 +68,13 @@ export function App({ surface = 'combined' }: AppProps) {
   const resolvedPersona = resolvedAssets[personaSlot]
   const resolvedBackground = resolvedAssets['desktop.background']
   const modelLabel = runtime.model ?? (tier === 'pro' ? 'Pro · 成年形态' : 'Flash · 幼年形态')
-  const sceneSurface = surface !== 'interaction'
-  const interactionSurface = surface !== 'background'
+  // The WorkerW background is the single desktop host. It renders both scene
+  // and conversation, eliminating cross-WebView placement races.
+  const sceneSurface = true
+  const interactionSurface = true
   const placementState: InteractionState = settings.interactionLayout === 'floating' ? 'expanded' : interactionState
   const interactionDirection = useInteractionLayout({
-    enabled: surface === 'interaction',
+    enabled: false,
     layout: settings.interactionLayout,
     state: placementState,
     anchor: settings.floatingAnchor,
@@ -79,6 +82,9 @@ export function App({ surface = 'combined' }: AppProps) {
   })
 
   const enterInnerWorkspace = () => {
+    // A workspace entry is an input-focused starting point, not a pre-opened
+    // empty transcript drawer. History is deliberately user-triggered here.
+    setInnerHistoryExpanded(false)
     setWorkspace('entering-inner')
     setInteractionState('expanded')
     baseDispatch({ type: 'OPEN_CHAT' })
@@ -88,6 +94,7 @@ export function App({ surface = 'combined' }: AppProps) {
 
   const leaveInnerWorkspace = () => {
     setShowAppearance(false)
+    setInnerHistoryExpanded(false)
     if (settings.interactionLayout === 'floating') {
       // A floating surface is either fully present or absent. Resizing its native
       // HWND during a CSS exit animation exposes partially clipped WebView frames.
@@ -210,7 +217,7 @@ export function App({ surface = 'combined' }: AppProps) {
       appCoreClient.snapshot().then(applySnapshot),
       appCoreClient.subscribe(applySnapshot).then((dispose) => { unsubscribe = dispose }),
     ])
-    const timer = surface === 'background'
+    const timer = surface !== 'interaction'
       ? setTimeout(() => dispatchCore('boot-ready', { playWake: settings.animationsEnabled && !settings.skipWakeAnimation }), 120)
       : undefined
     return () => {
@@ -382,11 +389,6 @@ export function App({ surface = 'combined' }: AppProps) {
       if (event.altKey && event.key.toLowerCase() === 'w') { baseDispatch({ type: 'LOCK' }); dispatchCore('lock') }
       if (event.key === 'Escape') {
         if (runtime.phase === 'locked') { baseDispatch({ type: 'UNLOCK', playWake: settings.playWakeOnEveryUnlock && settings.animationsEnabled && !settings.skipWakeAnimation }); dispatchCore('unlock', { playWake: settings.playWakeOnEveryUnlock && settings.animationsEnabled && !settings.skipWakeAnimation }) }
-        else if (workspace === 'inner' || workspace === 'entering-inner') leaveInnerWorkspace()
-        else if (showAppearance || interactionState === 'expanded') {
-          setShowAppearance(false); setInteractionState('collapsed')
-          baseDispatch({ type: 'CLOSE_CHAT' }); dispatchCore('close-chat')
-        }
       }
     }
     window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey)
@@ -401,13 +403,13 @@ export function App({ surface = 'combined' }: AppProps) {
   const scene = useMemo(() => {
     if (runtime.phase === 'booting' || runtime.phase === 'locked') return <SleepScene persona={persona} mode="system" />
     if (runtime.phase === 'waking') return <WakeScene persona={persona} enabled={settings.animationsEnabled && !settings.skipWakeAnimation} speed={settings.animationSpeed} onWakeDone={() => { baseDispatch({ type: 'WAKE_DONE' }); dispatchCore('wake-done') }} />
-    return <IdleScene persona={{ ...persona, bubbles, assets: { ...persona.assets, portrait: resolvedPersona ?? persona.assets.portrait } }} bubbleText={runtime.activity === 'thinking' ? '正在认真思考…' : bubbles.morning} showHarnessPrompt={interactionSurface && showHarnessPrompt} harnessOnline={runtime.harness !== 'offline'} backgroundUrl={resolvedBackground ?? (background?.path ? assetUrl(background.path) : undefined)} portraitAmbientLength={settings.portraitAmbientLength} portraitAmbientStrength={settings.portraitAmbientStrength} onOpenChat={() => { if (interactionSurface) { baseDispatch({ type: 'OPEN_CHAT' }); dispatchCore('open-chat') } }} onSwitchToHarness={() => changeBackend('harness')} onDismissHarnessPrompt={() => setShowHarnessPrompt(false)} />
-  }, [background?.path, bubbles, persona, resolvedBackground, resolvedPersona, runtime, settings, showHarnessPrompt])
+    return <IdleScene persona={{ ...persona, bubbles, assets: { ...persona.assets, portrait: resolvedPersona ?? persona.assets.portrait } }} bubbleText={runtime.activity === 'thinking' ? '正在认真思考…' : bubbles.morning} showHarnessPrompt={interactionSurface && showHarnessPrompt} harnessOnline={runtime.harness !== 'offline'} backgroundUrl={resolvedBackground ?? (background?.path ? assetUrl(background.path) : undefined)} portraitAmbientLength={settings.portraitAmbientLength} portraitAmbientStrength={settings.portraitAmbientStrength} hideBubble={workspace !== 'front'} onOpenChat={() => { if (interactionSurface) enterInnerWorkspace() }} onSwitchToHarness={() => changeBackend('harness')} onDismissHarnessPrompt={() => setShowHarnessPrompt(false)} />
+  }, [background?.path, bubbles, persona, resolvedBackground, resolvedPersona, runtime, settings, showHarnessPrompt, workspace])
 
   return <div className={`wallpaper-root surface-${surface} effort-${runtime.reasoningEffort ?? 'normal'} workspace-${workspace}`} data-workspace={workspace}>
     {sceneSurface && scene}
     {interactionSurface && <>
-      {(settings.interactionLayout === 'taskbar-docked' || workspace !== 'front') && <ConversationBubble backend={runtime.backend} activity={runtime.activity} modelLabel={modelLabel} messages={messages} streamingText={streamingText} historyExpanded={runtime.historyExpanded} usage={usage} collapsed={settings.interactionLayout === 'taskbar-docked' && interactionState === 'collapsed'} layout={settings.interactionLayout} expandDirection={interactionDirection} onExpand={() => { setInteractionState('expanded'); if (workspace === 'front') enterInnerWorkspace(); else { baseDispatch({ type: 'OPEN_CHAT' }); dispatchCore('open-chat') } }} disabled={runtime.backend === 'deepseek-web' || (runtime.backend === 'harness' && runtime.harness !== 'bridge-ready')} onToggleHistory={() => { baseDispatch({ type: 'TOGGLE_HISTORY' }); dispatchCore('toggle-history') }} onSend={(text) => { void adapterRef.current.send(text).then(() => { if (adapterRef.current instanceof NativeChatAdapter) { const id = adapterRef.current.conversationId(); if (id) saveConversationPointer(runtime.backend, id) } }) }} onStop={() => void adapterRef.current.stop()} onClose={() => { leaveInnerWorkspace() }} />}
+      {runtime.phase !== 'booting' && runtime.phase !== 'locked' && (settings.interactionLayout === 'taskbar-docked' || workspace !== 'front') && <ConversationBubble backend={runtime.backend} activity={runtime.activity} modelLabel={modelLabel} messages={messages} streamingText={streamingText} historyExpanded={workspace === 'front' ? runtime.historyExpanded : innerHistoryExpanded} usage={usage} collapsed={settings.interactionLayout === 'taskbar-docked' && interactionState === 'collapsed'} layout={settings.interactionLayout} expandDirection={interactionDirection} persistent={settings.interactionLayout === 'floating'} acrylicOpacity={settings.conversationOpacity} acrylicBlur={settings.conversationBlur} onExpand={() => { setInteractionState('expanded'); if (workspace === 'front') enterInnerWorkspace(); else { baseDispatch({ type: 'OPEN_CHAT' }); dispatchCore('open-chat') } }} disabled={runtime.backend === 'deepseek-web' || (runtime.backend === 'harness' && runtime.harness !== 'bridge-ready')} onToggleHistory={() => { if (workspace !== 'front') setInnerHistoryExpanded((value) => !value); else { baseDispatch({ type: 'TOGGLE_HISTORY' }); dispatchCore('toggle-history') } }} onSend={(text) => { void adapterRef.current.send(text).then(() => { if (adapterRef.current instanceof NativeChatAdapter) { const id = adapterRef.current.conversationId(); if (id) saveConversationPointer(runtime.backend, id) } }) }} onStop={() => void adapterRef.current.stop()} onClose={() => undefined} />}
       {runtime.error && runtime.phase !== 'error' && <div className="runtime-notice" role="status">{runtime.error}<button onClick={() => patchRuntime({ error: undefined })}>×</button></div>}
       <AppearanceDrawer open={showAppearance} themes={appearanceThemes} assets={appearanceAssets} activeThemeId={appearanceTheme?.id ?? ''} activeThemeVersion={appearanceTheme?.version ?? ''} overrides={appearanceOverrides} busy={appearanceBusy} notice={appearanceNotice} onClose={() => setShowAppearance(false)} onImport={() => { void importAppearance(chooseAppearanceImportPaths) }} onImportFolder={() => { void importAppearance(chooseAppearanceImportFolder) }} onExport={() => setAppearanceNotice({ tone: 'info', message: '主题导出需要名称与版本信息，完整导出表单将在下一步接入。' })} onReviewInbox={() => undefined} onClassify={(request) => { void classifyAppearance(request) }} onActivateTheme={(themeId, version) => { void mutateAppearance(() => nativeAppearance.activateTheme(themeId, version)) }} onSetOverride={(slot, assetId) => { void mutateAppearance(() => nativeAppearance.setOverride(slot, assetId)) }} onClearOverride={(slot) => { void mutateAppearance(() => nativeAppearance.clearOverride(slot)) }} />
       {runtime.phase === 'auth-required' && <div className="auth-overlay" data-interaction-region="auth"><div className="auth-card"><h2>DeepSeek 网页登录</h2><p>桌面版会显示 DeepSeek 官方登录窗口，登录态由 WebView2 保存。</p><button onClick={() => { baseDispatch({ type: 'AUTH_READY' }); dispatchCore('auth-ready') }}>我已完成登录</button></div></div>}
