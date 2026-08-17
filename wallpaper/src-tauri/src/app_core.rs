@@ -70,7 +70,8 @@ pub struct WallpaperHostStatus {
 pub struct InteractionState {
     /// Explicit user choice. Only tray/settings controls may change it.
     pub enabled: bool,
-    /// Derived visibility of the transparent interaction surface.
+    /// Derived visibility of the desktop interaction UI inside the shared
+    /// WorkerW background host. This is not a separate native window.
     pub visible: bool,
     pub desktop_foreground: bool,
     pub history_expanded: bool,

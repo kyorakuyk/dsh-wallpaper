@@ -119,10 +119,10 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
       {page === 'connections' && <>
         <Card title="默认后端" description="网页桥接不会在失败时自动切换到付费 API。">
-          <Field title="启动时使用"><Choice label="启动时使用" value={settings.defaultBackend} onChange={(value) => set({ defaultBackend: value as BackendMode })} options={[{ value: 'deepseek-web', label: 'DeepSeek 免费网页桥接' }, { value: 'deepseek-api', label: 'DeepSeek API（付费）' }, { value: 'harness', label: 'DeepSeek Harness' }]} /></Field>
+          <Field title="启动时使用"><Choice label="启动时使用" value={settings.defaultBackend} onChange={(value) => set({ defaultBackend: value as BackendMode })} options={[{ value: 'deepseek-web', label: 'DeepSeek 网页入口（实验）' }, { value: 'deepseek-api', label: 'DeepSeek API（付费）' }, { value: 'harness', label: 'DeepSeek Harness' }]} /></Field>
           <Field title="DSH 就绪时自动切换" detail="仅检测到兼容的壁纸 Bridge 才会切换。"><Toggle label="DSH 自动切换" checked={settings.autoSwitchHarness} onChange={(value) => set({ autoSwitchHarness: value })} /></Field>
         </Card>
-        <Card title="DeepSeek 网页桥接"><Field title="登录状态" detail="登录由官方页面完成，本应用不读取 Cookie。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>扫码登录或重新登录</button></Field></Card>
+        <Card title="DeepSeek 网页入口（实验）" description="当前仅在默认浏览器打开 DeepSeek 官方页面，不能在壁纸内聊天或同步消息。"><Field title="官方页面" detail="本应用不创建登录 WebView、不读取 Cookie，也不能使用或保存官方页面的登录状态。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开官方页面</button></Field></Card>
         <Card title="DeepSeek API" description="API 模式会产生实际费用，密钥只保存在 Windows 凭据管理器。">
           <Field title="API 地址"><input value={settings.deepseekApi.baseUrl} onChange={(e) => set({ deepseekApi: { ...settings.deepseekApi, baseUrl: e.target.value } })} /></Field>
           <Field title="模型"><input value={settings.deepseekApi.model} onChange={(e) => set({ deepseekApi: { ...settings.deepseekApi, model: e.target.value } })} /></Field>

@@ -12,9 +12,10 @@ DeepSeek Harness 生态的**交互式桌面壁纸框架**：以鲸鱼娘为拟�
 | 🌅 **苏醒帧动画** | ✅ | variant-anima 4 帧序列（睡脸→睁眼→坐起→慵懒打哈欠），1920×1024 |
 | 🎨 **形态系统** | ✅ | 蓝/黑 × 幼/成年 四形态，立绘即时切换（useMemo），气泡跟随立绘 |
 | 🌊 **深海背景** | ✅ | 3 款深海室内插画 + 默认渐变，设置面板切换，持久化 |
-| 💬 **聊天双通道** | ✅ | deepseek-api（流式）+ harness（bridge 会话）适配器 |
+| 💬 **聊天后端** | ✅ | DeepSeek API（流式）+ Harness（bridge 会话）；DeepSeek 网页入口仍为实验能力 |
 | 🔌 **DSH 会话桥** | ✅ | `bridge/` 独立插件：loopback REST/SSE + bearer token 鉴权 |
-| 🖥️ **Tauri 壳** | ✅ | 双窗口（WorkerW 壁纸层 + 透明聊天窗）、托盘、开机自启、锁屏联动 |
+| 🖥️ **Tauri 壳** | ✅ | 统一 WorkerW 背景宿主（画面与桌面内交互热区）+ 独立设置窗口、托盘、开机自启 |
+| 🔐 **锁屏接管** | 🧪 | 安全备份/恢复与无副作用 MSIX 打包验证已完成；已安装 MSIX 的 `Win+L` 人工验收待做 |
 | 🔒 **凭据安全** | ✅ | DeepSeek API Key 只存 Windows 凭据管理器（keyring） |
 
 ## 体验流程
@@ -29,7 +30,7 @@ DeepSeek Harness 生态的**交互式桌面壁纸框架**：以鲸鱼娘为拟�
 ☀️ 待机    深海背景 + 右侧立绘 + 气泡「早上好！今天要做什么呢？」
    │ 单击立绘 / 快捷键
    ▼
-💬 会话    默认 DeepSeek 网页/API；检测到 3080（DSH）→ 气泡询问
+💬 会话    DeepSeek API 或 Harness 可在壁纸中对话；网页模式仅打开官方网页入口，不提供消息桥接
    ▼
 🖥️ Harness  立绘切换为黑红主题 + 会话走 DSH bridge（http://127.0.0.1:3080）
 ```
@@ -66,10 +67,10 @@ pnpm desktop:build   # 构建安装包
 
 | id | 名称 | 后端 | 年龄段 |
 |---|---|---|---|
-| `blue-child` | 蓝色萝莉鲸鱼娘 | deepseek.com 网页 | 幼 |
+| `blue-child` | 蓝色幼年鲸鱼娘 | DeepSeek 蓝色主题 | 幼 |
 | `black-adult` | 黑红成年鲸鱼娘 | DSH (3080) | 成年 |
-| `blue-adult` | 蓝色成年鲸鱼娘 | deepseek.com 网页 | 成年 |
-| `black-child` | 黑红萝莉鲸鱼娘 | DSH (3080) | 幼 |
+| `blue-adult` | 蓝色成年鲸鱼娘 | DeepSeek 蓝色主题 | 成年 |
+| `black-child` | 黑红幼年鲸鱼娘 | DSH (3080) | 幼 |
 
 ### manifest.json 规范（用户定制）
 
@@ -128,7 +129,7 @@ dsh-wallpaper/
 │   │   ├── native/             # Tauri invoke 桥（runtime.ts）
 │   │   ├── settings/           # 设置持久化与面板
 │   │   └── ui/                 # 气泡 + 程序化鲸鱼娘
-│   └── src-tauri/              # Rust 壳（双窗口/托盘/锁屏/自启/聊天）
+│   └── src-tauri/              # Rust 壳（WorkerW 宿主/设置窗口/托盘/锁屏/自启/聊天）
 ├── bridge/                     # DSH 会话桥插件（loopback REST/SSE）
 ├── assets/personas/            # 全部素材（立绘/动画帧/背景/留档）
 ├── scripts/                    # 素材生成与处理（11 个脚本）
@@ -140,7 +141,7 @@ dsh-wallpaper/
 - **状态机**：`scenes/stateMachine.ts` 纯函数转移表，可测试
 - **3080 探测**：`connect/probe.ts` HTTP 轮询 + settle 去抖
 - **形态联动**：`autoSwitchPersona` 开启时 3080 上线→黑红、下线→蓝色（可关闭）
-- **Tauri 壳**：WorkerW 注入（桌面图标下）、WTS 锁定/解锁事件、托盘菜单、reg 自启、keyring 凭据
+- **Tauri 壳**：单一 `background` WebView 注入 WorkerW（画面和桌面内交互热区共用宿主）；`settings` 是唯一独立应用窗口。非热区输入通过原生命中测试交还 Explorer；另有 WTS 锁定/解锁、托盘菜单、reg 自启和 keyring 凭据。
 - **bridge 协议**：`/api/wallpaper/v1` 版本化 REST/SSE，status 公开、会话路由 bearer token 鉴权（token 存 `$DSH_HOME/wallpaper/bridge-token`，仅原生壳读取）
 
 ## 测试
@@ -161,8 +162,10 @@ pnpm -C bridge exec vitest run      # 3 项
 
 ## 路线图
 
-- [x] M1-M5：骨架 / 状态机 / 待机气泡 / 双后端 / 设置面板
-- [x] M6：Tauri 壳（双窗口/托盘/锁屏/自启）✅ 已构建 release 安装包
+- [x] M1-M5：骨架 / 状态机 / 待机气泡 / API 与 Harness 后端 / 设置面板
+- [x] M6：Tauri 壳（统一 WorkerW 宿主、设置窗口、托盘、自启）
+- [ ] DeepSeek 网页 DOM 消息桥接（当前实验入口只会用默认浏览器打开官方页面；本应用不读取 Cookie，不能使用或保存该页面的登录状态）
+- [ ] 锁屏接管真机验收（已安装 MSIX + `Win+L`；现有实现不会在未封装开发版中接管系统锁屏）
 - [x] 苏醒帧动画序列（variant-anima，人设修正：有腿+尾巴装饰）
 - [x] 深海室内背景切换
 - [x] DSH 会话桥（bridge/）+ 聊天双通道
