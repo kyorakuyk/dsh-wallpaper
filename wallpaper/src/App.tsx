@@ -68,10 +68,6 @@ export function App({ surface = 'combined' }: AppProps) {
   const resolvedPersona = resolvedAssets[personaSlot]
   const resolvedBackground = resolvedAssets['desktop.background']
   const modelLabel = runtime.model ?? (tier === 'pro' ? 'Pro · 成年形态' : 'Flash · 幼年形态')
-  // The WorkerW background is the single desktop host. It renders both scene
-  // and conversation, eliminating cross-WebView placement races.
-  const sceneSurface = true
-  const interactionSurface = true
   // The WorkerW host is permanently desktop-sized. Both the floating window
   // and the taskbar capsule now use CSS placement inside that one viewport.
   const interactionDirection = 'center' as const
@@ -232,7 +228,6 @@ export function App({ surface = 'combined' }: AppProps) {
   }, [])
 
   useEffect(() => {
-    if (!interactionSurface) return
     const adapter: ChatAdapter = nativeRuntime.isNative
       ? runtime.backend === 'deepseek-web'
         ? new DeepSeekWebAdapter()
@@ -266,7 +261,7 @@ export function App({ surface = 'combined' }: AppProps) {
       if (history.length) setMessages(history)
     }).catch((error) => patchRuntime({ activity: 'idle', error: String(error) }))
     return () => { unsubscribe(); adapter.disconnect() }
-  }, [interactionSurface, runtime.backend, settings.conversationPolicy, settings.deepseekApi.baseUrl, settings.deepseekApi.model, conversationGeneration])
+  }, [runtime.backend, settings.conversationPolicy, settings.deepseekApi.baseUrl, settings.deepseekApi.model, conversationGeneration])
 
   useEffect(() => {
     if (!nativeRuntime.isNative) return
@@ -283,24 +278,24 @@ export function App({ surface = 'combined' }: AppProps) {
   }, [settings.animationsEnabled, settings.conversationPolicy, settings.interactionLayout, settings.playWakeOnEveryUnlock, settings.skipWakeAnimation])
 
   useEffect(() => {
-    if (!nativeRuntime.isNative || !interactionSurface) return
+    if (!nativeRuntime.isNative) return
     let unsubscribe: () => void = () => undefined
     void nativeRuntime.listenTray((event) => {
       if (event.type === 'backend') changeBackend(event.backend)
       else { setInteractionState('expanded'); setShowAppearance(true) }
     }).then((dispose) => { unsubscribe = dispose })
     return () => unsubscribe()
-  }, [interactionSurface])
+  }, [])
 
   useEffect(() => {
-    if (!nativeRuntime.isNative || !interactionSurface) return
+    if (!nativeRuntime.isNative) return
     let dispose: () => void = () => undefined
     void import('@tauri-apps/api/event').then(({ listen }) => listen<'enter' | 'leave'>('desktop-workspace-toggle', (event) => {
       if (event.payload === 'enter') enterInnerWorkspace()
       else leaveInnerWorkspace()
     })).then((unlisten) => { dispose = unlisten })
     return () => dispose()
-  }, [interactionSurface, settings.interactionLayout])
+  }, [settings.interactionLayout])
 
   useEffect(() => {
     if (!nativeAppearance.isNative) return
@@ -315,7 +310,7 @@ export function App({ surface = 'combined' }: AppProps) {
   }, [surface])
 
   useEffect(() => {
-    if (!nativeRuntime.isNative || !interactionSurface) return
+    if (!nativeRuntime.isNative) return
     let disposed = false
     let session: number | undefined
     let revision = 0
@@ -349,10 +344,9 @@ export function App({ surface = 'combined' }: AppProps) {
         void publishInteractionRegions({ session, revision: ++revision, scaleFactor: window.devicePixelRatio || 1, regions: [] })
       }
     }
-  }, [interactionSurface])
+  }, [])
 
   useEffect(() => {
-    if (!interactionSurface) return
     // Native builds receive the debounced Harness availability from the single Rust monitor
     // through AppSnapshot. Starting a second browser-side monitor here would duplicate every
     // 3080 probe for each WebView.
@@ -365,16 +359,16 @@ export function App({ surface = 'combined' }: AppProps) {
       if (status.availability !== 'bridge-ready' && runtimeRef.current.backend === 'harness') patchRuntime({ backend: 'deepseek-web' })
     })
     return () => monitor.stop()
-  }, [interactionSurface, settings.autoSwitchHarness])
+  }, [settings.autoSwitchHarness])
 
   useEffect(() => {
-    if (!appCoreClient.native || !interactionSurface) return
+    if (!appCoreClient.native) return
     if (runtime.harness === 'bridge-ready' && runtime.backend !== 'harness') {
       if (settings.autoSwitchHarness) changeBackend('harness')
       else setShowHarnessPrompt(true)
     }
     if (runtime.harness !== 'bridge-ready' && runtime.backend === 'harness') changeBackend('deepseek-web')
-  }, [interactionSurface, runtime.harness, runtime.backend, settings.autoSwitchHarness])
+  }, [runtime.harness, runtime.backend, settings.autoSwitchHarness])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -395,17 +389,17 @@ export function App({ surface = 'combined' }: AppProps) {
   const scene = useMemo(() => {
     if (runtime.phase === 'booting' || runtime.phase === 'locked') return <SleepScene persona={persona} mode="system" />
     if (runtime.phase === 'waking') return <WakeScene persona={persona} enabled={settings.animationsEnabled && !settings.skipWakeAnimation} speed={settings.animationSpeed} onWakeDone={() => { baseDispatch({ type: 'WAKE_DONE' }); dispatchCore('wake-done') }} />
-    return <IdleScene persona={{ ...persona, bubbles, assets: { ...persona.assets, portrait: resolvedPersona ?? persona.assets.portrait } }} bubbleText={runtime.activity === 'thinking' ? '正在认真思考…' : bubbles.morning} showHarnessPrompt={interactionSurface && showHarnessPrompt} harnessOnline={runtime.harness !== 'offline'} backgroundUrl={resolvedBackground ?? (background?.path ? assetUrl(background.path) : undefined)} portraitAmbientLength={settings.portraitAmbientLength} portraitAmbientStrength={settings.portraitAmbientStrength} hideBubble={workspace !== 'front'} onOpenChat={() => { if (interactionSurface) enterInnerWorkspace() }} onSwitchToHarness={() => changeBackend('harness')} onDismissHarnessPrompt={() => setShowHarnessPrompt(false)} />
+    return <IdleScene persona={{ ...persona, bubbles, assets: { ...persona.assets, portrait: resolvedPersona ?? persona.assets.portrait } }} bubbleText={runtime.activity === 'thinking' ? '正在认真思考…' : bubbles.morning} showHarnessPrompt={showHarnessPrompt} harnessOnline={runtime.harness !== 'offline'} backgroundUrl={resolvedBackground ?? (background?.path ? assetUrl(background.path) : undefined)} portraitAmbientLength={settings.portraitAmbientLength} portraitAmbientStrength={settings.portraitAmbientStrength} hideBubble={workspace !== 'front'} onOpenChat={enterInnerWorkspace} onSwitchToHarness={() => changeBackend('harness')} onDismissHarnessPrompt={() => setShowHarnessPrompt(false)} />
   }, [background?.path, bubbles, persona, resolvedBackground, resolvedPersona, runtime, settings, showHarnessPrompt, workspace])
 
   return <div className={`wallpaper-root surface-${surface} effort-${runtime.reasoningEffort ?? 'normal'} workspace-${workspace}`} data-workspace={workspace}>
-    {sceneSurface && scene}
-    {interactionSurface && <>
+    {scene}
+    <>
       <WidgetHost workspace={workspace} widgets={[]} />
       {interactionEnabled && runtime.phase !== 'booting' && runtime.phase !== 'locked' && (settings.interactionLayout === 'taskbar-docked' || workspace !== 'front') && <ConversationBubble backend={runtime.backend} activity={runtime.activity} modelLabel={modelLabel} messages={messages} streamingText={streamingText} historyExpanded={workspace === 'front' ? runtime.historyExpanded : innerHistoryExpanded} usage={usage} collapsed={settings.interactionLayout === 'taskbar-docked' && interactionState === 'collapsed'} layout={settings.interactionLayout} expandDirection={interactionDirection} persistent={settings.interactionLayout === 'floating'} acrylicOpacity={settings.conversationOpacity} acrylicBlur={settings.conversationBlur} onExpand={() => { setInteractionState('expanded'); if (workspace === 'front') enterInnerWorkspace(); else { baseDispatch({ type: 'OPEN_CHAT' }); dispatchCore('open-chat') } }} disabled={runtime.backend === 'harness' && runtime.harness !== 'bridge-ready'} onToggleHistory={() => { if (workspace !== 'front') setInnerHistoryExpanded((value) => !value); else { baseDispatch({ type: 'TOGGLE_HISTORY' }); dispatchCore('toggle-history') } }} onSend={(text) => { void adapterRef.current.send(text).then(() => { if (adapterRef.current instanceof NativeChatAdapter) { const id = adapterRef.current.conversationId(); if (id) saveConversationPointer(runtime.backend, id) } }) }} onStop={() => void adapterRef.current.stop()} onClose={() => undefined} />}
       {runtime.error && runtime.phase !== 'error' && <div className="runtime-notice" role="status">{runtime.error}<button onClick={() => patchRuntime({ error: undefined })}>×</button></div>}
       <AppearanceDrawer open={showAppearance} themes={appearanceThemes} assets={appearanceAssets} activeThemeId={appearanceTheme?.id ?? ''} activeThemeVersion={appearanceTheme?.version ?? ''} overrides={appearanceOverrides} busy={appearanceBusy} notice={appearanceNotice} onClose={() => setShowAppearance(false)} onImport={() => { void importAppearance(chooseAppearanceImportPaths) }} onImportFolder={() => { void importAppearance(chooseAppearanceImportFolder) }} onExport={() => setAppearanceNotice({ tone: 'info', message: '主题导出需要名称与版本信息，完整导出表单将在下一步接入。' })} onReviewInbox={() => undefined} onClassify={(request) => { void classifyAppearance(request) }} onActivateTheme={(themeId, version) => { void mutateAppearance(() => nativeAppearance.activateTheme(themeId, version)) }} onSetOverride={(slot, assetId) => { void mutateAppearance(() => nativeAppearance.setOverride(slot, assetId)) }} onClearOverride={(slot) => { void mutateAppearance(() => nativeAppearance.clearOverride(slot)) }} />
       {runtime.phase === 'auth-required' && <div className="auth-overlay" data-interaction-region="auth"><div className="auth-card"><h2>DeepSeek 网页登录</h2><p>桌面版会显示 DeepSeek 官方登录窗口，登录态由 WebView2 保存。</p><button onClick={() => { baseDispatch({ type: 'AUTH_READY' }); dispatchCore('auth-ready') }}>我已完成登录</button></div></div>}
-    </>}
+    </>
   </div>
 }
