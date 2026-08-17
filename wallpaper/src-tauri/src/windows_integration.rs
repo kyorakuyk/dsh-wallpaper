@@ -47,7 +47,7 @@ use windows::{
             GetClientRect, GetDesktopWindow, GetForegroundWindow, GetParent, GetWindowLongPtrW,
             GetWindowRect, GetWindowThreadProcessId, IsWindow, IsWindowVisible,
             SendMessageTimeoutW, SetParent, SetWindowLongPtrW, SetWindowPos,
-            ShowWindow, GWL_EXSTYLE, GWL_STYLE, HWND_TOP,
+            ShowWindow, GWL_EXSTYLE, GWL_STYLE, HTTRANSPARENT, HWND_TOP,
             PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SEND_MESSAGE_TIMEOUT_FLAGS, SMTO_NORMAL,
             SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
             SW_HIDE, SW_SHOWNA, WM_ACTIVATE, WM_CONTEXTMENU, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONDBLCLK,
@@ -389,11 +389,13 @@ pub fn update_interaction_regions(
     state.regions = physical_regions;
     let regions_for_window = state.regions.clone();
     drop(state);
+    // In the single WorkerW host, regions drive hit testing only. Applying an
+    // HRGN here would clip the *visual* wallpaper to the chat controls. WebView2
+    // may create its render child after the wallpaper host is attached, so
+    // refresh the subclass list after every published layout as well.
     #[cfg(windows)]
-    apply_interaction_window_region(&regions_for_window)?;
-    #[cfg(windows)]
-    if !regions_for_window.is_empty() && INTERACTION_REVEAL_PENDING.swap(false, Ordering::AcqRel) {
-        reveal_interaction_window(INTERACTION_REVEAL_FOCUS.swap(false, Ordering::AcqRel))?;
+    if let Some(hwnd) = interaction_window_hwnd() {
+        install_desktop_hit_testing(hwnd)?;
     }
     Ok(InteractionRegionUpdateResult {
         revision,
@@ -823,30 +825,27 @@ fn locate_wallpaper_worker() -> Result<HWND, String> {
         .ok_or_else(|| "Explorer 未枚举独立 WorkerW 壁纸宿主".to_string())
 }
 
-/// The icon view is owned by Explorer. We only change its visibility while the
-/// user is in the inner workspace: no files, positions, or Explorer settings
-/// are altered. It is always restored before a normal application exit.
+/// The desktop icon *layer* is owned by Explorer.  It contains both the
+/// visible list items and an otherwise transparent full-screen hit-test
+/// surface (`SHELLDLL_DefView`).  In the inner workspace we must hide the
+/// whole layer, not only `SysListView32`: leaving DefView visible makes the
+/// desktop look empty but it still consumes every mouse move and click before
+/// they can reach the wallpaper WebView.
+///
+/// We do not move, delete, or modify individual icon items.  The exact same
+/// Explorer layer is restored when returning to the front workspace or when
+/// the application exits.
 #[cfg(windows)]
-fn desktop_icon_list_view() -> Option<HWND> {
+fn desktop_icon_layer() -> Option<HWND> {
     enumerate_desktop_windows().ok()?.into_iter().find_map(|item| {
         if !item.candidate.hosts_desktop_icons {
             return None;
         }
-        let def_view = unsafe {
+        unsafe {
             FindWindowExW(
                 Some(item.hwnd),
                 None,
                 windows::core::w!("SHELLDLL_DefView"),
-                PCWSTR::null(),
-            )
-        }
-        .ok()
-        .filter(|hwnd| !hwnd.0.is_null())?;
-        unsafe {
-            FindWindowExW(
-                Some(def_view),
-                None,
-                windows::core::w!("SysListView32"),
                 PCWSTR::null(),
             )
         }
@@ -856,10 +855,34 @@ fn desktop_icon_list_view() -> Option<HWND> {
 }
 
 #[cfg(windows)]
-fn set_desktop_icons_visible(visible: bool) -> Result<(), String> {
-    let icon_view = desktop_icon_list_view().ok_or("未找到 Explorer 桌面图标层")?;
+fn desktop_icon_list_view_in_layer(icon_layer: HWND) -> Option<HWND> {
     unsafe {
-        let _ = ShowWindow(icon_view, if visible { SW_SHOWNA } else { SW_HIDE });
+        FindWindowExW(
+            Some(icon_layer),
+            None,
+            windows::core::w!("SysListView32"),
+            PCWSTR::null(),
+        )
+    }
+    .ok()
+    .filter(|hwnd| !hwnd.0.is_null())
+}
+
+#[cfg(windows)]
+fn set_desktop_icons_visible(visible: bool) -> Result<(), String> {
+    let icon_layer = desktop_icon_layer().ok_or("未找到 Explorer 桌面图标层")?;
+    unsafe {
+        if visible {
+            // Older development builds hid SysListView32 directly.  Restore it
+            // as well so a forced restart cannot leave the normal desktop
+            // visually empty after this implementation moved to DefView.
+            let _ = ShowWindow(icon_layer, SW_SHOWNA);
+            if let Some(icon_list) = desktop_icon_list_view_in_layer(icon_layer) {
+                let _ = ShowWindow(icon_list, SW_SHOWNA);
+            }
+        } else {
+            let _ = ShowWindow(icon_layer, SW_HIDE);
+        }
     }
     Ok(())
 }
@@ -1120,7 +1143,12 @@ pub fn attach_to_workerw(window: &WebviewWindow) -> Result<(), String> {
         .set_ignore_cursor_events(false)
         .map_err(|error| format!("无法启用桌面交互：{error}"))?;
     let background = HWND(window.hwnd().map_err(|error| error.to_string())?.0);
-    attach_hwnd_to_workerw(background).map(|_| ())
+    attach_hwnd_to_workerw(background)?;
+    // The same WebView now paints both the background and conversation. Keep
+    // the entire scene visible, but only let declared chat regions receive
+    // pointer input; all other desktop input falls through to Explorer.
+    remember_interaction_window(background);
+    install_desktop_hit_testing(background)
 }
 
 #[cfg(windows)]
@@ -1252,6 +1280,9 @@ fn recover_wallpaper_host(app: &tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(windows)]
 pub fn start_wallpaper_host(app: tauri::AppHandle) -> Result<(), String> {
+    // A force-quit during the inner workspace must never leave Explorer's
+    // desktop layer hidden on the next startup.
+    restore_desktop_icons();
     recover_wallpaper_host(&app)?;
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -1375,17 +1406,24 @@ unsafe extern "system" fn interaction_subclass_proc(
             };
             let mut origin = POINT::default();
             if ClientToScreen(root_hwnd, &mut origin).as_bool() {
+                // The inner workspace deliberately hides Explorer's icons.
+                // Do not rely on fragile WebView child-region coordinates
+                // there: the whole desktop surface may receive input so the
+                // textarea and controls retain ordinary browser behaviour.
+                // In the front workspace the surface remains transparent and
+                // Explorer owns icons, selection, and the context menu.
+                if INNER_WORKSPACE_ACTIVE.load(Ordering::Acquire) {
+                    return DefSubclassProc(hwnd, message, wparam, lparam);
+                }
                 let local_x = screen_x - origin.x;
                 let local_y = screen_y - origin.y;
                 let hit = interaction_regions()
                     .read()
                     .map(|state| point_hits_interaction_region(&state.regions, local_x, local_y))
                     .unwrap_or(false);
-                // Progman fallback cannot use HTTRANSPARENT: Windows may skip
-                // Explorer's sibling icon view and hit an application behind
-                // the desktop. Mouse messages outside hot regions are instead
-                // forwarded explicitly to the native desktop list view above.
-                let _ = hit;
+                if !hit {
+                    return LRESULT(HTTRANSPARENT as isize);
+                }
             } else {
                 return DefSubclassProc(hwnd, message, wparam, lparam);
             }

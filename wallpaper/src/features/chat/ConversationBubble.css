@@ -283,6 +283,7 @@
   padding: 9px 0 4px;
   background: transparent;
   color: var(--dsh-text-strong);
+  cursor: text;
   font: 14px/1.55 var(--dsh-font-sans);
   caret-color: var(--dsh-accent-soft);
 }
