@@ -9,13 +9,13 @@ import { assetUrl } from '../settings/store.ts'
  *   /personas/sleep.jpg                睡眠场景
  *   /personas/wake.jpg                 苏醒场景
  *   /personas/portrait-<id>.png        待机立绘（透明底，scripts/remove-bg.py 抠图）
- * 用户新增立绘：放入 wallpaper/public/personas/ 并在 manifest 的 assets 里引用。
+ * 用户素材由外观素材库导入、校验和分类；运行时只读取已登记的资产引用。
  */
 
 export const BUILTIN_PERSONAS: Record<string, PersonaManifest> = {
   'blue-child': {
     id: 'blue-child',
-    name: '蓝色萝莉鲸鱼娘',
+    name: '蓝色幼年鲸鱼娘',
     theme: { primary: '#4da6ff', accent: '#7fc4ff', glow: 'rgba(77,166,255,0.18)' },
     age: 'child',
     kind: 'blue',
@@ -54,7 +54,7 @@ export const BUILTIN_PERSONAS: Record<string, PersonaManifest> = {
   },
   'black-child': {
     id: 'black-child',
-    name: '黑红萝莉鲸鱼娘',
+    name: '黑红幼年鲸鱼娘',
     theme: { primary: '#e03050', accent: '#ff8a9a', glow: 'rgba(224,48,80,0.20)' },
     age: 'child',
     kind: 'black',
