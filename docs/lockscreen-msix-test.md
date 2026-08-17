@@ -50,7 +50,9 @@ AppxManifest.xml
 
 ## 显式创建本机测试证书并安装
 
-以下命令才会产生有副作用的操作：在**当前用户**的 `My` 证书存储创建可导出的代码签名测试证书、导出 PFX/CER、将 CER 加入**当前用户**的 `TrustedPeople`，然后注册当前用户的 MSIX。
+以下命令才会产生有副作用的操作：在**当前用户**的 `My` 证书存储创建可导出的代码签名测试证书、导出 PFX/CER、尝试将 CER 加入**当前用户**的 `TrustedPeople`，然后注册当前用户的 MSIX。
+
+`CurrentUser\TrustedPeople` 是脚本刻意采用的最小作用域测试路径，但它不是对所有 Windows 配置都足以信任 MSIX 的保证。Microsoft 的手工旁加载示例常要求将发布者证书信任到 `LocalMachine\TrustedPeople`；企业策略、App Installer 配置和 Windows 版本也可能改变结果。若 `Add-AppxPackage` 报签名/信任错误，应先停止，不要把它当作锁屏实现失败；由测试者按所在组织的受控流程确认是否需要管理员协助的机器级信任，或改用 Microsoft Store / 已受信任的发行证书。脚本不会自动写入 `LocalMachine` 证书存储。
 
 ```powershell
 .\scripts\build-msix-test.ps1 `
@@ -131,4 +133,4 @@ Get-ChildItem Cert:\CurrentUser\TrustedPeople |
 ## 实现依据
 
 - `windows-rs 0.61` 应通过 `Win32::Storage::Packaging::Appx::GetCurrentPackageFullName` 检测当前进程包身份；`APPMODEL_ERROR_NO_PACKAGE` 表示无包身份。所需 feature 为 `Win32_Storage_Packaging_Appx`。
-- Microsoft：[GetCurrentPackageFullName](https://learn.microsoft.com/windows/win32/api/appmodel/nf-appmodel-getcurrentpackagefullname)、[命令行打包 MSIX](https://learn.microsoft.com/windows/msix/package/manual-packaging-root)、[创建包签名证书](https://learn.microsoft.com/windows/msix/package/create-certificate-package-signing)、[桌面应用 MSIX 清单](https://learn.microsoft.com/windows/msix/desktop/desktop-to-uwp-manual-conversion)。
+- Microsoft：[GetCurrentPackageFullName](https://learn.microsoft.com/windows/win32/api/appmodel/nf-appmodel-getcurrentpackagefullname)、[命令行打包 MSIX](https://learn.microsoft.com/windows/msix/package/manual-packaging-root)、[创建包签名证书](https://learn.microsoft.com/windows/msix/package/create-certificate-package-signing)、[为包签名证书建立信任](https://learn.microsoft.com/windows/msix/package/create-certificate-package-signing#install-the-certificate)、[桌面应用 MSIX 清单](https://learn.microsoft.com/windows/msix/desktop/desktop-to-uwp-manual-conversion)。

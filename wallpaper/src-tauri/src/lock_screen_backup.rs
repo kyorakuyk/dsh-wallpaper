@@ -20,10 +20,14 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-pub const LOCK_SCREEN_BACKUP_SCHEMA_VERSION: u32 = 1;
+pub const LOCK_SCREEN_BACKUP_SCHEMA_VERSION: u32 = 2;
 pub const LOCK_SCREEN_BACKUP_MANIFEST: &str = "lock-screen-backup.json";
 pub const LOCK_SCREEN_LEGACY_BACKUP: &str = "lock-screen-backup.txt";
 pub const LOCK_SCREEN_ASSET_DIRECTORY: &str = "lock-screen";
+/// v1 manifests did not record the managed image name.  Keep recognizing
+/// their fixed filename long enough for an already-active legacy takeover to
+/// be restored safely; all new takeovers write a unique v2 filename.
+pub const LEGACY_MANAGED_IMAGE_FILE: &str = "dsh-wallpaper-sleep.png";
 
 static CAPTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -39,7 +43,17 @@ pub struct LockScreenBackupManifest {
     pub version: u32,
     pub original_image_uri: String,
     pub snapshot_file: String,
+    /// The application-owned image that Windows is currently using while the
+    /// takeover is active.  Windows requires a distinct filename for every
+    /// repeated personalization change, so this is never a fixed path for v2
+    /// manifests.
+    #[serde(default = "legacy_managed_image_file")]
+    pub managed_image_file: String,
     pub captured_at_unix_ms: u64,
+}
+
+fn legacy_managed_image_file() -> String {
+    LEGACY_MANAGED_IMAGE_FILE.into()
 }
 
 /// Result of inspecting on-disk lock-screen ownership state.
@@ -221,10 +235,13 @@ pub fn ensure_backup(
     current_original_image_uri: &str,
     captured_at_unix_ms: u64,
 ) -> Result<LockScreenBackupManifest, String> {
-    Ok(
-        ensure_backup_for_takeover(config_dir, current_original_image_uri, captured_at_unix_ms)?
-            .manifest,
-    )
+    Ok(ensure_backup_for_takeover(
+        config_dir,
+        current_original_image_uri,
+        captured_at_unix_ms,
+        LEGACY_MANAGED_IMAGE_FILE,
+    )?
+    .manifest)
 }
 
 /// Acquires a durable backup for a pending takeover and records whether this
@@ -235,7 +252,11 @@ pub fn ensure_backup_for_takeover(
     config_dir: &Path,
     current_original_image_uri: &str,
     captured_at_unix_ms: u64,
+    managed_image_file: &str,
 ) -> Result<LockScreenBackupLease, String> {
+    // Validate the caller-provided managed filename before performing any
+    // state transition.  It is later used for ownership checks and cleanup.
+    let _ = managed_image_path_from_file(config_dir, managed_image_file)?;
     match inspect_backup(config_dir) {
         LockScreenBackupState::Valid(manifest) => Ok(LockScreenBackupLease {
             manifest,
@@ -244,22 +265,26 @@ pub fn ensure_backup_for_takeover(
         LockScreenBackupState::Invalid { reason } => {
             Err(format!("现有锁屏备份不完整，已拒绝覆盖当前锁屏：{reason}"))
         }
-        LockScreenBackupState::LegacyUri { original_image_uri } => {
-            capture_backup(config_dir, &original_image_uri, captured_at_unix_ms).map(|manifest| {
-                LockScreenBackupLease {
-                    manifest,
-                    created_for_this_attempt: true,
-                }
-            })
-        }
-        LockScreenBackupState::Missing => {
-            capture_backup(config_dir, current_original_image_uri, captured_at_unix_ms).map(
-                |manifest| LockScreenBackupLease {
-                    manifest,
-                    created_for_this_attempt: true,
-                },
-            )
-        }
+        LockScreenBackupState::LegacyUri { original_image_uri } => capture_backup(
+            config_dir,
+            &original_image_uri,
+            captured_at_unix_ms,
+            managed_image_file,
+        )
+        .map(|manifest| LockScreenBackupLease {
+            manifest,
+            created_for_this_attempt: true,
+        }),
+        LockScreenBackupState::Missing => capture_backup(
+            config_dir,
+            current_original_image_uri,
+            captured_at_unix_ms,
+            managed_image_file,
+        )
+        .map(|manifest| LockScreenBackupLease {
+            manifest,
+            created_for_this_attempt: true,
+        }),
     }
 }
 
@@ -284,8 +309,10 @@ pub fn discard_backup_after_failed_takeover(
         return Err("锁屏备份状态已被其他操作更改，拒绝清理本次失败接管的备份".into());
     }
     let snapshot = snapshot_path(config_dir, &lease.manifest.snapshot_file)?;
+    let managed_image = managed_image_path(config_dir, &lease.manifest)?;
     fs::remove_file(&path).map_err(|error| format!("无法回滚锁屏备份状态：{error}"))?;
     let _ = fs::remove_file(snapshot);
+    let _ = fs::remove_file(managed_image);
     Ok(())
 }
 
@@ -304,18 +331,64 @@ pub fn restore_snapshot_path(
     Ok(snapshot)
 }
 
-/// Removes the manifest after native code has positively verified that Windows
-/// is using the restored image.  Snapshot cleanup is best effort: retaining an
-/// unreachable private copy is safer than claiming a restore that did not
-/// happen.
+/// Resolves the application-owned image named by a verified manifest.  Unlike
+/// [`restore_snapshot_path`], the image need not exist yet while a takeover is
+/// being prepared, so this validates only the contained filename.
+pub fn managed_image_path(
+    config_dir: &Path,
+    manifest: &LockScreenBackupManifest,
+) -> Result<PathBuf, String> {
+    let _ = validate_manifest(config_dir, manifest.clone())?;
+    managed_image_path_from_file(config_dir, &manifest.managed_image_file)
+}
+
+pub fn managed_image_path_from_file(config_dir: &Path, file_name: &str) -> Result<PathBuf, String> {
+    asset_path(config_dir, file_name, "锁屏托管图片")
+}
+
+/// Allocates a new filename for a managed sleep image. Windows rejects a
+/// repeated personalization update that reuses the previous filename, even
+/// when the bytes changed, so callers must use this for every new takeover.
+pub fn next_managed_image_file(
+    captured_at_unix_ms: u64,
+    extension: &str,
+) -> Result<String, String> {
+    let extension = extension
+        .trim()
+        .trim_start_matches('.')
+        .to_ascii_lowercase();
+    if extension.is_empty()
+        || extension.len() > 12
+        || !extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    {
+        return Err("锁屏托管图片扩展名无效".into());
+    }
+    let sequence = CAPTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    Ok(format!(
+        "dsh-wallpaper-sleep-{captured_at_unix_ms}-{sequence}.{extension}"
+    ))
+}
+
+/// Removes ownership markers after native code has positively verified that
+/// Windows is using the restored image.  The snapshot **must remain**: Windows
+/// now directly references this private path, and deleting it would turn a
+/// verified restore into a broken lock-screen image after cache eviction or
+/// reboot.  Later collection is only safe after a future verified transition
+/// away from that file.
 pub fn remove_backup_after_verified_restore(
     config_dir: &Path,
     manifest: &LockScreenBackupManifest,
 ) -> Result<(), String> {
     let snapshot = restore_snapshot_path(config_dir, manifest)?;
+    let managed_image = managed_image_path(config_dir, manifest)?;
     fs::remove_file(manifest_path(config_dir))
         .map_err(|error| format!("已恢复锁屏，但无法清理备份状态：{error}"))?;
-    let _ = fs::remove_file(snapshot);
+    // This file is no longer the current lock screen after the caller's
+    // positive post-set verification. It may be removed, but never if a
+    // corrupted manifest made it equal to the restored snapshot.
+    if managed_image != snapshot {
+        let _ = fs::remove_file(managed_image);
+    }
     let _ = fs::remove_file(legacy_manifest_path(config_dir));
     Ok(())
 }
@@ -324,6 +397,7 @@ fn capture_backup(
     config_dir: &Path,
     original_image_uri: &str,
     captured_at_unix_ms: u64,
+    managed_image_file: &str,
 ) -> Result<LockScreenBackupManifest, String> {
     let source = local_file_uri_to_path(original_image_uri)?;
     if !source.is_file() {
@@ -337,6 +411,11 @@ fn capture_backup(
     let sequence = CAPTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let snapshot_file = format!("original-{captured_at_unix_ms}-{sequence}.{extension}");
     let snapshot = snapshot_path(config_dir, &snapshot_file)?;
+    let managed_image_file = managed_image_path_from_file(config_dir, managed_image_file)?
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "锁屏托管图片文件名无效".to_string())?
+        .to_string();
     copy_file_without_overwrite(&source, &snapshot)
         .map_err(|error| format!("无法保存锁屏原图副本：{error}"))?;
 
@@ -344,6 +423,7 @@ fn capture_backup(
         version: LOCK_SCREEN_BACKUP_SCHEMA_VERSION,
         original_image_uri: original_image_uri.trim().to_string(),
         snapshot_file,
+        managed_image_file,
         captured_at_unix_ms,
     };
     if let Err(error) = write_new_manifest(config_dir, &manifest) {
@@ -362,7 +442,7 @@ fn validate_manifest(
     config_dir: &Path,
     manifest: LockScreenBackupManifest,
 ) -> Result<LockScreenBackupManifest, String> {
-    if manifest.version != LOCK_SCREEN_BACKUP_SCHEMA_VERSION {
+    if manifest.version != 1 && manifest.version != LOCK_SCREEN_BACKUP_SCHEMA_VERSION {
         return Err(format!("不支持的锁屏备份版本：{}", manifest.version));
     }
     local_file_uri_to_path(&manifest.original_image_uri)?;
@@ -370,10 +450,15 @@ fn validate_manifest(
     if !snapshot.is_file() {
         return Err("锁屏备份图片已不存在".into());
     }
+    let _ = managed_image_path_from_file(config_dir, &manifest.managed_image_file)?;
     Ok(manifest)
 }
 
 fn snapshot_path(config_dir: &Path, file_name: &str) -> Result<PathBuf, String> {
+    asset_path(config_dir, file_name, "锁屏备份")
+}
+
+fn asset_path(config_dir: &Path, file_name: &str, label: &str) -> Result<PathBuf, String> {
     let candidate = Path::new(file_name);
     if candidate.is_absolute()
         || candidate.file_name().is_none()
@@ -385,7 +470,7 @@ fn snapshot_path(config_dir: &Path, file_name: &str) -> Result<PathBuf, String> 
             )
         })
     {
-        return Err("锁屏备份引用了不安全的文件名".into());
+        return Err(format!("{label}引用了不安全的文件名"));
     }
     Ok(asset_directory(config_dir).join(candidate))
 }
@@ -552,6 +637,7 @@ mod tests {
             version: LOCK_SCREEN_BACKUP_SCHEMA_VERSION,
             original_image_uri: "file:///C:/original.png".into(),
             snapshot_file: "../unrelated.png".into(),
+            managed_image_file: "dsh-wallpaper-sleep-test.png".into(),
             captured_at_unix_ms: 1,
         };
         assert!(restore_snapshot_path(root.path(), &manifest).is_err());
@@ -622,14 +708,17 @@ mod tests {
         let uri = format!("file:///{}", source.to_string_lossy().replace('\\', "/"));
         let config = root.path().join("config");
 
-        let fresh = ensure_backup_for_takeover(&config, &uri, 1).unwrap();
+        let fresh =
+            ensure_backup_for_takeover(&config, &uri, 1, "dsh-wallpaper-sleep-one.png").unwrap();
         assert!(fresh.created_for_this_attempt);
         discard_backup_after_failed_takeover(&config, &fresh).unwrap();
         assert_eq!(inspect_backup(&config), LockScreenBackupState::Missing);
 
-        let existing = ensure_backup_for_takeover(&config, &uri, 2).unwrap();
+        let existing =
+            ensure_backup_for_takeover(&config, &uri, 2, "dsh-wallpaper-sleep-two.png").unwrap();
         assert!(existing.created_for_this_attempt);
-        let reused = ensure_backup_for_takeover(&config, &uri, 3).unwrap();
+        let reused =
+            ensure_backup_for_takeover(&config, &uri, 3, "dsh-wallpaper-sleep-three.png").unwrap();
         assert!(!reused.created_for_this_attempt);
         discard_backup_after_failed_takeover(&config, &reused).unwrap();
         assert_eq!(
@@ -639,14 +728,42 @@ mod tests {
     }
 
     #[test]
-    fn verified_restore_cleanup_removes_manifest_and_snapshot() {
+    fn verified_restore_cleanup_removes_manifest_but_keeps_windows_source_snapshot() {
         let root = tempdir().unwrap();
         let source = root.path().join("source.png");
         fs::write(&source, b"source").unwrap();
         let uri = format!("file:///{}", source.to_string_lossy().replace('\\', "/"));
         let config = root.path().join("config");
         let manifest = ensure_backup(&config, &uri, 1).unwrap();
+        let snapshot = restore_snapshot_path(&config, &manifest).unwrap();
         remove_backup_after_verified_restore(&config, &manifest).unwrap();
         assert_eq!(inspect_backup(&config), LockScreenBackupState::Missing);
+        assert!(
+            snapshot.is_file(),
+            "Windows must retain the file it now references"
+        );
+    }
+
+    #[test]
+    fn v1_manifest_uses_the_legacy_managed_image_name() {
+        let manifest: LockScreenBackupManifest = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "originalImageUri": "file:///C:/original.png",
+              "snapshotFile": "original.png",
+              "capturedAtUnixMs": 1
+            }"#,
+        )
+        .expect("v1 manifest");
+        assert_eq!(manifest.managed_image_file, LEGACY_MANAGED_IMAGE_FILE);
+    }
+
+    #[test]
+    fn managed_image_filenames_are_unique_and_constrained() {
+        let first = next_managed_image_file(42, "png").expect("first name");
+        let second = next_managed_image_file(42, ".png").expect("second name");
+        assert_ne!(first, second);
+        assert!(first.starts_with("dsh-wallpaper-sleep-42-"));
+        assert!(next_managed_image_file(42, "../exe").is_err());
     }
 }

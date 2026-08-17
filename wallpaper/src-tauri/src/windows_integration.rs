@@ -10,10 +10,11 @@ use crate::app_core::{AppAction, AppCore, WallpaperHostMode, WallpaperHostStatus
 
 #[cfg(windows)]
 use crate::lock_screen_backup::{
-    self, discard_backup_after_failed_takeover, ensure_backup_for_takeover, has_stale_backup,
-    inspect_backup, managed_image_is_active, remove_backup_after_verified_restore,
-    restore_snapshot_path, same_local_file_uri, LockScreenBackupLease, LockScreenBackupManifest,
-    LockScreenBackupState,
+    discard_backup_after_failed_takeover, ensure_backup_for_takeover, has_stale_backup,
+    inspect_backup, managed_image_is_active, managed_image_path, managed_image_path_from_file,
+    next_managed_image_file, remove_backup_after_verified_restore, restore_snapshot_path,
+    same_local_file_uri, LockScreenBackupLease, LockScreenBackupManifest, LockScreenBackupState,
+    LEGACY_MANAGED_IMAGE_FILE,
 };
 
 #[cfg(windows)]
@@ -21,13 +22,13 @@ use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 #[cfg(windows)]
 use windows::{
-    core::{BOOL, HSTRING, PCWSTR},
+    core::{w, BOOL, HSTRING, PCWSTR},
     Storage::StorageFile,
     System::UserProfile::{LockScreen, UserProfilePersonalizationSettings},
     Win32::{
         Foundation::{
             APPMODEL_ERROR_NO_PACKAGE, ERROR_INSUFFICIENT_BUFFER, HWND, LPARAM, LRESULT, POINT,
-            RECT, WPARAM,
+            RECT, WAIT_ABANDONED, WAIT_OBJECT_0, WPARAM,
         },
         Graphics::{
             Dwm::{
@@ -43,6 +44,7 @@ use windows::{
                 WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
                 NOTIFY_FOR_THIS_SESSION,
             },
+            Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject},
         },
         UI::WindowsAndMessaging::{
             EnumWindows, FindWindowExW, FindWindowW, GetClassNameW, GetClientRect, GetCursorPos,
@@ -72,8 +74,61 @@ const PROGMAN_SPAWN_WORKERW: u32 = 0x052C;
 static WALLPAPER_RECOVERY_QUEUED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(windows)]
-#[cfg(windows)]
 static INNER_WORKSPACE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Serializes the whole native lock-screen ownership transaction.  The
+/// settings WebView already avoids duplicate clicks, but commands can also
+/// arrive from the tray, the frontend, or a second Tauri surface.  Without a
+/// native lock, those callers could race between snapshot capture, the WinRT
+/// setter, and rollback/restore cleanup.
+#[cfg(windows)]
+static LOCK_SCREEN_TRANSACTION: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+/// The app normally has one process, but an installer update, a manual second
+/// launch, or an old process winding down can overlap with it.  A process-local
+/// async mutex cannot protect their shared current-user config directory, so
+/// the native transaction also holds this current-session named mutex.
+#[cfg(windows)]
+const LOCK_SCREEN_TRANSACTION_MUTEX_NAME: windows::core::PCWSTR =
+    w!("Local\\DSHWallpaper.LockScreenTransaction.v1");
+
+#[cfg(windows)]
+struct CrossProcessLockScreenTransaction {
+    handle: windows::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl CrossProcessLockScreenTransaction {
+    fn acquire() -> Result<Self, String> {
+        let handle = unsafe { CreateMutexW(None, false, LOCK_SCREEN_TRANSACTION_MUTEX_NAME) }
+            .map_err(|error| format!("无法建立锁屏接管事务锁：{error}"))?;
+        let wait = unsafe { WaitForSingleObject(handle, 30_000) };
+        if wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED {
+            unsafe {
+                let _ = windows::Win32::Foundation::CloseHandle(handle);
+            }
+            return Err("锁屏接管操作正在被另一个 dsh-wallpaper 实例处理，请稍后重试。".into());
+        }
+        if wait == WAIT_ABANDONED {
+            // A previous owner exited while inside a transaction. Existing
+            // manifest validation below is deliberately fail-closed; continue
+            // only under that validation rather than trusting the abandoned
+            // operation's partial state.
+            log::warn!("检测到中断的锁屏接管事务；将按现有备份状态进行安全检查");
+        }
+        Ok(Self { handle })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for CrossProcessLockScreenTransaction {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = ReleaseMutex(self.handle);
+            let _ = windows::Win32::Foundation::CloseHandle(self.handle);
+        }
+    }
+}
 
 const MAX_INTERACTION_REGIONS: usize = 128;
 const MIN_SCALE_FACTOR: f64 = 0.5;
@@ -1307,6 +1362,11 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
 
 #[cfg(windows)]
 pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<String, String> {
+    let _transaction = LOCK_SCREEN_TRANSACTION
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let _cross_process_transaction = CrossProcessLockScreenTransaction::acquire()?;
     let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     if enabled {
         let has_package_identity = has_package_identity()?;
@@ -1321,14 +1381,27 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
             .AbsoluteUri()
             .map_err(|_| "无法读取当前锁屏图片；为避免无法恢复，已取消接管。".to_string())?
             .to_string();
-        let managed_path =
-            lock_screen_backup::asset_directory(&config_dir).join("dsh-wallpaper-sleep.png");
         let backup_state = inspect_backup(&config_dir);
+        if let LockScreenBackupState::Invalid { reason } = &backup_state {
+            return Err(format!("现有锁屏备份不完整，已拒绝覆盖当前锁屏：{reason}"));
+        }
+        let managed_path = managed_image_path_for_state(&config_dir, &backup_state)?;
         let managed_image_active = managed_image_is_active(Some(&original), &managed_path);
         if has_stale_backup(&backup_state, managed_image_active) {
             return Err("检测到接管期间锁屏已由用户或其他程序更改。为避免覆盖当前锁屏，应用不会再次接管；原备份已保留。请先在 Windows 设置中确认锁屏图片，再决定是否清理或恢复。".into());
         }
-        if managed_image_active && matches!(backup_state, LockScreenBackupState::Missing) {
+        // A verified active manifest already represents the exact image Windows
+        // owns.  Repeating a setter with the same filename is explicitly
+        // rejected by Windows, while switching it to a new filename would
+        // require replacing the only restore manifest.  Therefore this is a
+        // true idempotent success, not a second takeover attempt.
+        if matches!(&backup_state, LockScreenBackupState::Valid(_)) && managed_image_active {
+            if managed_path.is_file() {
+                return Ok("锁屏图片已经由本应用接管；原静态图片备份仍可恢复。".into());
+            }
+            return Err("Windows 仍指向本应用的锁屏图片，但托管图片文件已丢失。为避免覆盖唯一的原图备份，应用没有再次接管；请先恢复原锁屏或在 Windows 设置中重新选择图片。".into());
+        }
+        if managed_image_active && matches!(&backup_state, LockScreenBackupState::Missing) {
             return Err("当前锁屏已经是本应用的熟睡画面，但原锁屏备份不存在。为避免把托管图片误当作原图，已拒绝再次接管；请先在 Windows 设置中手动选择原图。".into());
         }
         // Prepare the application-owned managed file before creating a backup.
@@ -1370,17 +1443,54 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
         // resource bundle (especially during `tauri dev`): it can receive a
         // virtual/masked resource path and return 0x800700A1.  Hand Windows a
         // normal, current-user-owned file instead.
-        let managed_dir = lock_screen_backup::asset_directory(&config_dir);
-        std::fs::create_dir_all(&managed_dir)
-            .map_err(|_| "无法创建锁屏图片存放目录".to_string())?;
-        let managed_path = managed_dir.join("dsh-wallpaper-sleep.png");
-        std::fs::copy(&bundled_sleep_image, &managed_path)
-            .map_err(|_| "无法准备锁屏图片。请检查应用安装目录是否完整。".to_string())?;
         let captured_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| "系统时间无效，已取消锁屏接管。".to_string())?
             .as_millis() as u64;
-        let lease = ensure_backup_for_takeover(&config_dir, &original, captured_at)?;
+        let managed_image_file = next_managed_image_file(captured_at, "png")?;
+        let managed_path = managed_image_path_from_file(&config_dir, &managed_image_file)?;
+        copy_sleep_image_without_overwrite(&bundled_sleep_image, &managed_path)?;
+        let lease = match ensure_backup_for_takeover(
+            &config_dir,
+            &original,
+            captured_at,
+            &managed_image_file,
+        ) {
+            Ok(lease) => lease,
+            Err(error) => {
+                // There is no manifest ownership record for this freshly
+                // allocated path when acquisition fails, so it is safe to
+                // remove only this orphaned candidate.
+                let _ = std::fs::remove_file(&managed_path);
+                return Err(error);
+            }
+        };
+        let lease_managed_path = match managed_image_path(&config_dir, &lease.manifest) {
+            Ok(path) => path,
+            Err(_) => {
+                // Do not clean up here. A concurrent process could have
+                // changed the persisted manifest between acquisition and this
+                // validation; without a verified ownership relation, keeping
+                // every file is safer than deleting one it may now reference.
+                return abort_lock_screen_takeover_before_set(
+                    &config_dir,
+                    &lease,
+                    "锁屏备份状态在接管准备期间无法验证；应用没有修改锁屏。",
+                );
+            }
+        };
+        if lease_managed_path != managed_path {
+            // `ensure_backup_for_takeover` is intentionally non-destructive
+            // when it discovers an existing valid manifest.  If the manifest
+            // changed after our preflight, its managed image is not the unique
+            // candidate we just prepared, so setting that candidate would
+            // leave no durable ownership record for it.  Refuse the setter
+            // and remove only our unreferenced candidate.
+            let _ = std::fs::remove_file(&managed_path);
+            return Err(
+                "锁屏备份状态在接管准备期间发生变化；应用没有修改锁屏。请刷新检查后重试。".into(),
+            );
+        }
         // A user can change their lock screen while the resource copy and
         // snapshot above are running.  Re-read immediately before the only
         // setter and refuse to overwrite a newer choice.  This cannot remove
@@ -1404,14 +1514,35 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
                 "检测到锁屏图片在接管准备期间已被用户或其他程序更改；应用没有覆盖新图片。",
             );
         }
+        // Resolve all non-mutating WinRT prerequisites before the setter.  If
+        // one fails, this attempt is proven not to have asked Windows to take
+        // ownership, so rolling back its brand-new snapshot is safe.
+        let path_string = HSTRING::from(managed_path.to_string_lossy().as_ref());
+        let file = match StorageFile::GetFileFromPathAsync(&path_string)
+            .map_err(|_| "Windows 无法读取准备好的锁屏图片。".to_string())
+            .and_then(|operation| {
+                operation
+                    .get()
+                    .map_err(|_| "Windows 无法打开准备好的锁屏图片。".to_string())
+            }) {
+            Ok(file) => file,
+            Err(error) => {
+                return abort_lock_screen_takeover_before_set(&config_dir, &lease, &error);
+            }
+        };
+        let settings = match UserProfilePersonalizationSettings::Current()
+            .map_err(|_| "Windows 无法打开锁屏个性化设置。".to_string())
+        {
+            Ok(settings) => settings,
+            Err(error) => {
+                return abort_lock_screen_takeover_before_set(&config_dir, &lease, &error);
+            }
+        };
+        // From this point on, every failure is treated as indeterminate.  A
+        // completed/asynchronous WinRT call can have changed the setting even
+        // if it reports an error or its immediate query lags, so do not delete
+        // the managed image or its original-image recovery point.
         let set_result = (|| -> Result<(), String> {
-            let path_string = HSTRING::from(managed_path.to_string_lossy().as_ref());
-            let file = StorageFile::GetFileFromPathAsync(&path_string)
-                .map_err(|_| "Windows 无法读取准备好的锁屏图片。".to_string())?
-                .get()
-                .map_err(|_| "Windows 无法打开准备好的锁屏图片。".to_string())?;
-            let settings = UserProfilePersonalizationSettings::Current()
-                .map_err(|_| "Windows 无法打开锁屏个性化设置。".to_string())?;
             let changed = settings
                 .TrySetLockScreenImageAsync(&file)
                 .map_err(|_| {
@@ -1430,15 +1561,17 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
             }
             Ok(())
         })();
-        finish_lock_screen_takeover_attempt(&config_dir, &lease, &managed_path, set_result)
+        finish_lock_screen_takeover_attempt(&config_dir, &lease, set_result)
     } else {
-        let managed_path =
-            lock_screen_backup::asset_directory(&config_dir).join("dsh-wallpaper-sleep.png");
         let current_image_uri = LockScreen::OriginalImageFile()
             .ok()
             .and_then(|uri| uri.AbsoluteUri().ok())
             .map(|uri| uri.to_string());
         let backup_state = inspect_backup(&config_dir);
+        if let LockScreenBackupState::Invalid { reason } = &backup_state {
+            return Err(format!("现有锁屏备份不完整，无法安全恢复：{reason}"));
+        }
+        let managed_path = managed_image_path_for_state(&config_dir, &backup_state)?;
         let managed_image_active =
             managed_image_is_active(current_image_uri.as_deref(), &managed_path);
         if has_stale_backup(&backup_state, managed_image_active) {
@@ -1480,9 +1613,12 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
 fn finish_lock_screen_takeover_attempt(
     config_dir: &std::path::Path,
     lease: &LockScreenBackupLease,
-    managed_image: &std::path::Path,
     set_result: Result<(), String>,
 ) -> Result<String, String> {
+    // Derive the expected filename from the durable manifest rather than the
+    // provisional path prepared by the caller.  This keeps post-set ownership
+    // verification and rollback coupled to one source of truth.
+    let managed_image = managed_image_path(config_dir, &lease.manifest)?;
     // Never discard a newly captured restore point merely because the
     // verification query failed. The setter can succeed even when a later
     // OriginalImageFile read is unavailable; in that indeterminate case the
@@ -1490,7 +1626,7 @@ fn finish_lock_screen_takeover_attempt(
     let current_is_managed = LockScreen::OriginalImageFile()
         .ok()
         .and_then(|uri| uri.AbsoluteUri().ok())
-        .map(|uri| managed_image_is_active(Some(&uri.to_string()), managed_image));
+        .map(|uri| managed_image_is_active(Some(&uri.to_string()), &managed_image));
 
     match (set_result, current_is_managed) {
         // Even when an API reports an error, the authoritative ownership check
@@ -1503,10 +1639,13 @@ fn finish_lock_screen_takeover_attempt(
         // safer than trying to make the transaction look clean.
         (Ok(()), Some(false)) => Err("Windows 未确认锁屏已切换为本应用的熟睡画面；恢复点已保留，应用没有删除任何原图备份。请刷新检查后再决定是否恢复或重试。".into()),
         (Ok(()), None) => Err("Windows 已完成锁屏设置请求，但无法读取最终状态；恢复点已保留，应用没有删除任何原图备份。请刷新检查后再决定是否恢复或重试。".into()),
-        // Only an explicit setter failure combined with a positive read of a
-        // non-managed image can roll back a backup created in *this* attempt.
-        // It never deletes a recovery point inherited from an earlier run.
-        (Err(error), Some(false)) => abort_lock_screen_takeover_before_set(config_dir, lease, &error),
+        // The setter was invoked before this error.  WinRT may complete an
+        // asynchronous write even when the operation reports an error or an
+        // immediate read is stale, so retain both files rather than risk
+        // deleting an image Windows still references.
+        (Err(error), Some(false)) => Err(format!(
+            "{error} Windows 当前未确认锁屏已切换；恢复点和托管图片均已保留，以避免删除可能仍被系统引用的文件。"
+        )),
         (Err(error), None) => Err(format!(
             "{error} 同时无法确认锁屏最终状态；恢复点已保留，应用没有删除任何原图备份。"
         )),
@@ -1578,6 +1717,76 @@ fn bundled_sleep_resource_candidates() -> [&'static str; 2] {
     ]
 }
 
+/// Resolves the managed image that is meaningful for the currently persisted
+/// ownership state.  There is intentionally no speculative new filename here:
+/// diagnostics and stale-state checks must only compare against a file that a
+/// manifest has already committed.  Before the first takeover (and for a
+/// legacy URI-only marker), the old fixed name is the only compatible path.
+#[cfg(windows)]
+fn managed_image_path_for_state(
+    config_dir: &std::path::Path,
+    state: &LockScreenBackupState,
+) -> Result<std::path::PathBuf, String> {
+    match state {
+        LockScreenBackupState::Valid(manifest) => managed_image_path(config_dir, manifest),
+        LockScreenBackupState::Missing | LockScreenBackupState::LegacyUri { .. } => {
+            managed_image_path_from_file(config_dir, LEGACY_MANAGED_IMAGE_FILE)
+        }
+        LockScreenBackupState::Invalid { reason } => Err(format!(
+            "现有锁屏备份不完整，无法安全解析托管图片：{reason}"
+        )),
+    }
+}
+
+/// Copies a bundled lock-screen image without overwriting any existing file.
+/// The generated name is a one-time personalization input, so replacement
+/// would both violate Windows' filename rule and make a concurrent/corrupt
+/// ownership state harder to reason about.
+#[cfg(windows)]
+fn copy_sleep_image_without_overwrite(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> Result<(), String> {
+    use std::io::{Read, Write};
+
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "锁屏图片存放目录无效".to_string())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("无法创建锁屏图片存放目录：{error}"))?;
+
+    // Do not use one all-in-one closure here: if `create_new` reports that a
+    // same-named file already exists, cleanup must *not* delete that existing
+    // file.  Only failures after we successfully create this exact destination
+    // are ours to roll back.
+    let mut input =
+        std::fs::File::open(source).map_err(|error| format!("无法读取内置锁屏图片：{error}"))?;
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|error| format!("无法创建新的锁屏图片副本：{error}"))?;
+    let result = (|| -> std::io::Result<()> {
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let bytes = input.read(&mut buffer)?;
+            if bytes == 0 {
+                break;
+            }
+            output.write_all(&buffer[..bytes])?;
+        }
+        output.sync_all()
+    })();
+    drop(output);
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(destination);
+        return Err(format!(
+            "无法准备锁屏图片。请检查应用安装目录是否完整：{error}"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 fn remove_backup_after_restore(
     config_dir: &std::path::Path,
@@ -1607,17 +1816,21 @@ pub struct LockScreenDiagnostics {
 #[cfg(windows)]
 pub fn lock_screen_diagnostics(app: &tauri::AppHandle) -> Result<LockScreenDiagnostics, String> {
     let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    let managed_image =
-        lock_screen_backup::asset_directory(&config_dir).join("dsh-wallpaper-sleep.png");
     let original_image_uri = LockScreen::OriginalImageFile()
         .ok()
         .and_then(|uri| uri.AbsoluteUri().ok())
         .map(|uri| uri.to_string());
     let backup_state = inspect_backup(&config_dir);
+    // Diagnostics must use the filename committed in the manifest.  Falling
+    // back to the legacy fixed path makes a healthy v2 takeover look inactive.
+    // An invalid manifest intentionally yields no managed path rather than
+    // trusting unvalidated disk data.
+    let managed_image = managed_image_path_for_state(&config_dir, &backup_state).ok();
     let backup_exists = !matches!(backup_state, LockScreenBackupState::Missing);
     let backup_valid = matches!(backup_state, LockScreenBackupState::Valid(_));
-    let managed_image_active =
-        managed_image_is_active(original_image_uri.as_deref(), &managed_image);
+    let managed_image_active = managed_image
+        .as_deref()
+        .is_some_and(|path| managed_image_is_active(original_image_uri.as_deref(), path));
     let stale_backup = has_stale_backup(&backup_state, managed_image_active);
     let supported = UserProfilePersonalizationSettings::IsSupported().map_err(|e| e.to_string())?;
     let package_identity = has_package_identity()?;
@@ -1649,7 +1862,7 @@ pub fn lock_screen_diagnostics(app: &tauri::AppHandle) -> Result<LockScreenDiagn
         backup_exists,
         backup_valid,
         stale_backup,
-        managed_image_ready: managed_image.is_file(),
+        managed_image_ready: managed_image.is_some_and(|path| path.is_file()),
         managed_image_active,
         development_build: cfg!(debug_assertions),
         warnings,
@@ -1710,6 +1923,7 @@ pub fn start_foreground_monitor(_: tauri::AppHandle) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn packaged_builds_are_always_eligible_for_lock_screen_takeover() {
@@ -1726,6 +1940,54 @@ mod tests {
         assert_eq!(
             bundled_sleep_resource_candidates()[0],
             "_up_/public/personas/wake-frames/variant-anima/sleep.png"
+        );
+    }
+
+    #[test]
+    fn v2_backup_uses_its_manifest_managed_filename() {
+        let root = tempdir().expect("temporary directory");
+        let config = root.path().join("config");
+        let assets = crate::lock_screen_backup::asset_directory(&config);
+        std::fs::create_dir_all(&assets).expect("asset directory");
+        std::fs::write(assets.join("original.png"), b"original").expect("snapshot");
+        let manifest = LockScreenBackupManifest {
+            version: crate::lock_screen_backup::LOCK_SCREEN_BACKUP_SCHEMA_VERSION,
+            original_image_uri: "file:///C:/Users/Test/original.png".into(),
+            snapshot_file: "original.png".into(),
+            managed_image_file: "dsh-wallpaper-sleep-123-0.png".into(),
+            captured_at_unix_ms: 123,
+        };
+
+        let managed =
+            managed_image_path_for_state(&config, &LockScreenBackupState::Valid(manifest))
+                .expect("dynamic managed path");
+
+        assert_eq!(
+            managed.file_name().and_then(|name| name.to_str()),
+            Some("dsh-wallpaper-sleep-123-0.png")
+        );
+    }
+
+    #[test]
+    fn managed_sleep_copy_never_overwrites_an_existing_path() {
+        let root = tempdir().expect("temporary directory");
+        let source = root.path().join("source.png");
+        let destination = root.path().join("managed.png");
+        std::fs::write(&source, b"new image").expect("source image");
+        std::fs::write(&destination, b"existing image").expect("existing managed image");
+
+        assert!(copy_sleep_image_without_overwrite(&source, &destination).is_err());
+        assert_eq!(
+            std::fs::read(&destination).expect("existing managed image remains"),
+            b"existing image"
+        );
+
+        let unique_destination = root.path().join("managed-unique.png");
+        copy_sleep_image_without_overwrite(&source, &unique_destination)
+            .expect("new managed image");
+        assert_eq!(
+            std::fs::read(unique_destination).expect("new managed image contents"),
+            b"new image"
         );
     }
 
