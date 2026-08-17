@@ -7,7 +7,7 @@ use app_core::{Activity, AppAction, AppCore, AppSnapshot, BackendMode, HarnessAv
 use std::sync::{OnceLock, RwLock};
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager};
 
 fn emit_app_snapshot(app: &tauri::AppHandle, snapshot: &AppSnapshot) {
     let _ = app.emit("app-snapshot", snapshot);
@@ -20,6 +20,8 @@ fn dispatch_ui_action(app: &tauri::AppHandle, action: AppAction, request_focus: 
     let snapshot = core.dispatch(action);
     if snapshot.interaction.visible {
         let _ = windows_integration::show_interaction(app, request_focus);
+    } else {
+        windows_integration::hide_interaction(app);
     }
     emit_app_snapshot(app, &snapshot);
 }
@@ -42,8 +44,21 @@ fn dispatch_tray_ui_action(app: &tauri::AppHandle, action: AppAction) {
     );
     if snapshot.interaction.visible {
         let _ = windows_integration::show_interaction(app, true);
+    } else {
+        windows_integration::hide_interaction(app);
     }
     emit_app_snapshot(app, &snapshot);
+}
+
+fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
+    let window = app.get_webview_window("settings").ok_or("settings window missing")?;
+    window.show().map_err(|error| error.to_string())?;
+    window.unminimize().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())?;
+    // Tao/Windows can restore the active-window accent border as part of
+    // SetForegroundWindow. Apply our DWM policy after activation so the CSS
+    // outline remains the only visible settings frame.
+    windows_integration::configure_settings_window(&window)
 }
 
 #[tauri::command]
@@ -180,6 +195,68 @@ fn set_autostart(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TranslucentTbStatus {
+    installed: bool,
+    running: bool,
+    source: Option<String>,
+}
+
+#[tauri::command]
+fn translucent_tb_status() -> TranslucentTbStatus {
+    #[cfg(windows)]
+    {
+        let running = std::process::Command::new("tasklist")
+            .args(["/FI", "IMAGENAME eq TranslucentTB.exe", "/FO", "CSV", "/NH"])
+            .output().ok().is_some_and(|output| String::from_utf8_lossy(&output.stdout).to_ascii_lowercase().contains("translucenttb.exe"));
+        let alias = std::process::Command::new("where.exe").arg("ttb.exe").output().ok().is_some_and(|output| output.status.success());
+        let packaged = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", "if (Get-AppxPackage -Name TranslucentTB -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"])
+            .status().ok().is_some_and(|status| status.success());
+        return TranslucentTbStatus { installed: alias || packaged, running, source: if alias { Some("execution-alias".into()) } else if packaged { Some("msix".into()) } else { None } };
+    }
+    #[cfg(not(windows))]
+    TranslucentTbStatus { installed: false, running: false, source: None }
+}
+
+#[tauri::command]
+fn launch_translucent_tb() -> Result<(), String> {
+    std::process::Command::new("ttb.exe").spawn().map(|_| ()).map_err(|_| "未找到 TranslucentTB。请先从 Microsoft Store 安装并启用 ttb.exe 执行别名。".into())
+}
+
+#[tauri::command]
+fn open_translucent_tb_install() -> Result<(), String> {
+    // `explorer.exe <uri>` may treat the Store URI as a filesystem path and
+    // open Documents instead. Ask ShellExecute to resolve the URI protocol.
+    #[cfg(windows)]
+    {
+        let store_uri = "ms-windows-store://pdp/?ProductId=9PF4KZ2VN4W9";
+        let status = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Process",
+                store_uri,
+            ])
+            .status()
+            .map_err(|error| format!("无法启动 Microsoft Store：{error}"))?;
+        if status.success() {
+            return Ok(());
+        }
+
+        // A Store-disabled Windows installation still gets a useful route.
+        std::process::Command::new("rundll32.exe")
+            .args(["url.dll,FileProtocolHandler", "https://apps.microsoft.com/detail/9PF4KZ2VN4W9"])
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("无法打开 TranslucentTB 下载页：{error}"))
+    }
+    #[cfg(not(windows))]
+    Err("TranslucentTB 仅支持 Windows。".into())
+}
+
 #[tauri::command]
 fn save_api_key(key: String) -> Result<(), String> {
     keyring::Entry::new("dsh-wallpaper", "deepseek-api")
@@ -190,41 +267,32 @@ fn save_api_key(key: String) -> Result<(), String> {
 
 #[tauri::command]
 fn show_deepseek_login(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("deepseek-login") {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("deepseek-webview2");
-    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
-    let login = WebviewWindowBuilder::new(
-        &app,
-        "deepseek-login",
-        WebviewUrl::External(
-            "https://chat.deepseek.com"
-                .parse()
-                .map_err(|e| format!("DeepSeek URL 无效：{e}"))?,
-        ),
-    )
-    .title("DeepSeek 登录")
-    .inner_size(980.0, 760.0)
-    .decorations(true) // 带系统标题栏与关闭按钮
-    .data_directory(data_dir)
-    .on_navigation(|url| {
-        matches!(
-            url.host_str(),
-            Some("chat.deepseek.com") | Some("deepseek.com") | Some("www.deepseek.com")
-        )
-    })
-    .build()
-    .map_err(|e| e.to_string())?;
-    // 关闭后允许重建（Tauri 默认销毁窗口）
-    let _ = login;
-    Ok(())
+    // A remote WebView2 created inside the wallpaper process can block the Tao
+    // event loop while Chromium initializes or the page hangs. Keep third-party
+    // login isolated from the wallpaper host until the bridge owns a dedicated
+    // helper process.
+    let _ = app;
+    std::process::Command::new("explorer.exe")
+        .arg("https://chat.deepseek.com")
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn start_settings_drag(app: tauri::AppHandle) -> Result<(), String> {
+    app.get_webview_window("settings")
+        .ok_or_else(|| "settings window missing".to_string())?
+        .start_dragging()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn hide_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    app.get_webview_window("settings")
+        .ok_or_else(|| "settings window missing".to_string())?
+        .hide()
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -238,12 +306,18 @@ fn hide_interaction(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
+fn begin_interaction_region_session() -> Result<u64, String> {
+    windows_integration::begin_interaction_region_session()
+}
+
+#[tauri::command]
 fn update_interaction_regions(
     regions: Vec<windows_integration::InteractionRegionInput>,
     scale_factor: f64,
+    session: u64,
     revision: u64,
 ) -> Result<windows_integration::InteractionRegionUpdateResult, String> {
-    windows_integration::update_interaction_regions(regions, scale_factor, revision)
+    windows_integration::update_interaction_regions(regions, scale_factor, session, revision)
 }
 
 #[tauri::command]
@@ -453,10 +527,16 @@ pub fn run() {
             dispatch_app_action,
             set_lock_screen_enabled,
             set_autostart,
+            translucent_tb_status,
+            launch_translucent_tb,
+            open_translucent_tb_install,
             save_api_key,
             show_deepseek_login,
+            start_settings_drag,
+            hide_settings_window,
             show_interaction,
             hide_interaction,
+            begin_interaction_region_session,
             update_interaction_regions,
             get_desktop_geometry,
             apply_interaction_placement,
@@ -475,7 +555,8 @@ pub fn run() {
             appearance::commands::appearance_import_paths,
             appearance::commands::appearance_classify_asset,
             appearance::commands::appearance_export_current_theme,
-            appearance::commands::appearance_resolve_asset
+            appearance::commands::appearance_resolve_asset,
+            appearance::commands::appearance_resolve_library_asset
         ])
         .setup(|app| {
             if let Err(error) = windows_integration::start_wallpaper_host(app.handle().clone()) {
@@ -487,6 +568,11 @@ pub fn run() {
             if let Some(interaction) = app.get_webview_window("interaction") {
                 if let Err(error) = windows_integration::configure_desktop_interaction(&interaction) {
                     log::error!("desktop interaction configuration failed: {error}");
+                }
+            }
+            if let Some(settings) = app.get_webview_window("settings") {
+                if let Err(error) = windows_integration::configure_settings_window(&settings) {
+                    log::warn!("settings window frame configuration failed: {error}");
                 }
             }
             if let Err(error) = windows_integration::register_session_events(app.handle()) {
@@ -520,7 +606,9 @@ pub fn run() {
                         let _ = app.emit("tray-backend", event.id().as_ref());
                     }
                     "settings" => {
-                        dispatch_tray_ui_action(app, AppAction::OpenSettings);
+                        if let Err(error) = show_settings_window(app) {
+                            log::error!("failed to show settings window: {error}");
+                        }
                     }
                     "lock" => {
                         #[cfg(windows)]

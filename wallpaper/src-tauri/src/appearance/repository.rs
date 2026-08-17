@@ -461,7 +461,12 @@ impl AppearanceRepository {
         let Some(active) = self.active_theme()? else {
             return Ok(None);
         };
-        self.resolve_theme_asset(&active.id, &active.version, slot, &mut std::collections::BTreeSet::new())
+        self.resolve_theme_asset(
+            &active.id,
+            &active.version,
+            slot,
+            &mut std::collections::BTreeSet::new(),
+        )
     }
 
     fn resolve_theme_asset(
@@ -488,12 +493,7 @@ impl AppearanceRepository {
         if !self.theme_exists(&theme.baseline_id, &theme.baseline_version)? {
             return Ok(None);
         }
-        self.resolve_theme_asset(
-            &theme.baseline_id,
-            &theme.baseline_version,
-            slot,
-            visited,
-        )
+        self.resolve_theme_asset(&theme.baseline_id, &theme.baseline_version, slot, visited)
     }
 
     pub fn list_component_assets(

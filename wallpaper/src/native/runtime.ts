@@ -24,11 +24,15 @@ export interface DesktopGeometry {
 export interface InteractionPlacement extends GeometryRect {
   expandDirection?: 'up' | 'down' | 'left' | 'right' | 'center'
 }
+export interface TranslucentTbStatus { installed: boolean; running: boolean; source?: string }
 
 export interface NativeRuntime {
   isNative: boolean
   setLockScreen(enabled: boolean): Promise<string>
   setAutostart(enabled: boolean): Promise<void>
+  translucentTbStatus(): Promise<TranslucentTbStatus>
+  launchTranslucentTb(): Promise<void>
+  openTranslucentTbInstall(): Promise<void>
   saveApiKey(key: string): Promise<void>
   requestDeepSeekLogin(): Promise<void>
   listenSystem(listener: (event: 'locked' | 'unlocked' | 'suspend' | 'resume') => void): Promise<() => void>
@@ -61,6 +65,19 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) return
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('set_autostart', { enabled })
+  },
+  async translucentTbStatus() {
+    if (!await tauriAvailable()) return { installed: false, running: false }
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<TranslucentTbStatus>('translucent_tb_status')
+  },
+  async launchTranslucentTb() {
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('launch_translucent_tb')
+  },
+  async openTranslucentTbInstall() {
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('open_translucent_tb_install')
   },
   async saveApiKey(key) {
     if (!await tauriAvailable()) throw new Error('仅桌面版支持 Windows 凭据管理器')

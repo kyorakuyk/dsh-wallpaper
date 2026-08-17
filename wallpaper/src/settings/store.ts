@@ -4,7 +4,7 @@ import type { BackendMode, ConversationPolicy, ModelTierRule } from '../domain/t
 import type { PersonaBubbles } from '../persona/types.ts'
 import type { InteractionLayout } from '../runtime/interactionLayout.ts'
 
-export const SETTINGS_VERSION = 3
+export const SETTINGS_VERSION = 5
 export const assetUrl = (path: string): string => `${import.meta.env.BASE_URL}${path.replace(/^\//, '')}`
 const CONVERSATION_KEY = 'dsh-wallpaper:conversations:v1'
 
@@ -48,6 +48,8 @@ export interface WallpaperSettings {
   animationIntensity: 'low' | 'normal' | 'high'
   interactionLayout: InteractionLayout
   floatingAnchor: { x: number; y: number }
+  portraitAmbientLength: number
+  portraitAmbientStrength: number
   deepseekApi: ApiSettings
 }
 
@@ -70,10 +72,12 @@ export const DEFAULT_SETTINGS: WallpaperSettings = {
   animationIntensity: 'normal',
   interactionLayout: 'floating',
   floatingAnchor: { x: 0.5, y: 0.56 },
+  portraitAmbientLength: 82,
+  portraitAmbientStrength: 0.72,
   deepseekApi: { baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
 }
 
-const KEY = 'dsh-wallpaper:settings:v3'
+const KEY = 'dsh-wallpaper:settings:v5'
 
 function migrate(raw: unknown): WallpaperSettings {
   if (raw === null || typeof raw !== 'object') return structuredClone(DEFAULT_SETTINGS)
@@ -86,13 +90,15 @@ function migrate(raw: unknown): WallpaperSettings {
     autoSwitchHarness: value.autoSwitchHarness ?? value.autoSwitchPersona ?? false,
     modelTierRules: Array.isArray(value.modelTierRules) ? value.modelTierRules : [],
     bubbleOverrides: value.bubbleOverrides ?? {},
+    portraitAmbientLength: typeof value.portraitAmbientLength === 'number' ? Math.min(100, Math.max(35, value.portraitAmbientLength)) : DEFAULT_SETTINGS.portraitAmbientLength,
+    portraitAmbientStrength: typeof value.portraitAmbientStrength === 'number' ? Math.min(1, Math.max(0, value.portraitAmbientStrength)) : DEFAULT_SETTINGS.portraitAmbientStrength,
     deepseekApi: { ...DEFAULT_SETTINGS.deepseekApi, ...(value.deepseekApi ?? {}) },
   }
 }
 
 export function loadSettings(): WallpaperSettings {
   try {
-    const raw = localStorage.getItem(KEY) ?? localStorage.getItem('dsh-wallpaper:settings:v2') ?? localStorage.getItem('dsh-wallpaper:settings')
+    const raw = localStorage.getItem(KEY) ?? localStorage.getItem('dsh-wallpaper:settings:v4') ?? localStorage.getItem('dsh-wallpaper:settings:v3') ?? localStorage.getItem('dsh-wallpaper:settings:v2') ?? localStorage.getItem('dsh-wallpaper:settings')
     if (raw) return migrate(JSON.parse(raw))
   } catch {
     /* 忽略损坏的配置 */

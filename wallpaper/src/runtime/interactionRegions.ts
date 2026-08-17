@@ -7,9 +7,16 @@ export interface InteractionRegion {
 }
 
 export interface InteractionRegionSnapshot {
+  session: number
   revision: number
   scaleFactor: number
   regions: InteractionRegion[]
+}
+
+export async function beginInteractionRegionSession(): Promise<number> {
+  if (!('__TAURI_INTERNALS__' in window)) return 0
+  const { invoke } = await import('@tauri-apps/api/core')
+  return invoke<number>('begin_interaction_region_session')
 }
 
 export function collectInteractionRegions(root: ParentNode = document): InteractionRegion[] {
@@ -34,6 +41,7 @@ export async function publishInteractionRegions(snapshot: InteractionRegionSnaps
   await invoke('update_interaction_regions', {
     regions: snapshot.regions,
     scaleFactor: snapshot.scaleFactor,
+    session: snapshot.session,
     revision: snapshot.revision,
   })
 }

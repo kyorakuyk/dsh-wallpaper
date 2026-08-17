@@ -58,10 +58,6 @@ export function WakeScene({ persona, onWakeDone, enabled = true, speed = 1 }: Wa
     return () => clearTimeout(t)
   }, [enabled, index, frames, hasFrames, onWakeDone, speed])
 
-  const progress = hasFrames
-    ? Math.min(100, Math.round(((index + 1) / frames.length) * 100))
-    : 100
-
   return (
     <div
       className="scene scene-wake"
@@ -79,10 +75,6 @@ export function WakeScene({ persona, onWakeDone, enabled = true, speed = 1 }: Wa
               draggable={false}
             />
           ))}
-          <div className="wake-art-progress">
-            <div className="wake-progress-fill" style={{ width: `${progress}%` }} />
-            <span>{['熟睡中…', '睁眼了…', '缓缓坐起…', '完全醒来'][Math.min(index, 3)]}</span>
-          </div>
         </>
       ) : (
         <>
@@ -92,10 +84,6 @@ export function WakeScene({ persona, onWakeDone, enabled = true, speed = 1 }: Wa
             alt="苏醒的鲸鱼娘"
             draggable={false}
           />
-          <div className="wake-art-progress">
-            <div className="wake-progress-fill" style={{ width: `${progress}%` }} />
-            <span>起床啦！</span>
-          </div>
         </>
       )}
     </div>

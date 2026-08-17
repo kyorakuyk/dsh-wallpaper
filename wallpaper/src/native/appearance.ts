@@ -58,6 +58,7 @@ interface NativeAppearanceClient {
   importPaths(paths: string[]): Promise<AppearanceImportBatch>
   classifyAsset(assetId: string, slots: AppearanceSlot[]): Promise<AppearanceAssetSummary>
   resolveAsset(slot: AppearanceSlot): Promise<string | undefined>
+  resolveLibraryAsset(assetId: string): Promise<string | undefined>
 }
 
 async function tauriInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -162,6 +163,11 @@ export const nativeAppearance: NativeAppearanceClient = {
   async resolveAsset(slot) {
     if (!this.isNative) return undefined
     const asset = await tauriInvoke<{ id: string; mediaType: string; mimeType: string; bytesBase64: string } | null>('appearance_resolve_asset', { slot })
+    return asset ? `data:${asset.mimeType};base64,${asset.bytesBase64}` : undefined
+  },
+  async resolveLibraryAsset(assetId) {
+    if (!this.isNative) return undefined
+    const asset = await tauriInvoke<{ id: string; mediaType: string; mimeType: string; bytesBase64: string } | null>('appearance_resolve_library_asset', { assetId })
     return asset ? `data:${asset.mimeType};base64,${asset.bytesBase64}` : undefined
   },
 }

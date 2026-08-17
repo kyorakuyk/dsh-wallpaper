@@ -12,7 +12,8 @@
   "app": {
     "windows": [
       { "label": "background", "title": "DSH Wallpaper", "url": "index.html?surface=background", "fullscreen": false, "width": 1280, "height": 720, "decorations": false, "resizable": false, "focus": false, "skipTaskbar": true, "transparent": false, "visible": false },
-      { "label": "interaction", "title": "DSH Wallpaper Interaction", "url": "index.html?surface=interaction", "fullscreen": false, "width": 1280, "height": 720, "decorations": false, "resizable": false, "focus": true, "skipTaskbar": true, "transparent": true, "visible": false }
+      { "label": "interaction", "title": "DSH Wallpaper Interaction", "url": "index.html?surface=interaction", "fullscreen": false, "width": 1280, "height": 720, "decorations": false, "resizable": false, "focus": true, "skipTaskbar": true, "transparent": true, "visible": false },
+      { "label": "settings", "title": "DSH Wallpaper Settings", "url": "index.html?surface=settings", "width": 920, "height": 680, "minWidth": 760, "minHeight": 560, "center": true, "decorations": false, "resizable": true, "focus": true, "skipTaskbar": false, "transparent": true, "visible": false }
     ],
     "security": { "csp": null }
   },

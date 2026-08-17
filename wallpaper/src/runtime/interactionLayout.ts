@@ -27,7 +27,11 @@ export function computeInteractionPlacement(
   const collapsedWidth = request.layout === 'taskbar-docked' ? 52 : 188
   const collapsedHeight = request.layout === 'taskbar-docked' ? 52 : 48
   const width = request.state === 'collapsed' ? collapsedWidth : clamp(workWidthDip * 0.34, 360, 680)
-  const height = request.state === 'collapsed' ? collapsedHeight : clamp(workHeightDip * 0.42, 260, 620)
+  const height = request.state === 'collapsed'
+    ? collapsedHeight
+    : request.layout === 'floating'
+      ? clamp(workHeightDip * 0.3, 250, 420)
+      : clamp(workHeightDip * 0.42, 260, 620)
 
   let x = (workWidthDip - width) / 2
   let y = (workHeightDip - height) / 2

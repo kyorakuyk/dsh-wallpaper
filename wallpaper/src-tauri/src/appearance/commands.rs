@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use tauri::State;
-use base64::Engine;
 
 use super::{
     ActiveTheme, AppearanceExporter, AppearanceImporter, AppearanceRepository, AppearanceSlot,
@@ -185,11 +185,46 @@ impl AppearanceState {
         Ok(exporter.export_current_theme(&*repository, &metadata, Path::new(destination))?)
     }
 
-    pub fn resolve_asset(&self, slot: &str) -> Result<Option<ResolvedAssetDto>, AppearanceCommandError> {
+    pub fn resolve_asset(
+        &self,
+        slot: &str,
+    ) -> Result<Option<ResolvedAssetDto>, AppearanceCommandError> {
         let slot = parse_slot(slot)?;
-        let paths = self.paths.as_ref().ok_or_else(AppearanceCommandError::internal)?;
+        let paths = self
+            .paths
+            .as_ref()
+            .ok_or_else(AppearanceCommandError::internal)?;
         let repository = self.lock()?;
-        let Some(asset) = repository.resolve_active_asset(slot)? else { return Ok(None) };
+        let Some(asset) = repository.resolve_active_asset(slot)? else {
+            return Ok(None);
+        };
+        let source = paths.root.join(&asset.object_path);
+        let bytes = std::fs::read(&source).map_err(|_| AppearanceCommandError::internal())?;
+        Ok(Some(ResolvedAssetDto {
+            id: asset.id,
+            media_type: asset.media_type.as_str().into(),
+            mime_type: mime_type(&asset.original_name).into(),
+            bytes_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        }))
+    }
+
+    pub fn resolve_library_asset(
+        &self,
+        asset_id: &str,
+    ) -> Result<Option<ResolvedAssetDto>, AppearanceCommandError> {
+        if asset_id.trim().is_empty() {
+            return Err(AppearanceCommandError::invalid_argument());
+        }
+        let paths = self
+            .paths
+            .as_ref()
+            .ok_or_else(AppearanceCommandError::internal)?;
+        let repository = self.lock()?;
+        let asset = repository
+            .list_library_assets(None)?
+            .into_iter()
+            .find(|asset| asset.id == asset_id)
+            .ok_or_else(|| AppearanceCommandError::from(StoreError::NotFound("asset not found".into())))?;
         let source = paths.root.join(&asset.object_path);
         let bytes = std::fs::read(&source).map_err(|_| AppearanceCommandError::internal())?;
         Ok(Some(ResolvedAssetDto {
@@ -378,7 +413,13 @@ fn snapshot(
 }
 
 fn mime_type(name: &str) -> &'static str {
-    match Path::new(name).extension().and_then(|value| value.to_str()).unwrap_or_default().to_ascii_lowercase().as_str() {
+    match Path::new(name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
@@ -574,4 +615,12 @@ pub(crate) fn appearance_resolve_asset(
     slot: String,
 ) -> Result<Option<ResolvedAssetDto>, AppearanceCommandError> {
     state.resolve_asset(&slot)
+}
+
+#[tauri::command]
+pub(crate) fn appearance_resolve_library_asset(
+    state: State<'_, AppearanceState>,
+    asset_id: String,
+) -> Result<Option<ResolvedAssetDto>, AppearanceCommandError> {
+    state.resolve_library_asset(&asset_id)
 }

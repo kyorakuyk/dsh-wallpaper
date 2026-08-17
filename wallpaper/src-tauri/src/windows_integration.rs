@@ -20,10 +20,13 @@ use windows::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::{
             Dwm::{
-                DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+                DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_COLOR_NONE,
+                DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
             },
-            Gdi::{ClientToScreen, CombineRgn, CreateRectRgn, DeleteObject, GetMonitorInfoW,
-                MonitorFromWindow, SetWindowRgn, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, RGN_OR},
+            Gdi::{
+                ClientToScreen, CombineRgn, CreateRectRgn, DeleteObject, GetMonitorInfoW,
+                MonitorFromWindow, SetWindowRgn, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, RGN_OR,
+            },
         },
         System::{
             RemoteDesktop::{
@@ -35,20 +38,21 @@ use windows::{
         UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         UI::Shell::{SHAppBarMessage, ABM_GETSTATE, ABM_GETTASKBARPOS, ABS_AUTOHIDE, APPBARDATA},
         UI::WindowsAndMessaging::{
-            EnumChildWindows, EnumWindows, FindWindowExW, FindWindowW, GetClassNameW, GetClientRect,
-            GetDesktopWindow, GetForegroundWindow, GetParent, GetWindowLongPtrW, GetWindowRect,
-            GetWindowThreadProcessId, IsWindow, IsWindowVisible, SendMessageTimeoutW, SetForegroundWindow, SetParent, SetWindowLongPtrW,
-            SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
+            EnumChildWindows, EnumWindows, FindWindowExW, FindWindowW, GetClassNameW,
+            GetClientRect, GetDesktopWindow, GetForegroundWindow, GetParent, GetWindowLongPtrW,
+            GetWindowRect, GetWindowThreadProcessId, IsWindow, IsWindowVisible,
+            SendMessageTimeoutW, SetForegroundWindow, SetParent, SetWindowLongPtrW, SetWindowPos,
+            ShowWindow, GWL_EXSTYLE, GWL_STYLE, HWND_NOTOPMOST, HWND_TOPMOST,
             PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SEND_MESSAGE_TIMEOUT_FLAGS, SMTO_NORMAL,
             SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-            HWND_NOTOPMOST, HWND_TOPMOST, SW_SHOWNA, WM_CONTEXTMENU, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONDBLCLK,
+            SW_HIDE, SW_SHOWNA, WM_ACTIVATE, WM_CONTEXTMENU, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONDBLCLK,
             WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP,
-            WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_NCHITTEST,
-            WM_POWERBROADCAST, WM_SETTINGCHANGE, WM_WTSSESSION_CHANGE, WS_BORDER, WS_CAPTION,
-            WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP,
-            WS_CHILD, WS_DLGFRAME, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_NOACTIVATE,
-            WS_EX_STATICEDGE, WS_EX_TOOLWINDOW, WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
-            WS_POPUP, WS_SYSMENU, WS_THICKFRAME, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
+            WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCDESTROY, WM_NCHITTEST,
+            WM_POWERBROADCAST, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE,
+            WM_WTSSESSION_CHANGE, WS_BORDER, WS_CAPTION, WS_CHILD, WS_DLGFRAME, WS_EX_APPWINDOW,
+            WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_NOACTIVATE, WS_EX_STATICEDGE,
+            WS_EX_TOOLWINDOW, WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP,
+            WS_SYSMENU, WS_THICKFRAME, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
         },
     },
 };
@@ -65,6 +69,11 @@ static INTERACTION_BOUNDS_SYNC_QUEUED: AtomicBool = AtomicBool::new(false);
 #[cfg(windows)]
 static INTERACTION_REVEAL_GRACE: OnceLock<RwLock<Option<std::time::Instant>>> = OnceLock::new();
 
+#[cfg(windows)]
+static INTERACTION_REVEAL_PENDING: AtomicBool = AtomicBool::new(false);
+
+#[cfg(windows)]
+static INTERACTION_REVEAL_FOCUS: AtomicBool = AtomicBool::new(false);
 
 const MAX_INTERACTION_REGIONS: usize = 128;
 const MIN_SCALE_FACTOR: f64 = 0.5;
@@ -95,6 +104,7 @@ impl PhysicalInteractionRegion {
 
 #[derive(Clone, Debug, Default)]
 struct InteractionRegionState {
+    session: u64,
     revision: u64,
     scale_factor: f64,
     regions: Vec<PhysicalInteractionRegion>,
@@ -147,6 +157,9 @@ pub struct InteractionPlacement {
 }
 
 static INTERACTION_REGIONS: OnceLock<RwLock<InteractionRegionState>> = OnceLock::new();
+
+static INTERACTION_REGION_SESSION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 #[cfg(windows)]
 static DESKTOP_FOREGROUND_STATE: OnceLock<RwLock<Option<bool>>> = OnceLock::new();
@@ -334,6 +347,7 @@ fn point_hits_interaction_region(regions: &[PhysicalInteractionRegion], x: i32, 
 pub fn update_interaction_regions(
     regions: Vec<InteractionRegionInput>,
     scale_factor: f64,
+    session: u64,
     revision: u64,
 ) -> Result<InteractionRegionUpdateResult, String> {
     if regions.len() > MAX_INTERACTION_REGIONS {
@@ -355,7 +369,7 @@ pub fn update_interaction_regions(
     let mut state = interaction_regions()
         .write()
         .map_err(|_| "interaction region state poisoned".to_string())?;
-    if revision < state.revision {
+    if session != state.session || revision < state.revision {
         return Ok(InteractionRegionUpdateResult {
             revision: state.revision,
             region_count: state.regions.len(),
@@ -369,11 +383,27 @@ pub fn update_interaction_regions(
     drop(state);
     #[cfg(windows)]
     apply_interaction_window_region(&regions_for_window)?;
+    #[cfg(windows)]
+    if !regions_for_window.is_empty() && INTERACTION_REVEAL_PENDING.swap(false, Ordering::AcqRel) {
+        reveal_interaction_window(INTERACTION_REVEAL_FOCUS.swap(false, Ordering::AcqRel))?;
+    }
     Ok(InteractionRegionUpdateResult {
         revision,
         region_count: regions_for_window.len(),
         stale: false,
     })
+}
+
+pub fn begin_interaction_region_session() -> Result<u64, String> {
+    let session = INTERACTION_REGION_SESSION.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+    let mut state = interaction_regions()
+        .write()
+        .map_err(|_| "interaction region state poisoned".to_string())?;
+    state.session = session;
+    state.revision = 0;
+    state.scale_factor = 1.0;
+    state.regions.clear();
+    Ok(session)
 }
 
 #[cfg(windows)]
@@ -382,12 +412,34 @@ fn apply_interaction_window_region(regions: &[PhysicalInteractionRegion]) -> Res
         return Ok(());
     };
     unsafe {
+        // React reports rectangles in WebView/client coordinates. HRGN uses
+        // coordinates relative to the *outer* HWND instead. Even after all
+        // visible frame styles have been removed, Windows/Tao can retain an
+        // invisible resize frame around a top-level WebView window. If the
+        // client offset is ignored, the region includes that non-client strip;
+        // Windows paints it as a white L-shaped activation frame when the user
+        // opens or clicks the conversation surface.
+        let mut window_rect = RECT::default();
+        GetWindowRect(hwnd, &mut window_rect)
+            .map_err(|error| format!("无法读取交互窗口边界：{error}"))?;
+        let mut client_origin = POINT::default();
+        if !ClientToScreen(hwnd, &mut client_origin).as_bool() {
+            return Err("无法换算交互窗口客户区坐标".into());
+        }
+        let client_offset_x = client_origin.x - window_rect.left;
+        let client_offset_y = client_origin.y - window_rect.top;
+
         let combined = CreateRectRgn(0, 0, 0, 0);
         if combined.is_invalid() {
             return Err("无法创建交互窗口区域".into());
         }
         for region in regions {
-            let part = CreateRectRgn(region.left, region.top, region.right, region.bottom);
+            let part = CreateRectRgn(
+                region.left + client_offset_x,
+                region.top + client_offset_y,
+                region.right + client_offset_x,
+                region.bottom + client_offset_y,
+            );
             if !part.is_invalid() {
                 let _ = CombineRgn(Some(combined), Some(combined), Some(part), RGN_OR);
                 let _ = DeleteObject(part.into());
@@ -423,6 +475,229 @@ fn remember_interaction_window(hwnd: HWND) {
     {
         *value = Some(hwnd.0 as isize);
     }
+}
+
+#[cfg(windows)]
+pub fn configure_settings_window(window: &WebviewWindow) -> Result<(), String> {
+    let hwnd = HWND(window.hwnd().map_err(|error| error.to_string())?.0);
+    apply_settings_window_frame_policy(hwnd)?;
+    log_settings_window_metrics(hwnd, "configure");
+    unsafe {
+        if !SetWindowSubclass(hwnd, Some(settings_window_subclass), 0x4453_4853, 0).as_bool() {
+            return Err("无法监听设置窗口边框状态".into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn log_settings_window_metrics(hwnd: HWND, stage: &str) {
+    unsafe {
+        let mut outer = RECT::default();
+        let mut client = RECT::default();
+        let mut origin = POINT::default();
+        if GetWindowRect(hwnd, &mut outer).is_ok()
+            && GetClientRect(hwnd, &mut client).is_ok()
+            && ClientToScreen(hwnd, &mut origin).as_bool()
+        {
+            log::info!(
+                "settings frame {stage}: outer=({},{} {}x{}), client-origin-offset=({},{}), client={}x{}",
+                outer.left,
+                outer.top,
+                outer.right - outer.left,
+                outer.bottom - outer.top,
+                origin.x - outer.left,
+                origin.y - outer.top,
+                client.right - client.left,
+                client.bottom - client.top,
+            );
+        }
+    }
+}
+
+#[cfg(windows)]
+fn apply_settings_window_frame_policy(hwnd: HWND) -> Result<(), String> {
+    unsafe {
+        // The rounded outline is rendered by the settings web UI. Windows 11
+        // otherwise adds its own one-pixel DWM border around the transparent
+        // top-level HWND, which shows up as a white halo outside the CSS curve.
+        let border_color = DWMWA_COLOR_NONE;
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            std::ptr::from_ref(&border_color).cast(),
+            std::mem::size_of_val(&border_color) as u32,
+        )
+        .map_err(|error| format!("无法关闭设置窗口系统边框：{error}"))?;
+
+        // A decoration-less yet resizable Tao window still owns a two-pixel
+        // non-client strip at its top (measured as client-origin y=2). Windows
+        // paints it with the accent/white caption color unless we explicitly
+        // supply the caption color. Match the CSS surface instead of removing
+        // the resize frame, which would expose an even larger transparent rim.
+        // COLORREF is 0x00BBGGRR: #0d1625.
+        let caption_color: u32 = 0x0025_160d;
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CAPTION_COLOR,
+            std::ptr::from_ref(&caption_color).cast(),
+            std::mem::size_of_val(&caption_color) as u32,
+        )
+        .map_err(|error| format!("无法设置设置窗口顶部颜色：{error}"))?;
+
+        // Let CSS own the rounded rectangle as well. Applying a second DWM
+        // corner mask produces bright antialiasing pixels outside that curve.
+        let corner_preference = DWMWCP_DONOTROUND;
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            std::ptr::from_ref(&corner_preference).cast(),
+            std::mem::size_of_val(&corner_preference) as u32,
+        )
+        .map_err(|error| format!("无法关闭设置窗口系统圆角：{error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn settings_window_subclass(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _subclass_id: usize,
+    _reference_data: usize,
+) -> LRESULT {
+    let result = DefSubclassProc(hwnd, message, wparam, lparam);
+    match message {
+        // DWM may restore the active accent border after processing either of
+        // these messages. Reapply the policy after the default window proc.
+        WM_ACTIVATE | WM_NCACTIVATE => {
+            let _ = apply_settings_window_frame_policy(hwnd);
+            log_settings_window_metrics(hwnd, "activate");
+        }
+        WM_NCDESTROY => {
+            let _ = RemoveWindowSubclass(hwnd, Some(settings_window_subclass), 0x4453_4853);
+        }
+        _ => {}
+    }
+    result
+}
+
+#[cfg(not(windows))]
+pub fn configure_settings_window(_: &WebviewWindow) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn prepare_hidden_interaction_window(hwnd: HWND) -> Result<(), String> {
+    unsafe {
+        // Do not let Win11 apply its top-level rounded-frame clip to this
+        // transparent host. The visible shape is owned exclusively by the
+        // component HRGN published from React.
+        let corner_preference = DWMWCP_DONOTROUND;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            std::ptr::from_ref(&corner_preference).cast(),
+            std::mem::size_of_val(&corner_preference) as u32,
+        );
+        let border_color = DWMWA_COLOR_NONE;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            std::ptr::from_ref(&border_color).cast(),
+            std::mem::size_of_val(&border_color) as u32,
+        );
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        SetWindowLongPtrW(
+            hwnd,
+            GWL_STYLE,
+            (style
+                & !(WS_BORDER.0 as isize
+                    | WS_CAPTION.0 as isize
+                    | WS_DLGFRAME.0 as isize
+                    | WS_MAXIMIZEBOX.0 as isize
+                    | WS_MINIMIZEBOX.0 as isize
+                    | WS_SYSMENU.0 as isize
+                    | WS_THICKFRAME.0 as isize))
+                | WS_POPUP.0 as isize,
+        );
+        let exstyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        SetWindowLongPtrW(
+            hwnd,
+            GWL_EXSTYLE,
+            (exstyle
+                & !(WS_EX_CLIENTEDGE.0 as isize
+                    | WS_EX_DLGMODALFRAME.0 as isize
+                    | WS_EX_STATICEDGE.0 as isize
+                    | WS_EX_WINDOWEDGE.0 as isize
+                    | WS_EX_APPWINDOW.0 as isize))
+                | WS_EX_TOOLWINDOW.0 as isize,
+        );
+        // The window is hidden when this runs, so recalculating the non-client
+        // frame cannot leak a white/title-bar frame to the desktop.
+        SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn reveal_interaction_window(request_focus: bool) -> Result<(), String> {
+    let Some(hwnd) = interaction_window_hwnd() else {
+        return Ok(());
+    };
+    unsafe {
+        // Tao may reapply the default DWM attributes during activation. Keep
+        // the transparent host visually frameless every time it is revealed.
+        let corner_preference = DWMWCP_DONOTROUND;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            std::ptr::from_ref(&corner_preference).cast(),
+            std::mem::size_of_val(&corner_preference) as u32,
+        );
+        let border_color = DWMWA_COLOR_NONE;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            std::ptr::from_ref(&border_color).cast(),
+            std::mem::size_of_val(&border_color) as u32,
+        );
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+        )
+        .map_err(|error| error.to_string())?;
+        SetWindowPos(
+            hwnd,
+            Some(HWND_NOTOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+        )
+        .map_err(|error| error.to_string())?;
+        if request_focus {
+            let _ = SetForegroundWindow(hwnd);
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -824,11 +1099,10 @@ fn inspect_wallpaper_host(window: Option<&WebviewWindow>) -> (WallpaperHostActio
         && parent
             .map(|hwnd| unsafe { IsWindowVisible(hwnd).as_bool() })
             .unwrap_or(false);
-    let worker_available =
-        parent_class.as_deref() == Some("Progman")
-            && locate_wallpaper_worker()
-                .map(|worker| unsafe { IsWindowVisible(worker).as_bool() })
-                .unwrap_or(false);
+    let worker_available = parent_class.as_deref() == Some("Progman")
+        && locate_wallpaper_worker()
+            .map(|worker| unsafe { IsWindowVisible(worker).as_bool() })
+            .unwrap_or(false);
 
     let size_matches = parent
         .filter(|_| parent_exists && parent_is_worker)
@@ -1127,10 +1401,7 @@ fn install_desktop_hit_testing(root_hwnd: HWND) -> Result<(), String> {
 pub fn configure_desktop_interaction(window: &WebviewWindow) -> Result<(), String> {
     let hwnd = HWND(window.hwnd().map_err(|error| error.to_string())?.0);
     remember_interaction_window(hwnd);
-    unsafe {
-        let exstyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, exstyle | WS_EX_TOOLWINDOW.0 as isize);
-    }
+    prepare_hidden_interaction_window(hwnd)?;
     size_interaction_to_desktop(hwnd)?;
     let regions = interaction_regions()
         .read()
@@ -1195,22 +1466,64 @@ pub fn apply_interaction_placement(
         let height = requested.height.clamp(min_height, max_height);
         let x = requested.x.clamp(0, (work_width - width).max(0));
         let y = requested.y.clamp(0, (work_height - height).max(0));
-        SetWindowPos(
-            hwnd,
-            None,
-            info.rcWork.left + x,
-            info.rcWork.top + y,
+        let desired_left = info.rcWork.left + x;
+        let desired_top = info.rcWork.top + y;
+
+        // The requested placement describes the WebView/client viewport, not
+        // the outer HWND. Measure the retained Tao/Windows frame *before*
+        // moving the window, then calculate the final outer rectangle once.
+        // A previous two-step resize (requested outer size, then compensated
+        // outer size) emitted two WebView resize events. The frontend reacted
+        // to each one by applying placement again, creating a visible feedback
+        // loop between the two sizes.
+        let mut window_rect = RECT::default();
+        let mut client_rect = RECT::default();
+        GetWindowRect(hwnd, &mut window_rect)
+            .map_err(|error| format!("无法读取交互窗口边界：{error}"))?;
+        GetClientRect(hwnd, &mut client_rect)
+            .map_err(|error| format!("无法读取交互窗口客户区：{error}"))?;
+        let mut client_origin = POINT::default();
+        if !ClientToScreen(hwnd, &mut client_origin).as_bool() {
+            return Err("无法换算交互窗口客户区坐标".into());
+        }
+        let outer_width = window_rect.right - window_rect.left;
+        let outer_height = window_rect.bottom - window_rect.top;
+        let client_width = client_rect.right - client_rect.left;
+        let client_height = client_rect.bottom - client_rect.top;
+        let inset_x = client_origin.x - window_rect.left;
+        let inset_y = client_origin.y - window_rect.top;
+        let non_client_width = outer_width - client_width;
+        let non_client_height = outer_height - client_height;
+        let target_left = desired_left - inset_x;
+        let target_top = desired_top - inset_y;
+        let target_width = width + non_client_width;
+        let target_height = height + non_client_height;
+        if window_rect.left != target_left
+            || window_rect.top != target_top
+            || outer_width != target_width
+            || outer_height != target_height
+        {
+            SetWindowPos(
+                hwnd,
+                None,
+                target_left,
+                target_top,
+                target_width,
+                target_height,
+                SWP_NOACTIVATE | SWP_NOZORDER,
+            )
+            .map_err(|error| format!("无法补偿交互窗口客户区边框：{error}"))?;
+        }
+
+        // Keep the last component HRGN in force until React republishes its
+        // post-layout rectangles. Clearing it here exposes the whole native
+        // host for one frame while the window is visible.
+        Ok(InteractionPlacement {
+            x,
+            y,
             width,
             height,
-            SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW,
-        )
-        .map_err(|error| error.to_string())?;
-        // SetWindowRgn is expressed in window-local coordinates, but Windows
-        // offsets an existing region when this top-level window is moved from
-        // its former full-work-area position. Clear it before the WebView
-        // publishes fresh local component rectangles for the new viewport.
-        let _ = SetWindowRgn(hwnd, None, true);
-        Ok(InteractionPlacement { x, y, width, height })
+        })
     }
 }
 
@@ -1227,35 +1540,7 @@ pub fn show_interaction(app: &tauri::AppHandle, request_focus: bool) -> Result<(
     let window = app
         .get_webview_window("interaction")
         .ok_or("interaction window missing")?;
-    window.show().map_err(|e| e.to_string())?;
     let hwnd = HWND(window.hwnd().map_err(|error| error.to_string())?.0);
-    unsafe {
-        // Win+D and Explorer's WorkerW reshuffle can leave a WS_EX_TOOLWINDOW
-        // below the desktop icon host even while IsWindowVisible is true.
-        // Pulse through TOPMOST and immediately return to a normal top-level
-        // window: this raises it above Explorer without making it permanently
-        // float over applications.
-        SetWindowPos(
-            hwnd,
-            Some(HWND_TOPMOST),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-        )
-        .map_err(|error| error.to_string())?;
-        SetWindowPos(
-            hwnd,
-            Some(HWND_NOTOPMOST),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-        )
-        .map_err(|error| error.to_string())?;
-    }
     if request_focus {
         if let Ok(mut deadline) = INTERACTION_REVEAL_GRACE
             .get_or_init(|| RwLock::new(None))
@@ -1263,31 +1548,65 @@ pub fn show_interaction(app: &tauri::AppHandle, request_focus: bool) -> Result<(
         {
             *deadline = Some(std::time::Instant::now() + std::time::Duration::from_millis(900));
         }
+    }
+    let regions = interaction_regions()
+        .read()
+        .map_err(|_| "interaction region state poisoned".to_string())?
+        .regions
+        .clone();
+    if unsafe { IsWindowVisible(hwnd).as_bool() } {
+        INTERACTION_REVEAL_PENDING.store(false, Ordering::Release);
+        INTERACTION_REVEAL_FOCUS.store(false, Ordering::Release);
+        reveal_interaction_window(request_focus)?;
+    } else if !regions.is_empty() {
+        // A foreground-app transition hides only the native HWND; React and its
+        // component geometry remain alive. Waiting for another MutationObserver
+        // publication here can deadlock the window in a permanently hidden
+        // state because no DOM or layout change is required when returning to
+        // the desktop. Reassert the known-good frame and region, then reveal it
+        // immediately. The pending path below is reserved for first render or a
+        // genuinely empty surface.
+        prepare_hidden_interaction_window(hwnd)?;
+        apply_interaction_window_region(&regions)?;
+        INTERACTION_REVEAL_PENDING.store(false, Ordering::Release);
+        INTERACTION_REVEAL_FOCUS.store(false, Ordering::Release);
+        reveal_interaction_window(request_focus)?;
+    } else {
+        // Do not expose the transparent WebView host before React has laid out
+        // its actual controls and published a non-empty native window region.
+        INTERACTION_REVEAL_FOCUS.fetch_or(request_focus, Ordering::AcqRel);
+        INTERACTION_REVEAL_PENDING.store(true, Ordering::Release);
+    }
+    if request_focus {
         // A tray command runs while Shell_TrayWnd owns the foreground. Calling
         // the Win32 foreground API from that input callback transfers the
         // activation to our compact interaction HWND before the monitor can
         // interpret the taskbar as an unrelated application.
-        unsafe {
-            let _ = ShowWindow(hwnd, SW_SHOWNA);
-            if !SetForegroundWindow(hwnd).as_bool() {
-                window.set_focus().map_err(|e| e.to_string())?;
-            }
-        }
     }
     Ok(())
 }
 
 #[cfg(windows)]
 pub fn hide_interaction(app: &tauri::AppHandle) {
+    INTERACTION_REVEAL_PENDING.store(false, Ordering::Release);
+    INTERACTION_REVEAL_FOCUS.store(false, Ordering::Release);
     if let Some(window) = app.get_webview_window("interaction") {
-        let _ = window.hide();
+        if let Ok(raw) = window.hwnd() {
+            let hwnd = HWND(raw.0);
+            unsafe {
+                // Tauri/Tao's hide path may reconstruct top-level decorations
+                // when activation changes. Hide the established native HWND
+                // directly so its popup/tool-window style remains authoritative.
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
+            let _ = prepare_hidden_interaction_window(hwnd);
+        }
     }
 }
 
 #[cfg(windows)]
 pub fn start_foreground_monitor(app: tauri::AppHandle) {
-    std::thread::spawn(move || {
-      loop {
+    std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_millis(120));
         let foreground = unsafe { GetForegroundWindow() };
         let mut process_id = 0u32;
@@ -1307,7 +1626,10 @@ pub fn start_foreground_monitor(app: tauri::AppHandle) {
             .and_then(|deadline| *deadline)
             .is_some_and(|deadline| std::time::Instant::now() <= deadline);
         let tray_transition = reveal_grace
-            && matches!(foreground_class.as_deref(), Some("Shell_TrayWnd") | Some("NotifyIconOverflowWindow"));
+            && matches!(
+                foreground_class.as_deref(),
+                Some("Shell_TrayWnd") | Some("NotifyIconOverflowWindow")
+            );
         let desktop_foreground = shell
             || tray_transition
             || (ours
@@ -1348,10 +1670,8 @@ pub fn start_foreground_monitor(app: tauri::AppHandle) {
         if app.get_webview_window("interaction").is_none() {
             break;
         }
-      }
     });
 }
-
 
 #[cfg(windows)]
 pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<String, String> {
@@ -1375,26 +1695,61 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
                 }
             }
         }
-        let path = app
+        const SLEEP_RESOURCE: &str = "personas/wake-frames/variant-anima/sleep.png";
+        let bundled_sleep_image = app
             .path()
-            .resolve(
-                "personas/wake-frames/variant-anima/sleep.png",
-                tauri::path::BaseDirectory::Resource,
-            )
-            .map_err(|e| e.to_string())?;
-        let path_string = HSTRING::from(path.to_string_lossy().as_ref());
+            .resolve(SLEEP_RESOURCE, tauri::path::BaseDirectory::Resource)
+            .ok()
+            .filter(|path| path.is_file())
+            // `tauri dev` does not copy bundle resources next to target/debug.
+            // The source public directory remains the canonical development
+            // resource location, while packaged builds take the branch above.
+            .or_else(|| {
+                std::env::current_dir()
+                    .ok()
+                    .map(|cwd| cwd.join("public").join(SLEEP_RESOURCE))
+                    .filter(|path| path.is_file())
+            })
+            .or_else(|| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .map(|root| root.join("public").join(SLEEP_RESOURCE))
+                    .filter(|path| path.is_file())
+            })
+            .ok_or_else(|| "未找到内置的锁屏睡眠图片。请重新安装 dsh-wallpaper。".to_string())?;
+
+        // WinRT's lock-screen API is unreliable with paths inside a Tauri
+        // resource bundle (especially during `tauri dev`): it can receive a
+        // virtual/masked resource path and return 0x800700A1.  Hand Windows a
+        // normal, current-user-owned file instead.
+        let managed_dir = backup_file
+            .parent()
+            .ok_or_else(|| "无法确定锁屏图片存放目录".to_string())?
+            .join("lock-screen");
+        std::fs::create_dir_all(&managed_dir)
+            .map_err(|_| "无法创建锁屏图片存放目录".to_string())?;
+        let managed_path = managed_dir.join("dsh-wallpaper-sleep.png");
+        std::fs::copy(&bundled_sleep_image, &managed_path)
+            .map_err(|_| "无法准备锁屏图片。请检查应用安装目录是否完整。".to_string())?;
+        let path_string = HSTRING::from(managed_path.to_string_lossy().as_ref());
         let file = StorageFile::GetFileFromPathAsync(&path_string)
-            .map_err(|e| e.to_string())?
+            .map_err(|_| "Windows 无法读取准备好的锁屏图片。".to_string())?
             .get()
-            .map_err(|e| e.to_string())?;
+            .map_err(|_| "Windows 无法打开准备好的锁屏图片。".to_string())?;
         let settings = UserProfilePersonalizationSettings::Current().map_err(|e| e.to_string())?;
         let changed = settings
             .TrySetLockScreenImageAsync(&file)
-            .map_err(|e| e.to_string())?
+            .map_err(|_| "Windows 拒绝设置锁屏图片（可能被组织策略或 Spotlight 管理）。".to_string())?
             .get()
-            .map_err(|e| e.to_string())?;
+            .map_err(|_| "Windows 未能完成锁屏图片设置。".to_string())?;
         if !changed {
-            return Err("Windows 或组织策略拒绝修改锁屏图片".into());
+            // Some Windows 11 editions deny TrySet… to unpackaged desktop
+            // apps even with no policy configured. The older LockScreen API
+            // is the compatible path for a local static PNG.
+            LockScreen::SetImageFileAsync(&file)
+                .map_err(|_| "Windows 不允许此未打包桌面应用接管锁屏图片。请使用 MSIX 安装包，或在 Windows 设置中手动选择该图片。".to_string())?
+                .get()
+                .map_err(|_| "Windows 不允许此未打包桌面应用接管锁屏图片。请使用 MSIX 安装包，或在 Windows 设置中手动选择该图片。".to_string())?;
         }
         Ok("锁屏图片已设置；密码页继续由 Windows 原生模糊处理。".into())
     } else {
@@ -1462,6 +1817,8 @@ pub fn start_foreground_monitor(_: tauri::AppHandle) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static REGION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn candidate(is_worker: bool, hosts_desktop_icons: bool) -> DesktopWindowCandidate {
         DesktopWindowCandidate {
@@ -1607,6 +1964,8 @@ mod tests {
 
     #[test]
     fn stale_region_updates_cannot_replace_newer_geometry() {
+        let _guard = REGION_TEST_LOCK.lock().expect("region test lock");
+        let session = begin_interaction_region_session().expect("region session");
         let current_revision = interaction_regions()
             .read()
             .expect("interaction region state")
@@ -1620,14 +1979,39 @@ mod tests {
                 height: 4.0,
             }],
             1.0,
+            session,
             newer,
         )
         .expect("new region update");
         assert!(!first.stale);
-        let stale =
-            update_interaction_regions(Vec::new(), 1.0, newer - 1).expect("stale region update");
+        let stale = update_interaction_regions(Vec::new(), 1.0, session, newer - 1)
+            .expect("stale region update");
         assert!(stale.stale);
         assert_eq!(stale.revision, newer);
         assert_eq!(stale.region_count, 1);
+    }
+
+    #[test]
+    fn previous_region_session_cannot_clear_the_current_surface() {
+        let _guard = REGION_TEST_LOCK.lock().expect("region test lock");
+        let previous = begin_interaction_region_session().expect("previous region session");
+        let current = begin_interaction_region_session().expect("current region session");
+        let accepted = update_interaction_regions(
+            vec![InteractionRegionInput {
+                x: 5.0,
+                y: 6.0,
+                width: 30.0,
+                height: 40.0,
+            }],
+            1.0,
+            current,
+            1,
+        )
+        .expect("current region update");
+        assert!(!accepted.stale);
+        let stale_cleanup = update_interaction_regions(Vec::new(), 1.0, previous, u64::MAX)
+            .expect("stale session cleanup");
+        assert!(stale_cleanup.stale);
+        assert_eq!(stale_cleanup.region_count, 1);
     }
 }
