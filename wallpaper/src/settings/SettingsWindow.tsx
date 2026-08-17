@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { emit } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
@@ -23,6 +23,23 @@ export function SettingsWindow() {
   const [appearanceAssets, setAppearanceAssets] = useState<AppearanceAssetSummary[]>([])
   const [appearanceOverrides, setAppearanceOverrides] = useState<Partial<Record<AppearanceSlot, string>>>({})
   const [appearanceBusy, setAppearanceBusy] = useState(false)
+  // A state update does not become visible to an async callback until React
+  // renders again. Keep the last committed settings here so a successful
+  // lock-screen request never overwrites unrelated settings changed while it
+  // was in flight.
+  const settingsRef = useRef(settings)
+  const lockScreenOperationRef = useRef(false)
+  const lockScreenDiagnosticsRequestRef = useRef(0)
+
+  const commitSettings = (next: WallpaperSettings) => {
+    settingsRef.current = next
+    setSettings(next)
+    saveSettings(next)
+    // Every Tauri WebView owns an isolated browser storage partition. Carry
+    // the new value with the event so the background WebView never rereads its
+    // own stale localStorage copy.
+    void emit('settings-changed', next)
+  }
 
   useEffect(() => {
     if (!notice || !notice.startsWith('已恢复')) return
@@ -35,16 +52,41 @@ export function SettingsWindow() {
     .catch((error) => setNotice(`素材库读取失败：${String(error)}`))
 
   const refreshTranslucentTb = () => void nativeRuntime.translucentTbStatus().then(setTranslucentTb).catch((error) => setNotice(String(error)))
-  const refreshLockScreenDiagnostics = () => void nativeRuntime.lockScreenDiagnostics().then(setLockScreenDiagnostics).catch((error) => setNotice(`锁屏检查失败：${String(error)}`))
-  const restoreLockScreen = async () => {
+  const refreshLockScreenDiagnostics = async () => {
+    const request = ++lockScreenDiagnosticsRequestRef.current
+    try {
+      const diagnostics = await nativeRuntime.lockScreenDiagnostics()
+      // An older initial/refresh request may finish after a successful
+      // takeover or restore. Never let it replace the newer system result.
+      if (request === lockScreenDiagnosticsRequestRef.current) setLockScreenDiagnostics(diagnostics)
+    } catch (error) {
+      if (request === lockScreenDiagnosticsRequestRef.current) setNotice(`锁屏检查失败：${String(error)}`)
+    }
+  }
+  const setLockScreenEnabled = async (enabled: boolean, force = false) => {
+    // `lockScreenBusy` only changes after a render. The ref closes the small
+    // double-click / keyboard activation window before that render occurs.
+    if (lockScreenOperationRef.current || (!force && settingsRef.current.lockScreenEnabled === enabled)) return
+    lockScreenOperationRef.current = true
     setLockScreenBusy(true)
     try {
-      setNotice(await nativeRuntime.setLockScreen(false))
-      const next = { ...settings, lockScreenEnabled: false }
-      setSettings(next); saveSettings(next); void emit('settings-changed', next)
-      await nativeRuntime.lockScreenDiagnostics().then(setLockScreenDiagnostics)
-    } catch (error) { setNotice(`恢复原锁屏图片失败：${String(error)}`) } finally { setLockScreenBusy(false) }
+      const confirmation = await nativeRuntime.setLockScreen(enabled)
+      // Do not optimistically persist or broadcast the setting: Windows is
+      // authoritative here. Only record the requested state after its native
+      // setter succeeds.
+      commitSettings({ ...settingsRef.current, lockScreenEnabled: enabled })
+      setNotice(confirmation)
+      await refreshLockScreenDiagnostics()
+    } catch (error) {
+      // Keep the previously committed setting visible and persisted. This is
+      // especially important when the MSIX identity gate rejects takeover.
+      setNotice(`${enabled ? '接管锁屏图片' : '恢复原锁屏图片'}失败：${String(error)}`)
+    } finally {
+      lockScreenOperationRef.current = false
+      setLockScreenBusy(false)
+    }
   }
+  const restoreLockScreen = () => setLockScreenEnabled(false, true)
   useEffect(() => {
     void appCoreClient.snapshot().then((snapshot) => { setHarness(snapshot.harness); setInteractionEnabled(snapshot.interaction.enabled) })
     refreshTranslucentTb()
@@ -59,23 +101,14 @@ export function SettingsWindow() {
   }, [])
 
   const change = (next: WallpaperSettings) => {
-    const previous = settings
-    setSettings(next)
-    saveSettings(next)
-    // Every Tauri WebView owns an isolated browser storage partition. Carry
-    // the new value with the event so the background WebView never rereads its
-    // own stale localStorage copy.
-    void emit('settings-changed', next)
-    if (next.lockScreenEnabled !== previous.lockScreenEnabled) {
-      void nativeRuntime.setLockScreen(next.lockScreenEnabled).catch((error) => {
-        // Do not leave a setting enabled when Windows rejected the operation.
-        const reverted = { ...next, lockScreenEnabled: previous.lockScreenEnabled }
-        setSettings(reverted)
-        saveSettings(reverted)
-        void emit('settings-changed', reverted)
-        setNotice(String(error))
-      })
-    }
+    const previous = settingsRef.current
+    // System lock-screen ownership is deliberately excluded from the normal
+    // immediate-save path. The dedicated async operation above is the only
+    // place allowed to persist or broadcast a change to this field.
+    const normalNext = next.lockScreenEnabled === previous.lockScreenEnabled
+      ? next
+      : { ...next, lockScreenEnabled: previous.lockScreenEnabled }
+    commitSettings(normalNext)
     if (next.autostart !== previous.autostart) void nativeRuntime.setAutostart(next.autostart).catch((error) => setNotice(String(error)))
   }
 
@@ -122,6 +155,7 @@ export function SettingsWindow() {
       lockScreenDiagnostics={lockScreenDiagnostics}
       onRefreshLockScreenDiagnostics={refreshLockScreenDiagnostics}
       onRestoreLockScreen={() => { void restoreLockScreen() }}
+      onSetLockScreenEnabled={(enabled) => { void setLockScreenEnabled(enabled) }}
       lockScreenBusy={lockScreenBusy}
       onRequestDeepSeekLogin={() => void nativeRuntime.requestDeepSeekLogin()}
       onConfigureApiKey={() => {
