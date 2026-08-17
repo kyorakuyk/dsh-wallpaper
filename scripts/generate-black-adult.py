@@ -1,7 +1,7 @@
 """调用 OpenAI 兼容 images/edits：参照黑红幼年 → 生成黑红成年鲸鱼娘立绘。
 
 输入参照：
-  assets/personas/黑红幼年.jpg   形象基底（黑红配色萝莉）
+  assets/personas/黑红幼年.jpg   形象基底（黑红配色幼年形态）
   assets/personas/蓝色成年.jpg   成年风格参照（体态/构图）
 输出：
   assets/personas/黑红成年.jpg
