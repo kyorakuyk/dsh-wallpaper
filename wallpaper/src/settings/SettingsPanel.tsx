@@ -4,6 +4,7 @@ import type { BackendMode, ModelTierRule } from '../domain/types.ts'
 import { BACKGROUND_OPTIONS, type WallpaperSettings } from './store.ts'
 import type { AppearanceAssetSummary } from '../features/appearance/appearanceViewModel.ts'
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
+import type { LockScreenDiagnostics } from '../native/runtime.ts'
 import './SettingsPanel.css'
 
 type Page = 'general' | 'connections' | 'appearance' | 'personas' | 'system'
@@ -28,6 +29,10 @@ export interface SettingsPanelProps {
   onClassifyAppearance: (assetId: string, slot: AppearanceSlot) => void
   onSelectAppearance: (slot: AppearanceSlot, assetId: string) => void
   onClearAppearance: (slot: AppearanceSlot) => void
+  lockScreenDiagnostics?: LockScreenDiagnostics
+  onRefreshLockScreenDiagnostics: () => void
+  onRestoreLockScreen: () => void
+  lockScreenBusy: boolean
 }
 
 const componentSlots: Array<{ slot: AppearanceSlot; label: string; detail: string }> = [
@@ -154,6 +159,11 @@ export function SettingsPanel(props: SettingsPanelProps) {
         <Card title="Windows 集成">
           <Field title="登录后自动启动" detail="以当前用户身份启动，无需管理员权限。"><Toggle label="登录后自动启动" checked={settings.autostart} onChange={(value) => set({ autostart: value })} /></Field>
           <Field title="接管锁屏图片" detail="密码界面仍由 Windows 原生安全桌面处理。"><Toggle label="接管锁屏图片" checked={settings.lockScreenEnabled} onChange={(value) => set({ lockScreenEnabled: value })} /></Field>
+          <div className="lockscreen-diagnostics">
+            <div className="lockscreen-diagnostics__row"><div><strong>接管状态</strong><small>{props.lockScreenDiagnostics?.managedImageActive ? '正在使用大肥鱼的熟睡画面' : '未检测到本应用的锁屏图片'}</small></div>{props.lockScreenDiagnostics?.managedImageActive && <button className="settings-action secondary" disabled={props.lockScreenBusy} onClick={props.onRestoreLockScreen}>{props.lockScreenBusy ? '正在恢复…' : '恢复原锁屏图片'}</button>}</div>
+            <div className="lockscreen-diagnostics__row"><div><strong>接管前检查</strong><small>{props.lockScreenDiagnostics ? props.lockScreenDiagnostics.supported ? 'Windows 允许应用尝试设置锁屏图片' : '当前系统不允许应用修改锁屏图片' : '正在读取系统状态…'}</small></div><button className="settings-action secondary" onClick={props.onRefreshLockScreenDiagnostics}>刷新检查</button></div>
+            {props.lockScreenDiagnostics && <ul><li>备份：{props.lockScreenDiagnostics.backupValid ? '原静态图片可恢复' : props.lockScreenDiagnostics.backupExists ? '备份失效' : '尚未创建（首次接管时保存）'}</li><li>托管睡眠图：{props.lockScreenDiagnostics.managedImageReady ? '已准备' : '首次接管时准备'}</li>{props.lockScreenDiagnostics.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
+          </div>
           <Field title="睡眠快捷键"><input className="short-input" value={settings.sleepHotkey} onChange={(e) => set({ sleepHotkey: e.target.value })} /></Field>
         </Card>
         <Card title="透明任务栏" description="通过松耦合方式连接独立安装的 TranslucentTB，本应用不会修改其配置。">

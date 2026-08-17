@@ -3,7 +3,7 @@ import { emit } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import { appCoreClient } from '../runtime/appCoreClient.ts'
-import { nativeRuntime, type TranslucentTbStatus } from '../native/runtime.ts'
+import { nativeRuntime, type LockScreenDiagnostics, type TranslucentTbStatus } from '../native/runtime.ts'
 import { loadSettings, saveSettings, type WallpaperSettings } from './store.ts'
 import { SettingsPanel } from './SettingsPanel.tsx'
 import { chooseAppearanceImportPaths, nativeAppearance } from '../native/appearance.ts'
@@ -17,19 +17,38 @@ export function SettingsWindow() {
   const [harness, setHarness] = useState<'offline' | 'web-only' | 'bridge-ready'>('offline')
   const [interactionEnabled, setInteractionEnabled] = useState(true)
   const [translucentTb, setTranslucentTb] = useState<TranslucentTbStatus>({ installed: false, running: false })
+  const [lockScreenDiagnostics, setLockScreenDiagnostics] = useState<LockScreenDiagnostics>()
+  const [lockScreenBusy, setLockScreenBusy] = useState(false)
   const [notice, setNotice] = useState<string>()
   const [appearanceAssets, setAppearanceAssets] = useState<AppearanceAssetSummary[]>([])
   const [appearanceOverrides, setAppearanceOverrides] = useState<Partial<Record<AppearanceSlot, string>>>({})
   const [appearanceBusy, setAppearanceBusy] = useState(false)
+
+  useEffect(() => {
+    if (!notice || !notice.startsWith('已恢复')) return
+    const timer = window.setTimeout(() => setNotice(undefined), 3400)
+    return () => window.clearTimeout(timer)
+  }, [notice])
 
   const refreshAppearance = () => void Promise.all([nativeAppearance.getState(), nativeAppearance.listAssets()])
     .then(([snapshot, assets]) => { setAppearanceOverrides(snapshot.overrides); setAppearanceAssets(assets) })
     .catch((error) => setNotice(`素材库读取失败：${String(error)}`))
 
   const refreshTranslucentTb = () => void nativeRuntime.translucentTbStatus().then(setTranslucentTb).catch((error) => setNotice(String(error)))
+  const refreshLockScreenDiagnostics = () => void nativeRuntime.lockScreenDiagnostics().then(setLockScreenDiagnostics).catch((error) => setNotice(`锁屏检查失败：${String(error)}`))
+  const restoreLockScreen = async () => {
+    setLockScreenBusy(true)
+    try {
+      setNotice(await nativeRuntime.setLockScreen(false))
+      const next = { ...settings, lockScreenEnabled: false }
+      setSettings(next); saveSettings(next); void emit('settings-changed', next)
+      await nativeRuntime.lockScreenDiagnostics().then(setLockScreenDiagnostics)
+    } catch (error) { setNotice(`恢复原锁屏图片失败：${String(error)}`) } finally { setLockScreenBusy(false) }
+  }
   useEffect(() => {
     void appCoreClient.snapshot().then((snapshot) => { setHarness(snapshot.harness); setInteractionEnabled(snapshot.interaction.enabled) })
     refreshTranslucentTb()
+    refreshLockScreenDiagnostics()
     refreshAppearance()
     const current = getCurrentWindow()
     const unlisten = current.onCloseRequested((event) => {
@@ -100,6 +119,10 @@ export function SettingsWindow() {
       onClassifyAppearance={(assetId, slot) => { void classifyAppearance(assetId, slot) }}
       onSelectAppearance={(slot, assetId) => { void selectAppearance(slot, assetId) }}
       onClearAppearance={(slot) => { void clearAppearance(slot) }}
+      lockScreenDiagnostics={lockScreenDiagnostics}
+      onRefreshLockScreenDiagnostics={refreshLockScreenDiagnostics}
+      onRestoreLockScreen={() => { void restoreLockScreen() }}
+      lockScreenBusy={lockScreenBusy}
       onRequestDeepSeekLogin={() => void nativeRuntime.requestDeepSeekLogin()}
       onConfigureApiKey={() => {
         const key = window.prompt('输入 DeepSeek API Key。密钥只会写入 Windows 凭据管理器。')

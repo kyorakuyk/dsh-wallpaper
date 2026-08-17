@@ -7,28 +7,13 @@ export interface NativeSendOptions {
   model?: string
 }
 
-export interface GeometryRect { x: number; y: number; width: number; height: number }
-export interface DesktopGeometry {
-  monitorId: string
-  monitorBounds: GeometryRect
-  workArea: GeometryRect
-  scaleFactor: number
-  taskbar: {
-    edge: 'top' | 'bottom' | 'left' | 'right' | 'hidden' | 'unknown'
-    bounds?: GeometryRect
-    autoHide: boolean
-    visible: boolean
-  }
-  revision: number
-}
-export interface InteractionPlacement extends GeometryRect {
-  expandDirection?: 'up' | 'down' | 'left' | 'right' | 'center'
-}
 export interface TranslucentTbStatus { installed: boolean; running: boolean; source?: string }
+export interface LockScreenDiagnostics { supported: boolean; originalImageUri?: string; backupExists: boolean; backupValid: boolean; managedImageReady: boolean; managedImageActive: boolean; developmentBuild: boolean; warnings: string[] }
 
 export interface NativeRuntime {
   isNative: boolean
   setLockScreen(enabled: boolean): Promise<string>
+  lockScreenDiagnostics(): Promise<LockScreenDiagnostics>
   setAutostart(enabled: boolean): Promise<void>
   translucentTbStatus(): Promise<TranslucentTbStatus>
   launchTranslucentTb(): Promise<void>
@@ -42,12 +27,8 @@ export interface NativeRuntime {
   connectHarness(resumeSessionId?: string): Promise<string>
   harnessHistory(): Promise<ChatMessage[]>
   apiHistory(conversationId: string): Promise<ChatMessage[]>
-  showInteraction(): Promise<void>
-  hideInteraction(): Promise<void>
   listenTray(listener: (event: { type: 'backend'; backend: BackendMode } | { type: 'settings' }) => void): Promise<() => void>
   probeHarness(): Promise<HarnessStatus>
-  desktopGeometry(): Promise<DesktopGeometry | undefined>
-  applyInteractionPlacement(placement: InteractionPlacement): Promise<InteractionPlacement | undefined>
 }
 
 async function tauriAvailable(): Promise<boolean> {
@@ -60,6 +41,11 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) return '浏览器预览不支持设置系统锁屏。'
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<string>('set_lock_screen_enabled', { enabled })
+  },
+  async lockScreenDiagnostics() {
+    if (!await tauriAvailable()) return { supported: false, backupExists: false, backupValid: false, managedImageReady: false, managedImageActive: false, developmentBuild: false, warnings: ['浏览器预览不支持系统锁屏诊断。'] }
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<LockScreenDiagnostics>('get_lock_screen_diagnostics')
   },
   async setAutostart(enabled) {
     if (!await tauriAvailable()) return
@@ -123,16 +109,6 @@ export const nativeRuntime: NativeRuntime = {
     const result = await invoke<{ messages: Array<{ role: 'user' | 'assistant'; content: string }> }>('api_history', { conversationId })
     return result.messages.map((message) => ({ ...message, id: crypto.randomUUID(), createdAt: Date.now() }))
   },
-  async showInteraction() {
-    if (!await tauriAvailable()) return
-    const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('show_interaction')
-  },
-  async hideInteraction() {
-    if (!await tauriAvailable()) return
-    const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('hide_interaction')
-  },
   async listenTray(listener) {
     if (!await tauriAvailable()) return () => undefined
     const { listen } = await import('@tauri-apps/api/event')
@@ -144,15 +120,5 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) return { availability: 'offline' }
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<HarnessStatus>('probe_harness')
-  },
-  async desktopGeometry() {
-    if (!await tauriAvailable()) return undefined
-    const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<DesktopGeometry>('get_desktop_geometry')
-  },
-  async applyInteractionPlacement(placement) {
-    if (!await tauriAvailable()) return placement
-    const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<InteractionPlacement>('apply_interaction_placement', { placement })
   },
 }

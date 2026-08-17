@@ -9,16 +9,15 @@ import { SettingsWindow } from './settings/SettingsWindow.tsx'
 const el = document.getElementById('root')
 if (el === null) throw new Error('missing #root')
 
-// Do not infer a native surface from the navigation URL. WorkerW reparents
-// the interaction host and WebView2 may then report a stale/rewritten URL;
-// the Tauri window label remains the authoritative identity.
+// Do not infer a native surface from the navigation URL. WorkerW can reparent
+// the desktop host and WebView2 may then report a stale/rewritten URL; the
+// Tauri window label remains the authoritative identity.
 const nativeLabel = '__TAURI_INTERNALS__' in window ? getCurrentWindow().label : undefined
-const surface = nativeLabel === 'background' || nativeLabel === 'interaction' || nativeLabel === 'settings'
+const surface = nativeLabel === 'background' || nativeLabel === 'settings'
   ? nativeLabel
   : currentSurface()
 document.documentElement.dataset.surface = surface
-// A second WorkerW-reparented WebView2 host is not stable on current Windows
-// builds: it can reload as the complete wallpaper and visibly jump. The
-// established background host therefore owns both the scene and the desktop
-// conversation UI; keep the legacy interaction host intentionally empty.
-createRoot(el).render(surface === 'settings' ? <SettingsWindow /> : surface === 'interaction' ? null : <App surface="combined" />)
+// The single WorkerW host owns both the scene and conversation UI. A second
+// reparented WebView2 host was removed because it caused duplicate scenes,
+// frame flashes and placement races.
+createRoot(el).render(surface === 'settings' ? <SettingsWindow /> : <App surface="combined" />)

@@ -22,9 +22,8 @@ import type { AppearanceAssetSummary, AppearanceThemeSummary, AssetClassificatio
 import type { AppearanceSlot } from './appearance/theme/index.ts'
 import { chooseAppearanceImportFolder, chooseAppearanceImportPaths, nativeAppearance } from './native/appearance.ts'
 import { appCoreClient } from './runtime/appCoreClient.ts'
-import { useInteractionLayout } from './runtime/useInteractionLayout.ts'
-import type { InteractionState } from './runtime/interactionLayout.ts'
 import type { DesktopWorkspace } from './runtime/desktopWorkspace.ts'
+import { WidgetHost } from './widgets/WidgetHost.tsx'
 
 const registry = new PersonaRegistry()
 
@@ -46,7 +45,7 @@ export function App({ surface = 'combined' }: AppProps) {
   const [streamingText, setStreamingText] = useState('')
   const [usage, setUsage] = useState<TokenUsage>()
   const [conversationGeneration, setConversationGeneration] = useState(0)
-  const [interactionState, setInteractionState] = useState<InteractionState>('collapsed')
+  const [interactionState, setInteractionState] = useState<'collapsed' | 'expanded'>('collapsed')
   const [interactionEnabled, setInteractionEnabled] = useState(true)
   const [workspace, setWorkspace] = useState<DesktopWorkspace>('front')
   const [innerHistoryExpanded, setInnerHistoryExpanded] = useState(false)
@@ -73,14 +72,9 @@ export function App({ surface = 'combined' }: AppProps) {
   // and conversation, eliminating cross-WebView placement races.
   const sceneSurface = true
   const interactionSurface = true
-  const placementState: InteractionState = settings.interactionLayout === 'floating' ? 'expanded' : interactionState
-  const interactionDirection = useInteractionLayout({
-    enabled: false,
-    layout: settings.interactionLayout,
-    state: placementState,
-    anchor: settings.floatingAnchor,
-    refreshKey: `${showAppearance}:${runtime.historyExpanded}:${runtime.phase}`,
-  })
+  // The WorkerW host is permanently desktop-sized. Both the floating window
+  // and the taskbar capsule now use CSS placement inside that one viewport.
+  const interactionDirection = 'center' as const
 
   const enterInnerWorkspace = () => {
     // A workspace entry is an input-focused starting point, not a pre-opened
@@ -219,11 +213,9 @@ export function App({ surface = 'combined' }: AppProps) {
       appCoreClient.snapshot().then(applySnapshot),
       appCoreClient.subscribe(applySnapshot).then((dispose) => { unsubscribe = dispose }),
     ])
-    const timer = surface !== 'interaction'
-      ? setTimeout(() => dispatchCore('boot-ready', { playWake: settings.animationsEnabled && !settings.skipWakeAnimation }), 120)
-      : undefined
+    const timer = setTimeout(() => dispatchCore('boot-ready', { playWake: settings.animationsEnabled && !settings.skipWakeAnimation }), 120)
     return () => {
-      if (timer !== undefined) clearTimeout(timer)
+      clearTimeout(timer)
       unsubscribe()
     }
   }, [settings.animationsEnabled, settings.interactionLayout, settings.skipWakeAnimation, surface])
@@ -346,14 +338,12 @@ export function App({ surface = 'combined' }: AppProps) {
       session = value
       observer.observe(document.body, { attributes: true, childList: true, subtree: true })
       window.addEventListener('resize', publish)
-      window.addEventListener('dsh-interaction-placement', publish)
       publish()
     }).catch((error) => patchRuntime({ error: String(error) }))
     return () => {
       disposed = true
       observer.disconnect()
       window.removeEventListener('resize', publish)
-      window.removeEventListener('dsh-interaction-placement', publish)
       cancelAnimationFrame(frame)
       if (session !== undefined) {
         void publishInteractionRegions({ session, revision: ++revision, scaleFactor: window.devicePixelRatio || 1, regions: [] })
@@ -411,6 +401,7 @@ export function App({ surface = 'combined' }: AppProps) {
   return <div className={`wallpaper-root surface-${surface} effort-${runtime.reasoningEffort ?? 'normal'} workspace-${workspace}`} data-workspace={workspace}>
     {sceneSurface && scene}
     {interactionSurface && <>
+      <WidgetHost workspace={workspace} widgets={[]} />
       {interactionEnabled && runtime.phase !== 'booting' && runtime.phase !== 'locked' && (settings.interactionLayout === 'taskbar-docked' || workspace !== 'front') && <ConversationBubble backend={runtime.backend} activity={runtime.activity} modelLabel={modelLabel} messages={messages} streamingText={streamingText} historyExpanded={workspace === 'front' ? runtime.historyExpanded : innerHistoryExpanded} usage={usage} collapsed={settings.interactionLayout === 'taskbar-docked' && interactionState === 'collapsed'} layout={settings.interactionLayout} expandDirection={interactionDirection} persistent={settings.interactionLayout === 'floating'} acrylicOpacity={settings.conversationOpacity} acrylicBlur={settings.conversationBlur} onExpand={() => { setInteractionState('expanded'); if (workspace === 'front') enterInnerWorkspace(); else { baseDispatch({ type: 'OPEN_CHAT' }); dispatchCore('open-chat') } }} disabled={runtime.backend === 'harness' && runtime.harness !== 'bridge-ready'} onToggleHistory={() => { if (workspace !== 'front') setInnerHistoryExpanded((value) => !value); else { baseDispatch({ type: 'TOGGLE_HISTORY' }); dispatchCore('toggle-history') } }} onSend={(text) => { void adapterRef.current.send(text).then(() => { if (adapterRef.current instanceof NativeChatAdapter) { const id = adapterRef.current.conversationId(); if (id) saveConversationPointer(runtime.backend, id) } }) }} onStop={() => void adapterRef.current.stop()} onClose={() => undefined} />}
       {runtime.error && runtime.phase !== 'error' && <div className="runtime-notice" role="status">{runtime.error}<button onClick={() => patchRuntime({ error: undefined })}>×</button></div>}
       <AppearanceDrawer open={showAppearance} themes={appearanceThemes} assets={appearanceAssets} activeThemeId={appearanceTheme?.id ?? ''} activeThemeVersion={appearanceTheme?.version ?? ''} overrides={appearanceOverrides} busy={appearanceBusy} notice={appearanceNotice} onClose={() => setShowAppearance(false)} onImport={() => { void importAppearance(chooseAppearanceImportPaths) }} onImportFolder={() => { void importAppearance(chooseAppearanceImportFolder) }} onExport={() => setAppearanceNotice({ tone: 'info', message: '主题导出需要名称与版本信息，完整导出表单将在下一步接入。' })} onReviewInbox={() => undefined} onClassify={(request) => { void classifyAppearance(request) }} onActivateTheme={(themeId, version) => { void mutateAppearance(() => nativeAppearance.activateTheme(themeId, version)) }} onSetOverride={(slot, assetId) => { void mutateAppearance(() => nativeAppearance.setOverride(slot, assetId)) }} onClearOverride={(slot) => { void mutateAppearance(() => nativeAppearance.clearOverride(slot)) }} />

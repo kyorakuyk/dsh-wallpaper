@@ -13,16 +13,11 @@ fn emit_app_snapshot(app: &tauri::AppHandle, snapshot: &AppSnapshot) {
     let _ = app.emit("app-snapshot", snapshot);
 }
 
-fn dispatch_ui_action(app: &tauri::AppHandle, action: AppAction, request_focus: bool) {
+fn dispatch_ui_action(app: &tauri::AppHandle, action: AppAction, _request_focus: bool) {
     let Some(core) = app.try_state::<AppCore>() else {
         return;
     };
     let snapshot = core.dispatch(action);
-    if snapshot.interaction.visible {
-        let _ = windows_integration::show_interaction(app, request_focus);
-    } else {
-        windows_integration::hide_interaction(app);
-    }
     emit_app_snapshot(app, &snapshot);
 }
 
@@ -42,11 +37,6 @@ fn dispatch_tray_ui_action(app: &tauri::AppHandle, action: AppAction) {
         snapshot.interaction.settings_open,
         snapshot.interaction.desktop_foreground
     );
-    if snapshot.interaction.visible {
-        let _ = windows_integration::show_interaction(app, true);
-    } else {
-        windows_integration::hide_interaction(app);
-    }
     emit_app_snapshot(app, &snapshot);
 }
 
@@ -73,11 +63,6 @@ fn set_interaction_enabled(
     enabled: bool,
 ) -> AppSnapshot {
     let snapshot = state.dispatch(AppAction::SetInteractionEnabled(enabled));
-    if snapshot.interaction.visible {
-        let _ = windows_integration::show_interaction(&app, false);
-    } else {
-        windows_integration::hide_interaction(&app);
-    }
     emit_app_snapshot(&app, &snapshot);
     snapshot
 }
@@ -107,7 +92,6 @@ fn dispatch_app_action(
     play_wake: Option<bool>,
     value: Option<String>,
 ) -> Result<AppSnapshot, String> {
-    let request_focus = action == "open-chat";
     let action = match action.as_str() {
         "boot-ready" => AppAction::BootReady {
             play_wake: play_wake.unwrap_or(true),
@@ -144,11 +128,6 @@ fn dispatch_app_action(
         _ => return Err(format!("unknown app action: {action}")),
     };
     let snapshot = state.dispatch(action);
-    if snapshot.interaction.visible {
-        windows_integration::show_interaction(&app, request_focus)?;
-    } else {
-        windows_integration::hide_interaction(&app);
-    }
     emit_app_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -156,6 +135,11 @@ fn dispatch_app_action(
 #[tauri::command]
 async fn set_lock_screen_enabled(app: tauri::AppHandle, enabled: bool) -> Result<String, String> {
     windows_integration::set_lock_screen(&app, enabled).await
+}
+
+#[tauri::command]
+fn get_lock_screen_diagnostics(app: tauri::AppHandle) -> Result<windows_integration::LockScreenDiagnostics, String> {
+    windows_integration::lock_screen_diagnostics(&app)
 }
 
 #[tauri::command]
@@ -296,16 +280,6 @@ fn hide_settings_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn show_interaction(app: tauri::AppHandle) -> Result<(), String> {
-    windows_integration::show_interaction(&app, true)
-}
-
-#[tauri::command]
-fn hide_interaction(app: tauri::AppHandle) {
-    windows_integration::hide_interaction(&app)
-}
-
-#[tauri::command]
 fn begin_interaction_region_session() -> Result<u64, String> {
     windows_integration::begin_interaction_region_session()
 }
@@ -318,24 +292,6 @@ fn update_interaction_regions(
     revision: u64,
 ) -> Result<windows_integration::InteractionRegionUpdateResult, String> {
     windows_integration::update_interaction_regions(regions, scale_factor, session, revision)
-}
-
-#[tauri::command]
-fn get_desktop_geometry(app: tauri::AppHandle) -> Result<windows_integration::DesktopGeometry, String> {
-    let window = app
-        .get_webview_window("interaction")
-        .or_else(|| app.get_webview_window("background"))
-        .ok_or("desktop window missing")?;
-    windows_integration::desktop_geometry(&window)
-}
-
-#[tauri::command]
-fn apply_interaction_placement(
-    app: tauri::AppHandle,
-    placement: windows_integration::InteractionPlacement,
-) -> Result<windows_integration::InteractionPlacement, String> {
-    let window = app.get_webview_window("interaction").ok_or("interaction window missing")?;
-    windows_integration::apply_interaction_placement(&window, placement)
 }
 
 #[tauri::command]
@@ -526,6 +482,7 @@ pub fn run() {
             select_backend,
             dispatch_app_action,
             set_lock_screen_enabled,
+            get_lock_screen_diagnostics,
             set_autostart,
             translucent_tb_status,
             launch_translucent_tb,
@@ -534,12 +491,8 @@ pub fn run() {
             show_deepseek_login,
             start_settings_drag,
             hide_settings_window,
-            show_interaction,
-            hide_interaction,
             begin_interaction_region_session,
             update_interaction_regions,
-            get_desktop_geometry,
-            apply_interaction_placement,
             send_chat,
             cancel_chat,
             connect_harness,
@@ -561,15 +514,6 @@ pub fn run() {
         .setup(|app| {
             if let Err(error) = windows_integration::start_wallpaper_host(app.handle().clone()) {
                 log::error!("WorkerW wallpaper host failed: {error}");
-            }
-            if let Some(background) = app.get_webview_window("background") {
-                let _ = background;
-            }
-            // The WorkerW background host is the single desktop WebView. The
-            // retired interaction window stays hidden so it cannot reload as a
-            // duplicate wallpaper or race the host's position.
-            if let Some(interaction) = app.get_webview_window("interaction") {
-                let _ = interaction.hide();
             }
             if let Some(settings) = app.get_webview_window("settings") {
                 if let Err(error) = windows_integration::configure_settings_window(&settings) {
@@ -611,6 +555,7 @@ pub fn run() {
                         let _ = app.emit("tray-backend", event.id().as_ref());
                     }
                     "settings" => {
+                        dispatch_tray_ui_action(app, AppAction::OpenSettings);
                         if let Err(error) = show_settings_window(app) {
                             log::error!("failed to show settings window: {error}");
                         }
@@ -632,7 +577,11 @@ pub fn run() {
                 })
                 .on_tray_icon_event(|tray, event| {
                     if matches!(event, TrayIconEvent::DoubleClick { button: MouseButton::Left, .. }) {
-                        dispatch_tray_ui_action(tray.app_handle(), AppAction::OpenChat);
+                        let app = tray.app_handle();
+                        dispatch_tray_ui_action(app, AppAction::OpenSettings);
+                        if let Err(error) = show_settings_window(app) {
+                            log::error!("failed to show settings window from tray double-click: {error}");
+                        }
                     }
                 });
             if let Some(icon) = app.default_window_icon() {
