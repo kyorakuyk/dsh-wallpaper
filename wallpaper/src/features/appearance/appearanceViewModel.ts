@@ -26,7 +26,10 @@ export interface AssetClassificationRequest {
 
 export const SLOT_PRESENTATION: Record<AppearanceSlot, AppearanceSlotPresentation> = {
   'desktop.background': { label: '桌面背景', shortLabel: '背景', description: '桌面场景的底图', acceptedMedia: ['image'] },
-  'lockscreen.image': { label: '锁屏图片', shortLabel: '锁屏', description: 'Windows 锁屏使用的熟睡画面', acceptedMedia: ['image'] },
+  // The library can retain a future lock-screen image selection, but the
+  // native MSIX takeover intentionally uses the bundled, audited sleep frame
+  // until a selected asset has a verified native hand-off path.
+  'lockscreen.image': { label: '锁屏图片（预留）', shortLabel: '锁屏', description: '素材库可预先归类；当前锁屏接管固定使用内置熟睡画面', acceptedMedia: ['image'] },
   'wake.sequence': { label: '苏醒动画', shortLabel: '苏醒', description: '解锁后播放的有序帧组', acceptedMedia: ['sequence'] },
   'persona.deepseek.flash': { label: 'DeepSeek Flash 立绘', shortLabel: '蓝色幼年', description: 'DeepSeek Flash 模型形态', acceptedMedia: ['image'] },
   'persona.deepseek.pro': { label: 'DeepSeek Pro 立绘', shortLabel: '蓝色成年', description: 'DeepSeek Pro 模型形态', acceptedMedia: ['image'] },
