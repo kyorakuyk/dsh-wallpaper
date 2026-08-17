@@ -1,0 +1,134 @@
+﻿# 锁屏接管：MSIX 安装包验收
+
+锁屏图片接管是 Windows 的用户级设置。无包身份的 `tauri dev`、直接运行的 EXE 与常规 NSIS 安装，在部分 Windows 11 版本上会被系统拒绝。因此，锁屏能力的正式技术验收必须使用具有 **MSIX 包身份** 的进程。
+
+本文件说明的是开发/测试路径，不是面向用户的发布方式。自签名证书仅可用于本机测试，绝对不能随正式版本分发。
+
+## 先决条件
+
+- Windows 11 x64，且已安装 Windows 10/11 SDK（包含 `MakeAppx.exe` 与 `SignTool.exe`）。
+- `pnpm`、Rust/Cargo 能正常构建项目。
+
+纯布局打包不需要已安装 WebView2 或 VCLibs，因此可在干净构建机上安全验证包内容。只有显式传入 `-InstallPackage` 进入本机安装验收时，脚本才会检查 Microsoft Edge WebView2 Evergreen Runtime 与 x64 `Microsoft.VCLibs.140.00.UWPDesktop`；缺少时会在安装前停止。
+
+## 最安全的默认操作：只生成未签名包
+
+下面命令会构建应用、重建本仓库受控的 `artifacts\msix-test\package-root`、打包并验证目录布局，但**不会**：
+
+- 创建或安装证书；
+- 安装/注册 MSIX；
+- 修改锁屏或任何系统设置。
+
+```powershell
+.\scripts\build-msix-test.ps1
+```
+
+产物位于 `artifacts\msix-test\dsh-wallpaper-lockscreen-test.msix`。未签名 MSIX 不可安装，这是预期行为。
+
+Rust 二进制会构建到独立的 `artifacts\msix-test\cargo-target\`，不会写入或占用开发实例使用的 `wallpaper\src-tauri\target\`。
+
+如果已在本机通过本脚本完成相同 profile 的隔离构建，只验证打包布局：
+
+```powershell
+.\scripts\build-msix-test.ps1 -SkipBuild
+```
+
+`-SkipBuild` 不会回退读取常规开发 target；若隔离目录中没有对应程序，请去掉该参数先构建一次。
+
+脚本会明确检查以下包内文件：
+
+```text
+dsh-wallpaper.exe
+WebView2Loader.dll
+dist/index.html
+_up_/public/personas/wake-frames/variant-anima/sleep.png
+Assets/*.png
+AppxManifest.xml
+```
+
+这里的 `_up_/public/.../sleep.png` 与 Tauri 当前 Windows bundle 的 `BaseDirectory::Resource` 路径规则一致：资源目录就是 EXE 所在目录，Tauri 保留 `bundle.resources` 源文件的相对路径。壁纸前端本身仍从 `dist/` 加载。
+
+## 显式创建本机测试证书并安装
+
+以下命令才会产生有副作用的操作：在**当前用户**的 `My` 证书存储创建可导出的代码签名测试证书、导出 PFX/CER、将 CER 加入**当前用户**的 `TrustedPeople`，然后注册当前用户的 MSIX。
+
+```powershell
+.\scripts\build-msix-test.ps1 `
+  -CreateTestCertificate `
+  -InstallCertificate `
+  -InstallPackage
+```
+
+脚本会交互要求一个 PFX 密码；不要把密码写入命令历史、脚本或 Git。所有测试证书文件都留在 `artifacts\msix-test\`，并应保持 Git 忽略。
+
+如需通过自动化提供密码，先在当前 PowerShell 会话内创建 `SecureString`：
+
+```powershell
+$password = Read-Host 'PFX password' -AsSecureString
+.\scripts\build-msix-test.ps1 `
+  -CreateTestCertificate `
+  -CertificatePassword $password `
+  -InstallCertificate `
+  -InstallPackage
+```
+
+也可复用自己保管的证书；脚本不会导入外部 PFX 的私钥，只会在显式指定 `-InstallCertificate` 时导入同路径 `.cer` 公钥：
+
+```powershell
+$password = Read-Host 'PFX password' -AsSecureString
+.\scripts\build-msix-test.ps1 -Release `
+  -CertificatePath C:\safe\dsh-wallpaper-test.pfx `
+  -CertificatePassword $password `
+  -InstallCertificate `
+  -InstallPackage
+```
+
+`-WhatIf` 可预览创建测试证书、安装证书和安装软件包等有副作用的操作；它仍会构建和打包未签名 MSIX，但不会创建 PFX/CER 或写入证书存储：
+
+```powershell
+.\scripts\build-msix-test.ps1 -CreateTestCertificate -InstallCertificate -InstallPackage -WhatIf
+```
+
+## 验收清单
+
+1. 从开始菜单启动已安装的 **DSH Wallpaper (Lock Screen Test)**，不要直接运行构建目录的 EXE。
+2. 打开“设置 → 系统 → Windows 集成”。诊断必须确认当前进程有包身份；若显示“无包身份”，停止验收并检查是否从正确安装入口启动。
+3. “接管前检查”必须显示：Windows 允许尝试、睡眠图已准备，并且当前锁屏为可私有备份的静态本地图片。
+4. 如果当前锁屏来自 Windows Spotlight 或其他动态来源，应用必须拒绝接管，不能覆盖后再声称可恢复。
+5. 启用“接管锁屏图片”，按 `Win+L`，确认显示熟睡画面；密码输入仍完全由 Windows 安全桌面处理。
+6. 解锁后确认苏醒动画开始；回到设置点击“恢复原锁屏图片”。
+7. 再按 `Win+L`，确认恢复的是原静态图片；诊断不应再显示有效接管状态或未清理的有效备份。
+8. 启动一次普通应用、回到桌面、再锁定/解锁，确认 WorkerW 桌面宿主与锁屏接管互不干扰。
+
+## 清理测试环境
+
+在卸载 MSIX 前，先通过应用的“恢复原锁屏图片”完成恢复。随后可以删除当前用户安装的测试包与测试证书：
+
+```powershell
+# 查看（不修改）
+Get-AppxPackage -Name com.dsh.wallpaper
+Get-ChildItem Cert:\CurrentUser\TrustedPeople |
+  Where-Object Subject -eq 'CN=DSH Wallpaper Test'
+
+# 删除测试包
+Get-AppxPackage -Name com.dsh.wallpaper | Remove-AppxPackage
+
+# 删除仅供测试的信任证书（确认 Subject / Thumbprint 后再执行）
+Get-ChildItem Cert:\CurrentUser\TrustedPeople |
+  Where-Object Subject -eq 'CN=DSH Wallpaper Test' |
+  Remove-Item
+```
+
+可保留或安全删除 `artifacts\msix-test\` 中的 PFX/CER；PFX 含私钥，不能上传、发送或提交。
+
+## 发布边界
+
+- 常规 NSIS 包继续提供桌面壁纸功能；锁屏页面必须依据真实包身份提示“需要 MSIX 包身份”，不得因 debug/release 或安装方式猜测结果。
+- 面向用户的 MSIX 必须由 Microsoft Store 或组织持有的受信任发行证书签名；不得分发本脚本生成的自签名证书。
+- MSIX 测试包当前只面向 Windows 11 x64；发布版如需 x86/ARM64，必须分别构建、提供对应图标/运行时依赖并单独验收。
+- 本实现只接管可读取且可私有复制的本地静态锁屏图。Spotlight 等动态来源没有可保真的恢复源，必须保持失败关闭。
+
+## 实现依据
+
+- `windows-rs 0.61` 应通过 `Win32::Storage::Packaging::Appx::GetCurrentPackageFullName` 检测当前进程包身份；`APPMODEL_ERROR_NO_PACKAGE` 表示无包身份。所需 feature 为 `Win32_Storage_Packaging_Appx`。
+- Microsoft：[GetCurrentPackageFullName](https://learn.microsoft.com/windows/win32/api/appmodel/nf-appmodel-getcurrentpackagefullname)、[命令行打包 MSIX](https://learn.microsoft.com/windows/msix/package/manual-packaging-root)、[创建包签名证书](https://learn.microsoft.com/windows/msix/package/create-certificate-package-signing)、[桌面应用 MSIX 清单](https://learn.microsoft.com/windows/msix/desktop/desktop-to-uwp-manual-conversion)。

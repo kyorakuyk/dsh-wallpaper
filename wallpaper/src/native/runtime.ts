@@ -8,7 +8,7 @@ export interface NativeSendOptions {
 }
 
 export interface TranslucentTbStatus { installed: boolean; running: boolean; source?: string }
-export interface LockScreenDiagnostics { supported: boolean; originalImageUri?: string; backupExists: boolean; backupValid: boolean; managedImageReady: boolean; managedImageActive: boolean; developmentBuild: boolean; warnings: string[] }
+export interface LockScreenDiagnostics { supported: boolean; packageIdentity: boolean; takeoverAvailable: boolean; originalImageUri?: string; backupExists: boolean; backupValid: boolean; staleBackup: boolean; managedImageReady: boolean; managedImageActive: boolean; developmentBuild: boolean; warnings: string[] }
 
 export interface NativeRuntime {
   isNative: boolean
@@ -43,7 +43,7 @@ export const nativeRuntime: NativeRuntime = {
     return invoke<string>('set_lock_screen_enabled', { enabled })
   },
   async lockScreenDiagnostics() {
-    if (!await tauriAvailable()) return { supported: false, backupExists: false, backupValid: false, managedImageReady: false, managedImageActive: false, developmentBuild: false, warnings: ['浏览器预览不支持系统锁屏诊断。'] }
+    if (!await tauriAvailable()) return { supported: false, packageIdentity: false, takeoverAvailable: false, backupExists: false, backupValid: false, staleBackup: false, managedImageReady: false, managedImageActive: false, developmentBuild: false, warnings: ['浏览器预览不支持系统锁屏诊断。'] }
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<LockScreenDiagnostics>('get_lock_screen_diagnostics')
   },

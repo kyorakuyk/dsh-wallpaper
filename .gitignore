@@ -5,6 +5,10 @@ node_modules/
 # Build outputs
 wallpaper/dist/
 wallpaper/src-tauri/target/
+.tmp-lockscreen-target/
+artifacts/
+*.pfx
+*.cer
 bridge/lib/
 
 # TypeScript build info

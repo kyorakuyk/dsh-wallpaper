@@ -9,6 +9,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::app_core::{AppAction, AppCore, WallpaperHostMode, WallpaperHostStatus};
 
 #[cfg(windows)]
+use crate::lock_screen_backup::{
+    self, discard_backup_after_failed_takeover, ensure_backup_for_takeover, has_stale_backup,
+    inspect_backup, managed_image_is_active, remove_backup_after_verified_restore,
+    restore_snapshot_path, same_local_file_uri, LockScreenBackupLease, LockScreenBackupManifest,
+    LockScreenBackupState,
+};
+
+#[cfg(windows)]
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 #[cfg(windows)]
@@ -17,7 +25,10 @@ use windows::{
     Storage::StorageFile,
     System::UserProfile::{LockScreen, UserProfilePersonalizationSettings},
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Foundation::{
+            APPMODEL_ERROR_NO_PACKAGE, ERROR_INSUFFICIENT_BUFFER, HWND, LPARAM, LRESULT, POINT,
+            RECT, WPARAM,
+        },
         Graphics::{
             Dwm::{
                 DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_COLOR_NONE,
@@ -25,6 +36,7 @@ use windows::{
             },
             Gdi::ClientToScreen,
         },
+        Storage::Packaging::Appx::GetCurrentPackageFullName,
         System::{
             Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED},
             RemoteDesktop::{
@@ -32,24 +44,23 @@ use windows::{
                 NOTIFY_FOR_THIS_SESSION,
             },
         },
-        UI::{
-            Accessibility::{CUIAutomation, IUIAutomation, UIA_ListItemControlTypeId},
-            Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON},
-            Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
-        },
         UI::WindowsAndMessaging::{
-            EnumWindows, FindWindowExW, FindWindowW, GetClassNameW, GetCursorPos,
-            GetClientRect, GetDesktopWindow, GetForegroundWindow, GetParent, GetWindowLongPtrW,
-            GetWindowRect, IsWindow, IsWindowVisible,
-            SendMessageTimeoutW, SetParent, SetWindowLongPtrW, SetWindowPos,
-            ShowWindow, GWL_EXSTYLE, GWL_STYLE, HTTRANSPARENT,
+            EnumWindows, FindWindowExW, FindWindowW, GetClassNameW, GetClientRect, GetCursorPos,
+            GetDesktopWindow, GetForegroundWindow, GetParent, GetWindowLongPtrW, GetWindowRect,
+            IsWindow, IsWindowVisible, SendMessageTimeoutW, SetParent, SetWindowLongPtrW,
+            SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, HTTRANSPARENT,
             PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SEND_MESSAGE_TIMEOUT_FLAGS, SMTO_NORMAL,
             SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
             SW_HIDE, SW_SHOWNA, WM_ACTIVATE, WM_NCACTIVATE, WM_NCDESTROY, WM_NCHITTEST,
             WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WS_BORDER, WS_CAPTION, WS_CHILD, WS_DLGFRAME,
-            WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE,
-            WS_EX_TOOLWINDOW, WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP,
-            WS_SYSMENU, WS_THICKFRAME, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
+            WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE, WS_EX_TOOLWINDOW,
+            WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
+            WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
+        },
+        UI::{
+            Accessibility::{CUIAutomation, IUIAutomation, UIA_ListItemControlTypeId},
+            Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON},
+            Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         },
     },
 };
@@ -538,21 +549,24 @@ fn locate_wallpaper_worker() -> Result<HWND, String> {
 /// the application exits.
 #[cfg(windows)]
 fn desktop_icon_layer() -> Option<HWND> {
-    enumerate_desktop_windows().ok()?.into_iter().find_map(|item| {
-        if !item.candidate.hosts_desktop_icons {
-            return None;
-        }
-        unsafe {
-            FindWindowExW(
-                Some(item.hwnd),
-                None,
-                windows::core::w!("SHELLDLL_DefView"),
-                PCWSTR::null(),
-            )
-        }
-        .ok()
-        .filter(|hwnd| !hwnd.0.is_null())
-    })
+    enumerate_desktop_windows()
+        .ok()?
+        .into_iter()
+        .find_map(|item| {
+            if !item.candidate.hosts_desktop_icons {
+                return None;
+            }
+            unsafe {
+                FindWindowExW(
+                    Some(item.hwnd),
+                    None,
+                    windows::core::w!("SHELLDLL_DefView"),
+                    PCWSTR::null(),
+                )
+            }
+            .ok()
+            .filter(|hwnd| !hwnd.0.is_null())
+        })
 }
 
 #[cfg(windows)]
@@ -1215,11 +1229,15 @@ fn cursor_is_over_desktop_blank(automation: &IUIAutomation) -> bool {
         let walker = automation.ControlViewWalker().ok();
         let mut current = Some(element);
         for _ in 0..4 {
-            let Some(element) = current else { break; };
+            let Some(element) = current else {
+                break;
+            };
             if element.CurrentControlType().ok() == Some(UIA_ListItemControlTypeId) {
                 return false;
             }
-            current = walker.as_ref().and_then(|tree| tree.GetParentElement(&element).ok());
+            current = walker
+                .as_ref()
+                .and_then(|tree| tree.GetParentElement(&element).ok());
         }
         true
     }
@@ -1254,7 +1272,9 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                     || is_desktop_foreground_class(window_class(foreground).as_deref());
                 if on_desktop && cursor_is_over_desktop_blank(&automation) {
                     let now = std::time::Instant::now();
-                    if last_blank_click.is_some_and(|previous| now.duration_since(previous) <= std::time::Duration::from_millis(500)) {
+                    if last_blank_click.is_some_and(|previous| {
+                        now.duration_since(previous) <= std::time::Duration::from_millis(500)
+                    }) {
                         last_blank_click = None;
                         let entering = !INNER_WORKSPACE_ACTIVE.fetch_xor(true, Ordering::AcqRel);
                         if let Err(error) = set_desktop_icons_visible(!entering) {
@@ -1265,8 +1285,14 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                             log::warn!("无法切换表/里桌面图标层：{error}");
                             continue;
                         }
-                        log::info!("桌面空白双击：切换至{}桌面", if entering { "里" } else { "表" });
-                        let _ = app.emit("desktop-workspace-toggle", if entering { "enter" } else { "leave" });
+                        log::info!(
+                            "桌面空白双击：切换至{}桌面",
+                            if entering { "里" } else { "表" }
+                        );
+                        let _ = app.emit(
+                            "desktop-workspace-toggle",
+                            if entering { "enter" } else { "leave" },
+                        );
                     } else {
                         last_blank_click = Some(now);
                     }
@@ -1281,45 +1307,61 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
 
 #[cfg(windows)]
 pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<String, String> {
-    let backup_file = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| e.to_string())?
-        .join("lock-screen-backup.txt");
+    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     if enabled {
+        let has_package_identity = has_package_identity()?;
+        if !can_attempt_lock_screen_takeover(has_package_identity) {
+            return Err("当前是无 MSIX 包身份的正式桌面版。为确保锁屏接管可验证且可恢复，请安装 MSIX 包后再启用；NSIS 版不会修改锁屏。".into());
+        }
         if !UserProfilePersonalizationSettings::IsSupported().map_err(|e| e.to_string())? {
             return Err("当前 Windows 策略不允许应用修改锁屏图片".into());
         }
-        if !backup_file.exists() {
-            if let Ok(uri) = LockScreen::OriginalImageFile() {
-                if let Ok(original) = uri.AbsoluteUri() {
-                    if let Some(parent) = backup_file.parent() {
-                        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                    }
-                    std::fs::write(&backup_file, original.to_string())
-                        .map_err(|e| e.to_string())?;
-                }
-            }
+        let original = LockScreen::OriginalImageFile()
+            .map_err(|_| "无法读取当前锁屏图片；为避免无法恢复，已取消接管。".to_string())?
+            .AbsoluteUri()
+            .map_err(|_| "无法读取当前锁屏图片；为避免无法恢复，已取消接管。".to_string())?
+            .to_string();
+        let managed_path =
+            lock_screen_backup::asset_directory(&config_dir).join("dsh-wallpaper-sleep.png");
+        let backup_state = inspect_backup(&config_dir);
+        let managed_image_active = managed_image_is_active(Some(&original), &managed_path);
+        if has_stale_backup(&backup_state, managed_image_active) {
+            return Err("检测到接管期间锁屏已由用户或其他程序更改。为避免覆盖当前锁屏，应用不会再次接管；原备份已保留。请先在 Windows 设置中确认锁屏图片，再决定是否清理或恢复。".into());
         }
-        const SLEEP_RESOURCE: &str = "personas/wake-frames/variant-anima/sleep.png";
-        let bundled_sleep_image = app
-            .path()
-            .resolve(SLEEP_RESOURCE, tauri::path::BaseDirectory::Resource)
-            .ok()
-            .filter(|path| path.is_file())
+        if managed_image_active && matches!(backup_state, LockScreenBackupState::Missing) {
+            return Err("当前锁屏已经是本应用的熟睡画面，但原锁屏备份不存在。为避免把托管图片误当作原图，已拒绝再次接管；请先在 Windows 设置中手动选择原图。".into());
+        }
+        // Prepare the application-owned managed file before creating a backup.
+        // A missing bundle resource or failed copy must not leave a valid
+        // restore manifest behind while the user's original image is still
+        // active (which would later look like a stale takeover).
+        let bundled_sleep_image = bundled_sleep_resource_candidates()
+            .into_iter()
+            .find_map(|resource| {
+                app.path()
+                    .resolve(resource, tauri::path::BaseDirectory::Resource)
+                    .ok()
+                    .filter(|path| path.is_file())
+            })
             // `tauri dev` does not copy bundle resources next to target/debug.
             // The source public directory remains the canonical development
             // resource location, while packaged builds take the branch above.
             .or_else(|| {
                 std::env::current_dir()
                     .ok()
-                    .map(|cwd| cwd.join("public").join(SLEEP_RESOURCE))
+                    .map(|cwd| {
+                        cwd.join("public")
+                            .join("personas/wake-frames/variant-anima/sleep.png")
+                    })
                     .filter(|path| path.is_file())
             })
             .or_else(|| {
                 std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .parent()
-                    .map(|root| root.join("public").join(SLEEP_RESOURCE))
+                    .map(|root| {
+                        root.join("public")
+                            .join("personas/wake-frames/variant-anima/sleep.png")
+                    })
                     .filter(|path| path.is_file())
             })
             .ok_or_else(|| "未找到内置的锁屏睡眠图片。请重新安装 dsh-wallpaper。".to_string())?;
@@ -1328,73 +1370,220 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
         // resource bundle (especially during `tauri dev`): it can receive a
         // virtual/masked resource path and return 0x800700A1.  Hand Windows a
         // normal, current-user-owned file instead.
-        let managed_dir = backup_file
-            .parent()
-            .ok_or_else(|| "无法确定锁屏图片存放目录".to_string())?
-            .join("lock-screen");
+        let managed_dir = lock_screen_backup::asset_directory(&config_dir);
         std::fs::create_dir_all(&managed_dir)
             .map_err(|_| "无法创建锁屏图片存放目录".to_string())?;
         let managed_path = managed_dir.join("dsh-wallpaper-sleep.png");
         std::fs::copy(&bundled_sleep_image, &managed_path)
             .map_err(|_| "无法准备锁屏图片。请检查应用安装目录是否完整。".to_string())?;
-        let path_string = HSTRING::from(managed_path.to_string_lossy().as_ref());
-        let file = StorageFile::GetFileFromPathAsync(&path_string)
-            .map_err(|_| "Windows 无法读取准备好的锁屏图片。".to_string())?
-            .get()
-            .map_err(|_| "Windows 无法打开准备好的锁屏图片。".to_string())?;
-        let settings = UserProfilePersonalizationSettings::Current().map_err(|e| e.to_string())?;
-        let changed = settings
-            .TrySetLockScreenImageAsync(&file)
-            .map_err(|_| "Windows 拒绝设置锁屏图片（可能被组织策略或 Spotlight 管理）。".to_string())?
-            .get()
-            .map_err(|_| "Windows 未能完成锁屏图片设置。".to_string())?;
-        if !changed {
-            // Some Windows 11 editions deny TrySet… to unpackaged desktop
-            // apps even with no policy configured. The older LockScreen API
-            // is the compatible path for a local static PNG.
-            LockScreen::SetImageFileAsync(&file)
-                .map_err(|_| "Windows 不允许此未打包桌面应用接管锁屏图片。请使用 MSIX 安装包，或在 Windows 设置中手动选择该图片。".to_string())?
-                .get()
-                .map_err(|_| "Windows 不允许此未打包桌面应用接管锁屏图片。请使用 MSIX 安装包，或在 Windows 设置中手动选择该图片。".to_string())?;
-        }
-        Ok("锁屏图片已设置；密码页继续由 Windows 原生模糊处理。".into())
-    } else {
-        let original = std::fs::read_to_string(&backup_file)
+        let captured_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "系统时间无效，已取消锁屏接管。".to_string())?
+            .as_millis() as u64;
+        let lease = ensure_backup_for_takeover(&config_dir, &original, captured_at)?;
+        // A user can change their lock screen while the resource copy and
+        // snapshot above are running.  Re-read immediately before the only
+        // setter and refuse to overwrite a newer choice.  This cannot remove
+        // the unavoidable kernel-level race, but it makes the application
+        // itself fail closed across its full preflight transaction.
+        let current_before_set = LockScreen::OriginalImageFile()
             .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty());
-        if let Some(original) = original {
-            let path = original
-                .strip_prefix("file:///")
-                .or_else(|| original.strip_prefix("file://"))
-                .unwrap_or(&original)
-                .replace('/', "\\");
-            if std::path::Path::new(&path).exists() {
-                let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path))
-                    .map_err(|e| e.to_string())?
+            .and_then(|uri| uri.AbsoluteUri().ok())
+            .map(|uri| uri.to_string());
+        let Some(current_before_set) = current_before_set else {
+            return abort_lock_screen_takeover_before_set(
+                &config_dir,
+                &lease,
+                "Windows 未能在写入前重新读取锁屏状态；应用没有修改锁屏，已取消接管。",
+            );
+        };
+        if !same_local_file_uri(&original, &current_before_set) {
+            return abort_lock_screen_takeover_before_set(
+                &config_dir,
+                &lease,
+                "检测到锁屏图片在接管准备期间已被用户或其他程序更改；应用没有覆盖新图片。",
+            );
+        }
+        let set_result = (|| -> Result<(), String> {
+            let path_string = HSTRING::from(managed_path.to_string_lossy().as_ref());
+            let file = StorageFile::GetFileFromPathAsync(&path_string)
+                .map_err(|_| "Windows 无法读取准备好的锁屏图片。".to_string())?
+                .get()
+                .map_err(|_| "Windows 无法打开准备好的锁屏图片。".to_string())?;
+            let settings = UserProfilePersonalizationSettings::Current()
+                .map_err(|_| "Windows 无法打开锁屏个性化设置。".to_string())?;
+            let changed = settings
+                .TrySetLockScreenImageAsync(&file)
+                .map_err(|_| {
+                    "Windows 拒绝设置锁屏图片（可能被组织策略或 Spotlight 管理）。".to_string()
+                })?
+                .get()
+                .map_err(|_| "Windows 未能完成锁屏图片设置。".to_string())?;
+            if !changed {
+                // Some Windows 11 editions deny TrySet… to unpackaged desktop
+                // apps even with no policy configured. The older LockScreen API
+                // is the compatible path for a local static PNG.
+                LockScreen::SetImageFileAsync(&file)
+                    .map_err(|_| "Windows 拒绝设置锁屏图片。请检查系统策略，或在 Windows 设置中手动选择该图片。".to_string())?
                     .get()
-                    .map_err(|e| e.to_string())?;
-                let settings = UserProfilePersonalizationSettings::Current().map_err(|e| e.to_string())?;
+                    .map_err(|_| "Windows 拒绝设置锁屏图片。请检查系统策略，或在 Windows 设置中手动选择该图片。".to_string())?;
+            }
+            Ok(())
+        })();
+        finish_lock_screen_takeover_attempt(&config_dir, &lease, &managed_path, set_result)
+    } else {
+        let managed_path =
+            lock_screen_backup::asset_directory(&config_dir).join("dsh-wallpaper-sleep.png");
+        let current_image_uri = LockScreen::OriginalImageFile()
+            .ok()
+            .and_then(|uri| uri.AbsoluteUri().ok())
+            .map(|uri| uri.to_string());
+        let backup_state = inspect_backup(&config_dir);
+        let managed_image_active =
+            managed_image_is_active(current_image_uri.as_deref(), &managed_path);
+        if has_stale_backup(&backup_state, managed_image_active) {
+            return Ok("已停止本应用的锁屏接管状态。检测到当前锁屏已由用户或其他程序更改，因此未覆盖它；原备份已保留。".into());
+        }
+        if let LockScreenBackupState::Valid(manifest) = backup_state {
+            if let Ok(path) = restore_snapshot_path(&config_dir, &manifest) {
+                let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(
+                    path.to_string_lossy().as_ref(),
+                ))
+                .map_err(|e| e.to_string())?
+                .get()
+                .map_err(|e| e.to_string())?;
+                let settings =
+                    UserProfilePersonalizationSettings::Current().map_err(|e| e.to_string())?;
                 let restored = settings
                     .TrySetLockScreenImageAsync(&file)
                     .map_err(|e| e.to_string())?
                     .get()
                     .map_err(|e| e.to_string())?;
                 if restored {
-                    let _ = std::fs::remove_file(&backup_file);
-                    return Ok("已恢复接管前的静态锁屏图片。".into());
+                    return finish_verified_lock_screen_restore(&config_dir, &manifest, &path);
                 }
                 // Match the enable path: unpackaged desktop processes on
                 // some Windows 11 builds report false from TrySet… while the
                 // compatibility LockScreen API succeeds for the same file.
-                if LockScreen::SetImageFileAsync(&file).is_ok_and(|operation| operation.get().is_ok()) {
-                    let _ = std::fs::remove_file(&backup_file);
-                    return Ok("已恢复接管前的静态锁屏图片。".into());
+                if LockScreen::SetImageFileAsync(&file)
+                    .is_ok_and(|operation| operation.get().is_ok())
+                {
+                    return finish_verified_lock_screen_restore(&config_dir, &manifest, &path);
                 }
             }
         }
-        Ok("已停止接管后续锁屏图片；未能恢复原静态图片。Spotlight 状态无法由 Windows API 可靠备份和恢复。".into())
+        Err("未能恢复原静态锁屏图片；接管仍保持启用，原备份没有被删除。请稍后重试或在 Windows 设置中手动恢复。".into())
     }
+}
+
+#[cfg(windows)]
+fn finish_lock_screen_takeover_attempt(
+    config_dir: &std::path::Path,
+    lease: &LockScreenBackupLease,
+    managed_image: &std::path::Path,
+    set_result: Result<(), String>,
+) -> Result<String, String> {
+    // Never discard a newly captured restore point merely because the
+    // verification query failed. The setter can succeed even when a later
+    // OriginalImageFile read is unavailable; in that indeterminate case the
+    // backup is the only safe recovery path.
+    let current_is_managed = LockScreen::OriginalImageFile()
+        .ok()
+        .and_then(|uri| uri.AbsoluteUri().ok())
+        .map(|uri| managed_image_is_active(Some(&uri.to_string()), managed_image));
+
+    match (set_result, current_is_managed) {
+        // Even when an API reports an error, the authoritative ownership check
+        // says Windows is using our image.  Keep the recovery point.
+        (_, Some(true)) => Ok("锁屏图片已设置；密码页继续由 Windows 原生模糊处理。".into()),
+        // A successful setter plus an ambiguous or mismatched later read is
+        // not proof that the setter failed.  Query propagation can lag the
+        // completed WinRT operation, and Windows can normalize a path in ways
+        // we do not recognize.  Retaining the only original-image snapshot is
+        // safer than trying to make the transaction look clean.
+        (Ok(()), Some(false)) => Err("Windows 未确认锁屏已切换为本应用的熟睡画面；恢复点已保留，应用没有删除任何原图备份。请刷新检查后再决定是否恢复或重试。".into()),
+        (Ok(()), None) => Err("Windows 已完成锁屏设置请求，但无法读取最终状态；恢复点已保留，应用没有删除任何原图备份。请刷新检查后再决定是否恢复或重试。".into()),
+        // Only an explicit setter failure combined with a positive read of a
+        // non-managed image can roll back a backup created in *this* attempt.
+        // It never deletes a recovery point inherited from an earlier run.
+        (Err(error), Some(false)) => abort_lock_screen_takeover_before_set(config_dir, lease, &error),
+        (Err(error), None) => Err(format!(
+            "{error} 同时无法确认锁屏最终状态；恢复点已保留，应用没有删除任何原图备份。"
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn abort_lock_screen_takeover_before_set(
+    config_dir: &std::path::Path,
+    lease: &LockScreenBackupLease,
+    reason: &str,
+) -> Result<String, String> {
+    match discard_backup_after_failed_takeover(config_dir, lease) {
+        Ok(()) => Err(reason.into()),
+        Err(_) => Err(format!(
+            "{reason} 本次接管创建的恢复点未能清理，已保留以避免丢失原图。"
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn finish_verified_lock_screen_restore(
+    config_dir: &std::path::Path,
+    manifest: &LockScreenBackupManifest,
+    expected_image: &std::path::Path,
+) -> Result<String, String> {
+    let current_uri = LockScreen::OriginalImageFile()
+        .ok()
+        .and_then(|uri| uri.AbsoluteUri().ok())
+        .map(|uri| uri.to_string());
+    if !managed_image_is_active(current_uri.as_deref(), expected_image) {
+        return Err("Windows 未确认原锁屏图片已恢复；接管备份已保留，请稍后重试或在 Windows 设置中手动恢复。".into());
+    }
+    remove_backup_after_restore(config_dir, manifest)?;
+    Ok("已恢复接管前的静态锁屏图片。".into())
+}
+
+/// Returns whether this process has a Windows package identity. Windows
+/// documents `APPMODEL_ERROR_NO_PACKAGE` as the explicit unpackaged result;
+/// the length probe is sufficient, so no package name is retained or exposed.
+#[cfg(windows)]
+fn has_package_identity() -> Result<bool, String> {
+    let mut length = 0u32;
+    let status = unsafe { GetCurrentPackageFullName(&mut length, None) };
+    if status == APPMODEL_ERROR_NO_PACKAGE {
+        return Ok(false);
+    }
+    if status == ERROR_INSUFFICIENT_BUFFER || status.is_ok() {
+        return Ok(true);
+    }
+    Err(format!(
+        "无法判断当前应用的 MSIX 包身份（Windows 错误码 {}）；为避免错误接管，已取消操作。",
+        status.0
+    ))
+}
+
+#[cfg(windows)]
+fn can_attempt_lock_screen_takeover(has_package_identity: bool) -> bool {
+    has_package_identity
+}
+
+#[cfg(windows)]
+fn bundled_sleep_resource_candidates() -> [&'static str; 2] {
+    [
+        "_up_/public/personas/wake-frames/variant-anima/sleep.png",
+        // Compatibility for older test bundles assembled before the current
+        // Tauri resource mapping was documented and verified.
+        "personas/wake-frames/variant-anima/sleep.png",
+    ]
+}
+
+#[cfg(windows)]
+fn remove_backup_after_restore(
+    config_dir: &std::path::Path,
+    manifest: &LockScreenBackupManifest,
+) -> Result<(), String> {
+    remove_backup_after_verified_restore(config_dir, manifest)
 }
 
 /// Read-only preflight for lock-screen ownership. It never calls a WinRT setter.
@@ -1403,9 +1592,12 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
 #[serde(rename_all = "camelCase")]
 pub struct LockScreenDiagnostics {
     pub supported: bool,
+    pub package_identity: bool,
+    pub takeover_available: bool,
     pub original_image_uri: Option<String>,
     pub backup_exists: bool,
     pub backup_valid: bool,
+    pub stale_backup: bool,
     pub managed_image_ready: bool,
     pub managed_image_active: bool,
     pub development_build: bool,
@@ -1415,25 +1607,53 @@ pub struct LockScreenDiagnostics {
 #[cfg(windows)]
 pub fn lock_screen_diagnostics(app: &tauri::AppHandle) -> Result<LockScreenDiagnostics, String> {
     let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    let backup_file = config_dir.join("lock-screen-backup.txt");
-    let managed_image = config_dir.join("lock-screen").join("dsh-wallpaper-sleep.png");
-    let original_image_uri = LockScreen::OriginalImageFile().ok().and_then(|uri| uri.AbsoluteUri().ok()).map(|uri| uri.to_string());
-    let backup = std::fs::read_to_string(&backup_file).ok().map(|value| value.trim().to_string());
-    let backup_valid = backup.as_deref().is_some_and(|value| {
-        let path = value.strip_prefix("file:///").or_else(|| value.strip_prefix("file://")).unwrap_or(value).replace('/', "\\");
-        std::path::Path::new(&path).is_file()
-    });
+    let managed_image =
+        lock_screen_backup::asset_directory(&config_dir).join("dsh-wallpaper-sleep.png");
+    let original_image_uri = LockScreen::OriginalImageFile()
+        .ok()
+        .and_then(|uri| uri.AbsoluteUri().ok())
+        .map(|uri| uri.to_string());
+    let backup_state = inspect_backup(&config_dir);
+    let backup_exists = !matches!(backup_state, LockScreenBackupState::Missing);
+    let backup_valid = matches!(backup_state, LockScreenBackupState::Valid(_));
+    let managed_image_active =
+        managed_image_is_active(original_image_uri.as_deref(), &managed_image);
+    let stale_backup = has_stale_backup(&backup_state, managed_image_active);
     let supported = UserProfilePersonalizationSettings::IsSupported().map_err(|e| e.to_string())?;
+    let package_identity = has_package_identity()?;
+    let takeover_available = supported && can_attempt_lock_screen_takeover(package_identity);
     let mut warnings = Vec::new();
-    if !supported { warnings.push("当前 Windows 策略不允许应用修改锁屏图片。".into()); }
-    if backup_file.exists() && !backup_valid { warnings.push("已发现旧锁屏备份，但原图片已不存在，停止接管时可能无法自动恢复。".into()); }
-    if original_image_uri.as_deref().is_none_or(|uri| !uri.starts_with("file:///")) { warnings.push("当前锁屏可能由 Windows Spotlight 或其他动态来源管理，Windows API 无法可靠还原该动态状态。".into()); }
-    if cfg!(debug_assertions) { warnings.push("当前为开发运行；部分 Windows 11 版本会拒绝未打包桌面应用设置锁屏。正式验收须在安装包中复测。".into()); }
-    let managed_image_active = original_image_uri.as_deref().is_some_and(|uri| {
-        let current = uri.strip_prefix("file:///").or_else(|| uri.strip_prefix("file://")).unwrap_or(uri).replace('/', "\\");
-        current.eq_ignore_ascii_case(&managed_image.to_string_lossy())
-    });
-    Ok(LockScreenDiagnostics { supported, original_image_uri, backup_exists: backup_file.exists(), backup_valid, managed_image_ready: managed_image.is_file(), managed_image_active, development_build: cfg!(debug_assertions), warnings })
+    if !supported {
+        warnings.push("当前 Windows 策略不允许应用修改锁屏图片。".into());
+    }
+    if backup_exists && !backup_valid {
+        warnings.push("已发现不完整的锁屏备份；应用会拒绝新的接管，以防覆盖唯一的恢复点。".into());
+    }
+    if stale_backup {
+        warnings.push("检测到原锁屏备份，但当前锁屏已由用户或其他程序更改；应用不会恢复或再次接管，以免覆盖当前图片。备份已保留。".into());
+    }
+    if original_image_uri
+        .as_deref()
+        .is_none_or(|uri| !uri.starts_with("file:///"))
+    {
+        warnings.push("当前锁屏可能由 Windows Spotlight 或其他动态来源管理，Windows API 无法可靠还原该动态状态。".into());
+    }
+    if !package_identity {
+        warnings.push("当前进程没有 MSIX 包身份；正式桌面版不会接管锁屏。请安装 MSIX 包。".into());
+    }
+    Ok(LockScreenDiagnostics {
+        supported,
+        package_identity,
+        takeover_available,
+        original_image_uri,
+        backup_exists,
+        backup_valid,
+        stale_backup,
+        managed_image_ready: managed_image.is_file(),
+        managed_image_active,
+        development_build: cfg!(debug_assertions),
+        warnings,
+    })
 }
 
 #[cfg(not(windows))]
@@ -1455,15 +1675,59 @@ pub async fn set_lock_screen(_: &tauri::AppHandle, _: bool) -> Result<String, St
 #[cfg(not(windows))]
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LockScreenDiagnostics { pub supported: bool, pub original_image_uri: Option<String>, pub backup_exists: bool, pub backup_valid: bool, pub managed_image_ready: bool, pub managed_image_active: bool, pub development_build: bool, pub warnings: Vec<String> }
+pub struct LockScreenDiagnostics {
+    pub supported: bool,
+    pub package_identity: bool,
+    pub takeover_available: bool,
+    pub original_image_uri: Option<String>,
+    pub backup_exists: bool,
+    pub backup_valid: bool,
+    pub stale_backup: bool,
+    pub managed_image_ready: bool,
+    pub managed_image_active: bool,
+    pub development_build: bool,
+    pub warnings: Vec<String>,
+}
 #[cfg(not(windows))]
-pub fn lock_screen_diagnostics(_: &tauri::AppHandle) -> Result<LockScreenDiagnostics, String> { Ok(LockScreenDiagnostics { supported: false, original_image_uri: None, backup_exists: false, backup_valid: false, managed_image_ready: false, managed_image_active: false, development_build: false, warnings: vec!["锁屏接管仅支持 Windows。".into()] }) }
+pub fn lock_screen_diagnostics(_: &tauri::AppHandle) -> Result<LockScreenDiagnostics, String> {
+    Ok(LockScreenDiagnostics {
+        supported: false,
+        package_identity: false,
+        takeover_available: false,
+        original_image_uri: None,
+        backup_exists: false,
+        backup_valid: false,
+        stale_backup: false,
+        managed_image_ready: false,
+        managed_image_active: false,
+        development_build: false,
+        warnings: vec!["锁屏接管仅支持 Windows。".into()],
+    })
+}
 #[cfg(not(windows))]
 pub fn start_foreground_monitor(_: tauri::AppHandle) {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packaged_builds_are_always_eligible_for_lock_screen_takeover() {
+        assert!(can_attempt_lock_screen_takeover(true));
+    }
+
+    #[test]
+    fn unpackaged_lock_screen_takeover_is_never_eligible() {
+        assert!(!can_attempt_lock_screen_takeover(false));
+    }
+
+    #[test]
+    fn packaged_sleep_resource_uses_tauris_verified_windows_path_first() {
+        assert_eq!(
+            bundled_sleep_resource_candidates()[0],
+            "_up_/public/personas/wake-frames/variant-anima/sleep.png"
+        );
+    }
 
     static REGION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

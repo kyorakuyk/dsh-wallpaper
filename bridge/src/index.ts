@@ -5,12 +5,12 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-user-approval'
-import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { mkdir, open, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { API_PREFIX, BRIDGE_VERSION, bearerAuthorized, contentText, mapSessionEvent, parseSessionRoute, type BridgeEvent } from './protocol.ts'
+import { API_PREFIX, BRIDGE_VERSION, bearerAuthorized, contentText, errorReference, isSafeSessionId, mapSessionEvent, parseSessionRoute, type BridgeEvent } from './protocol.ts'
 
 export const name = 'wallpaper-bridge'
 export const inject = ['agents', 'webServer']
@@ -29,6 +29,11 @@ interface LiveSession {
   handle: AgentHandle
   clients: Set<ServerResponse>
 }
+
+// This is an HTTP boundary, so measure the actual UTF-8 payload rather than
+// JavaScript UTF-16 code units. Keep it in lockstep with the native client.
+const MAX_MESSAGE_BYTES = 100_000
+const MAX_CWD_LENGTH = 4_096
 
 function defaultTokenFile(): string {
   const root = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
@@ -62,6 +67,12 @@ function json(res: ServerResponse, status: number, value: unknown): void {
   res.end(JSON.stringify(value))
 }
 
+function malformed(res: ServerResponse, error: unknown, logger: { warn(message: string): void }): void {
+  const reference = errorReference(error)
+  logger.warn(`wallpaper bridge request rejected (${reference})`)
+  json(res, 400, { error: 'invalid-request', reference })
+}
+
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = []
   let length = 0
@@ -91,6 +102,15 @@ function sessionSummary(live: LiveSession): Record<string, unknown> {
   }
 }
 
+function messageForClient(error: unknown): string {
+  // DSH errors can include provider response bodies, paths, or credentials.
+  // The wallpaper only needs to know that the turn stopped; the reference is
+  // enough to correlate a local host log without putting the raw failure into
+  // the WebView or SSE transcript.
+  const reference = errorReference(error)
+  return `Harness 会话执行失败（参考 ${reference}）`
+}
+
 function historyOf(session: Session): Array<Record<string, unknown>> {
   return session.deriveMessages()
     .filter((message) => message.role === 'user' || message.role === 'assistant')
@@ -100,7 +120,10 @@ function historyOf(session: Session): Array<Record<string, unknown>> {
 export function apply(ctx: Context, config: Config = {}): void {
   const live = new Map<string, LiveSession>()
   let token = ''
-  const tokenReady = ensureToken(config.tokenFile?.trim() || defaultTokenFile()).then((value) => { token = value })
+  let tokenFailure: string | undefined
+  const tokenReady = ensureToken(config.tokenFile?.trim() || defaultTokenFile())
+    .then((value) => { token = value })
+    .catch((error: unknown) => { tokenFailure = errorReference(error) })
 
   const publish = (sessionId: string, event: BridgeEvent): void => {
     const entry = live.get(sessionId)
@@ -115,6 +138,26 @@ export function apply(ctx: Context, config: Config = {}): void {
     const id = String(session.id)
     if (!live.has(id)) return
     for (const mapped of mapSessionEvent(event)) publish(id, mapped)
+  })
+
+  ctx.on('agent/error', ({ agent, error }) => {
+    const sessionId = String(agent.session.id)
+    if (!live.has(sessionId)) return
+    publish(sessionId, {
+      type: 'error',
+      code: 'HARNESS_AGENT_ERROR',
+      recoverable: true,
+      message: messageForClient(error),
+    })
+  })
+
+  ctx.on('agent/disposed', ({ agent }) => {
+    const sessionId = String(agent.session.id)
+    const entry = live.get(sessionId)
+    if (!entry || entry.handle.agent !== agent) return
+    publish(sessionId, { type: 'disconnected', recoverable: true })
+    for (const client of entry.clients) client.end()
+    live.delete(sessionId)
   })
 
   ctx.on('approval/request', (request, next) => {
@@ -155,6 +198,8 @@ export function apply(ctx: Context, config: Config = {}): void {
           protocolVersion: 1,
           dsh: 'online',
           capabilities: ['sessions', 'resume', 'history', 'sse', 'cancel', 'approval-handoff'],
+          authentication: tokenFailure === undefined ? 'ready' : 'unavailable',
+          ...(tokenFailure === undefined ? {} : { tokenReference: tokenFailure }),
           ...(active ? sessionSummary(active) : {}),
         })
       },
@@ -165,6 +210,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       path: `${API_PREFIX}/sessions`,
       handler: async (req, res) => {
         await tokenReady
+        if (tokenFailure !== undefined) return json(res, 503, { error: 'bridge-token-unavailable', reference: tokenFailure })
         if (!bearerAuthorized(req.headers.authorization, token)) return json(res, 401, { error: 'unauthorized' })
         const url = new URL(req.url ?? '/', 'http://127.0.0.1')
         const route = parseSessionRoute(url.pathname)
@@ -176,16 +222,19 @@ export function apply(ctx: Context, config: Config = {}): void {
             const requested = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
             const resume = typeof body.resumeSessionId === 'string' ? body.resumeSessionId.trim() : ''
             const id = resume || requested || `wallpaper-${randomUUID()}`
+            if (!isSafeSessionId(id)) return json(res, 400, { error: 'invalid-session-id' })
             const existing = live.get(id)
             if (existing) return json(res, 200, sessionSummary(existing))
             const provider = typeof body.provider === 'string' && body.provider.trim() ? body.provider.trim() : undefined
             const model = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : undefined
             const agentOptions = provider || model ? { provider, model } : undefined
+            const cwd = typeof body.cwd === 'string' && body.cwd.trim() ? body.cwd.trim() : config.cwd
+            if (cwd && cwd.length > MAX_CWD_LENGTH) return json(res, 400, { error: 'invalid-cwd' })
             const handle = resume
               ? await wctx.agents.resume({ resumeSessionId: SessionId(id), agentOptions })
               : await wctx.agents.create({
                   sessionId: SessionId(id),
-                  meta: { cwd: typeof body.cwd === 'string' ? body.cwd : config.cwd },
+                  meta: { cwd },
                   agentOptions,
                 })
             const entry = { handle, clients: new Set<ServerResponse>() }
@@ -218,6 +267,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             const body = await readJson(req)
             const text = typeof body.text === 'string' ? body.text.trim() : ''
             if (!text) return json(res, 400, { error: 'text-required' })
+            if (Buffer.byteLength(text, 'utf8') > MAX_MESSAGE_BYTES) return json(res, 413, { error: 'text-too-large' })
             entry.handle.agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
             return json(res, 202, { accepted: true, sessionId: route.sessionId })
           }
@@ -228,7 +278,8 @@ export function apply(ctx: Context, config: Config = {}): void {
             return json(res, 202, { cancelled: true, sessionId: route.sessionId })
           }
         } catch (error) {
-          const reference = createHash('sha256').update(String(error)).digest('hex').slice(0, 12)
+          if (error instanceof SyntaxError || error instanceof RangeError) return malformed(res, error, wctx.logger)
+          const reference = errorReference(error)
           wctx.logger.warn(`wallpaper bridge request failed (${reference})`)
           return json(res, 500, { error: 'bridge-error', reference })
         }

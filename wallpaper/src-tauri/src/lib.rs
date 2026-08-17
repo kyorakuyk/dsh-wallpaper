@@ -1,6 +1,7 @@
 mod app_core;
 mod appearance;
 mod chat;
+mod lock_screen_backup;
 mod windows_integration;
 
 use app_core::{Activity, AppAction, AppCore, AppSnapshot, BackendMode, HarnessAvailability};
@@ -41,7 +42,9 @@ fn dispatch_tray_ui_action(app: &tauri::AppHandle, action: AppAction) {
 }
 
 fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
-    let window = app.get_webview_window("settings").ok_or("settings window missing")?;
+    let window = app
+        .get_webview_window("settings")
+        .ok_or("settings window missing")?;
     window.show().map_err(|error| error.to_string())?;
     window.unminimize().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())?;
@@ -138,7 +141,9 @@ async fn set_lock_screen_enabled(app: tauri::AppHandle, enabled: bool) -> Result
 }
 
 #[tauri::command]
-fn get_lock_screen_diagnostics(app: tauri::AppHandle) -> Result<windows_integration::LockScreenDiagnostics, String> {
+fn get_lock_screen_diagnostics(
+    app: tauri::AppHandle,
+) -> Result<windows_integration::LockScreenDiagnostics, String> {
     windows_integration::lock_screen_diagnostics(&app)
 }
 
@@ -193,20 +198,49 @@ fn translucent_tb_status() -> TranslucentTbStatus {
     {
         let running = std::process::Command::new("tasklist")
             .args(["/FI", "IMAGENAME eq TranslucentTB.exe", "/FO", "CSV", "/NH"])
-            .output().ok().is_some_and(|output| String::from_utf8_lossy(&output.stdout).to_ascii_lowercase().contains("translucenttb.exe"));
-        let alias = std::process::Command::new("where.exe").arg("ttb.exe").output().ok().is_some_and(|output| output.status.success());
+            .output()
+            .ok()
+            .is_some_and(|output| {
+                String::from_utf8_lossy(&output.stdout)
+                    .to_ascii_lowercase()
+                    .contains("translucenttb.exe")
+            });
+        let alias = std::process::Command::new("where.exe")
+            .arg("ttb.exe")
+            .output()
+            .ok()
+            .is_some_and(|output| output.status.success());
         let packaged = std::process::Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", "if (Get-AppxPackage -Name TranslucentTB -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"])
             .status().ok().is_some_and(|status| status.success());
-        return TranslucentTbStatus { installed: alias || packaged, running, source: if alias { Some("execution-alias".into()) } else if packaged { Some("msix".into()) } else { None } };
+        return TranslucentTbStatus {
+            installed: alias || packaged,
+            running,
+            source: if alias {
+                Some("execution-alias".into())
+            } else if packaged {
+                Some("msix".into())
+            } else {
+                None
+            },
+        };
     }
     #[cfg(not(windows))]
-    TranslucentTbStatus { installed: false, running: false, source: None }
+    TranslucentTbStatus {
+        installed: false,
+        running: false,
+        source: None,
+    }
 }
 
 #[tauri::command]
 fn launch_translucent_tb() -> Result<(), String> {
-    std::process::Command::new("ttb.exe").spawn().map(|_| ()).map_err(|_| "未找到 TranslucentTB。请先从 Microsoft Store 安装并启用 ttb.exe 执行别名。".into())
+    std::process::Command::new("ttb.exe")
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| {
+            "未找到 TranslucentTB。请先从 Microsoft Store 安装并启用 ttb.exe 执行别名。".into()
+        })
 }
 
 #[tauri::command]
@@ -232,7 +266,10 @@ fn open_translucent_tb_install() -> Result<(), String> {
 
         // A Store-disabled Windows installation still gets a useful route.
         std::process::Command::new("rundll32.exe")
-            .args(["url.dll,FileProtocolHandler", "https://apps.microsoft.com/detail/9PF4KZ2VN4W9"])
+            .args([
+                "url.dll,FileProtocolHandler",
+                "https://apps.microsoft.com/detail/9PF4KZ2VN4W9",
+            ])
             .spawn()
             .map(|_| ())
             .map_err(|error| format!("无法打开 TranslucentTB 下载页：{error}"))
@@ -356,9 +393,79 @@ async fn harness_history(
 
 static HARNESS_STATUS_CACHE: OnceLock<RwLock<serde_json::Value>> = OnceLock::new();
 
+/// The wallpaper bridge exposes a small, versioned protocol of its own.  A
+/// listening service on port 3080 is not sufficient proof that it is our
+/// bridge: it may be DSH's regular web UI, an older bridge, or another local
+/// service altogether.
+const HARNESS_BRIDGE_PROTOCOL_VERSION: u64 = 1;
+const REQUIRED_HARNESS_BRIDGE_CAPABILITIES: &[&str] = &[
+    "sessions",
+    "resume",
+    "history",
+    "sse",
+    "cancel",
+    "approval-handoff",
+];
+
 fn harness_status_cache() -> &'static RwLock<serde_json::Value> {
     HARNESS_STATUS_CACHE
         .get_or_init(|| RwLock::new(serde_json::json!({ "availability": "offline" })))
+}
+
+/// Convert a bridge status document into the small status shape exposed to
+/// the WebView.  This is intentionally fail-closed: only a bridge that speaks
+/// the protocol we need can enable Harness mode.
+fn compatible_harness_bridge_status(data: &serde_json::Value) -> Option<serde_json::Value> {
+    let protocol_version = data
+        .get("protocolVersion")
+        .and_then(serde_json::Value::as_u64)?;
+    if protocol_version != HARNESS_BRIDGE_PROTOCOL_VERSION {
+        return None;
+    }
+    if data.get("dsh").and_then(serde_json::Value::as_str) != Some("online") {
+        return None;
+    }
+    if data
+        .get("authentication")
+        .and_then(serde_json::Value::as_str)
+        != Some("ready")
+    {
+        return None;
+    }
+
+    let capabilities = data
+        .get("capabilities")
+        .and_then(serde_json::Value::as_array)?;
+    // A malformed capability list must not accidentally pass because it has a
+    // few expected string values mixed with arbitrary JSON.
+    if !capabilities.iter().all(serde_json::Value::is_string) {
+        return None;
+    }
+    if !REQUIRED_HARNESS_BRIDGE_CAPABILITIES.iter().all(|required| {
+        capabilities
+            .iter()
+            .any(|capability| capability.as_str() == Some(*required))
+    }) {
+        return None;
+    }
+
+    let mut status = serde_json::Map::new();
+    status.insert(
+        "availability".into(),
+        serde_json::Value::String("bridge-ready".into()),
+    );
+    // These are informational only.  Do not let malformed optional metadata
+    // make a compatible bridge unusable, or expose non-string JSON to the UI.
+    for field in ["bridgeVersion", "model", "provider", "reasoningEffort"] {
+        if let Some(value) = data
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        {
+            status.insert(field.into(), serde_json::Value::String(value.into()));
+        }
+    }
+    Some(serde_json::Value::Object(status))
 }
 
 async fn fetch_harness_status() -> serde_json::Value {
@@ -376,19 +483,114 @@ async fn fetch_harness_status() -> serde_json::Value {
     {
         if response.status().is_success() {
             if let Ok(data) = response.json::<serde_json::Value>().await {
-                return serde_json::json!({
-                    "availability": "bridge-ready",
-                    "bridgeVersion": data.get("bridgeVersion"),
-                    "model": data.get("model"),
-                    "provider": data.get("provider"),
-                    "reasoningEffort": data.get("reasoningEffort"),
-                });
+                if let Some(status) = compatible_harness_bridge_status(&data) {
+                    return status;
+                }
             }
         }
     }
     match client.get("http://127.0.0.1:3080/").send().await {
         Ok(_) => serde_json::json!({ "availability": "web-only" }),
         Err(_) => serde_json::json!({ "availability": "offline" }),
+    }
+}
+
+#[cfg(test)]
+mod harness_status_tests {
+    use super::compatible_harness_bridge_status;
+    use serde_json::json;
+
+    fn valid_status() -> serde_json::Value {
+        json!({
+            "bridgeVersion": "1.0.0",
+            "protocolVersion": 1,
+            "dsh": "online",
+            "capabilities": [
+                "sessions",
+                "resume",
+                "history",
+                "sse",
+                "cancel",
+                "approval-handoff",
+                "future-capability"
+            ],
+            "authentication": "ready",
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "reasoningEffort": "high"
+        })
+    }
+
+    #[test]
+    fn accepts_only_a_ready_compatible_bridge() {
+        let status = compatible_harness_bridge_status(&valid_status()).expect("compatible status");
+        assert_eq!(status["availability"], "bridge-ready");
+        assert_eq!(status["bridgeVersion"], "1.0.0");
+        assert_eq!(status["provider"], "deepseek");
+        assert_eq!(status["model"], "deepseek-chat");
+        assert_eq!(status["reasoningEffort"], "high");
+    }
+
+    #[test]
+    fn rejects_incompatible_or_unready_status_documents() {
+        let invalid_statuses = [
+            json!({}),
+            json!({
+                "protocolVersion": 2,
+                "dsh": "online",
+                "capabilities": ["sessions", "resume", "history", "sse", "cancel", "approval-handoff"],
+                "authentication": "ready"
+            }),
+            json!({
+                "protocolVersion": "1",
+                "dsh": "online",
+                "capabilities": ["sessions", "resume", "history", "sse", "cancel", "approval-handoff"],
+                "authentication": "ready"
+            }),
+            json!({
+                "protocolVersion": 1,
+                "dsh": "offline",
+                "capabilities": ["sessions", "resume", "history", "sse", "cancel", "approval-handoff"],
+                "authentication": "ready"
+            }),
+            json!({
+                "protocolVersion": 1,
+                "dsh": "online",
+                "capabilities": ["sessions", "resume", "history", "sse", "cancel"],
+                "authentication": "ready"
+            }),
+            json!({
+                "protocolVersion": 1,
+                "dsh": "online",
+                "capabilities": ["sessions", "resume", "history", "sse", "cancel", "approval-handoff", 3],
+                "authentication": "ready"
+            }),
+            json!({
+                "protocolVersion": 1,
+                "dsh": "online",
+                "capabilities": ["sessions", "resume", "history", "sse", "cancel", "approval-handoff"],
+                "authentication": "unavailable"
+            }),
+        ];
+
+        for document in invalid_statuses {
+            assert!(
+                compatible_harness_bridge_status(&document).is_none(),
+                "unexpected compatible status: {document}"
+            );
+        }
+    }
+
+    #[test]
+    fn ignores_malformed_optional_metadata() {
+        let mut document = valid_status();
+        document["model"] = json!({ "unexpected": true });
+        document["provider"] = json!(42);
+        document["reasoningEffort"] = json!("");
+        let status = compatible_harness_bridge_status(&document).expect("compatible status");
+        assert!(status.get("model").is_none());
+        assert!(status.get("provider").is_none());
+        assert!(status.get("reasoningEffort").is_none());
     }
 }
 
@@ -550,7 +752,9 @@ pub fn run() {
                         }
                         dispatch_tray_ui_action(app, AppAction::OpenChat);
                     }
-                    "hide" => dispatch_ui_action(app, AppAction::SetInteractionEnabled(false), false),
+                    "hide" => {
+                        dispatch_ui_action(app, AppAction::SetInteractionEnabled(false), false)
+                    }
                     "deepseek-web" | "deepseek-api" | "harness" => {
                         let _ = app.emit("tray-backend", event.id().as_ref());
                     }
@@ -572,15 +776,23 @@ pub fn run() {
                         #[cfg(windows)]
                         windows_integration::restore_desktop_icons();
                         app.exit(0)
-                    },
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if matches!(event, TrayIconEvent::DoubleClick { button: MouseButton::Left, .. }) {
+                    if matches!(
+                        event,
+                        TrayIconEvent::DoubleClick {
+                            button: MouseButton::Left,
+                            ..
+                        }
+                    ) {
                         let app = tray.app_handle();
                         dispatch_tray_ui_action(app, AppAction::OpenSettings);
                         if let Err(error) = show_settings_window(app) {
-                            log::error!("failed to show settings window from tray double-click: {error}");
+                            log::error!(
+                                "failed to show settings window from tray double-click: {error}"
+                            );
                         }
                     }
                 });

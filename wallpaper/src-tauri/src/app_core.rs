@@ -289,8 +289,7 @@ mod tests {
 }
 
 fn can_show_interaction(state: &AppSnapshot) -> bool {
-    state.interaction.enabled
-        && matches!(state.phase, SystemPhase::Idle | SystemPhase::Chatting)
+    state.interaction.enabled && matches!(state.phase, SystemPhase::Idle | SystemPhase::Chatting)
 }
 
 fn recompute_interaction_visibility(state: &mut AppSnapshot) {

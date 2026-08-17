@@ -224,7 +224,9 @@ impl AppearanceState {
             .list_library_assets(None)?
             .into_iter()
             .find(|asset| asset.id == asset_id)
-            .ok_or_else(|| AppearanceCommandError::from(StoreError::NotFound("asset not found".into())))?;
+            .ok_or_else(|| {
+                AppearanceCommandError::from(StoreError::NotFound("asset not found".into()))
+            })?;
         let source = paths.root.join(&asset.object_path);
         let bytes = std::fs::read(&source).map_err(|_| AppearanceCommandError::internal())?;
         Ok(Some(ResolvedAssetDto {

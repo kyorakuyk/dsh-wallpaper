@@ -21,21 +21,51 @@ export type SessionRoute =
   | { kind: SessionItemRouteKind; sessionId: string }
   | null
 
+const MAX_SESSION_ID_LENGTH = 200
+
 export function parseSessionRoute(pathname: string): SessionRoute {
   if (pathname === `${API_PREFIX}/sessions`) return { kind: 'collection' }
   const match = pathname.match(new RegExp(`^${API_PREFIX}/sessions/([^/]+)/(messages|history|events|cancel)$`))
   if (!match?.[1] || !match[2]) return null
-  return { kind: match[2] as SessionItemRouteKind, sessionId: decodeURIComponent(match[1]) }
+  let sessionId: string
+  try {
+    sessionId = decodeURIComponent(match[1])
+  } catch {
+    return null
+  }
+  return isSafeSessionId(sessionId) ? { kind: match[2] as SessionItemRouteKind, sessionId } : null
+}
+
+/**
+ * Session IDs cross the local HTTP boundary and are ultimately handed to DSH.
+ * Keep that boundary deliberately boring: no control characters, no oversized
+ * values, and no path separators even after URL decoding.
+ */
+export function isSafeSessionId(value: string): boolean {
+  return value.length > 0
+    && value.length <= MAX_SESSION_ID_LENGTH
+    && !/[\u0000-\u001f\u007f/\\]/.test(value)
+}
+
+/** A stable, non-sensitive reference suitable for a local HTTP error body. */
+export function errorReference(error: unknown): string {
+  const message = error instanceof Error ? `${error.name}:${error.message}` : String(error)
+  // Keep the original failure (which can contain a model response or a path)
+  // out of both response bodies and ordinary bridge logs.
+  return createHash('sha256').update(message).digest('hex').slice(0, 12)
 }
 
 export function bearerAuthorized(header: string | undefined, token: string): boolean {
-  if (!header?.startsWith('Bearer ')) return false
+  // Token creation deliberately uses 32 random bytes. Treat a missing or
+  // truncated token as an authentication setup failure, never as a valid empty
+  // secret (timingSafeEqual accepts two empty buffers).
+  if (token.length < 32 || !header?.startsWith('Bearer ')) return false
   const candidate = Buffer.from(header.slice(7))
   const expected = Buffer.from(token)
   return candidate.length === expected.length && BunSafeTimingEqual(candidate, expected)
 }
 
-import { timingSafeEqual } from 'node:crypto'
+import { createHash, timingSafeEqual } from 'node:crypto'
 
 function BunSafeTimingEqual(left: Buffer, right: Buffer): boolean {
   return timingSafeEqual(left, right)
