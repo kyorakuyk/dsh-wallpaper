@@ -6,6 +6,10 @@ export interface NativeSendOptions {
   requestId?: string
   baseUrl?: string
   model?: string
+  /** CNY per million input tokens. Omitted means pricing is not configured. */
+  priceInputPerMillion?: number
+  /** CNY per million output tokens. Omitted means pricing is not configured. */
+  priceOutputPerMillion?: number
 }
 
 export interface TranslucentTbStatus { installed: boolean; running: boolean; source?: string }
@@ -90,7 +94,16 @@ export const nativeRuntime: NativeRuntime = {
   },
   async sendChat(mode, text, options) {
     const { invoke } = await import('@tauri-apps/api/core')
-    return (await invoke<string | null>('send_chat', { mode, text, conversationId: options?.conversationId, requestId: options?.requestId, baseUrl: options?.baseUrl, model: options?.model })) ?? undefined
+    return (await invoke<string | null>('send_chat', {
+      mode,
+      text,
+      conversationId: options?.conversationId,
+      requestId: options?.requestId,
+      baseUrl: options?.baseUrl,
+      model: options?.model,
+      priceInputPerMillion: options?.priceInputPerMillion,
+      priceOutputPerMillion: options?.priceOutputPerMillion,
+    })) ?? undefined
   },
   async cancelChat(mode) {
     if (!await tauriAvailable()) return
@@ -109,8 +122,23 @@ export const nativeRuntime: NativeRuntime = {
   async apiHistory(conversationId) {
     if (!await tauriAvailable()) return []
     const { invoke } = await import('@tauri-apps/api/core')
-    const result = await invoke<{ messages: Array<{ role: 'user' | 'assistant'; content: string }> }>('api_history', { conversationId })
-    return result.messages.map((message) => ({ ...message, id: crypto.randomUUID(), createdAt: Date.now() }))
+    const result = await invoke<{ messages: Array<{
+      id: string
+      role: 'user' | 'assistant'
+      content: string
+      createdAt: number
+      usage?: ChatMessage['usage']
+    }> }>('api_history', { conversationId })
+    // Message ids, timestamps and final usage are persisted by the native
+    // DPAPI archive. Preserve them on resume so React keys and session cost
+    // remain stable instead of fabricating a fresh zero-cost transcript.
+    return result.messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      createdAt: message.createdAt,
+      usage: message.usage,
+    }))
   },
   async listenTray(listener) {
     if (!await tauriAvailable()) return () => undefined

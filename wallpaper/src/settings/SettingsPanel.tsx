@@ -5,6 +5,7 @@ import { BACKGROUND_OPTIONS, type WallpaperSettings } from './store.ts'
 import type { AppearanceAssetSummary } from '../features/appearance/appearanceViewModel.ts'
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
 import type { LockScreenDiagnostics } from '../native/runtime.ts'
+import { OfficialPersonaCards } from '../persona/OfficialPersonaCards.tsx'
 import './SettingsPanel.css'
 
 type Page = 'general' | 'connections' | 'appearance' | 'personas' | 'system'
@@ -79,6 +80,32 @@ function Choice({ value, options, onChange, label, disabled = false, emptyMessag
   </div>
 }
 
+function PriceInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: number | undefined
+  onChange: (value: number | undefined) => void
+}) {
+  return <input
+    aria-label={label}
+    className="price-input"
+    type="number"
+    min="0"
+    step="0.0001"
+    inputMode="decimal"
+    placeholder="未配置"
+    value={value ?? ''}
+    onChange={(event) => {
+      const raw = event.target.value.trim()
+      const parsed = Number(raw)
+      onChange(raw === '' || !Number.isFinite(parsed) || parsed < 0 ? undefined : parsed)
+    }}
+  />
+}
+
 export function SettingsPanel(props: SettingsPanelProps) {
   const { settings, harnessStatus, onChange, onClose, translucentTb } = props
   const [page, setPage] = useState<Page>('general')
@@ -128,6 +155,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <Field title="API 地址"><input value={settings.deepseekApi.baseUrl} onChange={(e) => set({ deepseekApi: { ...settings.deepseekApi, baseUrl: e.target.value } })} /></Field>
           <Field title="模型"><input value={settings.deepseekApi.model} onChange={(e) => set({ deepseekApi: { ...settings.deepseekApi, model: e.target.value } })} /></Field>
           <Field title="访问密钥"><button className="settings-action secondary" onClick={props.onConfigureApiKey}>更新 API Key</button></Field>
+          <Field title="输入价格" detail="人民币／每百万 input tokens。输入、输出价格都配置后，才会显示本轮和会话估算费用。"><PriceInput label="输入价格（人民币每百万 tokens）" value={settings.deepseekApi.priceInputPerMillion} onChange={(priceInputPerMillion) => set({ deepseekApi: { ...settings.deepseekApi, priceInputPerMillion } })} /></Field>
+          <Field title="输出价格" detail="人民币／每百万 output tokens。留空不会伪造零费用；缓存 token 没有单独价格时会标为估算。"><PriceInput label="输出价格（人民币每百万 tokens）" value={settings.deepseekApi.priceOutputPerMillion} onChange={(priceOutputPerMillion) => set({ deepseekApi: { ...settings.deepseekApi, priceOutputPerMillion } })} /></Field>
         </Card>
       </>}
 
@@ -151,10 +180,16 @@ export function SettingsPanel(props: SettingsPanelProps) {
         </Card>
       </>}
 
-      {page === 'personas' && <Card title="模型与形态映射" description="模型层级决定年龄，思考强度只改变氛围。">
-        <div className="rule-list">{settings.modelTierRules.length === 0 && <div className="settings-empty"><strong>尚未创建自定义规则</strong><span>未识别模型会保持当前形态，冷启动默认为 Flash。</span></div>}{settings.modelTierRules.map((rule, index) => <div className="rule-row" key={index}><select aria-label="后端" value={rule.backend} onChange={(e) => updateRule(index, { backend: e.target.value as ModelTierRule['backend'] })}><option value="*">全部后端</option><option value="deepseek-web">DeepSeek Web</option><option value="deepseek-api">DeepSeek API</option><option value="harness">Harness</option></select><select aria-label="匹配方式" value={rule.match} onChange={(e) => updateRule(index, { match: e.target.value as ModelTierRule['match'] })}><option value="exact">精确</option><option value="contains">包含</option><option value="regex">正则</option></select><input aria-label="模型名称" value={rule.pattern} placeholder="模型名称或表达式" onChange={(e) => updateRule(index, { pattern: e.target.value })} /><select aria-label="形态" value={rule.tier} onChange={(e) => updateRule(index, { tier: e.target.value as ModelTierRule['tier'] })}><option value="flash">Flash · 幼年</option><option value="pro">Pro · 成年</option></select><button aria-label="删除规则" onClick={() => set({ modelTierRules: settings.modelTierRules.filter((_, i) => i !== index) })}>×</button></div>)}</div>
-        <button className="settings-action secondary add-rule" onClick={() => set({ modelTierRules: [...settings.modelTierRules, { backend: '*', pattern: '', match: 'contains', tier: 'flash' }] })}>＋ 新增映射规则</button>
-      </Card>}
+      {page === 'personas' && <>
+        <Card title="官方人物列表" description="四张正式立绘是固定的后端／模型层级映射。此处只用于审阅；如需替换某张图，请到“外观 → 素材库”为对应槽位指定素材。">
+          <OfficialPersonaCards assets={props.appearanceAssets} overrides={props.appearanceOverrides} />
+          <p className="official-persona-note">DeepSeek 使用蓝色形态，Harness 使用黑红形态；Flash 始终对应幼年，Pro 始终对应成年。思考强度只影响氛围，不会改变年龄。</p>
+        </Card>
+        <Card title="模型与形态映射" description="模型层级决定年龄，思考强度只改变氛围。">
+          <div className="rule-list">{settings.modelTierRules.length === 0 && <div className="settings-empty"><strong>尚未创建自定义规则</strong><span>未识别模型会保持当前形态，冷启动默认为 Flash。</span></div>}{settings.modelTierRules.map((rule, index) => <div className="rule-row" key={index}><select aria-label="后端" value={rule.backend} onChange={(e) => updateRule(index, { backend: e.target.value as ModelTierRule['backend'] })}><option value="*">全部后端</option><option value="deepseek-web">DeepSeek Web</option><option value="deepseek-api">DeepSeek API</option><option value="harness">Harness</option></select><select aria-label="匹配方式" value={rule.match} onChange={(e) => updateRule(index, { match: e.target.value as ModelTierRule['match'] })}><option value="exact">精确</option><option value="contains">包含</option><option value="regex">正则</option></select><input aria-label="模型名称" value={rule.pattern} placeholder="模型名称或表达式" onChange={(e) => updateRule(index, { pattern: e.target.value })} /><select aria-label="形态" value={rule.tier} onChange={(e) => updateRule(index, { tier: e.target.value as ModelTierRule['tier'] })}><option value="flash">Flash · 幼年</option><option value="pro">Pro · 成年</option></select><button aria-label="删除规则" onClick={() => set({ modelTierRules: settings.modelTierRules.filter((_, i) => i !== index) })}>×</button></div>)}</div>
+          <button className="settings-action secondary add-rule" onClick={() => set({ modelTierRules: [...settings.modelTierRules, { backend: '*', pattern: '', match: 'contains', tier: 'flash' }] })}>＋ 新增映射规则</button>
+        </Card>
+      </>}
 
       {page === 'system' && <>
         <Card title="Windows 集成">

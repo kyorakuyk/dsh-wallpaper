@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from '../src/domain/types.ts'
-import { composerPlaceholder, formatCost, isBusyActivity, sessionCost, usageTokenCount } from '../src/features/chat/conversationViewModel.ts'
+import { composerPlaceholder, formatCost, isBusyActivity, sessionCost, sessionCostSummary, usageTokenCount } from '../src/features/chat/conversationViewModel.ts'
 
 describe('conversation view model', () => {
   it('treats only active request phases as busy', () => {
@@ -19,6 +19,16 @@ describe('conversation view model', () => {
       { id: '3', role: 'assistant', content: 'again', createdAt: 3, usage: { input: 4, output: 6, cost: 0.004 } },
     ]
     expect(sessionCost(messages)).toBeCloseTo(0.0163)
+    expect(sessionCostSummary(messages)).toMatchObject({ estimated: false })
+    expect(sessionCostSummary(messages)?.cost).toBeCloseTo(0.0163)
+  })
+
+  it('keeps a configured zero price distinct from an unpriced transcript', () => {
+    const zeroCost: ChatMessage[] = [{ id: 'zero', role: 'assistant', content: 'ok', createdAt: 1, usage: { input: 8, output: 3, cost: 0, estimated: true } }]
+    const noPrice: ChatMessage[] = [{ id: 'none', role: 'assistant', content: 'ok', createdAt: 1, usage: { input: 8, output: 3 } }]
+
+    expect(sessionCostSummary(zeroCost)).toEqual({ cost: 0, estimated: true })
+    expect(sessionCostSummary(noPrice)).toBeUndefined()
   })
 
   it('formats token and price metadata without inventing usage', () => {

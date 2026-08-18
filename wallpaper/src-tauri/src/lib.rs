@@ -1,3 +1,4 @@
+mod api_persistence;
 mod app_core;
 mod appearance;
 mod chat;
@@ -341,6 +342,8 @@ async fn send_chat(
     request_id: Option<String>,
     base_url: Option<String>,
     model: Option<String>,
+    price_input_per_million: Option<f64>,
+    price_output_per_million: Option<f64>,
 ) -> Result<Option<String>, String> {
     match mode.as_str() {
         "deepseek-api" => chat::send_api(
@@ -351,6 +354,8 @@ async fn send_chat(
             model.unwrap_or_else(|| "deepseek-chat".into()),
             conversation_id,
             request_id,
+            price_input_per_million,
+            price_output_per_million,
         )
         .await
         .map(Some),

@@ -22,7 +22,9 @@ export type BackgroundId = (typeof BACKGROUND_OPTIONS)[number]['id']
 export interface ApiSettings {
   baseUrl: string
   model: string
+  /** 人民币／每百万 input tokens；留空时不估算费用。 */
   priceInputPerMillion?: number
+  /** 人民币／每百万 output tokens；留空时不估算费用。 */
   priceOutputPerMillion?: number
 }
 
@@ -101,7 +103,25 @@ function migrate(raw: unknown): WallpaperSettings {
     portraitAmbientStrength: typeof value.portraitAmbientStrength === 'number' ? Math.min(1, Math.max(0, value.portraitAmbientStrength)) : DEFAULT_SETTINGS.portraitAmbientStrength,
     conversationOpacity: typeof value.conversationOpacity === 'number' ? Math.min(.96, Math.max(.2, value.conversationOpacity)) : DEFAULT_SETTINGS.conversationOpacity,
     conversationBlur: typeof value.conversationBlur === 'number' ? Math.min(40, Math.max(0, value.conversationBlur)) : DEFAULT_SETTINGS.conversationBlur,
-    deepseekApi: { ...DEFAULT_SETTINGS.deepseekApi, ...(value.deepseekApi ?? {}) },
+    deepseekApi: normalizeApiSettings(value.deepseekApi),
+  }
+}
+
+/**
+ * A zero price is a deliberate (and valid) configuration, while an empty,
+ * malformed, negative, or non-finite value means "price not configured".
+ * Keep that distinction through schema migrations and the native boundary.
+ */
+export function normalizedPrice(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+function normalizeApiSettings(value: Partial<ApiSettings> | undefined): ApiSettings {
+  return {
+    ...DEFAULT_SETTINGS.deepseekApi,
+    ...(value ?? {}),
+    priceInputPerMillion: normalizedPrice(value?.priceInputPerMillion),
+    priceOutputPerMillion: normalizedPrice(value?.priceOutputPerMillion),
   }
 }
 
@@ -129,6 +149,18 @@ export interface ConversationPointers {
   harness?: { id: string; updatedAt: number; day: string }
 }
 
+/**
+ * The "daily" lifecycle belongs to the user's local calendar day, not UTC.
+ * `toISOString()` would incorrectly begin a new transcript around local
+ * midnight for users outside UTC.
+ */
+export function localCalendarDay(now: Date = new Date()): string {
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 export function loadConversationPointers(): ConversationPointers {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(CONVERSATION_KEY) ?? '{}')
@@ -136,19 +168,19 @@ export function loadConversationPointers(): ConversationPointers {
   } catch { return {} }
 }
 
-export function saveConversationPointer(backend: BackendMode, id: string): void {
+export function saveConversationPointer(backend: BackendMode, id: string, now: Date = new Date()): void {
   try {
     const pointers = loadConversationPointers()
-    pointers[backend] = { id, updatedAt: Date.now(), day: new Date().toISOString().slice(0, 10) }
+    pointers[backend] = { id, updatedAt: now.getTime(), day: localCalendarDay(now) }
     localStorage.setItem(CONVERSATION_KEY, JSON.stringify(pointers))
   } catch { /* unavailable storage: start a fresh conversation next time */ }
 }
 
-export function resumeConversationId(backend: BackendMode, policy: ConversationPolicy): string | undefined {
+export function resumeConversationId(backend: BackendMode, policy: ConversationPolicy, now: Date = new Date()): string | undefined {
   if (policy === 'new-on-unlock') return undefined
   const pointer = loadConversationPointers()[backend]
   if (!pointer) return undefined
-  if (policy === 'daily' && pointer.day !== new Date().toISOString().slice(0, 10)) return undefined
+  if (policy === 'daily' && pointer.day !== localCalendarDay(now)) return undefined
   return pointer.id
 }
 

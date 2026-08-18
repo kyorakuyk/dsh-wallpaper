@@ -14,6 +14,8 @@ use std::{
 use tauri::{AppHandle, Emitter};
 use tokio::sync::oneshot;
 
+use crate::api_persistence::EncryptedJsonStore;
+
 const MAX_HARNESS_MESSAGE_BYTES: usize = 100_000;
 
 /// Incrementally decodes a UTF-8 byte stream without replacing a code point
@@ -68,12 +70,99 @@ fn generic_bridge_http_error(status: reqwest::StatusCode) -> String {
 /// Tauri owns one `ChatState`, but long-lived Harness SSE readers outlive an
 /// individual command future. Clones deliberately share these locks so the
 /// detached reader can never retain a borrowed `State` reference.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ChatState {
     api_cancel: Arc<Mutex<Option<ApiCancellation>>>,
     harness_cancel: Arc<Mutex<Option<HarnessStreamCancellation>>>,
     harness_session: Arc<Mutex<Option<String>>>,
     api_conversations: Arc<Mutex<HashMap<String, ApiConversation>>>,
+    api_store: Arc<Mutex<ApiConversationStore>>,
+}
+
+impl Default for ChatState {
+    fn default() -> Self {
+        Self::with_store(EncryptedJsonStore::new(default_api_conversation_path()))
+    }
+}
+
+impl ChatState {
+    pub fn with_store(store: EncryptedJsonStore) -> Self {
+        let (conversations, writable) = match store.load::<ApiConversationArchive>() {
+            Ok(Some(archive)) if archive.schema_version == API_CONVERSATION_SCHEMA_VERSION => {
+                (archive.conversations, true)
+            }
+            Ok(Some(_)) => {
+                // A future archive must never be overwritten by an older app.
+                (HashMap::new(), false)
+            }
+            Ok(None) => (HashMap::new(), true),
+            Err(error) => {
+                // Do not log error details here: while they deliberately omit
+                // content, callers only need a controlled availability state.
+                let _ = error;
+                (HashMap::new(), false)
+            }
+        };
+        Self {
+            api_cancel: Arc::default(),
+            harness_cancel: Arc::default(),
+            harness_session: Arc::default(),
+            api_conversations: Arc::new(Mutex::new(conversations)),
+            api_store: Arc::new(Mutex::new(ApiConversationStore { store, writable })),
+        }
+    }
+
+    fn persist_api_conversations(&self) -> Result<(), String> {
+        let archive = {
+            let conversations = self
+                .api_conversations
+                .lock()
+                .map_err(|_| "API conversation state poisoned".to_string())?;
+            ApiConversationArchive {
+                schema_version: API_CONVERSATION_SCHEMA_VERSION,
+                conversations: conversations.clone(),
+            }
+        };
+        let store = self
+            .api_store
+            .lock()
+            .map_err(|_| "API conversation storage state poisoned".to_string())?;
+        if !store.writable {
+            return Err("加密 API 会话记录不可用；为保护已有记录，本次不会覆盖它。".into());
+        }
+        store
+            .store
+            .save(&archive)
+            .map_err(|_| "无法保存加密 API 会话记录；已有记录未被覆盖。".to_string())
+    }
+
+    #[cfg(test)]
+    fn api_conversation(&self, conversation_id: &str) -> Option<ApiConversation> {
+        self.api_conversations
+            .lock()
+            .ok()
+            .and_then(|conversations| conversations.get(conversation_id).cloned())
+    }
+
+    #[cfg(test)]
+    fn append_api_conversation_for_test(&self, conversation_id: &str, message: ApiMessage) {
+        if let Ok(mut conversations) = self.api_conversations.lock() {
+            conversations
+                .entry(conversation_id.into())
+                .or_default()
+                .messages
+                .push(message);
+        }
+    }
+}
+
+const API_CONVERSATION_SCHEMA_VERSION: u32 = 1;
+
+fn default_api_conversation_path() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("dsh-wallpaper")
+        .join("api-conversations.v1.dpapi")
 }
 
 struct ApiCancellation {
@@ -88,14 +177,71 @@ struct HarnessStreamCancellation {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ApiMessage {
+    id: String,
     role: String,
     content: String,
+    created_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<ApiUsage>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct ApiConversation {
     messages: Vec<ApiMessage>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiUsage {
+    input: u64,
+    output: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_read: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cost: Option<f64>,
+    estimated: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiConversationArchive {
+    schema_version: u32,
+    conversations: HashMap<String, ApiConversation>,
+}
+
+struct ApiConversationStore {
+    store: EncryptedJsonStore,
+    writable: bool,
+}
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn new_api_message_id() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "msg-{:x}-{:x}",
+        unix_millis(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn new_api_message(role: &str, content: String, usage: Option<ApiUsage>) -> ApiMessage {
+    ApiMessage {
+        id: new_api_message_id(),
+        role: role.into(),
+        content,
+        created_at: unix_millis(),
+        usage,
+    }
 }
 
 fn new_conversation_id() -> String {
@@ -320,6 +466,8 @@ enum ChatEvent {
     Message {
         role: String,
         content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<ApiUsage>,
     },
     Usage {
         input: u64,
@@ -328,6 +476,8 @@ enum ChatEvent {
         cache_read: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         cost: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        estimated: Option<bool>,
     },
     Model {
         provider: Option<String>,
@@ -361,6 +511,48 @@ struct Usage {
     prompt_tokens: u64,
     completion_tokens: u64,
     prompt_cache_hit_tokens: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ApiPricing {
+    input_per_million: Option<f64>,
+    output_per_million: Option<f64>,
+}
+
+impl ApiPricing {
+    fn from_options(input_per_million: Option<f64>, output_per_million: Option<f64>) -> Self {
+        Self {
+            input_per_million: input_per_million.filter(|price| price.is_finite() && *price >= 0.0),
+            output_per_million: output_per_million
+                .filter(|price| price.is_finite() && *price >= 0.0),
+        }
+    }
+
+    fn usage(self, usage: Usage) -> ApiUsage {
+        let cache_read = usage.prompt_cache_hit_tokens;
+        let input = usage.prompt_tokens.saturating_sub(cache_read.unwrap_or(0));
+        // Cache reads are reported separately in the UI, but no separate
+        // cache rate is configured. Charge them at the input rate for a
+        // conservative estimate instead of silently making them free.
+        let estimated_input = input.saturating_add(cache_read.unwrap_or(0));
+        let cost = self.input_per_million.zip(self.output_per_million).map(
+            |(input_price, output_price)| {
+                (estimated_input as f64 * input_price
+                    + usage.completion_tokens as f64 * output_price)
+                    / 1_000_000.0
+            },
+        );
+        ApiUsage {
+            input,
+            output: usage.completion_tokens,
+            cache_read,
+            cost,
+            // A user-maintained rate table is necessarily an estimate. This
+            // is especially important when a provider reports cache reads but
+            // no separate cache-read price has been configured.
+            estimated: cost.is_some(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -471,6 +663,8 @@ fn process_api_sse_record(
     event_request_id: &str,
     record: &str,
     full: &mut String,
+    final_usage: &mut Option<ApiUsage>,
+    pricing: ApiPricing,
 ) {
     if !is_current_api_request(state, request_id) {
         return;
@@ -500,7 +694,8 @@ fn process_api_sse_record(
         );
     }
     if let Some(usage) = data.usage {
-        let cached = usage.prompt_cache_hit_tokens.unwrap_or(0);
+        let usage = pricing.usage(usage);
+        *final_usage = Some(usage.clone());
         let _ = emit_current_api_event(
             app,
             state,
@@ -508,10 +703,11 @@ fn process_api_sse_record(
             request_id,
             event_request_id,
             ChatEvent::Usage {
-                input: usage.prompt_tokens.saturating_sub(cached),
-                output: usage.completion_tokens,
-                cache_read: usage.prompt_cache_hit_tokens,
-                cost: None,
+                input: usage.input,
+                output: usage.output,
+                cache_read: usage.cache_read,
+                cost: usage.cost,
+                estimated: usage.cost.map(|_| usage.estimated),
             },
         );
     }
@@ -525,6 +721,8 @@ pub async fn send_api(
     model: String,
     conversation_id: Option<String>,
     event_request_id: Option<String>,
+    price_input_per_million: Option<f64>,
+    price_output_per_million: Option<f64>,
 ) -> Result<String, String> {
     cancel_api(&state);
     let (request_id, mut cancel_rx) = begin_api_request(&state)?;
@@ -535,25 +733,27 @@ pub async fn send_api(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| request_id.to_string());
     let trimmed_text = text.trim();
+    let pricing = ApiPricing::from_options(price_input_per_million, price_output_per_million);
     if trimmed_text.is_empty() {
         finish_api_request(&state, request_id);
         return Err("消息不能为空".into());
     }
-    let messages = {
-        let conversations = state
-            .api_conversations
-            .lock()
-            .map_err(|_| "API conversation state poisoned")?;
-        let mut messages = conversations
-            .get(&conversation_id)
-            .map(|conversation| conversation.messages.clone())
-            .unwrap_or_default();
-        messages.push(ApiMessage {
-            role: "user".into(),
-            content: trimmed_text.to_string(),
-        });
-        messages
-    };
+    let messages =
+        {
+            let conversations = state
+                .api_conversations
+                .lock()
+                .map_err(|_| "API conversation state poisoned")?;
+            let messages = conversations
+                .get(&conversation_id)
+                .map(|conversation| conversation.messages.clone())
+                .unwrap_or_default();
+            messages
+            .into_iter()
+            .map(|message| serde_json::json!({ "role": message.role, "content": message.content }))
+            .chain(std::iter::once(serde_json::json!({ "role": "user", "content": trimmed_text })))
+            .collect::<Vec<_>>()
+        };
     let key_entry = match keyring::Entry::new("dsh-wallpaper", "deepseek-api") {
         Ok(entry) => entry,
         Err(_) => {
@@ -620,6 +820,7 @@ pub async fn send_api(
     let mut decoder = Utf8StreamDecoder::default();
     let mut buffer = String::new();
     let mut full = String::new();
+    let mut final_usage: Option<ApiUsage> = None;
     let mut canceled = false;
     let mut stream_error: Option<String> = None;
     loop {
@@ -643,7 +844,7 @@ pub async fn send_api(
                         };
                         buffer.push_str(&decoded);
                         for record in drain_sse_records(&mut buffer) {
-                            process_api_sse_record(&app, &state, &conversation_id, request_id, &event_request_id, &record, &mut full);
+                            process_api_sse_record(&app, &state, &conversation_id, request_id, &event_request_id, &record, &mut full, &mut final_usage, pricing);
                         }
                     }
                     Err(_) => { stream_error = Some(generic_api_error("流式连接")); break; }
@@ -661,6 +862,8 @@ pub async fn send_api(
                 &event_request_id,
                 &record,
                 &mut full,
+                &mut final_usage,
+                pricing,
             );
         }
     }
@@ -671,17 +874,21 @@ pub async fn send_api(
     }
     if let Ok(mut conversations) = state.api_conversations.lock() {
         let conversation = conversations.entry(conversation_id.clone()).or_default();
-        conversation.messages.push(ApiMessage {
-            role: "user".into(),
-            content: trimmed_text.to_string(),
-        });
+        conversation
+            .messages
+            .push(new_api_message("user", trimmed_text.to_string(), None));
         if !full.is_empty() {
-            conversation.messages.push(ApiMessage {
-                role: "assistant".into(),
-                content: full.clone(),
-            });
+            conversation.messages.push(new_api_message(
+                "assistant",
+                full.clone(),
+                final_usage.clone(),
+            ));
         }
     }
+    // The in-memory transcript remains usable for this run if disk storage is
+    // temporarily unavailable. The warning is returned through the normal
+    // controlled error event below; existing ciphertext is never overwritten.
+    let persistence_error = state.persist_api_conversations().err();
     if !full.is_empty() {
         let _ = emit_current_api_event(
             &app,
@@ -692,6 +899,7 @@ pub async fn send_api(
             ChatEvent::Message {
                 role: "assistant".into(),
                 content: full,
+                usage: final_usage,
             },
         );
     }
@@ -729,7 +937,7 @@ pub async fn send_api(
                 activity: "idle".into(),
             },
         );
-    } else {
+    } else if persistence_error.is_none() {
         let _ = emit_current_api_event(
             &app,
             &state,
@@ -738,6 +946,30 @@ pub async fn send_api(
             &event_request_id,
             ChatEvent::Status {
                 activity: "done".into(),
+            },
+        );
+    }
+    if let Some(message) = persistence_error {
+        let _ = emit_current_api_event(
+            &app,
+            &state,
+            &conversation_id,
+            request_id,
+            &event_request_id,
+            ChatEvent::Error {
+                code: "API_TRANSCRIPT_PERSISTENCE".into(),
+                recoverable: true,
+                message,
+            },
+        );
+        let _ = emit_current_api_event(
+            &app,
+            &state,
+            &conversation_id,
+            request_id,
+            &event_request_id,
+            ChatEvent::Status {
+                activity: "idle".into(),
             },
         );
     }
@@ -1083,9 +1315,10 @@ pub fn cancel_harness_stream(state: &ChatState) {
 mod tests {
     use super::{
         drain_sse_records, finish_api_request, finish_harness_stream, finish_sse_records,
-        is_current_harness_stream, sse_record_payload, ChatState, HarnessStreamCancellation,
-        Utf8StreamDecoder, MAX_HARNESS_MESSAGE_BYTES,
+        is_current_harness_stream, sse_record_payload, ApiPricing, ApiUsage, ChatState,
+        HarnessStreamCancellation, Usage, Utf8StreamDecoder, MAX_HARNESS_MESSAGE_BYTES,
     };
+    use crate::api_persistence::EncryptedJsonStore;
     use tokio::sync::oneshot;
 
     #[test]
@@ -1164,5 +1397,72 @@ mod tests {
     fn harness_message_limit_uses_utf8_bytes() {
         assert!("界".repeat(33_333).len() <= MAX_HARNESS_MESSAGE_BYTES);
         assert!("界".repeat(33_334).len() > MAX_HARNESS_MESSAGE_BYTES);
+    }
+
+    #[test]
+    fn api_pricing_requires_both_rates_and_keeps_zero_as_configured() {
+        let missing_rate = ApiPricing::from_options(Some(2.0), None).usage(Usage {
+            prompt_tokens: 100,
+            completion_tokens: 20,
+            prompt_cache_hit_tokens: Some(40),
+        });
+        assert_eq!(missing_rate.cost, None);
+
+        let priced = ApiPricing::from_options(Some(2.0), Some(3.0)).usage(Usage {
+            prompt_tokens: 100,
+            completion_tokens: 20,
+            prompt_cache_hit_tokens: Some(40),
+        });
+        // Cache rate is not configured separately, so cache reads use the
+        // input price and are visibly marked as an estimate.
+        assert_eq!(priced.input, 60);
+        assert_eq!(priced.cache_read, Some(40));
+        assert_eq!(priced.cost, Some(0.00026));
+        assert!(priced.estimated);
+
+        let zero = ApiPricing::from_options(Some(0.0), Some(0.0)).usage(Usage {
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            prompt_cache_hit_tokens: None,
+        });
+        assert_eq!(zero.cost, Some(0.0));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn api_transcript_survives_state_recreation_with_ids_timestamps_and_usage() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("api-conversations.v1.dpapi");
+        let state = ChatState::with_store(EncryptedJsonStore::new(&path));
+        state.append_api_conversation_for_test(
+            "conversation-a",
+            super::new_api_message(
+                "assistant",
+                "persist me".into(),
+                Some(ApiUsage {
+                    input: 3,
+                    output: 4,
+                    cache_read: None,
+                    cost: Some(0.0001),
+                    estimated: true,
+                }),
+            ),
+        );
+        state
+            .persist_api_conversations()
+            .expect("persist transcript");
+
+        let restored = ChatState::with_store(EncryptedJsonStore::new(&path));
+        let messages = restored
+            .api_conversation("conversation-a")
+            .expect("restored conversation")
+            .messages;
+        assert_eq!(messages.len(), 1);
+        assert!(!messages[0].id.is_empty());
+        assert!(messages[0].created_at > 0);
+        assert_eq!(
+            messages[0].usage.as_ref().and_then(|usage| usage.cost),
+            Some(0.0001)
+        );
     }
 }

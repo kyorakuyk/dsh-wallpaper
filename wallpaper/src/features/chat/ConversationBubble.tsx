@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Activity, BackendMode, ChatMessage, TokenUsage } from '../../domain/types.ts'
 import { Button, Glass, Icon } from '../../ui/primitives/index.ts'
-import { ACTIVITY_LABEL, BACKEND_PRESENTATION, composerPlaceholder, formatCost, isBusyActivity, sessionCost, usageTokenCount } from './conversationViewModel.ts'
+import { ACTIVITY_LABEL, BACKEND_PRESENTATION, composerPlaceholder, formatCost, isBusyActivity, sessionCostSummary, usageTokenCount } from './conversationViewModel.ts'
 import './ConversationBubble.css'
 
 export interface ConversationBubbleProps {
@@ -19,6 +19,8 @@ export interface ConversationBubbleProps {
   persistent?: boolean
   acrylicOpacity?: number
   acrylicBlur?: number
+  /** Both API rates are explicitly configured; zero is still configured. */
+  apiPricingConfigured?: boolean
   onExpand?: () => void
   onToggleHistory: () => void
   onSend: (text: string) => void
@@ -40,7 +42,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const historyRef = useRef<HTMLDivElement>(null)
   const busy = isBusyActivity(props.activity)
   const backend = BACKEND_PRESENTATION[props.backend]
-  const totalCost = sessionCost(props.messages)
+  const totalCost = sessionCostSummary(props.messages)
   const tokenCount = usageTokenCount(props.usage)
   // An empty drawer has no information value and turns the workspace into a
   // large blank panel. It appears only once there is transcript content.
@@ -129,9 +131,9 @@ export function ConversationBubble(props: ConversationBubbleProps) {
 
       <footer className="dsh-chat__footer">
         <span className="dsh-chat__meta"><Icon name="model" size={13} /><span className="dsh-chat__model">{props.modelLabel}</span></span>
-        {props.backend === 'deepseek-api' && <><span className="dsh-chat__separator" /><span className="dsh-chat__billing">API 计费</span></>}
+        {props.backend === 'deepseek-api' && <><span className="dsh-chat__separator" /><span className="dsh-chat__billing">{props.apiPricingConfigured ? 'API 计费' : '价格未配置'}</span></>}
         {tokenCount !== undefined && <><span className="dsh-chat__separator" /><span>{tokenCount} tokens</span></>}
-        {totalCost > 0 && <><span className="dsh-chat__separator" /><span>会话 {formatCost(totalCost)}</span></>}
+        {totalCost && <><span className="dsh-chat__separator" /><span>会话 {formatCost(totalCost.cost, totalCost.estimated)}</span></>}
         <Button className="dsh-chat__history-button" variant="ghost" onClick={props.onToggleHistory} aria-expanded={showHistory}>
           <Icon name="history" size={14} />{showHistory ? '收起记录' : '会话记录'}<Icon name="chevron-up" size={13} />
         </Button>

@@ -6,6 +6,11 @@ node_modules/
 wallpaper/dist/
 wallpaper/src-tauri/target/
 .tmp-lockscreen-target/
+.tmp-audit-r6/
+.tmp-chat-target/
+.tmp-lockscreen-verify/
+.tmp-r6-check/
+.tmp-r6-final/
 artifacts/
 *.pfx
 *.cer

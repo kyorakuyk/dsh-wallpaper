@@ -27,7 +27,23 @@ export function isBusyActivity(activity: Activity): boolean {
 }
 
 export function sessionCost(messages: ChatMessage[]): number {
-  return messages.reduce((sum, message) => sum + (message.usage?.cost ?? 0), 0)
+  return sessionCostSummary(messages)?.cost ?? 0
+}
+
+/**
+ * Distinguish an actual zero-price transcript from one whose price table or
+ * provider usage is unavailable.  `0` is a valid user-entered price, so a
+ * numeric accumulator alone would make the two states indistinguishable.
+ */
+export function sessionCostSummary(messages: ChatMessage[]): { cost: number; estimated: boolean } | undefined {
+  const billed = messages
+    .map((message) => message.usage)
+    .filter((usage): usage is TokenUsage & { cost: number } => usage?.cost !== undefined)
+  if (billed.length === 0) return undefined
+  return {
+    cost: billed.reduce((sum, usage) => sum + usage.cost, 0),
+    estimated: billed.some((usage) => usage.estimated === true),
+  }
 }
 
 export function usageTokenCount(usage?: TokenUsage): number | undefined {

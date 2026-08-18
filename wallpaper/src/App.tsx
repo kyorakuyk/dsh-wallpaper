@@ -115,6 +115,10 @@ export function App({ surface = 'combined' }: AppProps) {
   activeBackendRef.current = runtime.backend
   const runtimeRef = useRef(runtime)
   runtimeRef.current = runtime
+  // Resolving library data URLs can finish out of order.  Each refresh gets a
+  // monotonic epoch, so a slower pre-change resolve can never repaint the
+  // previous background/persona after a user has selected a new one.
+  const appearanceRefreshEpochRef = useRef(0)
   const patchRuntime = (patch: Partial<RuntimeState>) => baseDispatch({ type: 'PATCH', patch })
   const dispatchCore = (action: Parameters<typeof appCoreClient.dispatch>[0], options?: Parameters<typeof appCoreClient.dispatch>[1]) => {
     if (!appCoreClient.native) return
@@ -169,22 +173,24 @@ export function App({ surface = 'combined' }: AppProps) {
   }
 
   const refreshAppearance = async () => {
+    const refreshEpoch = ++appearanceRefreshEpochRef.current
     try {
       const [snapshot, themes, assets] = await Promise.all([
         nativeAppearance.getState(),
         nativeAppearance.listThemes(),
         nativeAppearance.listAssets(),
       ])
-      setAppearanceTheme(snapshot.activeTheme)
-      setAppearanceOverrides(snapshot.overrides)
-      setAppearanceThemes(themes)
-      setAppearanceAssets(assets)
       const slots: AppearanceSlot[] = [
         'desktop.background',
         'persona.deepseek.flash', 'persona.deepseek.pro',
         'persona.harness.flash', 'persona.harness.pro',
       ]
       const resolved = await Promise.all(slots.map(async (slot) => [slot, await nativeAppearance.resolveAsset(slot)] as const))
+      if (refreshEpoch !== appearanceRefreshEpochRef.current) return
+      setAppearanceTheme(snapshot.activeTheme)
+      setAppearanceOverrides(snapshot.overrides)
+      setAppearanceThemes(themes)
+      setAppearanceAssets(assets)
       setResolvedAssets(Object.fromEntries(resolved.filter((entry) => Boolean(entry[1]))))
     } catch (error) {
       patchRuntime({ error: String(error) })
@@ -200,6 +206,10 @@ export function App({ surface = 'combined' }: AppProps) {
     setAppearanceBusy(true)
     try {
       applyAppearanceSnapshot(await operation())
+      // The snapshot only identifies selected records. Resolve their bytes
+      // immediately as well, so selection never waits for a later event or a
+      // remount before the live desktop scene changes.
+      await refreshAppearance()
     } catch (error) {
       patchRuntime({ error: String(error) })
     } finally {
@@ -303,7 +313,12 @@ export function App({ surface = 'combined' }: AppProps) {
         ? new DeepSeekWebAdapter()
         : new NativeChatAdapter(
             adapterBackend,
-            adapterBackend === 'deepseek-api' ? { baseUrl: settings.deepseekApi.baseUrl, model: settings.deepseekApi.model } : {},
+            adapterBackend === 'deepseek-api' ? {
+              baseUrl: settings.deepseekApi.baseUrl,
+              model: settings.deepseekApi.model,
+              priceInputPerMillion: settings.deepseekApi.priceInputPerMillion,
+              priceOutputPerMillion: settings.deepseekApi.priceOutputPerMillion,
+            } : {},
             adapterBackend === 'harness'
               ? resumeConversationId('harness', settings.conversationPolicy)
               : adapterBackend === 'deepseek-api'
@@ -346,7 +361,15 @@ export function App({ surface = 'combined' }: AppProps) {
       }
     })()
     return () => { disposed = true; unsubscribe(); adapter.disconnect() }
-  }, [runtime.backend, settings.conversationPolicy, settings.deepseekApi.baseUrl, settings.deepseekApi.model, conversationGeneration])
+  }, [
+    runtime.backend,
+    settings.conversationPolicy,
+    settings.deepseekApi.baseUrl,
+    settings.deepseekApi.model,
+    settings.deepseekApi.priceInputPerMillion,
+    settings.deepseekApi.priceOutputPerMillion,
+    conversationGeneration,
+  ])
 
   useEffect(() => {
     if (!nativeRuntime.isNative) return
@@ -490,7 +513,7 @@ export function App({ surface = 'combined' }: AppProps) {
     {scene}
     <>
       <WidgetHost workspace={workspace} widgets={[]} />
-      {interactionEnabled && runtime.phase !== 'booting' && runtime.phase !== 'locked' && (settings.interactionLayout === 'taskbar-docked' || workspace !== 'front') && <ConversationBubble backend={runtime.backend} activity={runtime.activity} modelLabel={modelLabel} messages={messages} streamingText={streamingText} historyExpanded={workspace === 'front' ? runtime.historyExpanded : innerHistoryExpanded} usage={usage} collapsed={settings.interactionLayout === 'taskbar-docked' && interactionState === 'collapsed'} layout={settings.interactionLayout} expandDirection={interactionDirection} persistent={settings.interactionLayout === 'floating'} acrylicOpacity={settings.conversationOpacity} acrylicBlur={settings.conversationBlur} onExpand={() => { setInteractionState('expanded'); if (workspace === 'front') enterInnerWorkspace(); else { baseDispatch({ type: 'OPEN_CHAT' }); dispatchCore('open-chat') } }} disabled={runtime.backend === 'harness' && runtime.harness !== 'bridge-ready'} onToggleHistory={() => { if (workspace !== 'front') setInnerHistoryExpanded((value) => !value); else { baseDispatch({ type: 'TOGGLE_HISTORY' }); dispatchCore('toggle-history') } }} onSend={(text) => {
+      {interactionEnabled && runtime.phase !== 'booting' && runtime.phase !== 'locked' && (settings.interactionLayout === 'taskbar-docked' || workspace !== 'front') && <ConversationBubble backend={runtime.backend} activity={runtime.activity} modelLabel={modelLabel} messages={messages} streamingText={streamingText} historyExpanded={workspace === 'front' ? runtime.historyExpanded : innerHistoryExpanded} usage={usage} collapsed={settings.interactionLayout === 'taskbar-docked' && interactionState === 'collapsed'} layout={settings.interactionLayout} expandDirection={interactionDirection} persistent={settings.interactionLayout === 'floating'} acrylicOpacity={settings.conversationOpacity} acrylicBlur={settings.conversationBlur} apiPricingConfigured={settings.deepseekApi.priceInputPerMillion !== undefined && settings.deepseekApi.priceOutputPerMillion !== undefined} onExpand={() => { setInteractionState('expanded'); if (workspace === 'front') enterInnerWorkspace(); else { baseDispatch({ type: 'OPEN_CHAT' }); dispatchCore('open-chat') } }} disabled={runtime.backend === 'harness' && runtime.harness !== 'bridge-ready'} onToggleHistory={() => { if (workspace !== 'front') setInnerHistoryExpanded((value) => !value); else { baseDispatch({ type: 'TOGGLE_HISTORY' }); dispatchCore('toggle-history') } }} onSend={(text) => {
         const adapter = adapterRef.current
         const adapterBackend = adapter.mode
         const isCurrent = () => isCurrentChatOperation(adapterRef.current, activeBackendRef.current, adapter, adapterBackend, false)
