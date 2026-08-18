@@ -1,4 +1,5 @@
 import type { BackendMode, ModelTier, ModelTierRule } from './types.ts'
+import { officialPersonaIdFor } from '../persona/officialCatalog.ts'
 
 export const BUILTIN_MODEL_RULES: ModelTierRule[] = [
   { backend: '*', pattern: 'flash', match: 'contains', tier: 'flash' },
@@ -39,7 +40,5 @@ export function resolveModelTier(
 }
 
 export function personaIdFor(backend: BackendMode, tier: ModelTier): string {
-  const kind = backend === 'harness' ? 'black' : 'blue'
-  return `${kind}-${tier === 'pro' ? 'adult' : 'child'}`
+  return officialPersonaIdFor(backend, tier)
 }
-
