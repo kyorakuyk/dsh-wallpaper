@@ -158,10 +158,9 @@ export function SettingsWindow() {
       onSetLockScreenEnabled={(enabled) => { void setLockScreenEnabled(enabled) }}
       lockScreenBusy={lockScreenBusy}
       onRequestDeepSeekLogin={() => void nativeRuntime.requestDeepSeekLogin()}
-      onConfigureApiKey={() => {
-        const key = window.prompt('输入 DeepSeek API Key。密钥只会写入 Windows 凭据管理器。')
-        if (key) void nativeRuntime.saveApiKey(key).catch((error) => setNotice(String(error)))
-      }}
+      onConfigureApiKey={() => void nativeRuntime.promptForApiKeyCredential()
+        .then((saved) => { if (saved) setNotice('DeepSeek API Key 已更新到 Windows 凭据管理器。') })
+        .catch((error) => setNotice(String(error)))}
       interactionEnabled={interactionEnabled}
       onSetInteractionEnabled={(enabled) => void appCoreClient.setInteractionEnabled(enabled).then((snapshot) => setInteractionEnabled(snapshot.interaction.enabled)).catch((error) => setNotice(String(error)))}
       onClose={close}

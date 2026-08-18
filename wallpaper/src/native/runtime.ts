@@ -23,7 +23,12 @@ export interface NativeRuntime {
   translucentTbStatus(): Promise<TranslucentTbStatus>
   launchTranslucentTb(): Promise<void>
   openTranslucentTbInstall(): Promise<void>
-  saveApiKey(key: string): Promise<void>
+  /**
+   * Opens Windows' native credential dialog. The API key never crosses the
+   * WebView IPC boundary: Windows persists it directly in Credential Manager.
+   * `false` means that the user dismissed the dialog without making a change.
+   */
+  promptForApiKeyCredential(): Promise<boolean>
   requestDeepSeekLogin(): Promise<void>
   listenSystem(listener: (event: 'locked' | 'unlocked' | 'suspend' | 'resume') => void): Promise<() => void>
   listenChat(listener: (event: ScopedChatEvent) => void): Promise<() => void>
@@ -72,10 +77,10 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('open_translucent_tb_install')
   },
-  async saveApiKey(key) {
+  async promptForApiKeyCredential() {
     if (!await tauriAvailable()) throw new Error('仅桌面版支持 Windows 凭据管理器')
     const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('save_api_key', { key })
+    return invoke<boolean>('prompt_for_api_key')
   },
   async requestDeepSeekLogin() {
     if (!await tauriAvailable()) return

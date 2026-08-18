@@ -84,7 +84,7 @@ describe('App chat lifecycle isolation', () => {
   })
 
   it('applies daily policy only when unlocking after a local calendar rollover', async () => {
-    const { chatAdapterLifecycleKey, isInitialSystemSessionSignal, shouldStartNewConversationOnUnlock } = await import('../src/App.tsx')
+    const { chatAdapterLifecycleKey, shouldIgnoreUnpairedResume, shouldStartNewConversationOnUnlock } = await import('../src/App.tsx')
     const beforeMidnight = new Date(2026, 7, 18, 23, 59, 0)
     const afterMidnight = new Date(2026, 7, 19, 0, 1, 0)
 
@@ -95,9 +95,9 @@ describe('App chat lifecycle isolation', () => {
     expect(shouldStartNewConversationOnUnlock('daily', '2026-08-18', afterMidnight)).toBe(true)
     expect(shouldStartNewConversationOnUnlock('new-on-unlock', '2026-08-19', afterMidnight)).toBe(true)
     expect(shouldStartNewConversationOnUnlock('resume-last', '2026-08-18', afterMidnight)).toBe(false)
-    expect(isInitialSystemSessionSignal(false, 'resume')).toBe(true)
-    expect(isInitialSystemSessionSignal(false, 'unlocked')).toBe(false)
-    expect(isInitialSystemSessionSignal(true, 'resume')).toBe(false)
+    expect(shouldIgnoreUnpairedResume(false, 'resume')).toBe(true)
+    expect(shouldIgnoreUnpairedResume(false, 'unlocked')).toBe(false)
+    expect(shouldIgnoreUnpairedResume(true, 'resume')).toBe(false)
   })
 
   it('persists an API session as soon as send has allocated its conversation ID', async () => {

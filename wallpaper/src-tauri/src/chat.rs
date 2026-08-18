@@ -156,9 +156,13 @@ impl ChatState {
             .store
             .update::<ApiConversationArchive, _, _>(|existing| {
                 let mut conversations = match existing {
-                    Some(archive) if archive.schema_version == API_CONVERSATION_SCHEMA_VERSION => archive.conversations,
+                    Some(archive) if archive.schema_version == API_CONVERSATION_SCHEMA_VERSION => {
+                        archive.conversations
+                    }
                     // Never overwrite an archive written by a newer schema.
-                    Some(_) => return Err(crate::api_persistence::PersistenceError::InvalidArchive),
+                    Some(_) => {
+                        return Err(crate::api_persistence::PersistenceError::InvalidArchive)
+                    }
                     None => HashMap::new(),
                 };
                 merge_api_conversations(&mut conversations, local_conversations);
@@ -210,7 +214,10 @@ const API_CONVERSATION_SCHEMA_VERSION: u32 = 1;
 /// user data directory exists.
 fn default_api_conversation_store() -> EncryptedJsonStore {
     match dirs::data_local_dir() {
-        Some(root) => EncryptedJsonStore::new(root.join("dsh-wallpaper").join("api-conversations.v1.dpapi")),
+        Some(root) => EncryptedJsonStore::new(
+            root.join("dsh-wallpaper")
+                .join("api-conversations.v1.dpapi"),
+        ),
         None => EncryptedJsonStore::unavailable(),
     }
 }
@@ -282,7 +289,11 @@ fn merge_api_conversations(
     for (conversation_id, incoming) in source {
         let target = destination.entry(conversation_id).or_default();
         for message in incoming.messages {
-            if !target.messages.iter().any(|existing| existing.id == message.id) {
+            if !target
+                .messages
+                .iter()
+                .any(|existing| existing.id == message.id)
+            {
                 target.messages.push(message);
             }
         }
@@ -357,8 +368,7 @@ fn api_stream_client() -> Result<reqwest::Client, String> {
 /// servers; never send a Credential-Manager bearer token to an arbitrary
 /// plaintext host, URL with embedded credentials, fragment, or opaque scheme.
 fn normalized_api_base_url(value: &str) -> Result<String, String> {
-    let mut url = reqwest::Url::parse(value.trim())
-        .map_err(|_| "DeepSeek API 地址无效。")?;
+    let mut url = reqwest::Url::parse(value.trim()).map_err(|_| "DeepSeek API 地址无效。")?;
     if url.fragment().is_some() || !url.username().is_empty() || url.password().is_some() {
         return Err("DeepSeek API 地址不能包含账号、密码或片段。".into());
     }
@@ -366,12 +376,16 @@ fn normalized_api_base_url(value: &str) -> Result<String, String> {
         .host_str()
         .ok_or_else(|| "DeepSeek API 地址必须包含主机名。".to_string())?;
     let loopback = host.eq_ignore_ascii_case("localhost")
-        || host == "127.0.0.1"
-        || host == "::1";
+        || host
+            .trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
     match url.scheme() {
         "https" => {}
         "http" if loopback => {}
-        "http" => return Err("DeepSeek API 地址必须使用 HTTPS；仅本机 loopback 允许 HTTP。".into()),
+        "http" => {
+            return Err("DeepSeek API 地址必须使用 HTTPS；仅本机 loopback 允许 HTTP。".into())
+        }
         _ => return Err("DeepSeek API 地址仅支持 HTTPS，或本机 loopback HTTP。".into()),
     }
     // The completion route is joined as a path rather than string-concatenated
@@ -415,7 +429,9 @@ fn api_request_messages(history: Vec<ApiMessage>, user_text: &str) -> Result<Vec
     Ok(selected
         .into_iter()
         .map(|message| serde_json::json!({ "role": message.role, "content": message.content }))
-        .chain(std::iter::once(serde_json::json!({ "role": "user", "content": user_text })))
+        .chain(std::iter::once(
+            serde_json::json!({ "role": "user", "content": user_text }),
+        ))
         .collect())
 }
 
@@ -485,7 +501,11 @@ fn owns_api_request(state: &ChatState, request_id: u64) -> bool {
         .api_cancel
         .lock()
         .ok()
-        .and_then(|active| active.as_ref().map(|active| active.request_id == request_id))
+        .and_then(|active| {
+            active
+                .as_ref()
+                .map(|active| active.request_id == request_id)
+        })
         .unwrap_or(false)
 }
 
@@ -705,8 +725,9 @@ impl ApiPricing {
             input_per_million: input_per_million.filter(|price| {
                 price.is_finite() && (0.0..=MAX_API_RATE_PER_MILLION).contains(price)
             }),
-            output_per_million: output_per_million
-                .filter(|price| price.is_finite() && (0.0..=MAX_API_RATE_PER_MILLION).contains(price)),
+            output_per_million: output_per_million.filter(|price| {
+                price.is_finite() && (0.0..=MAX_API_RATE_PER_MILLION).contains(price)
+            }),
         }
     }
 
@@ -722,14 +743,15 @@ impl ApiPricing {
         // cache rate is configured. Charge them at the input rate for a
         // conservative estimate instead of silently making them free.
         let estimated_input = input.saturating_add(cache_read.unwrap_or(0));
-        let cost = self.input_per_million.zip(self.output_per_million).and_then(
-            |(input_price, output_price)| {
+        let cost = self
+            .input_per_million
+            .zip(self.output_per_million)
+            .and_then(|(input_price, output_price)| {
                 let cost = (estimated_input as f64 * input_price
                     + usage.completion_tokens as f64 * output_price)
                     / 1_000_000.0;
                 cost.is_finite().then_some(cost)
-            },
-        );
+            });
         ApiUsage {
             input,
             output: usage.completion_tokens,
@@ -808,6 +830,32 @@ fn emit_current_api_event(
     event: ChatEvent,
 ) -> bool {
     if is_current_api_request(state, request_id) {
+        emit_scoped(
+            app,
+            "deepseek-api",
+            conversation_id,
+            Some(event_request_id.to_string()),
+            event,
+        );
+        true
+    } else {
+        false
+    }
+}
+
+/// User cancellation deliberately stops incremental output, but the request
+/// still owns one controlled terminal transition. This narrower predicate is
+/// never used for ordinary deltas or errors: it exists only so an explicit
+/// Stop cannot leave the composer permanently in its streaming state.
+fn emit_owned_api_event(
+    app: &AppHandle,
+    state: &ChatState,
+    conversation_id: &str,
+    request_id: u64,
+    event_request_id: &str,
+    event: ChatEvent,
+) -> bool {
+    if owns_api_request(state, request_id) {
         emit_scoped(
             app,
             "deepseek-api",
@@ -932,7 +980,9 @@ pub async fn send_api(
     }
     if trimmed_text.len() > MAX_API_MESSAGE_BYTES {
         finish_api_request(&state, request_id);
-        return Err(format!("单条 API 消息不能超过 {MAX_API_MESSAGE_BYTES} 字节。"));
+        return Err(format!(
+            "单条 API 消息不能超过 {MAX_API_MESSAGE_BYTES} 字节。"
+        ));
     }
     let completion_url = match api_completion_url(&base_url) {
         Ok(url) => url,
@@ -1089,7 +1139,9 @@ pub async fn send_api(
                 pricing,
             );
             if full.len() > MAX_API_RESPONSE_BYTES {
-                stream_error = Some(format!("DeepSeek API 回复不能超过 {MAX_API_RESPONSE_BYTES} 字节。"));
+                stream_error = Some(format!(
+                    "DeepSeek API 回复不能超过 {MAX_API_RESPONSE_BYTES} 字节。"
+                ));
                 break;
             }
         }
@@ -1134,7 +1186,12 @@ pub async fn send_api(
     })()
     .err();
     if !full.is_empty() {
-        let _ = emit_current_api_event(
+        let emit_message = if canceled {
+            emit_owned_api_event
+        } else {
+            emit_current_api_event
+        };
+        let _ = emit_message(
             &app,
             &state,
             &conversation_id,
@@ -1148,7 +1205,7 @@ pub async fn send_api(
         );
     }
     if canceled {
-        let _ = emit_current_api_event(
+        let _ = emit_owned_api_event(
             &app,
             &state,
             &conversation_id,
@@ -1570,8 +1627,8 @@ mod tests {
     use super::{
         api_completion_url, api_request_messages, drain_sse_records, finish_api_request,
         finish_harness_stream, finish_sse_records, is_current_api_request,
-        is_current_harness_stream, owns_api_request, sse_record_payload, ApiPricing, ApiUsage,
-        ApiMessage, ChatState, HarnessStreamCancellation, Usage, Utf8StreamDecoder,
+        is_current_harness_stream, owns_api_request, sse_record_payload, ApiMessage, ApiPricing,
+        ApiUsage, ChatState, HarnessStreamCancellation, Usage, Utf8StreamDecoder,
         MAX_API_RATE_PER_MILLION, MAX_API_REQUEST_CONTEXT_BYTES, MAX_HARNESS_MESSAGE_BYTES,
     };
     use crate::api_persistence::EncryptedJsonStore;
@@ -1680,17 +1737,27 @@ mod tests {
     fn request_context_keeps_newest_history_under_a_byte_ceiling() {
         let history = vec![
             ApiMessage {
-                id: "old".into(), role: "user".into(), content: "x".repeat(MAX_API_REQUEST_CONTEXT_BYTES), created_at: 1, usage: None,
+                id: "old".into(),
+                role: "user".into(),
+                content: "x".repeat(MAX_API_REQUEST_CONTEXT_BYTES),
+                created_at: 1,
+                usage: None,
             },
             ApiMessage {
-                id: "recent".into(), role: "assistant".into(), content: "recent".into(), created_at: 2, usage: None,
+                id: "recent".into(),
+                role: "assistant".into(),
+                content: "recent".into(),
+                created_at: 2,
+                usage: None,
             },
         ];
         let messages = api_request_messages(history, "new turn").expect("bounded context");
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0]["content"], "recent");
         assert_eq!(messages[1]["content"], "new turn");
-        assert!(api_request_messages(vec![], &"x".repeat(MAX_API_REQUEST_CONTEXT_BYTES + 1)).is_err());
+        assert!(
+            api_request_messages(vec![], &"x".repeat(MAX_API_REQUEST_CONTEXT_BYTES + 1)).is_err()
+        );
     }
 
     #[test]
@@ -1732,15 +1799,13 @@ mod tests {
         });
         assert_eq!(zero.cost, Some(0.0));
 
-        let malformed = ApiPricing::from_options(
-            Some(MAX_API_RATE_PER_MILLION + 1.0),
-            Some(f64::INFINITY),
-        )
-        .usage(Usage {
-            prompt_tokens: 10,
-            completion_tokens: 10,
-            prompt_cache_hit_tokens: Some(999),
-        });
+        let malformed =
+            ApiPricing::from_options(Some(MAX_API_RATE_PER_MILLION + 1.0), Some(f64::INFINITY))
+                .usage(Usage {
+                    prompt_tokens: 10,
+                    completion_tokens: 10,
+                    prompt_cache_hit_tokens: Some(999),
+                });
         assert_eq!(malformed.cache_read, Some(10));
         assert_eq!(malformed.input, 0);
         assert_eq!(malformed.cost, None);

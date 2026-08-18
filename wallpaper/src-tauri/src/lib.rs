@@ -11,6 +11,44 @@ use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
 
+/// Only the settings surface is allowed to request the API-key prompt. This
+/// is a defense in depth check: it prevents the desktop wallpaper WebView (or
+/// a future WebView) from opening a native credential capture dialog.
+const SETTINGS_WINDOW_LABEL: &str = "settings";
+
+/// `keyring`'s Windows backend stores string secrets in a Generic Credential
+/// as a UTF-16 little-endian byte blob. CredUI returns UTF-16 code units, so
+/// encode them explicitly rather than relying on the host representation when
+/// passing a raw `CredentialBlob` to `CredWriteW`.
+#[cfg(windows)]
+fn credential_blob_from_prompt_password(password: &[u16]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(password.len().saturating_mul(std::mem::size_of::<u16>()));
+    for code_unit in password {
+        bytes.extend_from_slice(&code_unit.to_le_bytes());
+    }
+    bytes
+}
+
+/// Do not use ordinary slice assignment for a secret: the optimizer is
+/// permitted to remove a write whose result is never read. Volatile writes
+/// make the cleanup observable to the machine, without adding a plaintext
+/// dependency or copying the key through the WebView.
+#[cfg(windows)]
+fn secure_zero_u16(secret: &mut [u16]) {
+    for value in secret {
+        unsafe { std::ptr::write_volatile(value, 0) };
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(windows)]
+fn secure_zero_bytes(secret: &mut [u8]) {
+    for value in secret {
+        unsafe { std::ptr::write_volatile(value, 0) };
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
+
 fn emit_app_snapshot(app: &tauri::AppHandle, snapshot: &AppSnapshot) {
     let _ = app.emit("app-snapshot", snapshot);
 }
@@ -279,12 +317,147 @@ fn open_translucent_tb_install() -> Result<(), String> {
     Err("TranslucentTB 仅支持 Windows。".into())
 }
 
+/// Opens the Windows-owned credential prompt and stores the API key without
+/// transporting plaintext through Tauri IPC or the renderer. The generic
+/// CredUI target deliberately matches the `keyring` crate's default Windows
+/// target naming, so the existing API client reads the same credential.
 #[tauri::command]
-fn save_api_key(key: String) -> Result<(), String> {
-    keyring::Entry::new("dsh-wallpaper", "deepseek-api")
-        .map_err(|e| e.to_string())?
-        .set_password(&key)
-        .map_err(|e| e.to_string())
+fn prompt_for_api_key(caller: tauri::WebviewWindow) -> Result<bool, String> {
+    if caller.label() != SETTINGS_WINDOW_LABEL {
+        return Err("仅设置中心可以更新 API Key。".into());
+    }
+
+    #[cfg(windows)]
+    {
+        use windows::{
+            core::{HSTRING, PCWSTR, PWSTR},
+            Win32::{
+                Foundation::{ERROR_CANCELLED, FILETIME},
+                Security::Credentials::{
+                    CredUIPromptForCredentialsW, CredWriteW, CREDENTIALW,
+                    CREDUI_FLAGS_ALWAYS_SHOW_UI, CREDUI_FLAGS_DO_NOT_PERSIST,
+                    CREDUI_FLAGS_GENERIC_CREDENTIALS, CREDUI_FLAGS_PASSWORD_ONLY_OK, CREDUI_INFOW,
+                    CRED_FLAGS, CRED_PERSIST_ENTERPRISE, CRED_TYPE_GENERIC,
+                },
+            },
+        };
+
+        // The Windows SDK caps CredUI password input at 256 UTF-16 code units
+        // plus a terminator.  DeepSeek keys are far shorter, while this avoids
+        // an unbounded native buffer when a malformed value is supplied.
+        const API_KEY_BUFFER_LEN: usize = 257;
+        const CREDENTIAL_TARGET: &str = "deepseek-api.dsh-wallpaper";
+        const CREDENTIAL_USERNAME: &str = "deepseek-api";
+
+        let caption = HSTRING::from("更新 DeepSeek API Key");
+        let message =
+            HSTRING::from("请输入 DeepSeek API Key。该密钥仅保存到当前 Windows 用户的凭据管理器。");
+        let target = HSTRING::from(CREDENTIAL_TARGET);
+        let username = HSTRING::from(CREDENTIAL_USERNAME);
+        let mut password = [0u16; API_KEY_BUFFER_LEN];
+        let mut credential_username = [0u16; 1];
+        let parent = caller
+            .hwnd()
+            .map_err(|error| format!("无法关联 Windows 凭据对话框：{error}"))?;
+        let ui_info = CREDUI_INFOW {
+            cbSize: std::mem::size_of::<CREDUI_INFOW>() as u32,
+            hwndParent: parent,
+            pszMessageText: PCWSTR(message.as_ptr()),
+            pszCaptionText: PCWSTR(caption.as_ptr()),
+            hbmBanner: Default::default(),
+        };
+        let flags = CREDUI_FLAGS_GENERIC_CREDENTIALS
+            | CREDUI_FLAGS_ALWAYS_SHOW_UI
+            | CREDUI_FLAGS_PASSWORD_ONLY_OK
+            // We deliberately make CredUI return the password to this native
+            // function, then write the exact Generic Credential target below.
+            // Microsoft documents that this is the supported path for
+            // inspecting a returned password; it is wiped immediately after
+            // CredWriteW and never enters WebView IPC.
+            | CREDUI_FLAGS_DO_NOT_PERSIST;
+        let result = unsafe {
+            CredUIPromptForCredentialsW(
+                Some(&ui_info),
+                &target,
+                None,
+                0,
+                &mut credential_username,
+                &mut password,
+                None,
+                flags,
+            )
+        };
+
+        if result == ERROR_CANCELLED {
+            secure_zero_u16(&mut password);
+            secure_zero_u16(&mut credential_username);
+            return Ok(false);
+        }
+        if result.0 != 0 {
+            secure_zero_u16(&mut password);
+            secure_zero_u16(&mut credential_username);
+            return Err(format!("Windows 凭据输入失败（错误代码 {}）。", result.0));
+        }
+
+        let save_result = (|| -> Result<(), String> {
+            let password_len = password
+                .iter()
+                .position(|value| *value == 0)
+                .unwrap_or(password.len());
+            if password_len == 0 {
+                return Err("API Key 不能为空。".into());
+            }
+            // Match `keyring`'s Windows Generic Credential representation:
+            // its `set_password` serializes password UTF-16 code units as a
+            // little-endian blob and `get_password` reverses that encoding.
+            let mut password_blob = credential_blob_from_prompt_password(&password[..password_len]);
+            let byte_len = u32::try_from(password_blob.len()).map_err(|_| "API Key 长度无效。")?;
+            let mut credential = CREDENTIALW {
+                Flags: CRED_FLAGS::default(),
+                Type: CRED_TYPE_GENERIC,
+                TargetName: PWSTR(target.as_ptr() as *mut u16),
+                Comment: PWSTR::null(),
+                LastWritten: FILETIME::default(),
+                CredentialBlobSize: byte_len,
+                CredentialBlob: password_blob.as_mut_ptr(),
+                Persist: CRED_PERSIST_ENTERPRISE,
+                AttributeCount: 0,
+                Attributes: std::ptr::null_mut(),
+                TargetAlias: PWSTR::null(),
+                UserName: PWSTR(username.as_ptr() as *mut u16),
+            };
+            // `keyring::Entry::new("dsh-wallpaper", "deepseek-api")`
+            // resolves to this target on Windows. Keep the credential write
+            // native so the renderer never sees plaintext.
+            let result = unsafe { CredWriteW(&mut credential, 0) }
+                .map_err(|error| format!("无法保存 API Key 到 Windows 凭据管理器：{error}"));
+            secure_zero_bytes(&mut password_blob);
+            result
+        })();
+        secure_zero_u16(&mut password);
+        secure_zero_u16(&mut credential_username);
+        save_result?;
+        Ok(true)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = caller;
+        Err("API Key 原生凭据输入仅支持 Windows。".into())
+    }
+}
+
+#[cfg(all(test, windows))]
+mod api_credential_tests {
+    use super::credential_blob_from_prompt_password;
+
+    #[test]
+    fn serializes_the_same_utf16_little_endian_shape_as_keyring_windows() {
+        assert_eq!(
+            credential_blob_from_prompt_password(&[0x0073, 0x006B, 0x4F60]),
+            vec![0x73, 0x00, 0x6B, 0x00, 0x60, 0x4F]
+        );
+    }
 }
 
 #[tauri::command]
@@ -702,7 +875,7 @@ pub fn run() {
             translucent_tb_status,
             launch_translucent_tb,
             open_translucent_tb_install,
-            save_api_key,
+            prompt_for_api_key,
             show_deepseek_login,
             start_settings_drag,
             hide_settings_window,

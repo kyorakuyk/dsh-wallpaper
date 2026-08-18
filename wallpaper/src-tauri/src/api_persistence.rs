@@ -147,9 +147,7 @@ impl EncryptedJsonStore {
         {
             return Err(PersistenceError::InvalidArchive);
         }
-        fs::read(path)
-            .map(Some)
-            .map_err(|_| PersistenceError::Io)
+        fs::read(path).map(Some).map_err(|_| PersistenceError::Io)
     }
 
     fn write_ciphertext_atomically(&self, ciphertext: &[u8]) -> Result<(), PersistenceError> {
@@ -279,10 +277,7 @@ impl CrossProcessStoreTransaction {
 #[cfg(windows)]
 impl Drop for CrossProcessStoreTransaction {
     fn drop(&mut self) {
-        use windows::Win32::{
-            Foundation::CloseHandle,
-            System::Threading::ReleaseMutex,
-        };
+        use windows::Win32::{Foundation::CloseHandle, System::Threading::ReleaseMutex};
         unsafe {
             let _ = ReleaseMutex(self.handle);
             let _ = CloseHandle(self.handle);
@@ -566,14 +561,23 @@ mod tests {
         let path = directory.path().join("api-conversations.v1.dpapi");
         let store = EncryptedJsonStore::new(&path);
         store
-            .save(&Fixture { text: "first".into(), count: 1 })
+            .save(&Fixture {
+                text: "first".into(),
+                count: 1,
+            })
             .expect("first save");
         store
-            .save(&Fixture { text: "second".into(), count: 2 })
+            .save(&Fixture {
+                text: "second".into(),
+                count: 2,
+            })
             .expect("atomic replacement");
         assert_eq!(
             store.load::<Fixture>().expect("read replacement"),
-            Some(Fixture { text: "second".into(), count: 2 })
+            Some(Fixture {
+                text: "second".into(),
+                count: 2
+            })
         );
     }
 
@@ -581,9 +585,15 @@ mod tests {
     fn unavailable_store_never_falls_back_to_a_file() {
         let store = EncryptedJsonStore::unavailable();
         assert!(store.path().is_none());
-        assert!(matches!(store.load::<Fixture>(), Err(PersistenceError::Unavailable)));
         assert!(matches!(
-            store.save(&Fixture { text: "must stay memory-only".into(), count: 1 }),
+            store.load::<Fixture>(),
+            Err(PersistenceError::Unavailable)
+        ));
+        assert!(matches!(
+            store.save(&Fixture {
+                text: "must stay memory-only".into(),
+                count: 1
+            }),
             Err(PersistenceError::Unavailable)
         ));
     }

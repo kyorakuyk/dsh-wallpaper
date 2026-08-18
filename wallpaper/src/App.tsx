@@ -151,14 +151,15 @@ export function shouldStartNewConversationOnUnlock(
 
 /**
  * `register_session_events` emits an initial `resume` while the background
- * WebView is starting. It is not an unlock, so it must not consume the
- * `new-on-unlock` policy or create a duplicate fresh session at boot.
+ * WebView is starting. A resume is a policy boundary only after this process
+ * has observed the matching suspend; otherwise it may be that synthetic
+ * startup signal and must not create a duplicate fresh session at boot.
  */
-export function isInitialSystemSessionSignal(
-  appBootCompleted: boolean,
+export function shouldIgnoreUnpairedResume(
+  observedLockOrSuspend: boolean,
   event: 'locked' | 'unlocked' | 'suspend' | 'resume',
 ): boolean {
-  return !appBootCompleted && event === 'resume'
+  return event === 'resume' && !observedLockOrSuspend
 }
 
 /**
@@ -510,13 +511,15 @@ export function App({ surface = 'combined' }: AppProps) {
   useEffect(() => {
     if (!nativeRuntime.isNative) return
     let unsubscribe: () => void = () => undefined
+    let observedLockOrSuspend = false
     void nativeRuntime.listenSystem((event) => {
       // The native host emits one synthetic `resume` on registration so a
       // current desktop can initialize its visual state. Do not mistake that
       // boot-time signal for an unlock policy boundary.
-      if (isInitialSystemSessionSignal(runtimeRef.current.phase !== 'booting', event)) {
+      if (shouldIgnoreUnpairedResume(observedLockOrSuspend, event)) {
         return
       }
+      if (event === 'locked' || event === 'suspend') observedLockOrSuspend = true
       if (!appCoreClient.native && (event === 'locked' || event === 'suspend')) baseDispatch({ type: 'LOCK' })
       if (event === 'unlocked' || event === 'resume') {
         if (settings.interactionLayout === 'taskbar-docked') setInteractionState('collapsed')
@@ -526,6 +529,7 @@ export function App({ surface = 'combined' }: AppProps) {
           setConversationGeneration((value) => value + 1)
         }
         previousUnlockDayRef.current = localCalendarDay(now)
+        observedLockOrSuspend = false
         if (!appCoreClient.native) baseDispatch({ type: 'UNLOCK', playWake: settings.playWakeOnEveryUnlock && settings.animationsEnabled && !settings.skipWakeAnimation })
       }
     }).then((dispose) => { unsubscribe = dispose })
