@@ -4,7 +4,7 @@ import { NativeChatAdapter } from './chat/nativeAdapter.ts'
 import { DeepSeekWebAdapter } from './chat/deepseekWebAdapter.ts'
 import type { ChatAdapter } from './chat/adapter.ts'
 import { ConversationBubble } from './chat/ConversationBubble.tsx'
-import type { ChatMessage, RuntimeState, TokenUsage } from './domain/types.ts'
+import type { BackendMode, ChatMessage, RuntimeState, TokenUsage } from './domain/types.ts'
 import { personaIdFor, resolveModelTier } from './domain/modelTier.ts'
 import { monitorHarness } from './connect/harness.ts'
 import { PersonaRegistry } from './persona/registry.ts'
@@ -26,6 +26,55 @@ import type { DesktopWorkspace } from './runtime/desktopWorkspace.ts'
 import { WidgetHost } from './widgets/WidgetHost.tsx'
 
 const registry = new PersonaRegistry()
+
+/**
+ * A chat adapter can finish connecting, loading history, or sending a message
+ * after React has already selected another backend.  Treat the adapter object
+ * and the backend it was created for as one identity; neither is sufficient on
+ * its own because an old native call may complete after a new adapter mounts.
+ */
+export function isCurrentChatOperation(
+  activeAdapter: ChatAdapter,
+  activeBackend: BackendMode,
+  candidateAdapter: ChatAdapter,
+  candidateBackend: BackendMode,
+  disposed: boolean,
+): boolean {
+  return !disposed
+    && activeAdapter === candidateAdapter
+    && activeBackend === candidateBackend
+    && candidateAdapter.mode === candidateBackend
+}
+
+export const HARNESS_DISCONNECTED_ERROR_PREFIX = 'DSH 壁纸 Bridge 当前不可用。'
+
+/**
+ * Dropping the bridge must never silently move a user to another backend: the
+ * current transcript and session pointer remain meaningful when DSH returns.
+ * The Bubble is disabled from the existing availability prop while this
+ * controlled notice tells the user how to proceed.
+ */
+export function harnessAvailabilityPatch(
+  backend: BackendMode,
+  availability: RuntimeState['harness'],
+  currentError?: string,
+): Pick<RuntimeState, 'activity' | 'error'> | undefined {
+  if (backend !== 'harness') return undefined
+  if (availability === 'bridge-ready') {
+    return currentError?.startsWith(HARNESS_DISCONNECTED_ERROR_PREFIX)
+      ? { activity: 'idle', error: undefined }
+      : undefined
+  }
+  if (currentError?.startsWith(HARNESS_DISCONNECTED_ERROR_PREFIX)) return undefined
+
+  const detail = availability === 'web-only'
+    ? '检测到 DSH 服务，但壁纸 Bridge 未安装、未启动或不兼容。'
+    : '未能连接到本机的 DSH 壁纸 Bridge。'
+  return {
+    activity: 'idle',
+    error: `${HARNESS_DISCONNECTED_ERROR_PREFIX}${detail} 已保留当前 Harness 会话和对话记录；Bridge 恢复后可继续，或由你手动切换后端。`,
+  }
+}
 
 export interface AppProps { surface?: AppSurface }
 
@@ -50,6 +99,12 @@ export function App({ surface = 'combined' }: AppProps) {
   const [workspace, setWorkspace] = useState<DesktopWorkspace>('front')
   const [innerHistoryExpanded, setInnerHistoryExpanded] = useState(false)
   const adapterRef = useRef<ChatAdapter>(new PreviewAdapter(settings.defaultBackend))
+  // This ref is updated synchronously by user/backend actions. React state is
+  // intentionally asynchronous, so runtimeRef alone would leave a short gap
+  // in which an old adapter could finish and persist its pointer under a new
+  // backend selection.
+  const activeBackendRef = useRef<BackendMode>(runtime.backend)
+  activeBackendRef.current = runtime.backend
   const runtimeRef = useRef(runtime)
   runtimeRef.current = runtime
   const patchRuntime = (patch: Partial<RuntimeState>) => baseDispatch({ type: 'PATCH', patch })
@@ -73,9 +128,10 @@ export function App({ surface = 'combined' }: AppProps) {
   const interactionDirection = 'center' as const
 
   const enterInnerWorkspace = () => {
-    // A workspace entry is an input-focused starting point, not a pre-opened
-    // empty transcript drawer. History is deliberately user-triggered here.
-    setInnerHistoryExpanded(false)
+    // The existing drawer already has its own state and visual treatment. The
+    // preference therefore only chooses its initial state as a workspace is
+    // entered; it does not add another surface or force a transcript open.
+    setInnerHistoryExpanded(settings.historyStartsExpanded)
     setWorkspace('entering-inner')
     setInteractionState('expanded')
     baseDispatch({ type: 'OPEN_CHAT' })
@@ -228,21 +284,31 @@ export function App({ surface = 'combined' }: AppProps) {
   }, [])
 
   useEffect(() => {
+    const adapterBackend = runtime.backend
     const adapter: ChatAdapter = nativeRuntime.isNative
-      ? runtime.backend === 'deepseek-web'
+      ? adapterBackend === 'deepseek-web'
         ? new DeepSeekWebAdapter()
         : new NativeChatAdapter(
-            runtime.backend,
-            runtime.backend === 'deepseek-api' ? { baseUrl: settings.deepseekApi.baseUrl, model: settings.deepseekApi.model } : {},
-            runtime.backend === 'harness'
+            adapterBackend,
+            adapterBackend === 'deepseek-api' ? { baseUrl: settings.deepseekApi.baseUrl, model: settings.deepseekApi.model } : {},
+            adapterBackend === 'harness'
               ? resumeConversationId('harness', settings.conversationPolicy)
-              : runtime.backend === 'deepseek-api'
+              : adapterBackend === 'deepseek-api'
                 ? resumeConversationId('deepseek-api', settings.conversationPolicy)
                 : undefined,
           )
-      : new PreviewAdapter(runtime.backend)
-    adapterRef.current.disconnect(); adapterRef.current = adapter; setMessages([]); setStreamingText('')
+      : new PreviewAdapter(adapterBackend)
+    adapterRef.current.disconnect(); adapterRef.current = adapter; setMessages([]); setStreamingText(''); setUsage(undefined)
+    let disposed = false
+    const isCurrent = () => isCurrentChatOperation(
+      adapterRef.current,
+      activeBackendRef.current,
+      adapter,
+      adapterBackend,
+      disposed,
+    )
     const unsubscribe = adapter.subscribe((event) => {
+      if (!isCurrent()) return
       if (event.type === 'status') { patchRuntime({ activity: event.activity }); dispatchCore('set-activity', { value: event.activity }) }
       if (event.type === 'delta') { patchRuntime({ activity: 'streaming' }); dispatchCore('set-activity', { value: 'streaming' }); setStreamingText((value) => value + event.text) }
       if (event.type === 'message') { setMessages((items) => [...items, { id: crypto.randomUUID(), role: event.role, content: event.content, createdAt: Date.now(), usage: event.usage }]); if (event.role === 'assistant') setStreamingText('') }
@@ -252,15 +318,21 @@ export function App({ surface = 'combined' }: AppProps) {
       if (event.type === 'approval-required') { patchRuntime({ activity: 'tool', error: `${event.summary}；请打开 Harness 处理。` }); dispatchCore('set-activity', { value: 'tool' }) }
       if (event.type === 'error') patchRuntime({ activity: 'idle', error: event.message })
     })
-    void adapter.connect().then(async () => {
-      if (adapter instanceof NativeChatAdapter) {
-        const id = adapter.conversationId()
-        if (id) saveConversationPointer(runtime.backend, id)
+    void (async () => {
+      try {
+        await adapter.connect()
+        if (!isCurrent()) return
+        if (adapter instanceof NativeChatAdapter) {
+          const id = adapter.conversationId()
+          if (id) saveConversationPointer(adapterBackend, id)
+        }
+        const history = await adapter.history()
+        if (isCurrent() && history.length) setMessages(history)
+      } catch (error) {
+        if (isCurrent()) patchRuntime({ activity: 'idle', error: String(error) })
       }
-      const history = await adapter.history()
-      if (history.length) setMessages(history)
-    }).catch((error) => patchRuntime({ activity: 'idle', error: String(error) }))
-    return () => { unsubscribe(); adapter.disconnect() }
+    })()
+    return () => { disposed = true; unsubscribe(); adapter.disconnect() }
   }, [runtime.backend, settings.conversationPolicy, settings.deepseekApi.baseUrl, settings.deepseekApi.model, conversationGeneration])
 
   useEffect(() => {
@@ -354,9 +426,10 @@ export function App({ surface = 'combined' }: AppProps) {
     const monitor = monitorHarness((status) => {
       patchRuntime({ harness: status.availability, model: status.model ?? runtimeRef.current.model, provider: status.provider ?? runtimeRef.current.provider, reasoningEffort: status.reasoningEffort })
       if (status.availability === 'bridge-ready' && runtimeRef.current.backend !== 'harness') {
-        if (settings.autoSwitchHarness) patchRuntime({ backend: 'harness' }); else setShowHarnessPrompt(true)
+        if (settings.autoSwitchHarness) changeBackend('harness'); else setShowHarnessPrompt(true)
       }
-      if (status.availability !== 'bridge-ready' && runtimeRef.current.backend === 'harness') patchRuntime({ backend: 'deepseek-web' })
+      const disconnected = harnessAvailabilityPatch(runtimeRef.current.backend, status.availability, runtimeRef.current.error)
+      if (disconnected) patchRuntime(disconnected)
     })
     return () => monitor.stop()
   }, [settings.autoSwitchHarness])
@@ -367,8 +440,9 @@ export function App({ surface = 'combined' }: AppProps) {
       if (settings.autoSwitchHarness) changeBackend('harness')
       else setShowHarnessPrompt(true)
     }
-    if (runtime.harness !== 'bridge-ready' && runtime.backend === 'harness') changeBackend('deepseek-web')
-  }, [runtime.harness, runtime.backend, settings.autoSwitchHarness])
+    const disconnected = harnessAvailabilityPatch(runtime.backend, runtime.harness, runtime.error)
+    if (disconnected) patchRuntime(disconnected)
+  }, [runtime.harness, runtime.backend, runtime.error, settings.autoSwitchHarness])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -381,6 +455,13 @@ export function App({ surface = 'combined' }: AppProps) {
   }, [runtime.phase, settings, workspace, showAppearance, interactionState])
 
   const changeBackend = (backend: WallpaperSettings['defaultBackend']) => {
+    // Clear backend-scoped UI immediately. The effect below repeats this while
+    // creating the next adapter, which prevents one paint of API usage or a
+    // partial answer under the newly selected backend label.
+    setMessages([])
+    setStreamingText('')
+    setUsage(undefined)
+    activeBackendRef.current = backend
     patchRuntime({ backend })
     setShowHarnessPrompt(false)
     baseDispatch({ type: 'RECOVER' })
@@ -396,7 +477,27 @@ export function App({ surface = 'combined' }: AppProps) {
     {scene}
     <>
       <WidgetHost workspace={workspace} widgets={[]} />
-      {interactionEnabled && runtime.phase !== 'booting' && runtime.phase !== 'locked' && (settings.interactionLayout === 'taskbar-docked' || workspace !== 'front') && <ConversationBubble backend={runtime.backend} activity={runtime.activity} modelLabel={modelLabel} messages={messages} streamingText={streamingText} historyExpanded={workspace === 'front' ? runtime.historyExpanded : innerHistoryExpanded} usage={usage} collapsed={settings.interactionLayout === 'taskbar-docked' && interactionState === 'collapsed'} layout={settings.interactionLayout} expandDirection={interactionDirection} persistent={settings.interactionLayout === 'floating'} acrylicOpacity={settings.conversationOpacity} acrylicBlur={settings.conversationBlur} onExpand={() => { setInteractionState('expanded'); if (workspace === 'front') enterInnerWorkspace(); else { baseDispatch({ type: 'OPEN_CHAT' }); dispatchCore('open-chat') } }} disabled={runtime.backend === 'harness' && runtime.harness !== 'bridge-ready'} onToggleHistory={() => { if (workspace !== 'front') setInnerHistoryExpanded((value) => !value); else { baseDispatch({ type: 'TOGGLE_HISTORY' }); dispatchCore('toggle-history') } }} onSend={(text) => { void adapterRef.current.send(text).then(() => { if (adapterRef.current instanceof NativeChatAdapter) { const id = adapterRef.current.conversationId(); if (id) saveConversationPointer(runtime.backend, id) } }) }} onStop={() => void adapterRef.current.stop()} onClose={() => undefined} />}
+      {interactionEnabled && runtime.phase !== 'booting' && runtime.phase !== 'locked' && (settings.interactionLayout === 'taskbar-docked' || workspace !== 'front') && <ConversationBubble backend={runtime.backend} activity={runtime.activity} modelLabel={modelLabel} messages={messages} streamingText={streamingText} historyExpanded={workspace === 'front' ? runtime.historyExpanded : innerHistoryExpanded} usage={usage} collapsed={settings.interactionLayout === 'taskbar-docked' && interactionState === 'collapsed'} layout={settings.interactionLayout} expandDirection={interactionDirection} persistent={settings.interactionLayout === 'floating'} acrylicOpacity={settings.conversationOpacity} acrylicBlur={settings.conversationBlur} onExpand={() => { setInteractionState('expanded'); if (workspace === 'front') enterInnerWorkspace(); else { baseDispatch({ type: 'OPEN_CHAT' }); dispatchCore('open-chat') } }} disabled={runtime.backend === 'harness' && runtime.harness !== 'bridge-ready'} onToggleHistory={() => { if (workspace !== 'front') setInnerHistoryExpanded((value) => !value); else { baseDispatch({ type: 'TOGGLE_HISTORY' }); dispatchCore('toggle-history') } }} onSend={(text) => {
+        const adapter = adapterRef.current
+        const adapterBackend = adapter.mode
+        const isCurrent = () => isCurrentChatOperation(adapterRef.current, activeBackendRef.current, adapter, adapterBackend, false)
+        if (!isCurrent()) return
+        void adapter.send(text).then(() => {
+          if (!isCurrent() || !(adapter instanceof NativeChatAdapter)) return
+          const id = adapter.conversationId()
+          if (id) saveConversationPointer(adapterBackend, id)
+        }).catch((error) => {
+          if (isCurrent()) patchRuntime({ activity: 'idle', error: String(error) })
+        })
+      }} onStop={() => {
+        const adapter = adapterRef.current
+        const adapterBackend = runtimeRef.current.backend
+        const isCurrent = () => isCurrentChatOperation(adapterRef.current, activeBackendRef.current, adapter, adapterBackend, false)
+        if (!isCurrent()) return
+        void adapter.stop().catch((error) => {
+          if (isCurrent()) patchRuntime({ activity: 'idle', error: String(error) })
+        })
+      }} onClose={() => undefined} />}
       {runtime.error && runtime.phase !== 'error' && <div className="runtime-notice" role="status">{runtime.error}<button onClick={() => patchRuntime({ error: undefined })}>×</button></div>}
       <AppearanceDrawer open={showAppearance} themes={appearanceThemes} assets={appearanceAssets} activeThemeId={appearanceTheme?.id ?? ''} activeThemeVersion={appearanceTheme?.version ?? ''} overrides={appearanceOverrides} busy={appearanceBusy} notice={appearanceNotice} onClose={() => setShowAppearance(false)} onImport={() => { void importAppearance(chooseAppearanceImportPaths) }} onImportFolder={() => { void importAppearance(chooseAppearanceImportFolder) }} onExport={() => setAppearanceNotice({ tone: 'info', message: '主题导出需要名称与版本信息，完整导出表单将在下一步接入。' })} onReviewInbox={() => undefined} onClassify={(request) => { void classifyAppearance(request) }} onActivateTheme={(themeId, version) => { void mutateAppearance(() => nativeAppearance.activateTheme(themeId, version)) }} onSetOverride={(slot, assetId) => { void mutateAppearance(() => nativeAppearance.setOverride(slot, assetId)) }} onClearOverride={(slot) => { void mutateAppearance(() => nativeAppearance.clearOverride(slot)) }} />
       {runtime.phase === 'auth-required' && <div className="auth-overlay" data-interaction-region="auth"><div className="auth-card"><h2>DeepSeek 网页模式（实验入口）</h2><p>已通过默认浏览器打开 DeepSeek 官方页面。当前尚未启用持久 WebView2 或 DOM 消息桥接：本应用不读取 Cookie，不能使用或保存官方页面的登录状态，也不会自动切换到付费 API。</p><button onClick={() => { baseDispatch({ type: 'AUTH_READY' }); dispatchCore('auth-ready') }}>关闭提示</button></div></div>}
