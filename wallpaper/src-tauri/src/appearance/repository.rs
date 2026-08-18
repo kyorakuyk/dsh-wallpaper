@@ -2,8 +2,12 @@ use std::error::Error;
 use std::fmt;
 use std::path::Path;
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
+use super::official::{
+    official_base_theme, OfficialThemeBootstrapOutcome, OFFICIAL_BASE_THEME_ID,
+    OFFICIAL_BASE_THEME_VERSION,
+};
 use super::types::{
     ActiveTheme, AppearanceSlot, AssetMediaType, AssetOrigin, AssetRecord, AssetStatus,
     InsertAssetOutcome, ThemeAssetLink, ThemeFileRecord, ThemeRecord,
@@ -236,6 +240,80 @@ impl AppearanceRepository {
         Ok(self
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))?)
+    }
+
+    /// Registers and selects the metadata-only official baseline for a brand
+    /// new appearance catalog.
+    ///
+    /// This deliberately does *not* run for a catalog containing even a loose
+    /// asset.  An older app version may have allowed users to build a library
+    /// before selecting a theme, and silently replacing that state would be a
+    /// data-loss-shaped surprise.  A write transaction is acquired up front so
+    /// two concurrently launched instances cannot both seed the catalog.
+    pub fn bootstrap_official_base_theme(
+        &mut self,
+    ) -> Result<OfficialThemeBootstrapOutcome, StoreError> {
+        let official = official_base_theme();
+        validate_theme(&official)?;
+
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let theme_count: i64 =
+            transaction.query_row("SELECT COUNT(*) FROM themes", [], |row| row.get(0))?;
+        let asset_count: i64 =
+            transaction.query_row("SELECT COUNT(*) FROM assets", [], |row| row.get(0))?;
+        let override_count: i64 =
+            transaction.query_row("SELECT COUNT(*) FROM overrides", [], |row| row.get(0))?;
+        let (active_id, active_version): (Option<String>, Option<String>) = transaction.query_row(
+            "SELECT active_theme_id, active_theme_version FROM appearance_state WHERE singleton = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        let is_already_initialized = theme_count == 1
+            && asset_count == 0
+            && override_count == 0
+            && active_id.as_deref() == Some(OFFICIAL_BASE_THEME_ID)
+            && active_version.as_deref() == Some(OFFICIAL_BASE_THEME_VERSION)
+            && transaction.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM themes
+                    WHERE id = ?1 AND version = ?2 AND source = 'official' AND readonly = 1
+                )",
+                params![OFFICIAL_BASE_THEME_ID, OFFICIAL_BASE_THEME_VERSION],
+                |row| row.get::<_, bool>(0),
+            )?;
+        if is_already_initialized {
+            transaction.commit()?;
+            return Ok(OfficialThemeBootstrapOutcome::AlreadyInitialized);
+        }
+
+        // Only an entirely untouched catalog gets a default selection.  This
+        // preserves imported user packages, an existing active theme, and even
+        // an asset-only catalog created by older development builds.
+        if theme_count != 0
+            || asset_count != 0
+            || override_count != 0
+            || active_id.is_some()
+            || active_version.is_some()
+        {
+            transaction.commit()?;
+            return Ok(OfficialThemeBootstrapOutcome::PreservedExistingCatalog);
+        }
+
+        insert_theme_tx(&transaction, &official)?;
+        let changed = transaction.execute(
+            "UPDATE appearance_state
+             SET active_theme_id = ?1, active_theme_version = ?2
+             WHERE singleton = 1",
+            params![OFFICIAL_BASE_THEME_ID, OFFICIAL_BASE_THEME_VERSION],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::NotFound("appearance state is missing".into()));
+        }
+        transaction.commit()?;
+        Ok(OfficialThemeBootstrapOutcome::Initialized)
     }
 
     pub fn insert_theme(&mut self, theme: &ThemeRecord) -> Result<(), StoreError> {

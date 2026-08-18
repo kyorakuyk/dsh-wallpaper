@@ -7,7 +7,7 @@ use std::path::Path;
 use appearance::{
     AppearanceExporter, AppearanceImporter, AppearancePaths, AppearanceRepository, AppearanceSlot,
     AppearanceState, AssetMediaType, AssetOrigin, AssetRecord, AssetStatus, ExportThemeMetadataDto,
-    ThemeRecord, ThemeSource,
+    ThemeRecord, ThemeSource, OFFICIAL_BASE_THEME_ID, OFFICIAL_BASE_THEME_VERSION,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -315,6 +315,33 @@ fn with_io_supports_import_classification_and_self_contained_export() {
         .unwrap();
     assert_eq!(exported.files, AppearanceSlot::ALL.len());
     assert!(destination.is_file());
+}
+
+#[test]
+fn runtime_io_seeds_the_official_theme_without_writing_packaged_assets_to_user_library() {
+    let directory = tempdir().unwrap();
+    let paths = AppearancePaths::new(directory.path().join("runtime-data"));
+    paths.create().unwrap();
+    let repository = AppearanceRepository::open(&paths.catalog).unwrap();
+    let state = AppearanceState::with_runtime_io(
+        repository,
+        AppearanceImporter::new(paths.clone()).unwrap(),
+        AppearanceExporter::new(paths.clone()).unwrap(),
+        paths.clone(),
+    );
+
+    let themes = state.list_themes().unwrap();
+    assert_eq!(themes.len(), 1);
+    assert_eq!(themes[0].id, OFFICIAL_BASE_THEME_ID);
+    assert_eq!(themes[0].version, OFFICIAL_BASE_THEME_VERSION);
+    assert_eq!(themes[0].source, "official");
+    assert!(themes[0].readonly);
+    let active = state.get_state().unwrap().active_theme.unwrap();
+    assert_eq!(active.id, OFFICIAL_BASE_THEME_ID);
+    assert_eq!(active.version, OFFICIAL_BASE_THEME_VERSION);
+    assert!(state.list_assets(None).unwrap().is_empty());
+    assert_eq!(fs::read_dir(&paths.themes).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(&paths.objects_sha256).unwrap().count(), 0);
 }
 
 #[test]

@@ -53,11 +53,20 @@ impl AppearanceState {
     }
 
     pub fn with_runtime_io(
-        repository: AppearanceRepository,
+        mut repository: AppearanceRepository,
         importer: AppearanceImporter,
         exporter: AppearanceExporter,
         paths: super::AppearancePaths,
     ) -> Self {
+        // Runtime construction is the single migration-safe entry point for
+        // the shipped baseline.  The repository method only mutates a truly
+        // untouched catalog, so reopening an existing profile never changes a
+        // user's selection or library.  Failing here means the catalog could
+        // not perform an atomic initialization at all; do not continue with an
+        // apparently usable but silently empty official theme menu.
+        repository
+            .bootstrap_official_base_theme()
+            .expect("failed to initialize official appearance baseline");
         Self {
             repository: Mutex::new(repository),
             importer: Some(importer),

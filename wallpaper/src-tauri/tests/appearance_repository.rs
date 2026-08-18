@@ -3,8 +3,8 @@ mod appearance;
 
 use appearance::{
     AppearancePaths, AppearanceRepository, AppearanceSlot, AssetMediaType, AssetOrigin,
-    AssetRecord, AssetStatus, InsertAssetOutcome, ThemeAssetLink, ThemeFileRecord, ThemeRecord,
-    ThemeSource,
+    AssetRecord, AssetStatus, InsertAssetOutcome, OfficialThemeBootstrapOutcome, ThemeAssetLink,
+    ThemeFileRecord, ThemeRecord, ThemeSource, OFFICIAL_BASE_THEME_ID, OFFICIAL_BASE_THEME_VERSION,
 };
 use tempfile::tempdir;
 
@@ -75,6 +75,80 @@ fn creates_the_documented_app_data_layout_and_database() {
     );
     assert_eq!(paths.root(), directory.path().join("dsh-wallpaper"));
     assert!(AppearancePaths::from_local_app_data().is_some());
+}
+
+#[test]
+fn bootstraps_a_metadata_only_official_theme_for_a_fresh_catalog() {
+    let mut repository = AppearanceRepository::open_in_memory().unwrap();
+
+    assert_eq!(
+        repository.bootstrap_official_base_theme().unwrap(),
+        OfficialThemeBootstrapOutcome::Initialized
+    );
+    let themes = repository.list_themes().unwrap();
+    assert_eq!(themes.len(), 1);
+    let official = &themes[0];
+    assert_eq!(official.id, OFFICIAL_BASE_THEME_ID);
+    assert_eq!(official.version, OFFICIAL_BASE_THEME_VERSION);
+    assert_eq!(official.source, ThemeSource::Official);
+    assert!(official.readonly);
+    assert!(official.manifest_path.starts_with("builtin://"));
+    assert_eq!(
+        repository.active_theme().unwrap().unwrap().id,
+        OFFICIAL_BASE_THEME_ID
+    );
+    // Official resources remain in the package.  The catalog must not turn
+    // them into user-library assets just to make the theme visible.
+    assert!(repository.list_library_assets(None).unwrap().is_empty());
+    assert!(repository
+        .resolve_active_asset(AppearanceSlot::DesktopBackground)
+        .unwrap()
+        .is_none());
+
+    assert_eq!(
+        repository.bootstrap_official_base_theme().unwrap(),
+        OfficialThemeBootstrapOutcome::AlreadyInitialized
+    );
+}
+
+#[test]
+fn bootstrap_preserves_an_existing_user_theme_and_selection() {
+    let mut repository = AppearanceRepository::open_in_memory().unwrap();
+    let user_theme = theme("user.existing", "1.0.0");
+    repository.insert_theme(&user_theme).unwrap();
+    repository
+        .activate_theme(&user_theme.id, &user_theme.version)
+        .unwrap();
+
+    assert_eq!(
+        repository.bootstrap_official_base_theme().unwrap(),
+        OfficialThemeBootstrapOutcome::PreservedExistingCatalog
+    );
+    assert_eq!(repository.list_themes().unwrap(), vec![user_theme]);
+    assert_eq!(
+        repository.active_theme().unwrap().unwrap().id,
+        "user.existing"
+    );
+    assert!(!repository
+        .theme_exists(OFFICIAL_BASE_THEME_ID, OFFICIAL_BASE_THEME_VERSION)
+        .unwrap());
+}
+
+#[test]
+fn bootstrap_does_not_rewrite_an_asset_only_legacy_catalog() {
+    let mut repository = AppearanceRepository::open_in_memory().unwrap();
+    let asset = loose_asset("legacy-background", 'd', AppearanceSlot::DesktopBackground);
+    repository.insert_asset(&asset).unwrap();
+
+    assert_eq!(
+        repository.bootstrap_official_base_theme().unwrap(),
+        OfficialThemeBootstrapOutcome::PreservedExistingCatalog
+    );
+    assert!(repository.active_theme().unwrap().is_none());
+    assert_eq!(repository.list_library_assets(None).unwrap(), vec![asset]);
+    assert!(!repository
+        .theme_exists(OFFICIAL_BASE_THEME_ID, OFFICIAL_BASE_THEME_VERSION)
+        .unwrap());
 }
 
 #[test]
