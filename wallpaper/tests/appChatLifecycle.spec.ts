@@ -34,7 +34,7 @@ describe('App chat lifecycle isolation', () => {
   })
 
   it('keeps Harness selected and supplies a controlled disconnected state', async () => {
-    const { HARNESS_DISCONNECTED_ERROR_PREFIX, harnessAvailabilityPatch } = await import('../src/App.tsx')
+    const { HARNESS_DISCONNECTED_ERROR_PREFIX, canAutoSelectHarness, harnessAvailabilityPatch } = await import('../src/App.tsx')
     const disconnected = harnessAvailabilityPatch('harness', 'offline')
 
     expect(disconnected).toMatchObject({ activity: 'idle' })
@@ -42,5 +42,8 @@ describe('App chat lifecycle isolation', () => {
     expect(disconnected?.error).toContain('已保留当前 Harness 会话和对话记录')
     expect(harnessAvailabilityPatch('deepseek-web', 'offline')).toBeUndefined()
     expect(harnessAvailabilityPatch('harness', 'bridge-ready', disconnected?.error)).toEqual({ activity: 'idle', error: undefined })
+    expect(canAutoSelectHarness('bridge-ready', 'deepseek-web', true)).toBe(true)
+    expect(canAutoSelectHarness('offline', 'harness', true)).toBe(false)
+    expect(canAutoSelectHarness('offline', 'harness', false)).toBe(false)
   })
 })

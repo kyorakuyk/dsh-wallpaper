@@ -48,6 +48,14 @@ export function isCurrentChatOperation(
 
 export const HARNESS_DISCONNECTED_ERROR_PREFIX = 'DSH 壁纸 Bridge 当前不可用。'
 
+export function canAutoSelectHarness(
+  availability: RuntimeState['harness'],
+  backend: BackendMode,
+  autoSwitchHarness: boolean,
+): boolean {
+  return availability === 'bridge-ready' && backend !== 'harness' && autoSwitchHarness
+}
+
 /**
  * Dropping the bridge must never silently move a user to another backend: the
  * current transcript and session pointer remain meaningful when DSH returns.
@@ -243,6 +251,11 @@ export function App({ surface = 'combined' }: AppProps) {
     }
     let unsubscribe: () => void = () => undefined
     const applySnapshot = (snapshot: Awaited<ReturnType<typeof appCoreClient.snapshot>>) => {
+      // Native tray/system actions can change the selected backend without
+      // going through this WebView's changeBackend callback. Advance the
+      // synchronous identity first so an old async adapter cannot win during
+      // React's next render/cleanup boundary.
+      activeBackendRef.current = snapshot.backend
       patchRuntime({
         phase: snapshot.phase,
         backend: snapshot.backend,
@@ -426,7 +439,7 @@ export function App({ surface = 'combined' }: AppProps) {
     const monitor = monitorHarness((status) => {
       patchRuntime({ harness: status.availability, model: status.model ?? runtimeRef.current.model, provider: status.provider ?? runtimeRef.current.provider, reasoningEffort: status.reasoningEffort })
       if (status.availability === 'bridge-ready' && runtimeRef.current.backend !== 'harness') {
-        if (settings.autoSwitchHarness) changeBackend('harness'); else setShowHarnessPrompt(true)
+        if (canAutoSelectHarness(status.availability, runtimeRef.current.backend, settings.autoSwitchHarness)) changeBackend('harness'); else setShowHarnessPrompt(true)
       }
       const disconnected = harnessAvailabilityPatch(runtimeRef.current.backend, status.availability, runtimeRef.current.error)
       if (disconnected) patchRuntime(disconnected)
@@ -437,7 +450,7 @@ export function App({ surface = 'combined' }: AppProps) {
   useEffect(() => {
     if (!appCoreClient.native) return
     if (runtime.harness === 'bridge-ready' && runtime.backend !== 'harness') {
-      if (settings.autoSwitchHarness) changeBackend('harness')
+      if (canAutoSelectHarness(runtime.harness, runtime.backend, settings.autoSwitchHarness)) changeBackend('harness')
       else setShowHarnessPrompt(true)
     }
     const disconnected = harnessAvailabilityPatch(runtime.backend, runtime.harness, runtime.error)
@@ -491,7 +504,7 @@ export function App({ surface = 'combined' }: AppProps) {
         })
       }} onStop={() => {
         const adapter = adapterRef.current
-        const adapterBackend = runtimeRef.current.backend
+        const adapterBackend = adapter.mode
         const isCurrent = () => isCurrentChatOperation(adapterRef.current, activeBackendRef.current, adapter, adapterBackend, false)
         if (!isCurrent()) return
         void adapter.stop().catch((error) => {
