@@ -34,21 +34,21 @@ fn lock_enables_privacy_and_collapses_transient_ui() {
 }
 
 #[test]
-fn returning_to_desktop_never_reopens_chat_or_settings() {
+fn focus_changes_do_not_implicitly_hide_or_reopen_chat() {
     let core = AppCore::default();
     core.dispatch(AppAction::BootReady { play_wake: false });
     core.dispatch(AppAction::OpenChat);
     core.dispatch(AppAction::ToggleHistory);
 
     let hidden = core.dispatch(AppAction::DesktopForegroundChanged(false));
-    assert_eq!(hidden.phase, SystemPhase::Idle);
-    assert!(!hidden.interaction.visible);
-    assert!(!hidden.interaction.history_expanded);
+    assert_eq!(hidden.phase, SystemPhase::Chatting);
+    assert!(hidden.interaction.visible);
+    assert!(hidden.interaction.history_expanded);
 
     let restored = core.dispatch(AppAction::DesktopForegroundChanged(true));
-    assert_eq!(restored.phase, SystemPhase::Idle);
+    assert_eq!(restored.phase, SystemPhase::Chatting);
     assert!(restored.interaction.visible);
-    assert!(!restored.interaction.history_expanded);
+    assert!(restored.interaction.history_expanded);
     assert!(!restored.interaction.settings_open);
 }
 
