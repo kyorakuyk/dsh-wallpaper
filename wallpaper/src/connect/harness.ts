@@ -7,7 +7,6 @@ export interface HarnessStatus { availability: HarnessAvailability; bridgeVersio
 const HARNESS_BRIDGE_PROTOCOL_VERSION = 1
 const REQUIRED_HARNESS_BRIDGE_CAPABILITIES = [
   'sessions',
-  'resume',
   'history',
   'sse',
   'cancel',
@@ -21,9 +20,10 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 /**
- * Accept only the versioned bridge contract required by the native Harness
- * client. This deliberately fails closed so preview mode cannot offer a
- * Harness switch that will fail later while opening a session or SSE stream.
+ * Accept only the versioned bridge contract required to create a fresh native
+ * Harness session. `resume` is deliberately optional: DSH only exposes it
+ * when its optional session-persistence service is installed, and absence of
+ * that service must not make otherwise usable Harness mode disappear.
  */
 export function compatibleHarnessBridgeStatus(data: unknown): HarnessStatus | undefined {
   const document = asRecord(data)

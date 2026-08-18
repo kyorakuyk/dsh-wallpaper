@@ -1,8 +1,9 @@
-import type { BackendMode, ChatEvent, ChatMessage } from '../domain/types.ts'
+import type { BackendMode, ChatMessage, ScopedChatEvent } from '../domain/types.ts'
 import type { HarnessStatus } from '../connect/harness.ts'
 
 export interface NativeSendOptions {
   conversationId?: string
+  requestId?: string
   baseUrl?: string
   model?: string
 }
@@ -21,10 +22,10 @@ export interface NativeRuntime {
   saveApiKey(key: string): Promise<void>
   requestDeepSeekLogin(): Promise<void>
   listenSystem(listener: (event: 'locked' | 'unlocked' | 'suspend' | 'resume') => void): Promise<() => void>
-  listenChat(listener: (event: ChatEvent) => void): Promise<() => void>
+  listenChat(listener: (event: ScopedChatEvent) => void): Promise<() => void>
   sendChat(mode: BackendMode, text: string, options?: NativeSendOptions): Promise<string | undefined>
   cancelChat(mode: BackendMode): Promise<void>
-  connectHarness(resumeSessionId?: string): Promise<string>
+  connectHarness(resumeSessionId: string | undefined, connectionId: string): Promise<string>
   harnessHistory(): Promise<ChatMessage[]>
   apiHistory(conversationId: string): Promise<ChatMessage[]>
   listenTray(listener: (event: { type: 'backend'; backend: BackendMode } | { type: 'settings' }) => void): Promise<() => void>
@@ -32,11 +33,13 @@ export interface NativeRuntime {
 }
 
 async function tauriAvailable(): Promise<boolean> {
-  return '__TAURI_INTERNALS__' in window
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 }
 
+const nativeWindowAvailable = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+
 export const nativeRuntime: NativeRuntime = {
-  isNative: '__TAURI_INTERNALS__' in window,
+  isNative: nativeWindowAvailable,
   async setLockScreen(enabled) {
     if (!await tauriAvailable()) return '浏览器预览不支持设置系统锁屏。'
     const { invoke } = await import('@tauri-apps/api/core')
@@ -83,20 +86,20 @@ export const nativeRuntime: NativeRuntime = {
   async listenChat(listener) {
     if (!await tauriAvailable()) return () => undefined
     const { listen } = await import('@tauri-apps/api/event')
-    return listen<ChatEvent>('chat-event', (event) => listener(event.payload))
+    return listen<ScopedChatEvent>('chat-event', (event) => listener(event.payload))
   },
   async sendChat(mode, text, options) {
     const { invoke } = await import('@tauri-apps/api/core')
-    return (await invoke<string | null>('send_chat', { mode, text, conversationId: options?.conversationId, baseUrl: options?.baseUrl, model: options?.model })) ?? undefined
+    return (await invoke<string | null>('send_chat', { mode, text, conversationId: options?.conversationId, requestId: options?.requestId, baseUrl: options?.baseUrl, model: options?.model })) ?? undefined
   },
   async cancelChat(mode) {
     if (!await tauriAvailable()) return
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('cancel_chat', { mode })
   },
-  async connectHarness(resumeSessionId) {
+  async connectHarness(resumeSessionId, connectionId) {
     const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<string>('connect_harness', { resumeSessionId })
+    return invoke<string>('connect_harness', { resumeSessionId, connectionId })
   },
   async harnessHistory() {
     const { invoke } = await import('@tauri-apps/api/core')

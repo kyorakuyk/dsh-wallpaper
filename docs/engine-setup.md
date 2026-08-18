@@ -45,4 +45,4 @@ pnpm build   # 产物在 wallpaper/dist/（index.html + assets/）
 
 - **登录态**：网页实验入口只会在默认浏览器打开 DeepSeek 官方页面；当前没有应用内网页登录态、Cookie 读取或 DOM 消息桥接。DSH 会话通过本地 bridge `http://127.0.0.1:3080` 连接。
 - **穿透**：网页壁纸引擎的鼠标穿透策略各异；需要精细控制时走 Tauri 壳
-- **3080 探测**：只在 `/api/wallpaper/v1/status` 的版本、鉴权状态与能力集完整匹配时启用 Harness；端口可达本身不会启用。
+- **3080 探测**：只在 `/api/wallpaper/v1/status` 的版本、鉴权状态与新建会话所需能力集完整匹配时启用 Harness；端口可达本身不会启用。`resume` 仅在 DSH 安装会话持久化服务时出现，不影响新建会话。

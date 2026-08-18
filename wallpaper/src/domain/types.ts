@@ -38,6 +38,16 @@ export type ChatEvent =
   | { type: 'auth-required' }
   | { type: 'error'; code: string; recoverable: boolean; message: string }
 
+/**
+ * Native chat traffic shares Tauri's app-wide event channel. Origin metadata
+ * lets a live adapter discard events from an old backend or transcript.
+ */
+export type ScopedChatEvent = ChatEvent & {
+  backend?: BackendMode
+  conversationId?: string
+  requestId?: string
+}
+
 export interface ModelTierRule {
   backend: BackendMode | '*'
   provider?: string
@@ -63,4 +73,3 @@ export interface RuntimeState {
   harness: 'offline' | 'web-only' | 'bridge-ready'
   error?: string
 }
-

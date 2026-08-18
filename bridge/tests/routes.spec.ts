@@ -29,6 +29,7 @@ interface RouteHarness {
   }
   create: ReturnType<typeof vi.fn>
   logger: { warn: ReturnType<typeof vi.fn> }
+  persistence: { enabled: boolean }
 }
 
 const cleanups: string[] = []
@@ -36,14 +37,23 @@ afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((path) => rm(path, { recursive: true, force: true })))
 })
 
-function request(method: string, path: string, body?: unknown, authorization?: string): IncomingMessage {
+function request(
+  method: string,
+  path: string,
+  body?: unknown,
+  authorization?: string,
+  options: { declaredLength?: number; chunks?: Buffer[] } = {},
+): IncomingMessage {
   const payload = body === undefined
     ? []
-    : [Buffer.from(typeof body === 'string' ? body : JSON.stringify(body), 'utf8')]
+    : options.chunks ?? [Buffer.from(typeof body === 'string' ? body : JSON.stringify(body), 'utf8')]
   return {
     method,
     url: path,
-    headers: authorization === undefined ? {} : { authorization },
+    headers: {
+      ...(authorization === undefined ? {} : { authorization }),
+      ...(options.declaredLength === undefined ? {} : { 'content-length': String(options.declaredLength) }),
+    },
     on: () => undefined,
     async *[Symbol.asyncIterator](): AsyncGenerator<Buffer> {
       yield* payload
@@ -77,7 +87,7 @@ function response(): CapturedResponse {
   }
 }
 
-async function createHarness(): Promise<RouteHarness> {
+async function createHarness(persistenceEnabled = false): Promise<RouteHarness> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-wallpaper-bridge-'))
   cleanups.push(root)
   const routes = new Map<string, (req: IncomingMessage, res: ServerResponse) => void | Promise<void>>()
@@ -94,6 +104,7 @@ async function createHarness(): Promise<RouteHarness> {
     return { agent, dispose: async () => undefined }
   })
   const logger = { warn: vi.fn() }
+  const persistence = { enabled: persistenceEnabled }
   const webServer = {
     host: '127.0.0.1' as const,
     register: (route: { path: string; handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void> }) => {
@@ -107,11 +118,12 @@ async function createHarness(): Promise<RouteHarness> {
       return () => { listeners.delete(event) }
     },
     effect: () => undefined,
+    get: (name: string) => name === 'sessionPersistence' && persistence.enabled ? {} : undefined,
     inject: (_dependencies: string[], callback: (scope: unknown) => void) => callback({ webServer, agents: { create, resume: create }, logger, effect: () => undefined }),
   } as unknown as Context
   const tokenFile = join(root, 'bridge-token')
   apply(context, { tokenFile })
-  return { root, tokenFile, routes, listeners, agent, create, logger }
+  return { root, tokenFile, routes, listeners, agent, create, logger, persistence }
 }
 
 async function call(
@@ -126,7 +138,7 @@ async function call(
 
 describe('wallpaper bridge HTTP routes', () => {
   it('keeps status public while protecting standard session operations with the generated token', async () => {
-    const harness = await createHarness()
+    const harness = await createHarness(true)
     const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
     const sessionsRoute = harness.routes.get(`${API_PREFIX}/sessions`)
 
@@ -204,5 +216,42 @@ describe('wallpaper bridge HTTP routes', () => {
     expect(rejected.status).toBe(413)
     expect(JSON.parse(rejected.body)).toEqual({ error: 'text-too-large' })
     expect(harness.agent.followup).not.toHaveBeenCalled()
+  })
+
+  it('does not reveal live sessions publicly and declares resume only with persistence', async () => {
+    const harness = await createHarness(false)
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+    const sessionsRoute = harness.routes.get(`${API_PREFIX}/sessions`)
+    const initial = await call(statusRoute, request('GET', `${API_PREFIX}/status`))
+    expect(JSON.parse(initial.body).capabilities).not.toContain('resume')
+    const token = (await readFile(harness.tokenFile, 'utf8')).trim()
+    const created = await call(sessionsRoute, request('POST', `${API_PREFIX}/sessions`, { sessionId: 'private-live' }, `Bearer ${token}`))
+    expect(created.status).toBe(201)
+
+    const publicStatus = await call(statusRoute, request('GET', `${API_PREFIX}/status`))
+    expect(publicStatus.body).not.toContain('private-live')
+    expect(publicStatus.body).not.toContain('deepseek-chat')
+
+    const resume = await call(sessionsRoute, request('POST', `${API_PREFIX}/sessions`, { resumeSessionId: 'previous-session' }, `Bearer ${token}`))
+    expect(resume.status).toBe(409)
+    expect(JSON.parse(resume.body)).toEqual({ error: 'resume-unavailable' })
+  })
+
+  it('uses precise 400/413 request-body errors and stops oversized input', async () => {
+    const harness = await createHarness()
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+    const sessionsRoute = harness.routes.get(`${API_PREFIX}/sessions`)
+    await call(statusRoute, request('GET', `${API_PREFIX}/status`))
+    const token = (await readFile(harness.tokenFile, 'utf8')).trim()
+    const tooLarge = await call(
+      sessionsRoute,
+      request('POST', `${API_PREFIX}/sessions`, {}, `Bearer ${token}`, { declaredLength: 1_048_577 }),
+    )
+    expect(tooLarge.status).toBe(413)
+    expect(JSON.parse(tooLarge.body)).toEqual({ error: 'request-too-large' })
+
+    const nonObject = await call(sessionsRoute, request('POST', `${API_PREFIX}/sessions`, [], `Bearer ${token}`))
+    expect(nonObject.status).toBe(400)
+    expect(JSON.parse(nonObject.body).error).toBe('invalid-request')
   })
 })

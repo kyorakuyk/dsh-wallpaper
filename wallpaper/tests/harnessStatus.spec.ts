@@ -35,6 +35,12 @@ describe('Harness bridge status contract', () => {
     })
   })
 
+  it('keeps fresh-session Harness usable when optional resume is unavailable', () => {
+    const status = validBridgeStatus()
+    status.capabilities = (status.capabilities as string[]).filter((capability) => capability !== 'resume')
+    expect(compatibleHarnessBridgeStatus(status)).toMatchObject({ availability: 'bridge-ready' })
+  })
+
   it.each([
     {},
     { ...validBridgeStatus(), protocolVersion: 2 },

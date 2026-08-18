@@ -4,9 +4,10 @@ use serde_json::Value;
 use std::{
     collections::HashMap,
     path::PathBuf,
+    str::Utf8Error,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Mutex,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -14,6 +15,40 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::oneshot;
 
 const MAX_HARNESS_MESSAGE_BYTES: usize = 100_000;
+
+/// Incrementally decodes a UTF-8 byte stream without replacing a code point
+/// split across network chunks. Both OpenAI-compatible responses and the
+/// local DSH bridge use UTF-8 SSE, so one decoder serves both paths.
+#[derive(Default)]
+struct Utf8StreamDecoder {
+    pending: Vec<u8>,
+}
+
+impl Utf8StreamDecoder {
+    fn push(&mut self, chunk: &[u8]) -> Result<String, Utf8Error> {
+        self.pending.extend_from_slice(chunk);
+        match std::str::from_utf8(&self.pending) {
+            Ok(text) => {
+                let decoded = text.to_owned();
+                self.pending.clear();
+                Ok(decoded)
+            }
+            Err(error) if error.error_len().is_none() => {
+                let valid = error.valid_up_to();
+                let decoded = std::str::from_utf8(&self.pending[..valid])?.to_owned();
+                self.pending.drain(..valid);
+                Ok(decoded)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn finish(&mut self) -> Result<String, Utf8Error> {
+        let decoded = std::str::from_utf8(&self.pending)?.to_owned();
+        self.pending.clear();
+        Ok(decoded)
+    }
+}
 
 fn generic_api_error(stage: &str) -> String {
     format!("DeepSeek API {stage}失败；请检查地址、网络与访问密钥后重试。")
@@ -30,16 +65,25 @@ fn generic_bridge_http_error(status: reqwest::StatusCode) -> String {
     )
 }
 
-#[derive(Default)]
+/// Tauri owns one `ChatState`, but long-lived Harness SSE readers outlive an
+/// individual command future. Clones deliberately share these locks so the
+/// detached reader can never retain a borrowed `State` reference.
+#[derive(Clone, Default)]
 pub struct ChatState {
-    api_cancel: Mutex<Option<ApiCancellation>>,
-    harness_cancel: Mutex<Option<oneshot::Sender<()>>>,
-    harness_session: Mutex<Option<String>>,
-    api_conversations: Mutex<HashMap<String, ApiConversation>>,
+    api_cancel: Arc<Mutex<Option<ApiCancellation>>>,
+    harness_cancel: Arc<Mutex<Option<HarnessStreamCancellation>>>,
+    harness_session: Arc<Mutex<Option<String>>>,
+    api_conversations: Arc<Mutex<HashMap<String, ApiConversation>>>,
 }
 
 struct ApiCancellation {
     request_id: u64,
+    sender: Option<oneshot::Sender<()>>,
+}
+
+struct HarnessStreamCancellation {
+    stream_id: u64,
+    session_id: String,
     sender: Option<oneshot::Sender<()>>,
 }
 
@@ -106,11 +150,31 @@ fn begin_api_request(state: &ChatState) -> Result<(u64, oneshot::Receiver<()>), 
         .api_cancel
         .lock()
         .map_err(|_| "API cancel state poisoned")?;
+    // This is defensive in addition to `send_api`'s explicit cancellation:
+    // no caller can accidentally leave an older stream able to publish.
+    if let Some(mut previous) = guard.take() {
+        if let Some(cancel) = previous.sender.take() {
+            let _ = cancel.send(());
+        }
+    }
     *guard = Some(ApiCancellation {
         request_id,
         sender: Some(sender),
     });
     Ok((request_id, receiver))
+}
+
+fn is_current_api_request(state: &ChatState, request_id: u64) -> bool {
+    state
+        .api_cancel
+        .lock()
+        .ok()
+        .and_then(|active| {
+            active
+                .as_ref()
+                .map(|active| active.request_id == request_id)
+        })
+        .unwrap_or(false)
 }
 
 /// Clears only the request that installed the cancellation slot. An older
@@ -130,24 +194,105 @@ fn finish_api_request(state: &ChatState, request_id: u64) -> bool {
     }
 }
 
+/// The native `chat-event` channel is process-global. Guard every Harness
+/// stream before it publishes so a disconnected or replaced session cannot
+/// overwrite the active session's composer state.
+fn is_current_harness_stream(state: &ChatState, stream_id: u64, session_id: &str) -> bool {
+    let active_stream = state
+        .harness_cancel
+        .lock()
+        .ok()
+        .and_then(|active| {
+            active
+                .as_ref()
+                .map(|active| active.stream_id == stream_id && active.session_id == session_id)
+        })
+        .unwrap_or(false);
+    let active_session = state
+        .harness_session
+        .lock()
+        .ok()
+        .and_then(|session| session.as_ref().map(|session| session == session_id))
+        .unwrap_or(false);
+    active_stream && active_session
+}
+
+fn finish_harness_stream(state: &ChatState, stream_id: u64, session_id: &str) {
+    if let Ok(mut active) = state.harness_cancel.lock() {
+        if active.as_ref().is_some_and(|current| {
+            current.stream_id == stream_id && current.session_id == session_id
+        }) {
+            active.take();
+        }
+    }
+}
+
+fn clear_harness_session_if(state: &ChatState, session_id: &str) {
+    if let Ok(mut active) = state.harness_session.lock() {
+        if active.as_deref() == Some(session_id) {
+            active.take();
+        }
+    }
+}
+
 /// Extract complete Server-Sent Event records without assuming a particular
-/// line ending. Providers commonly use CRLF while local test servers often
-/// use LF; both are valid SSE framing.
+/// line ending. WHATWG SSE accepts LF, CRLF, and bare CR; a bare CR at the
+/// tail must remain buffered because the next chunk may start with LF.
 fn drain_sse_records(buffer: &mut String) -> Vec<String> {
     let mut records = Vec::new();
-    loop {
-        let lf_end = buffer.find("\n\n");
-        let crlf_end = buffer.find("\r\n\r\n");
-        let Some((end, delimiter_length)) = (match (lf_end, crlf_end) {
-            (Some(lf), Some(crlf)) if crlf < lf => Some((crlf, 4)),
-            (Some(lf), _) => Some((lf, 2)),
-            (_, Some(crlf)) => Some((crlf, 4)),
-            (None, None) => None,
-        }) else {
-            break;
+    let mut record_start = 0;
+    let mut line_start = 0;
+    // The content of a record ends *before* its final line terminator. Keep
+    // that position separately; slicing at `line_start` would retain `\n` or
+    // `\r\n` from the preceding data line.
+    let mut previous_line_terminator_start: Option<usize> = None;
+    let mut index = 0;
+    let bytes = buffer.as_bytes();
+
+    while index < bytes.len() {
+        let terminator = match bytes[index] {
+            b'\n' => Some(1),
+            b'\r' if index + 1 < bytes.len() && bytes[index + 1] == b'\n' => Some(2),
+            b'\r' if index + 1 < bytes.len() => Some(1),
+            // The final CR might form CRLF with the next network chunk.
+            b'\r' => break,
+            _ => None,
         };
-        records.push(buffer[..end].to_string());
-        buffer.drain(..end + delimiter_length);
+        let Some(terminator_len) = terminator else {
+            index += 1;
+            continue;
+        };
+        if index == line_start {
+            let record_end = previous_line_terminator_start.unwrap_or(index);
+            records.push(buffer[record_start..record_end].to_owned());
+            record_start = index + terminator_len;
+            previous_line_terminator_start = None;
+        } else {
+            previous_line_terminator_start = Some(index);
+        }
+        index += terminator_len;
+        line_start = index;
+    }
+    if record_start > 0 {
+        buffer.drain(..record_start);
+    }
+    records
+}
+
+/// At end-of-stream no later byte can turn a final CR into CRLF, so it is a
+/// complete line terminator. This is intentionally separate from the normal
+/// drain path, which must wait across network chunks.
+fn finish_sse_records(buffer: &mut String) -> Vec<String> {
+    if buffer.ends_with('\r') {
+        buffer.push('\n');
+    }
+    let mut records = drain_sse_records(buffer);
+    // Some otherwise valid streaming implementations close immediately after
+    // the final data line instead of writing the optional blank terminator.
+    // At EOF no future byte can complete that record, so accept a data-bearing
+    // tail rather than silently dropping the assistant's last token.
+    if sse_record_payload(buffer).is_some() {
+        records.push(std::mem::take(buffer));
     }
     records
 }
@@ -156,7 +301,7 @@ fn drain_sse_records(buffer: &mut String) -> Vec<String> {
 /// both `data:value` and `data: value`, which are equally valid on the wire.
 fn sse_record_payload(record: &str) -> Option<String> {
     let data: Vec<&str> = record
-        .lines()
+        .split(['\r', '\n'])
         .filter_map(|line| line.strip_prefix("data:"))
         .map(|value| value.strip_prefix(' ').unwrap_or(value))
         .collect();
@@ -225,23 +370,151 @@ struct HarnessSessionRequest<'a> {
     resume_session_id: Option<&'a str>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct HarnessSessionResponse {
-    session_id: String,
-    provider: Option<String>,
-    model: Option<String>,
+pub struct HarnessConnection {
+    pub session_id: String,
+    pub provider: Option<String>,
+    pub model: Option<String>,
 }
 
-fn emit_error(app: &AppHandle, code: &str, recoverable: bool, message: impl Into<String>) {
+#[derive(Deserialize)]
+struct BridgeErrorResponse {
+    error: Option<String>,
+}
+
+/// `chat-event` is application-global, while the UI has one adapter per
+/// backend/conversation. Keep the origin on every native event so an old
+/// stream cannot paint into a newly selected backend or transcript.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ScopedChatEvent {
+    backend: String,
+    conversation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_id: Option<String>,
+    #[serde(flatten)]
+    event: ChatEvent,
+}
+
+fn emit_scoped(
+    app: &AppHandle,
+    backend: &str,
+    conversation_id: &str,
+    request_id: Option<String>,
+    event: ChatEvent,
+) {
     let _ = app.emit(
         "chat-event",
-        ChatEvent::Error {
-            code: code.into(),
-            recoverable,
-            message: message.into(),
+        ScopedChatEvent {
+            backend: backend.into(),
+            conversation_id: conversation_id.into(),
+            request_id,
+            event,
         },
     );
+}
+
+fn emit_current_api_event(
+    app: &AppHandle,
+    state: &ChatState,
+    conversation_id: &str,
+    request_id: u64,
+    event_request_id: &str,
+    event: ChatEvent,
+) -> bool {
+    if is_current_api_request(state, request_id) {
+        emit_scoped(
+            app,
+            "deepseek-api",
+            conversation_id,
+            Some(event_request_id.to_string()),
+            event,
+        );
+        true
+    } else {
+        false
+    }
+}
+
+fn scoped_harness_event(mut event: Value, session_id: &str, connection_id: &str) -> Value {
+    let Some(map) = event.as_object_mut() else {
+        return serde_json::json!({
+            "type": "error",
+            "code": "HARNESS_SSE_INVALID_EVENT",
+            "recoverable": true,
+            "message": "DSH bridge 返回了无法识别的事件。",
+            "backend": "harness",
+            "conversationId": session_id,
+            "requestId": connection_id,
+        });
+    };
+    // The local bridge must not be able to choose an origin label. These three
+    // fields are assigned by the native subscriber that owns the connection.
+    map.insert("backend".into(), Value::String("harness".into()));
+    map.insert("conversationId".into(), Value::String(session_id.into()));
+    map.insert("requestId".into(), Value::String(connection_id.into()));
+    if map.get("type").and_then(Value::as_str) == Some("model") && !map.contains_key("tier") {
+        map.insert("tier".into(), Value::String("unknown".into()));
+    }
+    event
+}
+
+/// Parse and relay one complete API SSE record. The current-request check is
+/// deliberately inside this helper (rather than only at loop boundaries): a
+/// cancelled or superseded stream can have already-buffered chunks.
+fn process_api_sse_record(
+    app: &AppHandle,
+    state: &ChatState,
+    conversation_id: &str,
+    request_id: u64,
+    event_request_id: &str,
+    record: &str,
+    full: &mut String,
+) {
+    if !is_current_api_request(state, request_id) {
+        return;
+    }
+    let Some(line) = sse_record_payload(record) else {
+        return;
+    };
+    if line == "[DONE]" {
+        return;
+    }
+    let Ok(data) = serde_json::from_str::<ApiChunk>(&line) else {
+        return;
+    };
+    if let Some(delta) = data
+        .choices
+        .and_then(|choices| choices.into_iter().next())
+        .and_then(|choice| choice.delta.content)
+    {
+        full.push_str(&delta);
+        let _ = emit_current_api_event(
+            app,
+            state,
+            conversation_id,
+            request_id,
+            event_request_id,
+            ChatEvent::Delta { text: delta },
+        );
+    }
+    if let Some(usage) = data.usage {
+        let cached = usage.prompt_cache_hit_tokens.unwrap_or(0);
+        let _ = emit_current_api_event(
+            app,
+            state,
+            conversation_id,
+            request_id,
+            event_request_id,
+            ChatEvent::Usage {
+                input: usage.prompt_tokens.saturating_sub(cached),
+                output: usage.completion_tokens,
+                cache_read: usage.prompt_cache_hit_tokens,
+                cost: None,
+            },
+        );
+    }
 }
 
 pub async fn send_api(
@@ -251,12 +524,16 @@ pub async fn send_api(
     base_url: String,
     model: String,
     conversation_id: Option<String>,
+    event_request_id: Option<String>,
 ) -> Result<String, String> {
     cancel_api(&state);
     let (request_id, mut cancel_rx) = begin_api_request(&state)?;
     let conversation_id = conversation_id
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(new_conversation_id);
+    let event_request_id = event_request_id
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| request_id.to_string());
     let trimmed_text = text.trim();
     if trimmed_text.is_empty() {
         finish_api_request(&state, request_id);
@@ -312,22 +589,35 @@ pub async fn send_api(
             response.status().as_u16()
         ));
     }
-    let _ = app.emit(
-        "chat-event",
+    if !emit_current_api_event(
+        &app,
+        &state,
+        &conversation_id,
+        request_id,
+        &event_request_id,
         ChatEvent::Model {
             provider: Some("deepseek".into()),
             model,
             tier: "unknown".into(),
             effort: None,
         },
-    );
-    let _ = app.emit(
-        "chat-event",
+    ) {
+        return Ok(conversation_id);
+    }
+    if !emit_current_api_event(
+        &app,
+        &state,
+        &conversation_id,
+        request_id,
+        &event_request_id,
         ChatEvent::Status {
             activity: "streaming".into(),
         },
-    );
+    ) {
+        return Ok(conversation_id);
+    }
     let mut stream = response.bytes_stream();
+    let mut decoder = Utf8StreamDecoder::default();
     let mut buffer = String::new();
     let mut full = String::new();
     let mut canceled = false;
@@ -336,18 +626,24 @@ pub async fn send_api(
         tokio::select! {
             _ = &mut cancel_rx => { canceled = true; break; }
             chunk = stream.next() => {
-                let Some(chunk) = chunk else { break };
+                let Some(chunk) = chunk else {
+                    match decoder.finish() {
+                        Ok(tail) => buffer.push_str(&tail),
+                        Err(_) => {
+                        stream_error = Some(generic_api_error("流式编码"));
+                        }
+                    }
+                    break;
+                };
                 match chunk {
                     Ok(bytes) => {
-                        buffer.push_str(&String::from_utf8_lossy(&bytes));
+                        let decoded = match decoder.push(&bytes) {
+                            Ok(decoded) => decoded,
+                            Err(_) => { stream_error = Some(generic_api_error("流式编码")); break; }
+                        };
+                        buffer.push_str(&decoded);
                         for record in drain_sse_records(&mut buffer) {
-                            if let Some(line) = sse_record_payload(&record) {
-                                if line == "[DONE]" { continue; }
-                                if let Ok(data) = serde_json::from_str::<ApiChunk>(&line) {
-                                    if let Some(delta) = data.choices.and_then(|v| v.into_iter().next()).and_then(|c| c.delta.content) { full.push_str(&delta); let _ = app.emit("chat-event", ChatEvent::Delta { text: delta }); }
-                                    if let Some(usage) = data.usage { let cached = usage.prompt_cache_hit_tokens.unwrap_or(0); let _ = app.emit("chat-event", ChatEvent::Usage { input: usage.prompt_tokens.saturating_sub(cached), output: usage.completion_tokens, cache_read: usage.prompt_cache_hit_tokens, cost: None }); }
-                                }
-                            }
+                            process_api_sse_record(&app, &state, &conversation_id, request_id, &event_request_id, &record, &mut full);
                         }
                     }
                     Err(_) => { stream_error = Some(generic_api_error("流式连接")); break; }
@@ -355,10 +651,22 @@ pub async fn send_api(
             }
         }
     }
-    let current = finish_api_request(&state, request_id);
+    if !canceled && stream_error.is_none() {
+        for record in finish_sse_records(&mut buffer) {
+            process_api_sse_record(
+                &app,
+                &state,
+                &conversation_id,
+                request_id,
+                &event_request_id,
+                &record,
+                &mut full,
+            );
+        }
+    }
     // A newer request superseded this one. Do not publish stale terminal
     // state or mutate the shared conversation transcript.
-    if !current {
+    if !is_current_api_request(&state, request_id) {
         return Ok(conversation_id);
     }
     if let Ok(mut conversations) = state.api_conversations.lock() {
@@ -375,8 +683,12 @@ pub async fn send_api(
         }
     }
     if !full.is_empty() {
-        let _ = app.emit(
-            "chat-event",
+        let _ = emit_current_api_event(
+            &app,
+            &state,
+            &conversation_id,
+            request_id,
+            &event_request_id,
             ChatEvent::Message {
                 role: "assistant".into(),
                 content: full,
@@ -384,28 +696,52 @@ pub async fn send_api(
         );
     }
     if canceled {
-        let _ = app.emit(
-            "chat-event",
+        let _ = emit_current_api_event(
+            &app,
+            &state,
+            &conversation_id,
+            request_id,
+            &event_request_id,
             ChatEvent::Status {
                 activity: "idle".into(),
             },
         );
     } else if let Some(error) = stream_error {
-        emit_error(&app, "DEEPSEEK_API_STREAM", true, error);
-        let _ = app.emit(
-            "chat-event",
+        let _ = emit_current_api_event(
+            &app,
+            &state,
+            &conversation_id,
+            request_id,
+            &event_request_id,
+            ChatEvent::Error {
+                code: "DEEPSEEK_API_STREAM".into(),
+                recoverable: true,
+                message: error,
+            },
+        );
+        let _ = emit_current_api_event(
+            &app,
+            &state,
+            &conversation_id,
+            request_id,
+            &event_request_id,
             ChatEvent::Status {
                 activity: "idle".into(),
             },
         );
     } else {
-        let _ = app.emit(
-            "chat-event",
+        let _ = emit_current_api_event(
+            &app,
+            &state,
+            &conversation_id,
+            request_id,
+            &event_request_id,
             ChatEvent::Status {
                 activity: "done".into(),
             },
         );
     }
+    finish_api_request(&state, request_id);
     Ok(conversation_id)
 }
 
@@ -423,7 +759,10 @@ pub fn api_history(state: &ChatState, conversation_id: &str) -> Result<Value, St
 
 pub fn cancel_api(state: &ChatState) {
     if let Ok(mut guard) = state.api_cancel.lock() {
-        if let Some(active) = guard.as_mut() {
+        // Remove the ownership marker before waking the task. A buffered
+        // response can otherwise observe itself as current after cancellation
+        // and append a stale terminal message to the transcript.
+        if let Some(mut active) = guard.take() {
             if let Some(cancel) = active.sender.take() {
                 let _ = cancel.send(());
             }
@@ -464,24 +803,49 @@ pub async fn harness_connect(
     app: AppHandle,
     state: tauri::State<'_, ChatState>,
     resume_session_id: Option<String>,
+    connection_id: String,
 ) -> Result<String, String> {
+    let connection_id = connection_id.trim().to_string();
+    if connection_id.is_empty() || connection_id.len() > 200 {
+        return Err("Harness 连接标识无效".into());
+    }
     cancel_harness_stream(&state);
     let token = read_bridge_token()?;
     let client = bridge_request_client()?;
-    let response = auth(
-        client.post("http://127.0.0.1:3080/api/wallpaper/v1/sessions"),
-        &token,
-    )
-    .json(&HarnessSessionRequest {
-        resume_session_id: resume_session_id.as_deref(),
-    })
-    .send()
-    .await
-    .map_err(|_| generic_harness_error("连接"))?;
+    let create_session = |resume_session_id: Option<&str>| {
+        auth(
+            client.post("http://127.0.0.1:3080/api/wallpaper/v1/sessions"),
+            &token,
+        )
+        .json(&HarnessSessionRequest { resume_session_id })
+        .send()
+    };
+    let mut response = create_session(resume_session_id.as_deref())
+        .await
+        .map_err(|_| generic_harness_error("连接"))?;
+    // Persistence is optional in DSH. Only the explicit bridge 409 contract
+    // gets a one-time new-session retry; never turn arbitrary failed resumes
+    // into a fresh transcript silently.
+    if resume_session_id.is_some() && response.status() == reqwest::StatusCode::CONFLICT {
+        let resume_unavailable = response
+            .json::<BridgeErrorResponse>()
+            .await
+            .ok()
+            .and_then(|body| body.error)
+            .as_deref()
+            == Some("resume-unavailable");
+        if resume_unavailable {
+            response = create_session(None)
+                .await
+                .map_err(|_| generic_harness_error("连接"))?;
+        } else {
+            return Err(generic_bridge_http_error(reqwest::StatusCode::CONFLICT));
+        }
+    }
     if !response.status().is_success() {
         return Err(generic_bridge_http_error(response.status()));
     }
-    let session: HarnessSessionResponse = response
+    let session: HarnessConnection = response
         .json()
         .await
         .map_err(|_| "DSH bridge 返回了无法识别的会话响应。".to_string())?;
@@ -489,86 +853,140 @@ pub async fn harness_connect(
         .harness_session
         .lock()
         .map_err(|_| "Harness session state poisoned")? = Some(session.session_id.clone());
-    if let Some(model) = session.model {
-        let _ = app.emit(
-            "chat-event",
-            ChatEvent::Model {
-                provider: session.provider,
-                model,
-                tier: "unknown".into(),
-                effort: None,
-            },
-        );
+    if let Err(error) = connect_harness_events(
+        app,
+        state.inner().clone(),
+        session.session_id.clone(),
+        token,
+        connection_id,
+    )
+    .await
+    {
+        clear_harness_session_if(state.inner(), &session.session_id);
+        return Err(error);
     }
-    spawn_harness_stream(app, state.inner(), session.session_id.clone(), token);
     Ok(session.session_id)
 }
 
-fn spawn_harness_stream(app: AppHandle, state: &ChatState, session_id: String, token: String) {
+async fn connect_harness_events(
+    app: AppHandle,
+    state: ChatState,
+    session_id: String,
+    token: String,
+    connection_id: String,
+) -> Result<(), String> {
     let (cancel_tx, mut cancel_rx) = oneshot::channel();
+    static STREAM_COUNTER: AtomicU64 = AtomicU64::new(1);
+    let stream_id = STREAM_COUNTER.fetch_add(1, Ordering::Relaxed);
     if let Ok(mut guard) = state.harness_cancel.lock() {
-        *guard = Some(cancel_tx);
+        *guard = Some(HarnessStreamCancellation {
+            stream_id,
+            session_id: session_id.clone(),
+            sender: Some(cancel_tx),
+        });
+    }
+    let url = format!(
+        "http://127.0.0.1:3080/api/wallpaper/v1/sessions/{}/events",
+        urlencoding::encode(&session_id)
+    );
+    let client = match bridge_stream_client() {
+        Ok(client) => client,
+        Err(error) => {
+            finish_harness_stream(&state, stream_id, &session_id);
+            return Err(error);
+        }
+    };
+    // `send()` resolves after response headers arrive. The bridge registers the
+    // client before it flushes those headers, so this await is the readiness
+    // barrier that prevents the first POST/followup from being missed.
+    let response = match auth(client.get(url), &token).send().await {
+        Ok(response) if response.status().is_success() => response,
+        Ok(response) => {
+            finish_harness_stream(&state, stream_id, &session_id);
+            return Err(generic_bridge_http_error(response.status()));
+        }
+        Err(_) => {
+            finish_harness_stream(&state, stream_id, &session_id);
+            return Err(generic_harness_error("事件流连接"));
+        }
+    };
+    // The bridge sets this only after it has inserted the response into the
+    // live subscriber set. Require the handshake rather than assuming an HTTP
+    // 200 means the first `followup()` cannot win the race.
+    if response
+        .headers()
+        .get("x-dsh-wallpaper-sse-ready")
+        .and_then(|value| value.to_str().ok())
+        != Some("1")
+    {
+        finish_harness_stream(&state, stream_id, &session_id);
+        return Err("DSH bridge 事件流未确认就绪；请升级壁纸 bridge 后重试。".into());
     }
     tauri::async_runtime::spawn(async move {
-        let url = format!(
-            "http://127.0.0.1:3080/api/wallpaper/v1/sessions/{}/events",
-            urlencoding::encode(&session_id)
-        );
-        let client = match bridge_stream_client() {
-            Ok(client) => client,
-            Err(error) => {
-                emit_error(&app, "HARNESS_SSE_CLIENT", true, error);
-                return;
-            }
-        };
-        let response = match auth(client.get(url), &token).send().await {
-            Ok(response) if response.status().is_success() => response,
-            Ok(response) => {
-                emit_error(
+        let emit_stream_error = |code: &str, message: String| {
+            if is_current_harness_stream(&state, stream_id, &session_id) {
+                emit_scoped(
                     &app,
-                    "HARNESS_SSE_HTTP",
-                    true,
-                    generic_bridge_http_error(response.status()),
+                    "harness",
+                    &session_id,
+                    Some(connection_id.clone()),
+                    ChatEvent::Error {
+                        code: code.into(),
+                        recoverable: true,
+                        message,
+                    },
                 );
-                return;
-            }
-            Err(_) => {
-                emit_error(
-                    &app,
-                    "HARNESS_SSE_CONNECT",
-                    true,
-                    generic_harness_error("事件流连接"),
-                );
-                return;
             }
         };
         let mut stream = response.bytes_stream();
+        let mut decoder = Utf8StreamDecoder::default();
         let mut buffer = String::new();
         loop {
             tokio::select! {
                 _ = &mut cancel_rx => break,
                 chunk = stream.next() => {
-                    let Some(chunk) = chunk else { emit_error(&app, "HARNESS_DISCONNECTED", true, "DSH bridge 事件流已断开"); break; };
-                    match chunk {
-                        Ok(bytes) => {
-                            buffer.push_str(&String::from_utf8_lossy(&bytes));
-                            for record in drain_sse_records(&mut buffer) {
-                                if let Some(line) = sse_record_payload(&record) {
-                                    if let Ok(mut event) = serde_json::from_str::<Value>(&line) {
-                                        if event.get("type").and_then(Value::as_str) == Some("model") && event.get("tier").is_none() {
-                                            if let Some(map) = event.as_object_mut() { map.insert("tier".into(), Value::String("unknown".into())); }
-                                        }
-                                        let _ = app.emit("chat-event", event);
+                    let Some(chunk) = chunk else {
+                        match decoder.finish() {
+                            Ok(tail) => buffer.push_str(&tail),
+                            Err(_) => emit_stream_error("HARNESS_SSE_ENCODING", generic_harness_error("事件流编码")),
+                        }
+                        for record in finish_sse_records(&mut buffer) {
+                            if let Some(line) = sse_record_payload(&record) {
+                                    if let Ok(event) = serde_json::from_str::<Value>(&line) {
+                                    if is_current_harness_stream(&state, stream_id, &session_id) {
+                                        let _ = app.emit("chat-event", scoped_harness_event(event, &session_id, &connection_id));
                                     }
                                 }
                             }
                         }
-                        Err(_) => { emit_error(&app, "HARNESS_SSE_READ", true, generic_harness_error("事件流读取")); break; }
+                        emit_stream_error("HARNESS_DISCONNECTED", "DSH bridge 事件流已断开".into());
+                        break;
+                    };
+                    match chunk {
+                        Ok(bytes) => {
+                            let decoded = match decoder.push(&bytes) {
+                                Ok(decoded) => decoded,
+                                Err(_) => { emit_stream_error("HARNESS_SSE_ENCODING", generic_harness_error("事件流编码")); break; }
+                            };
+                            buffer.push_str(&decoded);
+                            for record in drain_sse_records(&mut buffer) {
+                                if let Some(line) = sse_record_payload(&record) {
+                                    if let Ok(event) = serde_json::from_str::<Value>(&line) {
+                                        if is_current_harness_stream(&state, stream_id, &session_id) {
+                                            let _ = app.emit("chat-event", scoped_harness_event(event, &session_id, &connection_id));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(_) => { emit_stream_error("HARNESS_SSE_READ", generic_harness_error("事件流读取")); break; }
                     }
                 }
             }
         }
+        finish_harness_stream(&state, stream_id, &session_id);
     });
+    Ok(())
 }
 
 pub async fn harness_send(state: tauri::State<'_, ChatState>, text: String) -> Result<(), String> {
@@ -576,7 +994,7 @@ pub async fn harness_send(state: tauri::State<'_, ChatState>, text: String) -> R
     if text.is_empty() {
         return Err("消息不能为空".into());
     }
-    if text.len() > MAX_HARNESS_MESSAGE_BYTES {
+    if text.as_bytes().len() > MAX_HARNESS_MESSAGE_BYTES {
         return Err("消息过长；单条消息不能超过 100,000 个 UTF-8 字节".into());
     }
     let session_id = state
@@ -653,8 +1071,10 @@ pub async fn harness_cancel(state: tauri::State<'_, ChatState>) -> Result<(), St
 
 pub fn cancel_harness_stream(state: &ChatState) {
     if let Ok(mut guard) = state.harness_cancel.lock() {
-        if let Some(cancel) = guard.take() {
-            let _ = cancel.send(());
+        if let Some(mut active) = guard.take() {
+            if let Some(cancel) = active.sender.take() {
+                let _ = cancel.send(());
+            }
         }
     }
 }
@@ -662,26 +1082,68 @@ pub fn cancel_harness_stream(state: &ChatState) {
 #[cfg(test)]
 mod tests {
     use super::{
-        drain_sse_records, finish_api_request, sse_record_payload, ChatState,
-        MAX_HARNESS_MESSAGE_BYTES,
+        drain_sse_records, finish_api_request, finish_harness_stream, finish_sse_records,
+        is_current_harness_stream, sse_record_payload, ChatState, HarnessStreamCancellation,
+        Utf8StreamDecoder, MAX_HARNESS_MESSAGE_BYTES,
     };
+    use tokio::sync::oneshot;
 
     #[test]
-    fn sse_parser_accepts_lf_and_crlf_records_across_chunks() {
+    fn sse_parser_accepts_lf_crlf_and_bare_cr_records_across_chunks() {
         let mut buffer = "data: one\n\n".to_string();
-        buffer.push_str("data: two\r\n\r\npartial");
+        buffer.push_str("data: two\r\n\r\ndata: three\r\rpartial");
         let records = drain_sse_records(&mut buffer);
-        assert_eq!(records, ["data: one", "data: two"]);
+        assert_eq!(records, ["data: one", "data: two", "data: three"]);
         assert_eq!(buffer, "partial");
         assert_eq!(sse_record_payload(&records[0]), Some("one".into()));
         assert_eq!(sse_record_payload(&records[1]), Some("two".into()));
+        assert_eq!(sse_record_payload(&records[2]), Some("three".into()));
     }
 
     #[test]
     fn sse_parser_combines_multiline_data_and_ignores_comments() {
-        let record = ": heartbeat\ndata:first\ndata: second\nevent: ignored";
+        let record = ": heartbeat\rdata:first\r\ndata: second\nevent: ignored";
         assert_eq!(sse_record_payload(record), Some("first\nsecond".into()));
         assert_eq!(sse_record_payload(": heartbeat"), None);
+    }
+
+    #[test]
+    fn sse_parser_waits_for_a_split_crlf_then_flushes_terminal_bare_cr() {
+        let mut buffer = "data: split\r".to_string();
+        assert!(drain_sse_records(&mut buffer).is_empty());
+        buffer.push_str("\n\r\n");
+        assert_eq!(drain_sse_records(&mut buffer), ["data: split"]);
+        assert!(buffer.is_empty());
+
+        buffer.push_str("data: terminal\r\r");
+        assert_eq!(finish_sse_records(&mut buffer), ["data: terminal"]);
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn utf8_stream_decoder_preserves_a_codepoint_split_across_chunks() {
+        let mut decoder = Utf8StreamDecoder::default();
+        let whale = "鲸".as_bytes();
+        assert_eq!(decoder.push(&whale[..1]).expect("partial UTF-8"), "");
+        assert_eq!(decoder.push(&whale[1..]).expect("complete UTF-8"), "鲸");
+        assert_eq!(decoder.finish().expect("empty tail"), "");
+    }
+
+    #[test]
+    fn stale_harness_stream_cannot_publish_or_clear_the_newer_stream() {
+        let state = ChatState::default();
+        let (sender, _receiver) = oneshot::channel();
+        *state.harness_cancel.lock().expect("state lock") = Some(HarnessStreamCancellation {
+            stream_id: 22,
+            session_id: "newer-session".into(),
+            sender: Some(sender),
+        });
+        *state.harness_session.lock().expect("session lock") = Some("newer-session".into());
+        assert!(!is_current_harness_stream(&state, 21, "older-session"));
+        finish_harness_stream(&state, 21, "older-session");
+        assert!(is_current_harness_stream(&state, 22, "newer-session"));
+        finish_harness_stream(&state, 22, "newer-session");
+        assert!(!is_current_harness_stream(&state, 22, "newer-session"));
     }
 
     #[test]

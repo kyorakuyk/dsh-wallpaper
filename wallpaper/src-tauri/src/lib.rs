@@ -338,6 +338,7 @@ async fn send_chat(
     mode: String,
     text: String,
     conversation_id: Option<String>,
+    request_id: Option<String>,
     base_url: Option<String>,
     model: Option<String>,
 ) -> Result<Option<String>, String> {
@@ -349,6 +350,7 @@ async fn send_chat(
             base_url.unwrap_or_else(|| "https://api.deepseek.com".into()),
             model.unwrap_or_else(|| "deepseek-chat".into()),
             conversation_id,
+            request_id,
         )
         .await
         .map(Some),
@@ -380,8 +382,9 @@ async fn connect_harness(
     app: tauri::AppHandle,
     state: tauri::State<'_, chat::ChatState>,
     resume_session_id: Option<String>,
+    connection_id: String,
 ) -> Result<String, String> {
-    chat::harness_connect(app, state, resume_session_id).await
+    chat::harness_connect(app, state, resume_session_id, connection_id).await
 }
 
 #[tauri::command]
@@ -398,14 +401,8 @@ static HARNESS_STATUS_CACHE: OnceLock<RwLock<serde_json::Value>> = OnceLock::new
 /// bridge: it may be DSH's regular web UI, an older bridge, or another local
 /// service altogether.
 const HARNESS_BRIDGE_PROTOCOL_VERSION: u64 = 1;
-const REQUIRED_HARNESS_BRIDGE_CAPABILITIES: &[&str] = &[
-    "sessions",
-    "resume",
-    "history",
-    "sse",
-    "cancel",
-    "approval-handoff",
-];
+const REQUIRED_HARNESS_BRIDGE_CAPABILITIES: &[&str] =
+    &["sessions", "history", "sse", "cancel", "approval-handoff"];
 
 fn harness_status_cache() -> &'static RwLock<serde_json::Value> {
     HARNESS_STATUS_CACHE
@@ -414,7 +411,8 @@ fn harness_status_cache() -> &'static RwLock<serde_json::Value> {
 
 /// Convert a bridge status document into the small status shape exposed to
 /// the WebView.  This is intentionally fail-closed: only a bridge that speaks
-/// the protocol we need can enable Harness mode.
+/// the fresh-session protocol we need can enable Harness mode. `resume` is an
+/// optional DSH persistence feature and cannot be required for a new session.
 fn compatible_harness_bridge_status(data: &serde_json::Value) -> Option<serde_json::Value> {
     let protocol_version = data
         .get("protocolVersion")
@@ -529,6 +527,16 @@ mod harness_status_tests {
         assert_eq!(status["provider"], "deepseek");
         assert_eq!(status["model"], "deepseek-chat");
         assert_eq!(status["reasoningEffort"], "high");
+    }
+
+    #[test]
+    fn accepts_a_bridge_without_optional_session_persistence() {
+        let mut document = valid_status();
+        let capabilities = document["capabilities"]
+            .as_array_mut()
+            .expect("capabilities");
+        capabilities.retain(|capability| capability.as_str() != Some("resume"));
+        assert!(compatible_harness_bridge_status(&document).is_some());
     }
 
     #[test]
