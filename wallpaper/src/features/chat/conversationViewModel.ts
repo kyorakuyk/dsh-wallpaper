@@ -55,6 +55,46 @@ export function formatCost(cost: number, estimated = false): string {
   return `${estimated ? '约 ' : ''}¥${cost.toFixed(4)}`
 }
 
+/**
+ * The compact footer is deliberately complete even when a backend did not
+ * return metering data. A blank footer made an unmetered reply look like a
+ * free reply, which is especially misleading for API mode. Zero remains a
+ * real value at every field and must never be formatted as unavailable.
+ */
+export interface TurnUsageSummary {
+  available: boolean
+  input: string
+  output: string
+  cacheRead: string
+  cost: string
+}
+
+export function turnUsageSummary(
+  usage: TokenUsage | undefined,
+  backend: BackendMode,
+  apiPricingConfigured: boolean,
+): TurnUsageSummary {
+  const unavailable = '未提供'
+  if (!usage) {
+    return {
+      available: false,
+      input: unavailable,
+      output: unavailable,
+      cacheRead: unavailable,
+      cost: backend === 'deepseek-api' && !apiPricingConfigured ? '价格未配置' : '费用未提供',
+    }
+  }
+  return {
+    available: true,
+    input: String(usage.input),
+    output: String(usage.output),
+    cacheRead: usage.cacheRead === undefined ? unavailable : String(usage.cacheRead),
+    cost: usage.cost === undefined
+      ? backend === 'deepseek-api' && !apiPricingConfigured ? '价格未配置' : '费用未提供'
+      : formatCost(usage.cost, usage.estimated),
+  }
+}
+
 export function composerPlaceholder(disabled: boolean, activity: Activity): string {
   if (disabled) return '当前模式暂不可用'
   if (isBusyActivity(activity)) return '大肥鱼正在处理上一条消息…'

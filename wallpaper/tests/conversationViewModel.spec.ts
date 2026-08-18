@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from '../src/domain/types.ts'
-import { composerPlaceholder, formatCost, isBusyActivity, sessionCost, sessionCostSummary, usageTokenCount } from '../src/features/chat/conversationViewModel.ts'
+import { composerPlaceholder, formatCost, isBusyActivity, sessionCost, sessionCostSummary, turnUsageSummary, usageTokenCount } from '../src/features/chat/conversationViewModel.ts'
 
 describe('conversation view model', () => {
   it('treats only active request phases as busy', () => {
@@ -36,6 +36,26 @@ describe('conversation view model', () => {
     expect(usageTokenCount({ input: 18, output: 7, cacheRead: 4 })).toBe(25)
     expect(formatCost(0.02345)).toBe('¥0.0234')
     expect(formatCost(0.02345, true)).toBe('约 ¥0.0234')
+  })
+
+  it('keeps every per-turn footer field explicit, including zero values', () => {
+    expect(turnUsageSummary(undefined, 'harness', false)).toEqual({
+      available: false,
+      input: '未提供',
+      output: '未提供',
+      cacheRead: '未提供',
+      cost: '费用未提供',
+    })
+    expect(turnUsageSummary(undefined, 'deepseek-api', false).cost).toBe('价格未配置')
+    expect(turnUsageSummary({ input: 1, output: 2 }, 'deepseek-api', false).cost).toBe('价格未配置')
+    expect(turnUsageSummary({ input: 0, output: 0, cacheRead: 0, cost: 0, estimated: true }, 'deepseek-api', true)).toEqual({
+      available: true,
+      input: '0',
+      output: '0',
+      cacheRead: '0',
+      cost: '约 ¥0.0000',
+    })
+    expect(turnUsageSummary({ input: 18, output: 7 }, 'deepseek-api', true).cost).toBe('费用未提供')
   })
 
   it('uses explicit disabled and busy composer guidance', () => {

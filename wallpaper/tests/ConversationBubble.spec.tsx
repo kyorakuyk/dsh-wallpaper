@@ -25,6 +25,11 @@ describe('ConversationBubble', () => {
     expect(html).toContain('aria-label="输入消息"')
     expect(html).toContain('aria-label="发送消息"')
     expect(html).not.toContain('当前会话记录')
+    expect(html).toContain('本轮 入 未提供')
+    expect(html).toContain('出 未提供')
+    expect(html).toContain('缓存 未提供')
+    expect(html).toContain('费用未提供')
+    expect(html).toContain('会话费用未提供')
   })
 
   it('renders Harness theme, history, streaming state and usage metadata', () => {
@@ -42,7 +47,31 @@ describe('ConversationBubble', () => {
     expect(html).toContain('data-dsh-theme="harness"')
     expect(html).toContain('当前会话记录')
     expect(html).toContain('正在回复')
-    expect(html).toContain('30 tokens')
+    expect(html).toContain('本轮 入 10')
+    expect(html).toContain('出 20')
+    expect(html).toContain('缓存 未提供')
+    expect(html).toContain('费用未提供')
     expect(html).toContain('正在处理')
+  })
+
+  it('renders zero-priced API usage as measured rather than unavailable', () => {
+    const html = renderToStaticMarkup(<ConversationBubble
+      backend="deepseek-api"
+      activity="done"
+      modelLabel="deepseek-chat"
+      messages={[{ id: 'message-1', role: 'assistant', content: '完成', createdAt: 1, usage: { input: 2, output: 3, cacheRead: 0, cost: 0, estimated: true } }]}
+      streamingText=""
+      historyExpanded={false}
+      usage={{ input: 2, output: 3, cacheRead: 0, cost: 0, estimated: true }}
+      apiPricingConfigured
+      {...callbacks}
+    />)
+
+    expect(html).toContain('本轮 入 2')
+    expect(html).toContain('出 3')
+    expect(html).toContain('缓存 0')
+    expect(html).toContain('费用 约 ¥0.0000')
+    expect(html).toContain('会话 约 ¥0.0000')
+    expect(html).not.toContain('价格未配置')
   })
 })

@@ -12,8 +12,8 @@ import { IdleScene } from './scenes/IdleScene.tsx'
 import { SleepScene } from './scenes/SleepScene.tsx'
 import { WakeScene } from './scenes/WakeScene.tsx'
 import { INITIAL_RUNTIME_STATE, reduceRuntime } from './scenes/stateMachine.ts'
-import { BACKGROUND_OPTIONS, applyBubbleOverrides, assetUrl, loadSettings, resumeConversationId, saveConversationPointer, type WallpaperSettings } from './settings/store.ts'
-import { nativeRuntime } from './native/runtime.ts'
+import { BACKGROUND_OPTIONS, applyBubbleOverrides, assetUrl, loadSettings, localCalendarDay, resumeConversationId, saveConversationPointer, type WallpaperSettings } from './settings/store.ts'
+import { nativeRuntime, type NativeSendOptions } from './native/runtime.ts'
 import { listen } from '@tauri-apps/api/event'
 import type { AppSurface } from './surface.ts'
 import { beginInteractionRegionSession, collectInteractionRegions, publishInteractionRegions } from './runtime/interactionRegions.ts'
@@ -54,6 +54,111 @@ export function canAutoSelectHarness(
   autoSwitchHarness: boolean,
 ): boolean {
   return availability === 'bridge-ready' && backend !== 'harness' && autoSwitchHarness
+}
+
+/**
+ * `NativeChatAdapter` retains the options object it is constructed with and
+ * takes a value snapshot only when it starts a request.  Keep that object
+ * stable for the lifetime of the API adapter: editing an API endpoint, model,
+ * or price must affect the *next* request, never sever the event subscription
+ * for a response that is already streaming.
+ */
+export function apiAdapterOptionsFromSettings(
+  settings: Pick<WallpaperSettings, 'deepseekApi'>,
+): NativeSendOptions {
+  return {
+    baseUrl: settings.deepseekApi.baseUrl,
+    model: settings.deepseekApi.model,
+    priceInputPerMillion: settings.deepseekApi.priceInputPerMillion,
+    priceOutputPerMillion: settings.deepseekApi.priceOutputPerMillion,
+  }
+}
+
+/** Mutates the stable API options holder used by the mounted adapter. */
+export function updateApiAdapterOptions(
+  options: NativeSendOptions,
+  settings: Pick<WallpaperSettings, 'deepseekApi'>,
+): NativeSendOptions {
+  Object.assign(options, apiAdapterOptionsFromSettings(settings))
+  return options
+}
+
+type ConversationPointerAdapter = ChatAdapter & {
+  conversationId?: () => string | undefined
+}
+
+/**
+ * Native API sessions receive their UUID before the native async request is
+ * awaited.  Persist it at every lifecycle boundary instead of waiting for a
+ * successful response, otherwise a backend switch can orphan a just-started
+ * transcript from the resume pointer.
+ */
+export function persistConversationPointerWhenAvailable(
+  adapter: ConversationPointerAdapter,
+  backend: BackendMode,
+  savePointer: (backend: BackendMode, id: string) => void = saveConversationPointer,
+): string | undefined {
+  if (adapter.mode !== backend || typeof adapter.conversationId !== 'function') return undefined
+  const id = adapter.conversationId()
+  if (!id) return undefined
+  savePointer(backend, id)
+  return id
+}
+
+/**
+ * Keep teardown ordering explicit and testable: an adapter that has already
+ * allocated its API UUID gets a resume pointer before its event listener is
+ * removed.  This also covers an effect replacement caused by a backend change.
+ */
+export function disposeChatAdapter(
+  adapter: ConversationPointerAdapter,
+  backend: BackendMode,
+  unsubscribe: () => void,
+  savePointer: (backend: BackendMode, id: string) => void = saveConversationPointer,
+): void {
+  persistConversationPointerWhenAvailable(adapter, backend, savePointer)
+  unsubscribe()
+  adapter.disconnect()
+}
+
+/**
+ * Adapter replacement is deliberately a much narrower event than a settings
+ * update. A live API request owns its listener and request ID until a backend
+ * switch or an explicit new-conversation generation replaces it. In
+ * particular, editing the conversation policy only affects a later unlock;
+ * it must not disconnect a response currently streaming.
+ */
+export function chatAdapterLifecycleKey(
+  backend: BackendMode,
+  conversationGeneration: number,
+): string {
+  return `${backend}:${conversationGeneration}`
+}
+
+/**
+ * Daily sessions roll over on a real session return, rather than on an
+ * arbitrary timer. This is important for a resident wallpaper: it may stay
+ * alive across midnight with yesterday's adapter still mounted.
+ */
+export function shouldStartNewConversationOnUnlock(
+  policy: WallpaperSettings['conversationPolicy'],
+  previousUnlockDay: string,
+  now: Date = new Date(),
+): boolean {
+  return policy === 'new-on-unlock'
+    || (policy === 'daily' && previousUnlockDay !== localCalendarDay(now))
+}
+
+/**
+ * `register_session_events` emits an initial `resume` while the background
+ * WebView is starting. It is not an unlock, so it must not consume the
+ * `new-on-unlock` policy or create a duplicate fresh session at boot.
+ */
+export function isInitialSystemSessionSignal(
+  appBootCompleted: boolean,
+  event: 'locked' | 'unlocked' | 'suspend' | 'resume',
+): boolean {
+  return !appBootCompleted && event === 'resume'
 }
 
 /**
@@ -107,6 +212,16 @@ export function App({ surface = 'combined' }: AppProps) {
   const [workspace, setWorkspace] = useState<DesktopWorkspace>('front')
   const [innerHistoryExpanded, setInnerHistoryExpanded] = useState(false)
   const adapterRef = useRef<ChatAdapter>(new PreviewAdapter(settings.defaultBackend))
+  // Do not put mutable API request settings in the adapter lifecycle effect.
+  // The adapter captures this object by reference and snapshots it only when
+  // sending, so a settings edit changes the next request without disconnecting
+  // an in-flight stream or dropping its scoped events.
+  const apiAdapterOptionsRef = useRef<NativeSendOptions>(apiAdapterOptionsFromSettings(settings))
+  const conversationPolicyRef = useRef(settings.conversationPolicy)
+  // Keep the day from the last session return, not from the last render. A
+  // long-running process therefore notices local midnight when the user
+  // returns to the desktop and asks for a daily conversation.
+  const previousUnlockDayRef = useRef(localCalendarDay())
   // This ref is updated synchronously by user/backend actions. React state is
   // intentionally asynchronous, so runtimeRef alone would leave a short gap
   // in which an old adapter could finish and persist its pointer under a new
@@ -138,6 +253,21 @@ export function App({ surface = 'combined' }: AppProps) {
   // The WorkerW host is permanently desktop-sized. Both the floating window
   // and the taskbar capsule now use CSS placement inside that one viewport.
   const interactionDirection = 'center' as const
+  const adapterLifecycleKey = chatAdapterLifecycleKey(runtime.backend, conversationGeneration)
+
+  // Commit settings into the stable holder after React commits the matching
+  // render.  Mutating the ref during render could leak a discarded concurrent
+  // render's configuration into an in-flight request.
+  useEffect(() => {
+    updateApiAdapterOptions(apiAdapterOptionsRef.current, settings)
+    conversationPolicyRef.current = settings.conversationPolicy
+  }, [
+    settings.conversationPolicy,
+    settings.deepseekApi.baseUrl,
+    settings.deepseekApi.model,
+    settings.deepseekApi.priceInputPerMillion,
+    settings.deepseekApi.priceOutputPerMillion,
+  ])
 
   const enterInnerWorkspace = () => {
     // The existing drawer already has its own state and visual treatment. The
@@ -308,21 +438,17 @@ export function App({ surface = 'combined' }: AppProps) {
 
   useEffect(() => {
     const adapterBackend = runtime.backend
+    const conversationPolicy = conversationPolicyRef.current
     const adapter: ChatAdapter = nativeRuntime.isNative
       ? adapterBackend === 'deepseek-web'
         ? new DeepSeekWebAdapter()
         : new NativeChatAdapter(
             adapterBackend,
-            adapterBackend === 'deepseek-api' ? {
-              baseUrl: settings.deepseekApi.baseUrl,
-              model: settings.deepseekApi.model,
-              priceInputPerMillion: settings.deepseekApi.priceInputPerMillion,
-              priceOutputPerMillion: settings.deepseekApi.priceOutputPerMillion,
-            } : {},
+            adapterBackend === 'deepseek-api' ? apiAdapterOptionsRef.current : {},
             adapterBackend === 'harness'
-              ? resumeConversationId('harness', settings.conversationPolicy)
+              ? resumeConversationId('harness', conversationPolicy)
               : adapterBackend === 'deepseek-api'
-                ? resumeConversationId('deepseek-api', settings.conversationPolicy)
+                ? resumeConversationId('deepseek-api', conversationPolicy)
                 : undefined,
           )
       : new PreviewAdapter(adapterBackend)
@@ -339,7 +465,13 @@ export function App({ surface = 'combined' }: AppProps) {
       if (!isCurrent()) return
       if (event.type === 'status') { patchRuntime({ activity: event.activity }); dispatchCore('set-activity', { value: event.activity }) }
       if (event.type === 'delta') { patchRuntime({ activity: 'streaming' }); dispatchCore('set-activity', { value: 'streaming' }); setStreamingText((value) => value + event.text) }
-      if (event.type === 'message') { setMessages((items) => [...items, { id: crypto.randomUUID(), role: event.role, content: event.content, createdAt: Date.now(), usage: event.usage }]); if (event.role === 'assistant') setStreamingText('') }
+      if (event.type === 'message') {
+        setMessages((items) => [...items, { id: crypto.randomUUID(), role: event.role, content: event.content, createdAt: Date.now(), usage: event.usage }])
+        // Harness and future providers may attach final usage directly to the
+        // final message instead of publishing a separate usage event.
+        if (event.usage) setUsage(event.usage)
+        if (event.role === 'assistant') setStreamingText('')
+      }
       if (event.type === 'usage') setUsage(event)
       if (event.type === 'model') patchRuntime({ model: event.model, provider: event.provider, modelTier: event.tier, reasoningEffort: event.effort })
       if (event.type === 'auth-required') { baseDispatch({ type: 'AUTH_REQUIRED' }); dispatchCore('auth-required') }
@@ -350,40 +482,55 @@ export function App({ surface = 'combined' }: AppProps) {
       try {
         await adapter.connect()
         if (!isCurrent()) return
-        if (adapter instanceof NativeChatAdapter) {
-          const id = adapter.conversationId()
-          if (id) saveConversationPointer(adapterBackend, id)
-        }
+        persistConversationPointerWhenAvailable(adapter, adapterBackend)
         const history = await adapter.history()
-        if (isCurrent() && history.length) setMessages(history)
+        if (isCurrent() && history.length) {
+          setMessages(history)
+          // A restored transcript has no live `usage` event. Recover the
+          // newest provider usage so the footer still describes the current
+          // conversation until the next user turn clears it.
+          const latestUsage = [...history].reverse().find((message) => message.usage)?.usage
+          setUsage(latestUsage)
+        }
       } catch (error) {
         if (isCurrent()) patchRuntime({ activity: 'idle', error: String(error) })
       }
     })()
-    return () => { disposed = true; unsubscribe(); adapter.disconnect() }
+    return () => {
+      // `send()` creates an API session UUID synchronously, before its native
+      // Promise resolves. Persist it before disconnecting so a backend switch,
+      // unlock reset, or React effect teardown cannot orphan that transcript.
+      disposed = true
+      disposeChatAdapter(adapter, adapterBackend, unsubscribe)
+    }
   }, [
-    runtime.backend,
-    settings.conversationPolicy,
-    settings.deepseekApi.baseUrl,
-    settings.deepseekApi.model,
-    settings.deepseekApi.priceInputPerMillion,
-    settings.deepseekApi.priceOutputPerMillion,
-    conversationGeneration,
+    adapterLifecycleKey,
   ])
 
   useEffect(() => {
     if (!nativeRuntime.isNative) return
     let unsubscribe: () => void = () => undefined
     void nativeRuntime.listenSystem((event) => {
+      // The native host emits one synthetic `resume` on registration so a
+      // current desktop can initialize its visual state. Do not mistake that
+      // boot-time signal for an unlock policy boundary.
+      if (isInitialSystemSessionSignal(runtimeRef.current.phase !== 'booting', event)) {
+        return
+      }
       if (!appCoreClient.native && (event === 'locked' || event === 'suspend')) baseDispatch({ type: 'LOCK' })
       if (event === 'unlocked' || event === 'resume') {
         if (settings.interactionLayout === 'taskbar-docked') setInteractionState('collapsed')
-        if (settings.conversationPolicy === 'new-on-unlock') setConversationGeneration((value) => value + 1)
+        const now = new Date()
+        const policy = conversationPolicyRef.current
+        if (shouldStartNewConversationOnUnlock(policy, previousUnlockDayRef.current, now)) {
+          setConversationGeneration((value) => value + 1)
+        }
+        previousUnlockDayRef.current = localCalendarDay(now)
         if (!appCoreClient.native) baseDispatch({ type: 'UNLOCK', playWake: settings.playWakeOnEveryUnlock && settings.animationsEnabled && !settings.skipWakeAnimation })
       }
     }).then((dispose) => { unsubscribe = dispose })
     return () => unsubscribe()
-  }, [settings.animationsEnabled, settings.conversationPolicy, settings.interactionLayout, settings.playWakeOnEveryUnlock, settings.skipWakeAnimation])
+  }, [settings.animationsEnabled, settings.interactionLayout, settings.playWakeOnEveryUnlock, settings.skipWakeAnimation])
 
   useEffect(() => {
     if (!nativeRuntime.isNative) return
@@ -518,10 +665,18 @@ export function App({ surface = 'combined' }: AppProps) {
         const adapterBackend = adapter.mode
         const isCurrent = () => isCurrentChatOperation(adapterRef.current, activeBackendRef.current, adapter, adapterBackend, false)
         if (!isCurrent()) return
-        void adapter.send(text).then(() => {
-          if (!isCurrent() || !(adapter instanceof NativeChatAdapter)) return
-          const id = adapter.conversationId()
-          if (id) saveConversationPointer(adapterBackend, id)
+        // The footer describes the turn being sent, never stale metrics from
+        // its predecessor. It changes to an explicit waiting/unavailable
+        // state until a provider supplies fresh usage.
+        setUsage(undefined)
+        const sending = adapter.send(text)
+        // NativeChatAdapter allocates an API conversation ID before its first
+        // await. Saving immediately survives a settings update or backend
+        // switch while the request is still pending.
+        persistConversationPointerWhenAvailable(adapter, adapterBackend)
+        void sending.then(() => {
+          if (!isCurrent()) return
+          persistConversationPointerWhenAvailable(adapter, adapterBackend)
         }).catch((error) => {
           if (isCurrent()) patchRuntime({ activity: 'idle', error: String(error) })
         })

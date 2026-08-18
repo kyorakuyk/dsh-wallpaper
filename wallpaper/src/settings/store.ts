@@ -6,6 +6,10 @@ import type { PersonaBubbles } from '../persona/types.ts'
 export type InteractionLayout = 'floating' | 'taskbar-docked'
 
 export const SETTINGS_VERSION = 7
+/** Keep renderer validation aligned with the native request boundary. A value
+ * beyond this ceiling is almost certainly a unit/configuration error and must
+ * not be presented as a configured price when Rust deliberately ignores it. */
+export const MAX_PRICE_PER_MILLION = 1_000_000
 export const assetUrl = (path: string): string => `${import.meta.env.BASE_URL}${path.replace(/^\//, '')}`
 const CONVERSATION_KEY = 'dsh-wallpaper:conversations:v1'
 
@@ -113,7 +117,12 @@ function migrate(raw: unknown): WallpaperSettings {
  * Keep that distinction through schema migrations and the native boundary.
  */
 export function normalizedPrice(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+  return typeof value === 'number'
+    && Number.isFinite(value)
+    && value >= 0
+    && value <= MAX_PRICE_PER_MILLION
+    ? value
+    : undefined
 }
 
 function normalizeApiSettings(value: Partial<ApiSettings> | undefined): ApiSettings {

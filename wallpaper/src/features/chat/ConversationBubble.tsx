@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Activity, BackendMode, ChatMessage, TokenUsage } from '../../domain/types.ts'
 import { Button, Glass, Icon } from '../../ui/primitives/index.ts'
-import { ACTIVITY_LABEL, BACKEND_PRESENTATION, composerPlaceholder, formatCost, isBusyActivity, sessionCostSummary, usageTokenCount } from './conversationViewModel.ts'
+import { ACTIVITY_LABEL, BACKEND_PRESENTATION, composerPlaceholder, formatCost, isBusyActivity, sessionCostSummary, turnUsageSummary } from './conversationViewModel.ts'
 import './ConversationBubble.css'
 
 export interface ConversationBubbleProps {
@@ -43,7 +43,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const busy = isBusyActivity(props.activity)
   const backend = BACKEND_PRESENTATION[props.backend]
   const totalCost = sessionCostSummary(props.messages)
-  const tokenCount = usageTokenCount(props.usage)
+  const turnUsage = turnUsageSummary(props.usage, props.backend, Boolean(props.apiPricingConfigured))
   // An empty drawer has no information value and turns the workspace into a
   // large blank panel. It appears only once there is transcript content.
   const showHistory = props.historyExpanded && (props.messages.length > 0 || Boolean(props.streamingText))
@@ -131,9 +131,17 @@ export function ConversationBubble(props: ConversationBubbleProps) {
 
       <footer className="dsh-chat__footer">
         <span className="dsh-chat__meta"><Icon name="model" size={13} /><span className="dsh-chat__model">{props.modelLabel}</span></span>
-        {props.backend === 'deepseek-api' && <><span className="dsh-chat__separator" /><span className="dsh-chat__billing">{props.apiPricingConfigured ? 'API 计费' : '价格未配置'}</span></>}
-        {tokenCount !== undefined && <><span className="dsh-chat__separator" /><span>{tokenCount} tokens</span></>}
-        {totalCost && <><span className="dsh-chat__separator" /><span>会话 {formatCost(totalCost.cost, totalCost.estimated)}</span></>}
+        <span className="dsh-chat__turn-usage" data-usage-available={turnUsage.available ? 'true' : 'false'} aria-label={turnUsage.available ? '本轮用量' : '本轮用量未提供'}>
+          <span className="dsh-chat__separator" />
+          <span>本轮 入 {turnUsage.input}</span>
+          <span>出 {turnUsage.output}</span>
+          <span>缓存 {turnUsage.cacheRead}</span>
+          <span className={turnUsage.cost === '价格未配置' ? 'dsh-chat__billing' : undefined}>费用 {turnUsage.cost}</span>
+        </span>
+        <span className="dsh-chat__session-cost">
+          <span className="dsh-chat__separator" />
+          <span>{totalCost ? `会话 ${formatCost(totalCost.cost, totalCost.estimated)}` : '会话费用未提供'}</span>
+        </span>
         <Button className="dsh-chat__history-button" variant="ghost" onClick={props.onToggleHistory} aria-expanded={showHistory}>
           <Icon name="history" size={14} />{showHistory ? '收起记录' : '会话记录'}<Icon name="chevron-up" size={13} />
         </Button>
