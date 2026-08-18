@@ -381,7 +381,17 @@ pub fn remove_backup_after_verified_restore(
 ) -> Result<(), String> {
     let snapshot = restore_snapshot_path(config_dir, manifest)?;
     let managed_image = managed_image_path(config_dir, manifest)?;
-    fs::remove_file(manifest_path(config_dir))
+    // A restore is allowed to clear only the exact ownership record that
+    // supplied its snapshot.  The native transaction mutex serializes normal
+    // app operations, but this extra durable comparison also keeps an old
+    // caller from deleting a newer recovery point after a crash, restart, or
+    // external state change between its preflight and cleanup.
+    let manifest_path = manifest_path(config_dir);
+    let persisted = read_manifest(&manifest_path)?;
+    if persisted != *manifest {
+        return Err("锁屏备份状态已被其他操作更改，拒绝清理已恢复图片的备份记录".into());
+    }
+    fs::remove_file(&manifest_path)
         .map_err(|error| format!("已恢复锁屏，但无法清理备份状态：{error}"))?;
     // This file is no longer the current lock screen after the caller's
     // positive post-set verification. It may be removed, but never if a
@@ -742,6 +752,58 @@ mod tests {
             snapshot.is_file(),
             "Windows must retain the file it now references"
         );
+    }
+
+    #[test]
+    fn verified_restore_cleanup_refuses_to_delete_a_replaced_recovery_point() {
+        let root = tempdir().unwrap();
+        let source = root.path().join("source.png");
+        fs::write(&source, b"source").unwrap();
+        let uri = format!("file:///{}", source.to_string_lossy().replace('\\', "/"));
+        let config = root.path().join("config");
+        let lease =
+            ensure_backup_for_takeover(&config, &uri, 1, "dsh-wallpaper-sleep-original.png")
+                .unwrap();
+        let original_snapshot = restore_snapshot_path(&config, &lease.manifest).unwrap();
+        let original_managed = managed_image_path(&config, &lease.manifest).unwrap();
+        fs::write(&original_managed, b"managed original").unwrap();
+
+        let replacement_snapshot = asset_directory(&config).join("replacement.png");
+        let replacement_managed = asset_directory(&config).join("dsh-wallpaper-sleep-new.png");
+        fs::write(&replacement_snapshot, b"replacement snapshot").unwrap();
+        fs::write(&replacement_managed, b"managed replacement").unwrap();
+        let replacement = LockScreenBackupManifest {
+            version: LOCK_SCREEN_BACKUP_SCHEMA_VERSION,
+            original_image_uri: uri,
+            snapshot_file: "replacement.png".into(),
+            managed_image_file: "dsh-wallpaper-sleep-new.png".into(),
+            captured_at_unix_ms: 2,
+        };
+        fs::write(
+            manifest_path(&config),
+            serde_json::to_vec(&replacement).unwrap(),
+        )
+        .unwrap();
+
+        assert!(remove_backup_after_verified_restore(&config, &lease.manifest).is_err());
+        assert!(manifest_path(&config).is_file());
+        assert!(original_snapshot.is_file());
+        assert!(original_managed.is_file());
+        assert!(replacement_snapshot.is_file());
+        assert!(replacement_managed.is_file());
+    }
+
+    #[test]
+    fn unsafe_managed_name_is_rejected_before_a_backup_is_created() {
+        let root = tempdir().unwrap();
+        let source = root.path().join("source.png");
+        fs::write(&source, b"source").unwrap();
+        let uri = format!("file:///{}", source.to_string_lossy().replace('\\', "/"));
+        let config = root.path().join("config");
+
+        assert!(ensure_backup_for_takeover(&config, &uri, 1, "../outside.png").is_err());
+        assert_eq!(inspect_backup(&config), LockScreenBackupState::Missing);
+        assert!(!asset_directory(&config).exists());
     }
 
     #[test]
