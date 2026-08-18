@@ -337,7 +337,8 @@ fn prompt_for_api_key(caller: tauri::WebviewWindow) -> Result<bool, String> {
                     CredUIPromptForCredentialsW, CredWriteW, CREDENTIALW,
                     CREDUI_FLAGS_ALWAYS_SHOW_UI, CREDUI_FLAGS_DO_NOT_PERSIST,
                     CREDUI_FLAGS_GENERIC_CREDENTIALS, CREDUI_FLAGS_PASSWORD_ONLY_OK, CREDUI_INFOW,
-                    CRED_FLAGS, CRED_PERSIST_ENTERPRISE, CRED_TYPE_GENERIC,
+                    CREDUI_MAX_USERNAME_LENGTH, CRED_FLAGS, CRED_PERSIST_ENTERPRISE,
+                    CRED_TYPE_GENERIC,
                 },
             },
         };
@@ -355,7 +356,11 @@ fn prompt_for_api_key(caller: tauri::WebviewWindow) -> Result<bool, String> {
         let target = HSTRING::from(CREDENTIAL_TARGET);
         let username = HSTRING::from(CREDENTIAL_USERNAME);
         let mut password = [0u16; API_KEY_BUFFER_LEN];
-        let mut credential_username = [0u16; 1];
+        // Password-only mode must not surface a username control, but CredUI
+        // still requires a writable username buffer. Give it the documented
+        // maximum rather than risking ERROR_INSUFFICIENT_BUFFER on a Windows
+        // implementation that fills a default account name internally.
+        let mut credential_username = [0u16; CREDUI_MAX_USERNAME_LENGTH as usize + 1];
         let parent = caller
             .hwnd()
             .map_err(|error| format!("无法关联 Windows 凭据对话框：{error}"))?;
