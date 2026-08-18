@@ -79,10 +79,10 @@ export class PersonaRegistry {
     return this.personas.get(id) ?? BUILTIN_PERSONAS['blue-child']
   }
 
-  /** 按后端类型取默认形态：blue → blue-child；black → black-adult */
+  /** 按后端类型取默认形态：未知模型始终收敛到 Flash／幼年形态。 */
   byKind(kind: ThemeKind, age?: 'child' | 'adult'): PersonaManifest {
-    const fallback = kind === 'black' ? 'black-adult' : 'blue-child'
-    const withAge = `${kind}-${age ?? (kind === 'black' ? 'adult' : 'child')}`
+    const fallback = kind === 'black' ? 'black-child' : 'blue-child'
+    const withAge = `${kind}-${age ?? 'child'}`
     return this.personas.get(withAge) ?? this.personas.get(fallback)!
   }
 

@@ -2,12 +2,15 @@ import type { BackendMode, ModelTier, ModelTierRule } from './types.ts'
 import { officialPersonaIdFor } from '../persona/officialCatalog.ts'
 
 export const BUILTIN_MODEL_RULES: ModelTierRule[] = [
-  { backend: '*', pattern: 'flash', match: 'contains', tier: 'flash' },
-  { backend: '*', pattern: 'lite', match: 'contains', tier: 'flash' },
-  { backend: '*', pattern: 'chat', match: 'contains', tier: 'flash' },
+  // Specific capability names must win over broad product-family names.
+  // For example, `deepseek-chat-pro` contains both `chat` and `pro`; treating
+  // it as a Flash model would silently select the wrong formal persona.
   { backend: '*', pattern: 'pro', match: 'contains', tier: 'pro' },
   { backend: '*', pattern: 'reasoner', match: 'contains', tier: 'pro' },
   { backend: '*', pattern: 'r1', match: 'contains', tier: 'pro' },
+  { backend: '*', pattern: 'flash', match: 'contains', tier: 'flash' },
+  { backend: '*', pattern: 'lite', match: 'contains', tier: 'flash' },
+  { backend: '*', pattern: 'chat', match: 'contains', tier: 'flash' },
 ]
 
 function matches(rule: ModelTierRule, backend: BackendMode, provider: string | undefined, model: string): boolean {
