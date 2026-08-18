@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { BackendMode, ModelTierRule } from '../domain/types.ts'
-import { BACKGROUND_OPTIONS, type WallpaperSettings } from './store.ts'
+import { BACKGROUND_OPTIONS, MAX_PRICE_PER_MILLION, normalizedPrice, type WallpaperSettings } from './store.ts'
 import type { AppearanceAssetSummary } from '../features/appearance/appearanceViewModel.ts'
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
 import type { LockScreenDiagnostics } from '../native/runtime.ts'
@@ -80,7 +80,7 @@ function Choice({ value, options, onChange, label, disabled = false, emptyMessag
   </div>
 }
 
-function PriceInput({
+export function PriceInput({
   label,
   value,
   onChange,
@@ -94,6 +94,7 @@ function PriceInput({
     className="price-input"
     type="number"
     min="0"
+    max={MAX_PRICE_PER_MILLION}
     step="0.0001"
     inputMode="decimal"
     placeholder="未配置"
@@ -101,7 +102,7 @@ function PriceInput({
     onChange={(event) => {
       const raw = event.target.value.trim()
       const parsed = Number(raw)
-      onChange(raw === '' || !Number.isFinite(parsed) || parsed < 0 ? undefined : parsed)
+      onChange(raw === '' ? undefined : normalizedPrice(parsed))
     }}
   />
 }
