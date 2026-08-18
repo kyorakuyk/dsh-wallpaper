@@ -11,12 +11,26 @@ use std::{
     },
     time::Duration,
 };
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, EventTarget};
 use tokio::sync::oneshot;
 
 use crate::api_persistence::EncryptedJsonStore;
 
 const MAX_HARNESS_MESSAGE_BYTES: usize = 100_000;
+/// Bound values that originate in a renderer or an arbitrary compatible API
+/// endpoint.  The encrypted archive has a larger total ceiling, but allowing
+/// one request or a never-ending SSE record to consume that entire budget is
+/// neither useful nor safe for a long-running wallpaper process.
+const MAX_API_MESSAGE_BYTES: usize = 100_000;
+const MAX_API_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_API_SSE_BUFFER_BYTES: usize = 256 * 1024;
+const MAX_API_RATE_PER_MILLION: f64 = 1_000_000.0;
+/// Preserve room for the latest turn while preventing a restored transcript
+/// from becoming an unbounded request body. This is a byte bound because the
+/// compatible API accepts UTF-8 strings rather than an application token
+/// counter. Older messages are omitted first; the active user turn is never
+/// silently truncated.
+const MAX_API_REQUEST_CONTEXT_BYTES: usize = 2 * 1024 * 1024;
 
 /// Incrementally decodes a UTF-8 byte stream without replacing a code point
 /// split across network chunks. Both OpenAI-compatible responses and the
@@ -77,11 +91,15 @@ pub struct ChatState {
     harness_session: Arc<Mutex<Option<String>>>,
     api_conversations: Arc<Mutex<HashMap<String, ApiConversation>>>,
     api_store: Arc<Mutex<ApiConversationStore>>,
+    /// A process-local transaction guard covers current-request ownership,
+    /// transcript mutation and persistence as one unit.  The encrypted store
+    /// adds a named cross-process lock and reload/merge for a second process.
+    api_transcript_transaction: Arc<Mutex<()>>,
 }
 
 impl Default for ChatState {
     fn default() -> Self {
-        Self::with_store(EncryptedJsonStore::new(default_api_conversation_path()))
+        Self::with_store(default_api_conversation_store())
     }
 }
 
@@ -109,20 +127,19 @@ impl ChatState {
             harness_session: Arc::default(),
             api_conversations: Arc::new(Mutex::new(conversations)),
             api_store: Arc::new(Mutex::new(ApiConversationStore { store, writable })),
+            api_transcript_transaction: Arc::default(),
         }
     }
 
     fn persist_api_conversations(&self) -> Result<(), String> {
-        let archive = {
-            let conversations = self
-                .api_conversations
-                .lock()
-                .map_err(|_| "API conversation state poisoned".to_string())?;
-            ApiConversationArchive {
-                schema_version: API_CONVERSATION_SCHEMA_VERSION,
-                conversations: conversations.clone(),
-            }
-        };
+        let _transaction = self
+            .api_transcript_transaction
+            .lock()
+            .map_err(|_| "API transcript transaction state poisoned".to_string())?;
+        self.persist_api_conversations_locked()
+    }
+
+    fn persist_api_conversations_locked(&self) -> Result<(), String> {
         let store = self
             .api_store
             .lock()
@@ -130,10 +147,38 @@ impl ChatState {
         if !store.writable {
             return Err("加密 API 会话记录不可用；为保护已有记录，本次不会覆盖它。".into());
         }
-        store
+        let local_conversations = self
+            .api_conversations
+            .lock()
+            .map_err(|_| "API conversation state poisoned".to_string())?
+            .clone();
+        let merged = store
             .store
-            .save(&archive)
-            .map_err(|_| "无法保存加密 API 会话记录；已有记录未被覆盖。".to_string())
+            .update::<ApiConversationArchive, _, _>(|existing| {
+                let mut conversations = match existing {
+                    Some(archive) if archive.schema_version == API_CONVERSATION_SCHEMA_VERSION => archive.conversations,
+                    // Never overwrite an archive written by a newer schema.
+                    Some(_) => return Err(crate::api_persistence::PersistenceError::InvalidArchive),
+                    None => HashMap::new(),
+                };
+                merge_api_conversations(&mut conversations, local_conversations);
+                Ok((
+                    ApiConversationArchive {
+                        schema_version: API_CONVERSATION_SCHEMA_VERSION,
+                        conversations: conversations.clone(),
+                    },
+                    conversations,
+                ))
+            })
+            .map_err(|_| "无法保存加密 API 会话记录；已有记录未被覆盖。".to_string())?;
+        // Adopt the durable merged view while still inside the transaction.
+        // This prevents a second process's transcript from being forgotten by
+        // the next local append.
+        *self
+            .api_conversations
+            .lock()
+            .map_err(|_| "API conversation state poisoned".to_string())? = merged;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -158,16 +203,25 @@ impl ChatState {
 
 const API_CONVERSATION_SCHEMA_VERSION: u32 = 1;
 
-fn default_api_conversation_path() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("dsh-wallpaper")
-        .join("api-conversations.v1.dpapi")
+/// API transcripts are a per-user durable record, never a best-effort temp
+/// artifact.  If Windows cannot provide LocalAppData, deliberately create an
+/// unavailable store outside any shared temp directory; the chat state then
+/// remains usable in memory but refuses to write a transcript until a proper
+/// user data directory exists.
+fn default_api_conversation_store() -> EncryptedJsonStore {
+    match dirs::data_local_dir() {
+        Some(root) => EncryptedJsonStore::new(root.join("dsh-wallpaper").join("api-conversations.v1.dpapi")),
+        None => EncryptedJsonStore::unavailable(),
+    }
 }
 
 struct ApiCancellation {
     request_id: u64,
     sender: Option<oneshot::Sender<()>>,
+    /// An explicit user stop retains ownership until the streaming task emits
+    /// its terminal idle state.  A newer request instead replaces this record,
+    /// which makes the old task stale and prevents it from publishing.
+    cancelled: bool,
 }
 
 struct HarnessStreamCancellation {
@@ -214,6 +268,30 @@ struct ApiConversationArchive {
 struct ApiConversationStore {
     store: EncryptedJsonStore,
     writable: bool,
+}
+
+/// Merge archives by durable message identity.  A user may cancel a response
+/// after partial text has arrived, and two process lifetimes can legitimately
+/// append to different conversations.  Preserve both transcripts, retain a
+/// deterministic chronological order, and never duplicate a message already
+/// committed by an earlier transaction.
+fn merge_api_conversations(
+    destination: &mut HashMap<String, ApiConversation>,
+    source: HashMap<String, ApiConversation>,
+) {
+    for (conversation_id, incoming) in source {
+        let target = destination.entry(conversation_id).or_default();
+        for message in incoming.messages {
+            if !target.messages.iter().any(|existing| existing.id == message.id) {
+                target.messages.push(message);
+            }
+        }
+        target.messages.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+    }
 }
 
 fn unix_millis() -> u64 {
@@ -266,8 +344,79 @@ fn api_stream_client() -> Result<reqwest::Client, String> {
         .timeout(Duration::from_secs(24 * 60 * 60))
         .connect_timeout(Duration::from_secs(12))
         .tcp_keepalive(Duration::from_secs(30))
+        // A custom API endpoint must not turn one configured request into an
+        // invisible redirected request with the user's bearer credential.
+        // The UI can show the explicit HTTP failure for a moved endpoint.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| "无法初始化 DeepSeek API 客户端".to_string())
+}
+
+/// The API key belongs to a configured service endpoint.  Accept public HTTPS
+/// endpoints and a deliberately local HTTP endpoint for compatible development
+/// servers; never send a Credential-Manager bearer token to an arbitrary
+/// plaintext host, URL with embedded credentials, fragment, or opaque scheme.
+fn normalized_api_base_url(value: &str) -> Result<String, String> {
+    let mut url = reqwest::Url::parse(value.trim())
+        .map_err(|_| "DeepSeek API 地址无效。")?;
+    if url.fragment().is_some() || !url.username().is_empty() || url.password().is_some() {
+        return Err("DeepSeek API 地址不能包含账号、密码或片段。".into());
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| "DeepSeek API 地址必须包含主机名。".to_string())?;
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host == "127.0.0.1"
+        || host == "::1";
+    match url.scheme() {
+        "https" => {}
+        "http" if loopback => {}
+        "http" => return Err("DeepSeek API 地址必须使用 HTTPS；仅本机 loopback 允许 HTTP。".into()),
+        _ => return Err("DeepSeek API 地址仅支持 HTTPS，或本机 loopback HTTP。".into()),
+    }
+    // The completion route is joined as a path rather than string-concatenated
+    // so a query string or trailing slash cannot alter its authority.
+    if url.query().is_some() {
+        return Err("DeepSeek API 地址不能包含查询参数。".into());
+    }
+    let path = url.path().trim_end_matches('/').to_owned();
+    url.set_path(&path);
+    Ok(url.to_string().trim_end_matches('/').to_string())
+}
+
+fn api_completion_url(base_url: &str) -> Result<reqwest::Url, String> {
+    let normalized = normalized_api_base_url(base_url)?;
+    let mut url = reqwest::Url::parse(&normalized).map_err(|_| "DeepSeek API 地址无效。")?;
+    let path = url.path().trim_end_matches('/').to_owned();
+    url.set_path(&format!("{path}/chat/completions"));
+    Ok(url)
+}
+
+fn api_request_messages(history: Vec<ApiMessage>, user_text: &str) -> Result<Vec<Value>, String> {
+    let user_bytes = user_text.as_bytes().len();
+    if user_bytes > MAX_API_REQUEST_CONTEXT_BYTES {
+        return Err(format!(
+            "本轮 API 消息不能超过 {MAX_API_REQUEST_CONTEXT_BYTES} 字节。"
+        ));
+    }
+    let mut used = user_bytes;
+    let mut selected = Vec::new();
+    // Preserve chronological order in the submitted JSON, while selecting
+    // from newest to oldest so an old archive cannot crowd out recent context.
+    for message in history.into_iter().rev() {
+        let bytes = message.content.as_bytes().len();
+        if bytes > MAX_API_REQUEST_CONTEXT_BYTES.saturating_sub(used) {
+            continue;
+        }
+        used += bytes;
+        selected.push(message);
+    }
+    selected.reverse();
+    Ok(selected
+        .into_iter()
+        .map(|message| serde_json::json!({ "role": message.role, "content": message.content }))
+        .chain(std::iter::once(serde_json::json!({ "role": "user", "content": user_text })))
+        .collect())
 }
 
 fn bridge_request_client() -> Result<reqwest::Client, String> {
@@ -292,6 +441,10 @@ fn bridge_stream_client() -> Result<reqwest::Client, String> {
 fn begin_api_request(state: &ChatState) -> Result<(u64, oneshot::Receiver<()>), String> {
     let (sender, receiver) = oneshot::channel();
     let request_id = next_api_request_id();
+    let _transaction = state
+        .api_transcript_transaction
+        .lock()
+        .map_err(|_| "API transcript transaction state poisoned")?;
     let mut guard = state
         .api_cancel
         .lock()
@@ -306,6 +459,7 @@ fn begin_api_request(state: &ChatState) -> Result<(u64, oneshot::Receiver<()>), 
     *guard = Some(ApiCancellation {
         request_id,
         sender: Some(sender),
+        cancelled: false,
     });
     Ok((request_id, receiver))
 }
@@ -318,7 +472,33 @@ fn is_current_api_request(state: &ChatState, request_id: u64) -> bool {
         .and_then(|active| {
             active
                 .as_ref()
-                .map(|active| active.request_id == request_id)
+                .map(|active| active.request_id == request_id && !active.cancelled)
+        })
+        .unwrap_or(false)
+}
+
+/// A user-cancelled request still owns its terminal transition; a superseded
+/// request does not.  Keeping these concepts separate avoids the old bug where
+/// `cancel_api` removed the slot and the stream could never emit `idle`.
+fn owns_api_request(state: &ChatState, request_id: u64) -> bool {
+    state
+        .api_cancel
+        .lock()
+        .ok()
+        .and_then(|active| active.as_ref().map(|active| active.request_id == request_id))
+        .unwrap_or(false)
+}
+
+fn is_api_request_cancelled(state: &ChatState, request_id: u64) -> bool {
+    state
+        .api_cancel
+        .lock()
+        .ok()
+        .and_then(|active| {
+            active
+                .as_ref()
+                .filter(|active| active.request_id == request_id)
+                .map(|active| active.cancelled)
         })
         .unwrap_or(false)
 }
@@ -522,24 +702,32 @@ struct ApiPricing {
 impl ApiPricing {
     fn from_options(input_per_million: Option<f64>, output_per_million: Option<f64>) -> Self {
         Self {
-            input_per_million: input_per_million.filter(|price| price.is_finite() && *price >= 0.0),
+            input_per_million: input_per_million.filter(|price| {
+                price.is_finite() && (0.0..=MAX_API_RATE_PER_MILLION).contains(price)
+            }),
             output_per_million: output_per_million
-                .filter(|price| price.is_finite() && *price >= 0.0),
+                .filter(|price| price.is_finite() && (0.0..=MAX_API_RATE_PER_MILLION).contains(price)),
         }
     }
 
     fn usage(self, usage: Usage) -> ApiUsage {
-        let cache_read = usage.prompt_cache_hit_tokens;
+        // Provider usage is untrusted input.  A cache-read count cannot exceed
+        // the reported prompt count; clamp it before display and pricing so a
+        // malformed response cannot manufacture nonsensical token accounting.
+        let cache_read = usage
+            .prompt_cache_hit_tokens
+            .map(|value| value.min(usage.prompt_tokens));
         let input = usage.prompt_tokens.saturating_sub(cache_read.unwrap_or(0));
         // Cache reads are reported separately in the UI, but no separate
         // cache rate is configured. Charge them at the input rate for a
         // conservative estimate instead of silently making them free.
         let estimated_input = input.saturating_add(cache_read.unwrap_or(0));
-        let cost = self.input_per_million.zip(self.output_per_million).map(
+        let cost = self.input_per_million.zip(self.output_per_million).and_then(
             |(input_price, output_price)| {
-                (estimated_input as f64 * input_price
+                let cost = (estimated_input as f64 * input_price
                     + usage.completion_tokens as f64 * output_price)
-                    / 1_000_000.0
+                    / 1_000_000.0;
+                cost.is_finite().then_some(cost)
             },
         );
         ApiUsage {
@@ -596,7 +784,11 @@ fn emit_scoped(
     request_id: Option<String>,
     event: ChatEvent,
 ) {
-    let _ = app.emit(
+    // Conversation bodies are private to the WorkerW wallpaper WebView. The
+    // settings surface must never receive a process-global chat event merely
+    // because it happens to be open at the same time.
+    let _ = app.emit_to(
+        EventTarget::webview_window("background"),
         "chat-event",
         ScopedChatEvent {
             backend: backend.into(),
@@ -738,22 +930,34 @@ pub async fn send_api(
         finish_api_request(&state, request_id);
         return Err("消息不能为空".into());
     }
-    let messages =
-        {
-            let conversations = state
-                .api_conversations
-                .lock()
-                .map_err(|_| "API conversation state poisoned")?;
-            let messages = conversations
-                .get(&conversation_id)
-                .map(|conversation| conversation.messages.clone())
-                .unwrap_or_default();
-            messages
-            .into_iter()
-            .map(|message| serde_json::json!({ "role": message.role, "content": message.content }))
-            .chain(std::iter::once(serde_json::json!({ "role": "user", "content": trimmed_text })))
-            .collect::<Vec<_>>()
-        };
+    if trimmed_text.len() > MAX_API_MESSAGE_BYTES {
+        finish_api_request(&state, request_id);
+        return Err(format!("单条 API 消息不能超过 {MAX_API_MESSAGE_BYTES} 字节。"));
+    }
+    let completion_url = match api_completion_url(&base_url) {
+        Ok(url) => url,
+        Err(error) => {
+            finish_api_request(&state, request_id);
+            return Err(error);
+        }
+    };
+    let history = {
+        let conversations = state
+            .api_conversations
+            .lock()
+            .map_err(|_| "API conversation state poisoned")?;
+        conversations
+            .get(&conversation_id)
+            .map(|conversation| conversation.messages.clone())
+            .unwrap_or_default()
+    };
+    let messages = match api_request_messages(history, trimmed_text) {
+        Ok(messages) => messages,
+        Err(error) => {
+            finish_api_request(&state, request_id);
+            return Err(error);
+        }
+    };
     let key_entry = match keyring::Entry::new("dsh-wallpaper", "deepseek-api") {
         Ok(entry) => entry,
         Err(_) => {
@@ -773,7 +977,7 @@ pub async fn send_api(
         }
     };
     let response = client
-        .post(format!("{}/chat/completions", base_url.trim_end_matches('/')))
+        .post(completion_url)
         .bearer_auth(key)
         .json(&serde_json::json!({ "model": model, "stream": true, "stream_options": { "include_usage": true }, "messages": messages }))
         .send()
@@ -829,7 +1033,13 @@ pub async fn send_api(
             chunk = stream.next() => {
                 let Some(chunk) = chunk else {
                     match decoder.finish() {
-                        Ok(tail) => buffer.push_str(&tail),
+                        Ok(tail) => {
+                            if buffer.len().saturating_add(tail.len()) > MAX_API_SSE_BUFFER_BYTES {
+                                stream_error = Some("DeepSeek API 返回的流式记录过大，已安全停止接收。".into());
+                            } else {
+                                buffer.push_str(&tail);
+                            }
+                        }
                         Err(_) => {
                         stream_error = Some(generic_api_error("流式编码"));
                         }
@@ -838,14 +1048,27 @@ pub async fn send_api(
                 };
                 match chunk {
                     Ok(bytes) => {
+                        if buffer.len().saturating_add(bytes.len()) > MAX_API_SSE_BUFFER_BYTES {
+                            stream_error = Some("DeepSeek API 返回的流式记录过大，已安全停止接收。".into());
+                            break;
+                        }
                         let decoded = match decoder.push(&bytes) {
                             Ok(decoded) => decoded,
                             Err(_) => { stream_error = Some(generic_api_error("流式编码")); break; }
                         };
                         buffer.push_str(&decoded);
+                        if buffer.len() > MAX_API_SSE_BUFFER_BYTES {
+                            stream_error = Some("DeepSeek API 返回的流式记录过大，已安全停止接收。".into());
+                            break;
+                        }
                         for record in drain_sse_records(&mut buffer) {
                             process_api_sse_record(&app, &state, &conversation_id, request_id, &event_request_id, &record, &mut full, &mut final_usage, pricing);
+                            if full.len() > MAX_API_RESPONSE_BYTES {
+                                stream_error = Some(format!("DeepSeek API 回复不能超过 {MAX_API_RESPONSE_BYTES} 字节。"));
+                                break;
+                            }
                         }
+                        if stream_error.is_some() { break; }
                     }
                     Err(_) => { stream_error = Some(generic_api_error("流式连接")); break; }
                 }
@@ -865,30 +1088,51 @@ pub async fn send_api(
                 &mut final_usage,
                 pricing,
             );
+            if full.len() > MAX_API_RESPONSE_BYTES {
+                stream_error = Some(format!("DeepSeek API 回复不能超过 {MAX_API_RESPONSE_BYTES} 字节。"));
+                break;
+            }
         }
     }
-    // A newer request superseded this one. Do not publish stale terminal
-    // state or mutate the shared conversation transcript.
-    if !is_current_api_request(&state, request_id) {
+    // A newer request superseded this one. Do not publish stale terminal state
+    // or mutate the transcript. A user cancellation retains ownership so the
+    // stream can persist its partial response and emit the controlled idle
+    // transition below.
+    if !owns_api_request(&state, request_id) {
         return Ok(conversation_id);
     }
-    if let Ok(mut conversations) = state.api_conversations.lock() {
-        let conversation = conversations.entry(conversation_id.clone()).or_default();
-        conversation
-            .messages
-            .push(new_api_message("user", trimmed_text.to_string(), None));
-        if !full.is_empty() {
-            conversation.messages.push(new_api_message(
-                "assistant",
-                full.clone(),
-                final_usage.clone(),
-            ));
+    let canceled = canceled || is_api_request_cancelled(&state, request_id);
+    // Ownership, append and durable merge are one transaction. This prevents a
+    // completed older request from snapshotting over a newer request that was
+    // installed between the prior `is_current` check and disk replacement.
+    let persistence_error = (|| -> Result<(), String> {
+        let _transaction = state
+            .api_transcript_transaction
+            .lock()
+            .map_err(|_| "API transcript transaction state poisoned".to_string())?;
+        if !owns_api_request(&state, request_id) {
+            return Ok(());
         }
-    }
-    // The in-memory transcript remains usable for this run if disk storage is
-    // temporarily unavailable. The warning is returned through the normal
-    // controlled error event below; existing ciphertext is never overwritten.
-    let persistence_error = state.persist_api_conversations().err();
+        {
+            let mut conversations = state
+                .api_conversations
+                .lock()
+                .map_err(|_| "API conversation state poisoned".to_string())?;
+            let conversation = conversations.entry(conversation_id.clone()).or_default();
+            conversation
+                .messages
+                .push(new_api_message("user", trimmed_text.to_string(), None));
+            if !full.is_empty() {
+                conversation.messages.push(new_api_message(
+                    "assistant",
+                    full.clone(),
+                    final_usage.clone(),
+                ));
+            }
+        }
+        state.persist_api_conversations_locked()
+    })()
+    .err();
     if !full.is_empty() {
         let _ = emit_current_api_event(
             &app,
@@ -991,10 +1235,12 @@ pub fn api_history(state: &ChatState, conversation_id: &str) -> Result<Value, St
 
 pub fn cancel_api(state: &ChatState) {
     if let Ok(mut guard) = state.api_cancel.lock() {
-        // Remove the ownership marker before waking the task. A buffered
-        // response can otherwise observe itself as current after cancellation
-        // and append a stale terminal message to the transcript.
-        if let Some(mut active) = guard.take() {
+        // Keep the ownership marker until the streaming task has emitted its
+        // terminal `idle` state.  The explicit `cancelled` bit blocks all
+        // subsequent deltas while allowing that task to persist any partial
+        // response and clean up only its own slot.
+        if let Some(active) = guard.as_mut() {
+            active.cancelled = true;
             if let Some(cancel) = active.sender.take() {
                 let _ = cancel.send(());
             }
@@ -1186,7 +1432,11 @@ async fn connect_harness_events(
                             if let Some(line) = sse_record_payload(&record) {
                                     if let Ok(event) = serde_json::from_str::<Value>(&line) {
                                     if is_current_harness_stream(&state, stream_id, &session_id) {
-                                        let _ = app.emit("chat-event", scoped_harness_event(event, &session_id, &connection_id));
+                                        let _ = app.emit_to(
+                                            EventTarget::webview_window("background"),
+                                            "chat-event",
+                                            scoped_harness_event(event, &session_id, &connection_id),
+                                        );
                                     }
                                 }
                             }
@@ -1205,7 +1455,11 @@ async fn connect_harness_events(
                                 if let Some(line) = sse_record_payload(&record) {
                                     if let Ok(event) = serde_json::from_str::<Value>(&line) {
                                         if is_current_harness_stream(&state, stream_id, &session_id) {
-                                            let _ = app.emit("chat-event", scoped_harness_event(event, &session_id, &connection_id));
+                                            let _ = app.emit_to(
+                                                EventTarget::webview_window("background"),
+                                                "chat-event",
+                                                scoped_harness_event(event, &session_id, &connection_id),
+                                            );
                                         }
                                     }
                                 }
@@ -1314,9 +1568,11 @@ pub fn cancel_harness_stream(state: &ChatState) {
 #[cfg(test)]
 mod tests {
     use super::{
-        drain_sse_records, finish_api_request, finish_harness_stream, finish_sse_records,
-        is_current_harness_stream, sse_record_payload, ApiPricing, ApiUsage, ChatState,
-        HarnessStreamCancellation, Usage, Utf8StreamDecoder, MAX_HARNESS_MESSAGE_BYTES,
+        api_completion_url, api_request_messages, drain_sse_records, finish_api_request,
+        finish_harness_stream, finish_sse_records, is_current_api_request,
+        is_current_harness_stream, owns_api_request, sse_record_payload, ApiPricing, ApiUsage,
+        ApiMessage, ChatState, HarnessStreamCancellation, Usage, Utf8StreamDecoder,
+        MAX_API_RATE_PER_MILLION, MAX_API_REQUEST_CONTEXT_BYTES, MAX_HARNESS_MESSAGE_BYTES,
     };
     use crate::api_persistence::EncryptedJsonStore;
     use tokio::sync::oneshot;
@@ -1389,6 +1645,55 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_request_keeps_terminal_ownership_but_stops_publishing() {
+        let state = ChatState::default();
+        let request = super::begin_api_request(&state).expect("request").0;
+        assert!(is_current_api_request(&state, request));
+        super::cancel_api(&state);
+        assert!(owns_api_request(&state, request));
+        assert!(!is_current_api_request(&state, request));
+        assert!(finish_api_request(&state, request));
+        assert!(!owns_api_request(&state, request));
+    }
+
+    #[test]
+    fn api_base_url_policy_protects_bearer_credentials() {
+        assert_eq!(
+            api_completion_url("https://api.deepseek.com/v1/")
+                .expect("https URL")
+                .as_str(),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+        assert!(api_completion_url("http://127.0.0.1:8080/v1").is_ok());
+        for unsafe_url in [
+            "http://api.example.test/v1",
+            "https://user:password@api.example.test/v1",
+            "https://api.example.test/v1?redirect=https://evil.test",
+            "https://api.example.test/v1#fragment",
+            "file:///C:/not-an-api",
+        ] {
+            assert!(api_completion_url(unsafe_url).is_err(), "{unsafe_url}");
+        }
+    }
+
+    #[test]
+    fn request_context_keeps_newest_history_under_a_byte_ceiling() {
+        let history = vec![
+            ApiMessage {
+                id: "old".into(), role: "user".into(), content: "x".repeat(MAX_API_REQUEST_CONTEXT_BYTES), created_at: 1, usage: None,
+            },
+            ApiMessage {
+                id: "recent".into(), role: "assistant".into(), content: "recent".into(), created_at: 2, usage: None,
+            },
+        ];
+        let messages = api_request_messages(history, "new turn").expect("bounded context");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["content"], "recent");
+        assert_eq!(messages[1]["content"], "new turn");
+        assert!(api_request_messages(vec![], &"x".repeat(MAX_API_REQUEST_CONTEXT_BYTES + 1)).is_err());
+    }
+
+    #[test]
     fn bridge_message_limit_matches_the_public_bridge_contract() {
         assert_eq!(MAX_HARNESS_MESSAGE_BYTES, 100_000);
     }
@@ -1426,6 +1731,19 @@ mod tests {
             prompt_cache_hit_tokens: None,
         });
         assert_eq!(zero.cost, Some(0.0));
+
+        let malformed = ApiPricing::from_options(
+            Some(MAX_API_RATE_PER_MILLION + 1.0),
+            Some(f64::INFINITY),
+        )
+        .usage(Usage {
+            prompt_tokens: 10,
+            completion_tokens: 10,
+            prompt_cache_hit_tokens: Some(999),
+        });
+        assert_eq!(malformed.cache_read, Some(10));
+        assert_eq!(malformed.input, 0);
+        assert_eq!(malformed.cost, None);
     }
 
     #[cfg(windows)]

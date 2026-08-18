@@ -48,22 +48,69 @@ impl std::error::Error for PersistenceError {}
 
 #[derive(Clone, Debug)]
 pub struct EncryptedJsonStore {
-    path: PathBuf,
+    // `None` is intentional: it represents an explicitly unavailable durable
+    // store, not a best-effort fallback somewhere such as the shared temp
+    // directory.  Callers can keep a transient in-memory conversation, but
+    // must not manufacture a location for protected user data.
+    path: Option<PathBuf>,
 }
 
 impl EncryptedJsonStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: Some(path.into()),
+        }
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
+    /// Creates a deliberately unavailable store.  This is used when Windows
+    /// cannot identify the current user's LocalAppData directory; falling back
+    /// to a temporary folder would make encrypted transcripts unexpectedly
+    /// shared, deleted, or overwritten by another process.
+    pub fn unavailable() -> Self {
+        Self { path: None }
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
     }
 
     /// Returns `None` only when no archive exists yet.  A damaged, symlinked,
     /// oversized, or undecryptable archive is an error so callers can stop
     /// writing rather than overwrite it.
     pub fn load<T: DeserializeOwned>(&self) -> Result<Option<T>, PersistenceError> {
+        self.with_exclusive_lock(|| self.load_unlocked())
+    }
+
+    /// Serializes a read/merge/write sequence across all dsh-wallpaper
+    /// processes in this desktop session.  A plain atomic replace protects a
+    /// file from torn writes, but does not stop two processes from both reading
+    /// an old archive and silently replacing each other's conversations.  This
+    /// method supplies that transaction boundary; callers merge their local
+    /// state with the archive passed to `operation` before returning the next
+    /// complete value.
+    pub fn update<T, R, F>(&self, operation: F) -> Result<R, PersistenceError>
+    where
+        T: DeserializeOwned + Serialize,
+        F: FnOnce(Option<T>) -> Result<(T, R), PersistenceError>,
+    {
+        self.with_exclusive_lock(|| {
+            let existing = self.load_unlocked()?;
+            let (next, result) = operation(existing)?;
+            self.save_unlocked(&next)?;
+            Ok(result)
+        })
+    }
+
+    /// Writes to a same-directory temporary file, syncs it, then atomically
+    /// replaces the old archive.  Every failure before replacement leaves the
+    /// previous ciphertext untouched.  Standalone writes also take the
+    /// cross-process store lock; multi-step callers should use `update` so a
+    /// stale read cannot later overwrite another process's committed archive.
+    pub fn save<T: Serialize>(&self, value: &T) -> Result<(), PersistenceError> {
+        self.with_exclusive_lock(|| self.save_unlocked(value))
+    }
+
+    fn load_unlocked<T: DeserializeOwned>(&self) -> Result<Option<T>, PersistenceError> {
         let ciphertext = match self.read_ciphertext()? {
             Some(ciphertext) => ciphertext,
             None => return Ok(None),
@@ -77,10 +124,7 @@ impl EncryptedJsonStore {
             .map_err(|_| PersistenceError::InvalidArchive)
     }
 
-    /// Writes to a same-directory temporary file, syncs it, then atomically
-    /// replaces the old archive.  Every failure before replacement leaves the
-    /// previous ciphertext untouched.
-    pub fn save<T: Serialize>(&self, value: &T) -> Result<(), PersistenceError> {
+    fn save_unlocked<T: Serialize>(&self, value: &T) -> Result<(), PersistenceError> {
         let plaintext = serde_json::to_vec(value).map_err(|_| PersistenceError::Serialization)?;
         if plaintext.len() > MAX_PLAINTEXT_BYTES {
             return Err(PersistenceError::InvalidArchive);
@@ -90,7 +134,8 @@ impl EncryptedJsonStore {
     }
 
     fn read_ciphertext(&self) -> Result<Option<Vec<u8>>, PersistenceError> {
-        let metadata = match fs::symlink_metadata(&self.path) {
+        let path = self.path.as_deref().ok_or(PersistenceError::Unavailable)?;
+        let metadata = match fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(_) => return Err(PersistenceError::Io),
@@ -102,15 +147,16 @@ impl EncryptedJsonStore {
         {
             return Err(PersistenceError::InvalidArchive);
         }
-        fs::read(&self.path)
+        fs::read(path)
             .map(Some)
             .map_err(|_| PersistenceError::Io)
     }
 
     fn write_ciphertext_atomically(&self, ciphertext: &[u8]) -> Result<(), PersistenceError> {
-        let parent = self.path.parent().ok_or(PersistenceError::Io)?;
+        let path = self.path.as_deref().ok_or(PersistenceError::Unavailable)?;
+        let parent = path.parent().ok_or(PersistenceError::Io)?;
         fs::create_dir_all(parent).map_err(|_| PersistenceError::Io)?;
-        if let Ok(metadata) = fs::symlink_metadata(&self.path) {
+        if let Ok(metadata) = fs::symlink_metadata(path) {
             if metadata.file_type().is_symlink() || !metadata.is_file() {
                 return Err(PersistenceError::InvalidArchive);
             }
@@ -121,10 +167,10 @@ impl EncryptedJsonStore {
                 .map_err(|_| PersistenceError::Io)?;
             file.sync_all().map_err(|_| PersistenceError::Io)?;
             drop(file);
-            if self.path.exists() {
-                atomic_replace_existing(&temporary, &self.path)
+            if path.exists() {
+                atomic_replace_existing(&temporary, path)
             } else {
-                atomic_install_new(&temporary, &self.path)
+                atomic_install_new(&temporary, path)
             }
         })();
         if write_result.is_err() {
@@ -136,7 +182,8 @@ impl EncryptedJsonStore {
     fn next_temporary_path(&self, parent: &Path) -> Result<PathBuf, PersistenceError> {
         let file_name = self
             .path
-            .file_name()
+            .as_deref()
+            .and_then(Path::file_name)
             .and_then(|name| name.to_str())
             .ok_or(PersistenceError::Io)?;
         // We do not create the file here, so an extremely unlikely collision
@@ -166,6 +213,81 @@ impl EncryptedJsonStore {
         }
         Err(PersistenceError::Io)
     }
+
+    fn with_exclusive_lock<R>(
+        &self,
+        operation: impl FnOnce() -> Result<R, PersistenceError>,
+    ) -> Result<R, PersistenceError> {
+        // Do not create or wait on a named mutex when this store has no valid
+        // backing location. Returning the availability error first makes the
+        // fail-closed contract deterministic even on a system with an orphaned
+        // mutex from another instance.
+        if self.path.is_none() {
+            return Err(PersistenceError::Unavailable);
+        }
+        #[cfg(windows)]
+        {
+            let _transaction = CrossProcessStoreTransaction::acquire()?;
+            operation()
+        }
+        #[cfg(not(windows))]
+        {
+            operation()
+        }
+    }
+}
+
+/// DPAPI is user-scoped, and this store has only one application-owned file
+/// per user.  Use a named mutex in addition to atomic replacement so an older
+/// process winding down cannot overwrite a newer process's merged transcript.
+/// `Local` is intentionally session-scoped: a wallpaper is tied to the active
+/// interactive desktop, while the in-process merge below protects every task
+/// inside that process.
+#[cfg(windows)]
+const API_TRANSCRIPT_STORE_MUTEX_NAME: windows::core::PCWSTR =
+    windows::core::w!("Local\\DSHWallpaper.ApiTranscriptStore.v1");
+
+#[cfg(windows)]
+struct CrossProcessStoreTransaction {
+    handle: windows::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl CrossProcessStoreTransaction {
+    fn acquire() -> Result<Self, PersistenceError> {
+        use windows::Win32::{
+            Foundation::{CloseHandle, WAIT_ABANDONED, WAIT_OBJECT_0},
+            System::Threading::{CreateMutexW, WaitForSingleObject},
+        };
+
+        let handle = unsafe { CreateMutexW(None, false, API_TRANSCRIPT_STORE_MUTEX_NAME) }
+            .map_err(|_| PersistenceError::Io)?;
+        let wait = unsafe { WaitForSingleObject(handle, 30_000) };
+        if wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED {
+            unsafe {
+                let _ = CloseHandle(handle);
+            }
+            return Err(PersistenceError::Io);
+        }
+        // An abandoned lock only tells us a previous writer died.  The archive
+        // is still reloaded and authenticated under this new lock; a damaged
+        // blob fails closed in `load_unlocked` instead of being overwritten.
+        Ok(Self { handle })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for CrossProcessStoreTransaction {
+    fn drop(&mut self) {
+        use windows::Win32::{
+            Foundation::CloseHandle,
+            System::Threading::ReleaseMutex,
+        };
+        unsafe {
+            let _ = ReleaseMutex(self.handle);
+            let _ = CloseHandle(self.handle);
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -173,7 +295,7 @@ fn atomic_replace_existing(temporary: &Path, destination: &Path) -> Result<(), P
     use std::os::windows::ffi::OsStrExt;
     use windows::{
         core::PCWSTR,
-        Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH},
+        Win32::Storage::FileSystem::{ReplaceFileW, REPLACE_FILE_FLAGS},
     };
 
     fn wide(path: &Path) -> Vec<u16> {
@@ -182,14 +304,17 @@ fn atomic_replace_existing(temporary: &Path, destination: &Path) -> Result<(), P
     let temporary = wide(temporary);
     let destination = wide(destination);
     unsafe {
-        // ReplaceFileW is explicitly an atomic replacement of an existing
-        // destination. It never asks us to delete the prior ciphertext first.
-        // WRITE_THROUGH requests the metadata flush before success is reported.
+        // ReplaceFileW is the Win32 replacement primitive for an existing
+        // file. It never asks us to delete the prior ciphertext first. Its
+        // only write-through-looking flag is explicitly unsupported by
+        // Microsoft, so persistence is provided by syncing the complete temp
+        // file before this same-volume replacement rather than passing an
+        // invalid flag that can make updates fail.
         ReplaceFileW(
             PCWSTR(destination.as_ptr()),
             PCWSTR(temporary.as_ptr()),
             PCWSTR::null(),
-            REPLACEFILE_WRITE_THROUGH,
+            REPLACE_FILE_FLAGS(0),
             None,
             None,
         )
@@ -386,7 +511,7 @@ fn dpapi_unprotect(_: &[u8]) -> Result<Vec<u8>, PersistenceError> {
 
 #[cfg(all(test, windows))]
 mod tests {
-    use super::EncryptedJsonStore;
+    use super::{EncryptedJsonStore, PersistenceError};
     use serde::{Deserialize, Serialize};
     use std::fs;
 
@@ -433,5 +558,33 @@ mod tests {
 
         assert!(store.load::<Fixture>().is_err());
         assert_eq!(fs::read(&path).expect("after"), before);
+    }
+
+    #[test]
+    fn replaces_an_existing_archive_with_the_newest_committed_value() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("api-conversations.v1.dpapi");
+        let store = EncryptedJsonStore::new(&path);
+        store
+            .save(&Fixture { text: "first".into(), count: 1 })
+            .expect("first save");
+        store
+            .save(&Fixture { text: "second".into(), count: 2 })
+            .expect("atomic replacement");
+        assert_eq!(
+            store.load::<Fixture>().expect("read replacement"),
+            Some(Fixture { text: "second".into(), count: 2 })
+        );
+    }
+
+    #[test]
+    fn unavailable_store_never_falls_back_to_a_file() {
+        let store = EncryptedJsonStore::unavailable();
+        assert!(store.path().is_none());
+        assert!(matches!(store.load::<Fixture>(), Err(PersistenceError::Unavailable)));
+        assert!(matches!(
+            store.save(&Fixture { text: "must stay memory-only".into(), count: 1 }),
+            Err(PersistenceError::Unavailable)
+        ));
     }
 }
