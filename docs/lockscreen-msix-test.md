@@ -27,7 +27,7 @@
 
 产物位于 `artifacts\msix-test\dsh-wallpaper-lockscreen-test.msix`。未签名 MSIX 不可安装，这是预期行为。
 
-Rust 二进制会以锁定依赖固定构建为 `x86_64-pc-windows-msvc`，输出到独立的 `artifacts\msix-test\cargo-target\x86_64-pc-windows-msvc\`；脚本会在打包前读取 PE Machine 字段，拒绝任何非 x64 EXE 或 `WebView2Loader.dll`，不会写入或占用开发实例使用的 `wallpaper\src-tauri\target\`。
+Rust 二进制会以锁定依赖固定构建为 `x86_64-pc-windows-msvc`，并显式启用 Tauri `custom-protocol`（避免程序误访问已停止的 Vite `devUrl`），输出到独立的 `artifacts\msix-test\cargo-target\x86_64-pc-windows-msvc\`；脚本会在打包前读取 PE Machine 字段，拒绝任何非 x64 EXE 或 `WebView2Loader.dll`，不会写入或占用开发实例使用的 `wallpaper\src-tauri\target\`。
 
 如果已在本机通过本脚本完成相同 profile 的隔离构建，只验证打包布局：
 

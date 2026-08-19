@@ -274,7 +274,11 @@ if (-not $SkipBuild) {
     Invoke-Checked 'pnpm' @('-C', 'wallpaper', 'build') '前端构建失败。'
     Push-Location $tauriRoot
     try {
-      $cargoArgs = @('build', '--locked', '--target', $rustTarget)
+      # `cargo build` alone selects Tauri's development URL (`devUrl`), which
+      # produces a package that tries to load the stopped Vite server at
+      # 127.0.0.1:5187.  The Tauri CLI enables this dependency feature for
+      # release bundles; this standalone MSIX path must do the same.
+      $cargoArgs = @('build', '--locked', '--target', $rustTarget, '--features', 'tauri/custom-protocol')
       if ($Release) { $cargoArgs += '--release' }
       # Keep this test build independent of wallpaper/src-tauri/target. A
       # running development instance can hold files in the default target
