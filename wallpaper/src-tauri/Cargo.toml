@@ -3,7 +3,7 @@ name = "dsh-wallpaper"
 version = "0.2.0"
 description = "Interactive DeepSeek desktop wallpaper"
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.77.2"
 
 [lib]
 name = "dsh_wallpaper_lib"
@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2.4.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
@@ -44,9 +45,11 @@ windows = { version = "0.61", features = [
   "Win32_Graphics_Gdi",
   "Win32_System_Com",
   "Win32_Security",
+  "Win32_Security_Authorization",
   "Win32_Security_Credentials",
   "Win32_Security_Cryptography",
   "Win32_System_RemoteDesktop",
+  "Win32_System_IO",
   "Win32_Storage_FileSystem",
   "Win32_System_Threading",
   "Win32_Storage_Packaging_Appx",
@@ -59,3 +62,10 @@ windows = { version = "0.61", features = [
 
 [profile.release]
 strip = true
+
+# Keep the Windows single-instance implementation auditable and pinned.  The
+# upstream 2.4.3 crate can let a concurrent second launch pass through during
+# the short interval between creating its mutex and hidden IPC window, which
+# is unacceptable for a resident WorkerW/tray application.
+[patch.crates-io]
+tauri-plugin-single-instance = { path = "vendor/tauri-plugin-single-instance" }

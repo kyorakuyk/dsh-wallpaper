@@ -6,7 +6,7 @@ import type { ChatAdapter } from './chat/adapter.ts'
 import { ConversationBubble } from './chat/ConversationBubble.tsx'
 import type { BackendMode, ChatMessage, RuntimeState, TokenUsage } from './domain/types.ts'
 import { personaIdFor, resolveModelTier } from './domain/modelTier.ts'
-import { monitorHarness } from './connect/harness.ts'
+import { isHarnessReady, monitorHarness } from './connect/harness.ts'
 import { PersonaRegistry } from './persona/registry.ts'
 import { IdleScene } from './scenes/IdleScene.tsx'
 import { SleepScene } from './scenes/SleepScene.tsx'
@@ -17,10 +17,8 @@ import { nativeRuntime, type NativeSendOptions } from './native/runtime.ts'
 import { listen } from '@tauri-apps/api/event'
 import type { AppSurface } from './surface.ts'
 import { beginInteractionRegionSession, collectInteractionRegions, publishInteractionRegions } from './runtime/interactionRegions.ts'
-import { AppearanceDrawer } from './features/appearance/AppearanceDrawer.tsx'
-import type { AppearanceAssetSummary, AppearanceThemeSummary, AssetClassificationRequest } from './features/appearance/appearanceViewModel.ts'
 import type { AppearanceSlot } from './appearance/theme/index.ts'
-import { chooseAppearanceImportFolder, chooseAppearanceImportPaths, nativeAppearance } from './native/appearance.ts'
+import { nativeAppearance } from './native/appearance.ts'
 import { appCoreClient } from './runtime/appCoreClient.ts'
 import type { DesktopWorkspace } from './runtime/desktopWorkspace.ts'
 import { WidgetHost } from './widgets/WidgetHost.tsx'
@@ -53,7 +51,25 @@ export function canAutoSelectHarness(
   backend: BackendMode,
   autoSwitchHarness: boolean,
 ): boolean {
-  return availability === 'bridge-ready' && backend !== 'harness' && autoSwitchHarness
+  return isHarnessReady(availability) && backend !== 'harness' && autoSwitchHarness
+}
+
+/**
+ * A 3080 response alone is not a usable Harness transport. Keep every
+ * renderer-side selection path behind the same compatible-Bridge predicate.
+ */
+export function canSelectBackend(
+  availability: RuntimeState['harness'],
+  backend: BackendMode,
+): boolean {
+  return backend !== 'harness' || isHarnessReady(availability)
+}
+
+export function harnessSelectionUnavailableError(availability: RuntimeState['harness']): string {
+  const detail = availability === 'web-only'
+    ? '检测到 DSH 服务，但壁纸 Bridge 未安装、未启动或不兼容。'
+    : '未能连接到本机的 DSH 壁纸 Bridge。'
+  return `${HARNESS_DISCONNECTED_ERROR_PREFIX}${detail} Harness 模式只能在兼容 Bridge 就绪后切换。`
 }
 
 /**
@@ -174,7 +190,7 @@ export function harnessAvailabilityPatch(
   currentError?: string,
 ): Pick<RuntimeState, 'activity' | 'error'> | undefined {
   if (backend !== 'harness') return undefined
-  if (availability === 'bridge-ready') {
+  if (isHarnessReady(availability)) {
     return currentError?.startsWith(HARNESS_DISCONNECTED_ERROR_PREFIX)
       ? { activity: 'idle', error: undefined }
       : undefined
@@ -195,14 +211,7 @@ export interface AppProps { surface?: AppSurface }
 export function App({ surface = 'combined' }: AppProps) {
   const [settings, setSettings] = useState<WallpaperSettings>(() => loadSettings())
   const [runtime, baseDispatch] = useReducer(reduceRuntime, { ...INITIAL_RUNTIME_STATE, backend: settings.defaultBackend })
-  const [showAppearance, setShowAppearance] = useState(false)
-  const [appearanceThemes, setAppearanceThemes] = useState<AppearanceThemeSummary[]>([])
-  const [appearanceAssets, setAppearanceAssets] = useState<AppearanceAssetSummary[]>([])
-  const [appearanceTheme, setAppearanceTheme] = useState<{ id: string; version: string }>()
-  const [appearanceOverrides, setAppearanceOverrides] = useState<Partial<Record<AppearanceSlot, string>>>({})
-  const [appearanceBusy, setAppearanceBusy] = useState(false)
   const [resolvedAssets, setResolvedAssets] = useState<Partial<Record<AppearanceSlot, string>>>({})
-  const [appearanceNotice, setAppearanceNotice] = useState<{ tone: 'success' | 'info' | 'warning' | 'error'; message: string }>()
   const [showHarnessPrompt, setShowHarnessPrompt] = useState(false)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [streamingText, setStreamingText] = useState('')
@@ -283,7 +292,6 @@ export function App({ surface = 'combined' }: AppProps) {
   }
 
   const leaveInnerWorkspace = () => {
-    setShowAppearance(false)
     setInnerHistoryExpanded(false)
     if (settings.interactionLayout === 'floating') {
       // A floating surface is either fully present or absent. Resizing its native
@@ -306,11 +314,6 @@ export function App({ surface = 'combined' }: AppProps) {
   const refreshAppearance = async () => {
     const refreshEpoch = ++appearanceRefreshEpochRef.current
     try {
-      const [snapshot, themes, assets] = await Promise.all([
-        nativeAppearance.getState(),
-        nativeAppearance.listThemes(),
-        nativeAppearance.listAssets(),
-      ])
       const slots: AppearanceSlot[] = [
         'desktop.background',
         'persona.deepseek.flash', 'persona.deepseek.pro',
@@ -318,70 +321,9 @@ export function App({ surface = 'combined' }: AppProps) {
       ]
       const resolved = await Promise.all(slots.map(async (slot) => [slot, await nativeAppearance.resolveAsset(slot)] as const))
       if (refreshEpoch !== appearanceRefreshEpochRef.current) return
-      setAppearanceTheme(snapshot.activeTheme)
-      setAppearanceOverrides(snapshot.overrides)
-      setAppearanceThemes(themes)
-      setAppearanceAssets(assets)
       setResolvedAssets(Object.fromEntries(resolved.filter((entry) => Boolean(entry[1]))))
     } catch (error) {
       patchRuntime({ error: String(error) })
-    }
-  }
-
-  const applyAppearanceSnapshot = (snapshot: { activeTheme?: { id: string; version: string }; overrides: Partial<Record<AppearanceSlot, string>> }) => {
-    setAppearanceTheme(snapshot.activeTheme)
-    setAppearanceOverrides(snapshot.overrides)
-  }
-
-  const mutateAppearance = async (operation: () => Promise<{ activeTheme?: { id: string; version: string }; overrides: Partial<Record<AppearanceSlot, string>> }>) => {
-    setAppearanceBusy(true)
-    try {
-      applyAppearanceSnapshot(await operation())
-      // The snapshot only identifies selected records. Resolve their bytes
-      // immediately as well, so selection never waits for a later event or a
-      // remount before the live desktop scene changes.
-      await refreshAppearance()
-    } catch (error) {
-      patchRuntime({ error: String(error) })
-    } finally {
-      setAppearanceBusy(false)
-    }
-  }
-
-  const importAppearance = async (choose: () => Promise<string[]>) => {
-    setAppearanceBusy(true)
-    try {
-      const paths = await choose()
-      if (paths.length === 0) return
-      const batch = await nativeAppearance.importPaths(paths)
-      applyAppearanceSnapshot(batch.snapshot)
-      await refreshAppearance()
-      const imported = batch.results.reduce((sum, result) => sum + result.imported, 0)
-      const deduplicated = batch.results.reduce((sum, result) => sum + result.deduplicated, 0)
-      const themeCount = batch.results.filter((result) => result.kind === 'theme').length
-      const inboxCount = batch.results.filter((result) => result.kind === 'inbox').reduce((sum, result) => sum + result.imported, 0)
-      const parts = [`已导入 ${imported} 项`]
-      if (themeCount > 0) parts.push(`${themeCount} 个主题包`)
-      if (inboxCount > 0) parts.push(`${inboxCount} 项等待分类`)
-      if (deduplicated > 0) parts.push(`${deduplicated} 项已去重`)
-      setAppearanceNotice({ tone: 'success', message: parts.join(' · ') })
-    } catch (error) {
-      setAppearanceNotice({ tone: 'error', message: `导入失败：${String(error)}` })
-    } finally {
-      setAppearanceBusy(false)
-    }
-  }
-
-  const classifyAppearance = async (request: AssetClassificationRequest) => {
-    setAppearanceBusy(true)
-    try {
-      await Promise.all(request.assetIds.map((assetId) => nativeAppearance.classifyAsset(assetId, request.slots)))
-      await refreshAppearance()
-      setAppearanceNotice({ tone: 'success', message: `已整理 ${request.assetIds.length} 项素材，可在对应组件菜单中选择。` })
-    } catch (error) {
-      setAppearanceNotice({ tone: 'error', message: `整理失败：${String(error)}` })
-    } finally {
-      setAppearanceBusy(false)
     }
   }
 
@@ -411,7 +353,6 @@ export function App({ surface = 'combined' }: AppProps) {
         setInteractionState('expanded')
       }
       if (!snapshot.interaction.desktopForeground || snapshot.privacyScreen) {
-        setShowAppearance(false)
         if (settings.interactionLayout === 'taskbar-docked') setInteractionState('collapsed')
       }
     }
@@ -540,8 +481,7 @@ export function App({ surface = 'combined' }: AppProps) {
     if (!nativeRuntime.isNative) return
     let unsubscribe: () => void = () => undefined
     void nativeRuntime.listenTray((event) => {
-      if (event.type === 'backend') changeBackend(event.backend)
-      else { setInteractionState('expanded'); setShowAppearance(true) }
+      changeBackend(event.backend)
     }).then((dispose) => { unsubscribe = dispose })
     return () => unsubscribe()
   }, [])
@@ -612,8 +552,12 @@ export function App({ surface = 'combined' }: AppProps) {
     if (appCoreClient.native) return
     const monitor = monitorHarness((status) => {
       patchRuntime({ harness: status.availability, model: status.model ?? runtimeRef.current.model, provider: status.provider ?? runtimeRef.current.provider, reasoningEffort: status.reasoningEffort })
-      if (status.availability === 'bridge-ready' && runtimeRef.current.backend !== 'harness') {
+      if (isHarnessReady(status.availability) && runtimeRef.current.backend !== 'harness') {
         if (canAutoSelectHarness(status.availability, runtimeRef.current.backend, settings.autoSwitchHarness)) changeBackend('harness'); else setShowHarnessPrompt(true)
+      } else if (!isHarnessReady(status.availability)) {
+        // The prompt may have been rendered while a Bridge was ready and then
+        // exited. Remove its stale switching affordance immediately.
+        setShowHarnessPrompt(false)
       }
       const disconnected = harnessAvailabilityPatch(runtimeRef.current.backend, status.availability, runtimeRef.current.error)
       if (disconnected) patchRuntime(disconnected)
@@ -623,9 +567,13 @@ export function App({ surface = 'combined' }: AppProps) {
 
   useEffect(() => {
     if (!appCoreClient.native) return
-    if (runtime.harness === 'bridge-ready' && runtime.backend !== 'harness') {
+    if (isHarnessReady(runtime.harness) && runtime.backend !== 'harness') {
       if (canAutoSelectHarness(runtime.harness, runtime.backend, settings.autoSwitchHarness)) changeBackend('harness')
       else setShowHarnessPrompt(true)
+    } else if (!isHarnessReady(runtime.harness)) {
+      // `web-only` remains an informational diagnostic, never a selectable
+      // Harness state. Clear any prompt from a prior bridge-ready snapshot.
+      setShowHarnessPrompt(false)
     }
     const disconnected = harnessAvailabilityPatch(runtime.backend, runtime.harness, runtime.error)
     if (disconnected) patchRuntime(disconnected)
@@ -639,9 +587,17 @@ export function App({ surface = 'combined' }: AppProps) {
       }
     }
     window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey)
-  }, [runtime.phase, settings, workspace, showAppearance, interactionState])
+  }, [runtime.phase, settings])
 
   const changeBackend = (backend: WallpaperSettings['defaultBackend']) => {
+    if (!canSelectBackend(runtimeRef.current.harness, backend)) {
+      // Do not construct a native Harness adapter or issue a Tauri selection
+      // for a bare port-3080 observation. Leave the current transcript and
+      // backend intact until the Bridge contract is actually ready.
+      setShowHarnessPrompt(false)
+      patchRuntime({ activity: 'idle', error: harnessSelectionUnavailableError(runtimeRef.current.harness) })
+      return
+    }
     // Clear backend-scoped UI immediately. The effect below repeats this while
     // creating the next adapter, which prevents one paint of API usage or a
     // partial answer under the newly selected backend label.
@@ -657,7 +613,7 @@ export function App({ surface = 'combined' }: AppProps) {
   const scene = useMemo(() => {
     if (runtime.phase === 'booting' || runtime.phase === 'locked') return <SleepScene persona={persona} mode="system" />
     if (runtime.phase === 'waking') return <WakeScene persona={persona} enabled={settings.animationsEnabled && !settings.skipWakeAnimation} speed={settings.animationSpeed} onWakeDone={() => { baseDispatch({ type: 'WAKE_DONE' }); dispatchCore('wake-done') }} />
-    return <IdleScene persona={{ ...persona, bubbles, assets: { ...persona.assets, portrait: resolvedPersona ?? persona.assets.portrait } }} bubbleText={runtime.activity === 'thinking' ? '正在认真思考…' : bubbles.morning} showHarnessPrompt={showHarnessPrompt} harnessOnline={runtime.harness !== 'offline'} backgroundUrl={resolvedBackground ?? (background?.path ? assetUrl(background.path) : undefined)} portraitAmbientLength={settings.portraitAmbientLength} portraitAmbientStrength={settings.portraitAmbientStrength} hideBubble={workspace !== 'front'} onOpenChat={enterInnerWorkspace} onSwitchToHarness={() => changeBackend('harness')} onDismissHarnessPrompt={() => setShowHarnessPrompt(false)} />
+    return <IdleScene persona={{ ...persona, bubbles, assets: { ...persona.assets, portrait: resolvedPersona ?? persona.assets.portrait } }} bubbleText={runtime.activity === 'thinking' ? '正在认真思考…' : bubbles.morning} showHarnessPrompt={showHarnessPrompt} harnessOnline={isHarnessReady(runtime.harness)} backgroundUrl={resolvedBackground ?? (background?.path ? assetUrl(background.path) : undefined)} portraitAmbientLength={settings.portraitAmbientLength} portraitAmbientStrength={settings.portraitAmbientStrength} hideBubble={workspace !== 'front'} onOpenChat={enterInnerWorkspace} onSwitchToHarness={() => changeBackend('harness')} onDismissHarnessPrompt={() => setShowHarnessPrompt(false)} />
   }, [background?.path, bubbles, persona, resolvedBackground, resolvedPersona, runtime, settings, showHarnessPrompt, workspace])
 
   return <div className={`wallpaper-root surface-${surface} effort-${runtime.reasoningEffort ?? 'normal'} workspace-${workspace}`} data-workspace={workspace}>
@@ -694,7 +650,6 @@ export function App({ surface = 'combined' }: AppProps) {
         })
       }} onClose={() => undefined} />}
       {runtime.error && runtime.phase !== 'error' && <div className="runtime-notice" role="status">{runtime.error}<button onClick={() => patchRuntime({ error: undefined })}>×</button></div>}
-      <AppearanceDrawer open={showAppearance} themes={appearanceThemes} assets={appearanceAssets} activeThemeId={appearanceTheme?.id ?? ''} activeThemeVersion={appearanceTheme?.version ?? ''} overrides={appearanceOverrides} busy={appearanceBusy} notice={appearanceNotice} onClose={() => setShowAppearance(false)} onImport={() => { void importAppearance(chooseAppearanceImportPaths) }} onImportFolder={() => { void importAppearance(chooseAppearanceImportFolder) }} onExport={() => setAppearanceNotice({ tone: 'info', message: '主题导出需要名称与版本信息，完整导出表单将在下一步接入。' })} onReviewInbox={() => undefined} onClassify={(request) => { void classifyAppearance(request) }} onActivateTheme={(themeId, version) => { void mutateAppearance(() => nativeAppearance.activateTheme(themeId, version)) }} onSetOverride={(slot, assetId) => { void mutateAppearance(() => nativeAppearance.setOverride(slot, assetId)) }} onClearOverride={(slot) => { void mutateAppearance(() => nativeAppearance.clearOverride(slot)) }} />
       {runtime.phase === 'auth-required' && <div className="auth-overlay" data-interaction-region="auth"><div className="auth-card"><h2>DeepSeek 网页模式（实验入口）</h2><p>已通过默认浏览器打开 DeepSeek 官方页面。当前尚未启用持久 WebView2 或 DOM 消息桥接：本应用不读取 Cookie，不能使用或保存官方页面的登录状态，也不会自动切换到付费 API。</p><button onClick={() => { baseDispatch({ type: 'AUTH_READY' }); dispatchCore('auth-ready') }}>关闭提示</button></div></div>}
     </>
   </div>

@@ -17,6 +17,28 @@ use tokio::sync::oneshot;
 use crate::api_persistence::EncryptedJsonStore;
 
 const MAX_HARNESS_MESSAGE_BYTES: usize = 100_000;
+/// A normal bearer is short.  Bound the file before allocating so a malformed
+/// local path cannot make the resident native process read arbitrary data.
+const MAX_BRIDGE_TOKEN_FILE_BYTES: usize = 4 * 1024;
+/// DSH Bridge runs on the loopback interface, but it is still a separate
+/// process and its SSE output is untrusted at this boundary.  A normal SSE
+/// record is a small delta, but the Bridge's final `message` record can carry
+/// a whole response, so allow the same largest useful response as the API.
+const MAX_HARNESS_SSE_EVENT_BYTES: usize = 4 * 1024 * 1024;
+/// A complete event is drained immediately.  Retaining more than this means a
+/// peer has not finished one event, which is never necessary for the normal
+/// Bridge protocol and must not grow without bound in a resident wallpaper.
+const MAX_HARNESS_SSE_BUFFER_BYTES: usize = 256 * 1024;
+/// Bound a single transport read before decoding it into an owned UTF-8
+/// string. This also limits a peer that packs many records into one read.
+const MAX_HARNESS_SSE_CHUNK_BYTES: usize = MAX_HARNESS_SSE_EVENT_BYTES;
+/// Non-streaming Bridge responses must be bounded before `bytes()` allocates
+/// them. The live-session endpoint is tiny; history has an explicit larger
+/// ceiling because it can contain several completed turns.
+const MAX_HARNESS_SESSION_RESPONSE_BYTES: usize = 64 * 1024;
+const MAX_HARNESS_HISTORY_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_HARNESS_HISTORY_MESSAGES: usize = 256;
+const MAX_HARNESS_HISTORY_ID_BYTES: usize = 200;
 /// Bound values that originate in a renderer or an arbitrary compatible API
 /// endpoint.  The encrypted archive has a larger total ceiling, but allowing
 /// one request or a never-ending SSE record to consume that entire budget is
@@ -437,6 +459,10 @@ fn api_request_messages(history: Vec<ApiMessage>, user_text: &str) -> Result<Vec
 
 fn bridge_request_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
+        // The Bridge bearer token is only valid for our loopback peer.  Do
+        // not inherit HTTP(S)_PROXY or system-proxy settings here: a malformed
+        // NO_PROXY environment variable must never route that token elsewhere.
+        .no_proxy()
         .timeout(Duration::from_secs(8))
         .connect_timeout(Duration::from_secs(3))
         .build()
@@ -445,6 +471,9 @@ fn bridge_request_client() -> Result<reqwest::Client, String> {
 
 fn bridge_stream_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
+        // See `bridge_request_client`: the SSE request carries the same
+        // bearer token and must remain a direct loopback connection.
+        .no_proxy()
         // Same as API streaming: a healthy idle SSE connection must not be
         // cut after an arbitrary total duration.
         .timeout(Duration::from_secs(24 * 60 * 60))
@@ -643,6 +672,45 @@ fn finish_sse_records(buffer: &mut String) -> Vec<String> {
     records
 }
 
+/// Append one decoded DSH Bridge SSE read and return only complete bounded
+/// records. A final delimiter may arrive after an otherwise full event, so
+/// drain before testing the retained tail; retained incomplete data has its
+/// own tighter cap while a completed final response may use the event cap.
+fn drain_bounded_harness_sse_records(buffer: &mut String, text: &str) -> Result<Vec<String>, ()> {
+    if text.len() > MAX_HARNESS_SSE_CHUNK_BYTES
+        || buffer.len() > MAX_HARNESS_SSE_BUFFER_BYTES
+        || buffer.len().saturating_add(text.len()) > MAX_HARNESS_SSE_EVENT_BYTES
+    {
+        return Err(());
+    }
+    buffer.push_str(text);
+    let records = drain_sse_records(buffer);
+    if records
+        .iter()
+        .any(|record| record.len() > MAX_HARNESS_SSE_EVENT_BYTES)
+        || buffer.len() > MAX_HARNESS_SSE_BUFFER_BYTES
+    {
+        return Err(());
+    }
+    Ok(records)
+}
+
+/// EOF makes a trailing bare CR and a data-bearing tail complete.  Apply the
+/// same event cap before forwarding that final record to the renderer.
+fn finish_bounded_harness_sse_records(buffer: &mut String) -> Result<Vec<String>, ()> {
+    if buffer.len() > MAX_HARNESS_SSE_BUFFER_BYTES {
+        return Err(());
+    }
+    let records = finish_sse_records(buffer);
+    if records
+        .iter()
+        .any(|record| record.len() > MAX_HARNESS_SSE_EVENT_BYTES)
+    {
+        return Err(());
+    }
+    Ok(records)
+}
+
 /// Combines all `data:` lines according to the SSE framing rule. It accepts
 /// both `data:value` and `data: value`, which are equally valid on the wire.
 fn sse_record_payload(record: &str) -> Option<String> {
@@ -686,11 +754,180 @@ enum ChatEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         effort: Option<String>,
     },
+    ApprovalRequired {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        summary: String,
+    },
     Error {
         code: String,
         recoverable: bool,
         message: String,
     },
+}
+
+/// The Bridge runs in a separate local process, so its SSE payloads must be
+/// parsed into this closed protocol before they reach a WebView.  Do not relay
+/// arbitrary JSON values: otherwise a compatible-but-buggy bridge could add
+/// renderer-visible fields or forge an event shape the UI was not designed to
+/// handle.
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+enum BridgeEvent {
+    Status {
+        activity: String,
+    },
+    Delta {
+        text: String,
+    },
+    Message {
+        role: String,
+        content: String,
+    },
+    Usage {
+        input: u64,
+        output: u64,
+        #[serde(rename = "cacheRead")]
+        cache_read: Option<u64>,
+        cost: Option<f64>,
+    },
+    Model {
+        provider: Option<String>,
+        model: String,
+        effort: Option<String>,
+    },
+    ApprovalRequired {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        summary: String,
+    },
+    Error {
+        code: String,
+        recoverable: bool,
+        message: String,
+    },
+    Disconnected {
+        recoverable: bool,
+    },
+}
+
+const MAX_HARNESS_EVENT_TEXT_BYTES: usize = MAX_HARNESS_MESSAGE_BYTES;
+const MAX_HARNESS_EVENT_IDENTIFIER_BYTES: usize = 200;
+const MAX_HARNESS_EVENT_PROVIDER_BYTES: usize = 200;
+const MAX_HARNESS_EVENT_SUMMARY_BYTES: usize = 500;
+const MAX_HARNESS_EVENT_TOKEN_COUNT: u64 = 1_000_000_000_000;
+const MAX_HARNESS_EVENT_COST: f64 = 1_000_000.0;
+
+fn bounded_bridge_text(value: String, maximum: usize) -> Option<String> {
+    (value.as_bytes().len() <= maximum).then_some(value)
+}
+
+fn valid_bridge_activity(value: &str) -> bool {
+    matches!(
+        value,
+        "idle" | "sending" | "thinking" | "streaming" | "tool" | "done"
+    )
+}
+
+fn valid_bridge_role(value: &str) -> bool {
+    matches!(value, "user" | "assistant")
+}
+
+/// Converts an untrusted Bridge event into the exact renderer protocol.  The
+/// native owner stamps backend/session/request metadata later, so all origin
+/// fields supplied by the bridge are rejected by `deny_unknown_fields`.
+fn parse_bridge_event(line: &str, expected_session_id: &str) -> Option<ChatEvent> {
+    let event = serde_json::from_str::<BridgeEvent>(line).ok()?;
+    match event {
+        BridgeEvent::Status { activity } if valid_bridge_activity(&activity) => {
+            Some(ChatEvent::Status { activity })
+        }
+        BridgeEvent::Delta { text } => bounded_bridge_text(text, MAX_HARNESS_EVENT_TEXT_BYTES)
+            .map(|text| ChatEvent::Delta { text }),
+        BridgeEvent::Message { role, content } if valid_bridge_role(&role) => {
+            bounded_bridge_text(content, MAX_HARNESS_EVENT_TEXT_BYTES).map(|content| {
+                ChatEvent::Message {
+                    role,
+                    content,
+                    usage: None,
+                }
+            })
+        }
+        BridgeEvent::Usage {
+            input,
+            output,
+            cache_read,
+            cost,
+        } if input <= MAX_HARNESS_EVENT_TOKEN_COUNT && output <= MAX_HARNESS_EVENT_TOKEN_COUNT => {
+            let cache_read = cache_read.map(|value| value.min(input));
+            let cost = cost.filter(|value| {
+                value.is_finite() && (0.0..=MAX_HARNESS_EVENT_COST).contains(value)
+            });
+            Some(ChatEvent::Usage {
+                input,
+                output,
+                cache_read,
+                cost,
+                estimated: cost.map(|_| false),
+            })
+        }
+        BridgeEvent::Model {
+            provider,
+            model,
+            effort,
+        } => {
+            let provider = match provider {
+                Some(value) => Some(bounded_bridge_text(
+                    value,
+                    MAX_HARNESS_EVENT_PROVIDER_BYTES,
+                )?),
+                None => None,
+            };
+            let model = bounded_bridge_text(model, MAX_HARNESS_EVENT_IDENTIFIER_BYTES)?;
+            let effort = match effort {
+                Some(value) => Some(bounded_bridge_text(
+                    value,
+                    MAX_HARNESS_EVENT_IDENTIFIER_BYTES,
+                )?),
+                None => None,
+            };
+            Some(ChatEvent::Model {
+                provider,
+                model,
+                tier: "unknown".into(),
+                effort,
+            })
+        }
+        BridgeEvent::ApprovalRequired {
+            session_id,
+            summary,
+        } if session_id == expected_session_id => {
+            let summary = bounded_bridge_text(summary, MAX_HARNESS_EVENT_SUMMARY_BYTES)?;
+            Some(ChatEvent::ApprovalRequired {
+                session_id: expected_session_id.into(),
+                summary,
+            })
+        }
+        BridgeEvent::Error {
+            code,
+            recoverable,
+            message,
+        } => {
+            let code = bounded_bridge_text(code, MAX_HARNESS_EVENT_IDENTIFIER_BYTES)?;
+            let message = bounded_bridge_text(message, MAX_HARNESS_EVENT_TEXT_BYTES)?;
+            Some(ChatEvent::Error {
+                code,
+                recoverable,
+                message,
+            })
+        }
+        BridgeEvent::Disconnected { recoverable } if recoverable => Some(ChatEvent::Error {
+            code: "HARNESS_DISCONNECTED".into(),
+            recoverable: true,
+            message: "DSH bridge 事件流已断开".into(),
+        }),
+        _ => None,
+    }
 }
 
 #[derive(Deserialize)]
@@ -773,16 +1010,139 @@ struct HarnessSessionRequest<'a> {
 }
 
 #[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HarnessConnection {
     pub session_id: String,
+    pub status: String,
     pub provider: Option<String>,
     pub model: Option<String>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct BridgeErrorResponse {
     error: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HarnessHistoryResponse {
+    session_id: String,
+    messages: Vec<HarnessHistoryMessage>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HarnessHistoryMessage {
+    id: String,
+    role: String,
+    content: String,
+}
+
+fn valid_bridge_session_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.as_bytes().len() <= MAX_HARNESS_EVENT_IDENTIFIER_BYTES
+        && !value
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '/' | '\\'))
+}
+
+/// Read a bounded non-streaming body before JSON decoding. `reqwest` has no
+/// useful default cap here, while the Bridge is a separate local process and
+/// could otherwise make the resident wallpaper allocate an arbitrary body.
+async fn bounded_bridge_json<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+    maximum: usize,
+    error: &'static str,
+) -> Result<T, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum as u64)
+    {
+        return Err(error.into());
+    }
+    // Do not use `Response::bytes()` here. Without a Content-Length header
+    // reqwest would retain the entire peer response before we can enforce the
+    // protocol ceiling. Accumulate one transport chunk at a time instead.
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::with_capacity(maximum.min(64 * 1024));
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| error.to_string())?;
+        if chunk.len() > maximum.saturating_sub(body.len()) {
+            return Err(error.into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body).map_err(|_| error.into())
+}
+
+fn valid_bridge_status(value: &str) -> bool {
+    !value.is_empty()
+        && value.as_bytes().len() <= MAX_HARNESS_EVENT_IDENTIFIER_BYTES
+        && !value.chars().any(char::is_control)
+}
+
+fn parse_harness_connection(session: HarnessConnection) -> Result<HarnessConnection, String> {
+    if !valid_bridge_session_id(&session.session_id) {
+        return Err("DSH bridge 返回了无效的会话标识。".into());
+    }
+    // DSH may add diagnostic lifecycle labels over time. The wallpaper does
+    // not branch on this field; constrain it as data instead of freezing the
+    // client to a short allow-list that would reject a compatible bridge.
+    if !valid_bridge_status(&session.status) {
+        return Err("DSH bridge 返回了无效的会话状态。".into());
+    }
+    let provider = match session.provider {
+        Some(value) => Some(
+            bounded_bridge_text(value, MAX_HARNESS_EVENT_PROVIDER_BYTES)
+                .ok_or("DSH bridge 返回了无效的会话元数据。")?,
+        ),
+        None => None,
+    };
+    let model = match session.model {
+        Some(value) => Some(
+            bounded_bridge_text(value, MAX_HARNESS_EVENT_IDENTIFIER_BYTES)
+                .ok_or("DSH bridge 返回了无效的会话元数据。")?,
+        ),
+        None => None,
+    };
+    Ok(HarnessConnection {
+        session_id: session.session_id,
+        status: session.status,
+        provider,
+        model,
+    })
+}
+
+fn parse_harness_history(
+    expected_session_id: &str,
+    history: HarnessHistoryResponse,
+) -> Result<Value, String> {
+    if history.session_id != expected_session_id || !valid_bridge_session_id(&history.session_id) {
+        return Err("DSH bridge 返回了不匹配的历史会话。".into());
+    }
+    if history.messages.len() > MAX_HARNESS_HISTORY_MESSAGES {
+        return Err("DSH bridge 返回的历史记录过多。".into());
+    }
+    let mut messages = Vec::with_capacity(history.messages.len());
+    for message in history.messages {
+        if message.id.is_empty()
+            || message.id.as_bytes().len() > MAX_HARNESS_HISTORY_ID_BYTES
+            || !valid_bridge_role(&message.role)
+            || message.content.as_bytes().len() > MAX_HARNESS_EVENT_TEXT_BYTES
+        {
+            return Err("DSH bridge 返回了无效的历史记录。".into());
+        }
+        messages.push(serde_json::json!({
+            "id": message.id,
+            "role": message.role,
+            "content": message.content,
+        }));
+    }
+    Ok(serde_json::json!({
+        "sessionId": expected_session_id,
+        "messages": messages,
+    }))
 }
 
 /// `chat-event` is application-global, while the UI has one adapter per
@@ -869,27 +1229,38 @@ fn emit_owned_api_event(
     }
 }
 
-fn scoped_harness_event(mut event: Value, session_id: &str, connection_id: &str) -> Value {
-    let Some(map) = event.as_object_mut() else {
-        return serde_json::json!({
-            "type": "error",
-            "code": "HARNESS_SSE_INVALID_EVENT",
-            "recoverable": true,
-            "message": "DSH bridge 返回了无法识别的事件。",
-            "backend": "harness",
-            "conversationId": session_id,
-            "requestId": connection_id,
-        });
-    };
-    // The local bridge must not be able to choose an origin label. These three
-    // fields are assigned by the native subscriber that owns the connection.
-    map.insert("backend".into(), Value::String("harness".into()));
-    map.insert("conversationId".into(), Value::String(session_id.into()));
-    map.insert("requestId".into(), Value::String(connection_id.into()));
-    if map.get("type").and_then(Value::as_str) == Some("model") && !map.contains_key("tier") {
-        map.insert("tier".into(), Value::String("unknown".into()));
+/// Forward only complete, bounded SSE records from the local Bridge.  The
+/// Bridge cannot choose event shape or origin: native code validates it
+/// against `BridgeEvent` and stamps backend/session/request metadata before
+/// emitting to the wallpaper WebView.
+fn forward_harness_sse_records(
+    app: &AppHandle,
+    state: &ChatState,
+    stream_id: u64,
+    session_id: &str,
+    connection_id: &str,
+    records: Vec<String>,
+) {
+    for record in records {
+        let Some(line) = sse_record_payload(&record) else {
+            continue;
+        };
+        let Some(event) = parse_bridge_event(&line, session_id) else {
+            // A malformed or out-of-contract event is not actionable UI
+            // state. The bridge may still send a later valid event, so keep
+            // the stream alive rather than surfacing raw local process data.
+            continue;
+        };
+        if is_current_harness_stream(state, stream_id, session_id) {
+            emit_scoped(
+                app,
+                "harness",
+                session_id,
+                Some(connection_id.to_string()),
+                event,
+            );
+        }
     }
-    event
 }
 
 /// Parse and relay one complete API SSE record. The current-request check is
@@ -1319,15 +1690,295 @@ fn bridge_token_path() -> Result<PathBuf, String> {
         .ok_or_else(|| "无法确定 DSH 用户目录".into())
 }
 
-fn read_bridge_token() -> Result<String, String> {
-    let token = std::fs::read_to_string(bridge_token_path()?).map_err(|_| {
-        "未找到 DSH 壁纸 bridge token；请先安装并启动 dsh-wallpaper-bridge".to_string()
-    })?;
+fn validate_bridge_token(token: String) -> Result<String, String> {
     let token = token.trim().to_string();
-    if token.len() < 32 {
+    if token.len() < 32 || token.len() > MAX_BRIDGE_TOKEN_FILE_BYTES {
         return Err("DSH bridge token 无效".into());
     }
     Ok(token)
+}
+
+/// Pure policy check used by the Windows reader after `GetSecurityInfo` has
+/// obtained an OS-validated ACL. The bridge writer creates exactly one,
+/// non-inherited Full Control allow ACE for the current user; accepting a
+/// weaker or broader shape here would quietly defeat that contract.
+fn bridge_token_acl_is_private(
+    owner_matches_current_user: bool,
+    dacl_present_and_protected: bool,
+    ace_count: u32,
+    allow_ace: bool,
+    ace_flags: u8,
+    ace_mask: u32,
+    full_access_mask: u32,
+    ace_sid_matches_current_user: bool,
+) -> bool {
+    owner_matches_current_user
+        && dacl_present_and_protected
+        && ace_count == 1
+        && allow_ace
+        && ace_flags == 0
+        && ace_mask == full_access_mask
+        && ace_sid_matches_current_user
+}
+
+#[cfg(not(windows))]
+fn read_bridge_token() -> Result<String, String> {
+    let path = bridge_token_path()?;
+    let metadata = std::fs::symlink_metadata(&path).map_err(|_| {
+        "未找到 DSH 壁纸 bridge token；请先安装并启动 dsh-wallpaper-bridge".to_string()
+    })?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > MAX_BRIDGE_TOKEN_FILE_BYTES as u64
+    {
+        return Err("DSH bridge token 文件不安全".into());
+    }
+    let token =
+        std::fs::read_to_string(path).map_err(|_| "无法读取 DSH bridge token".to_string())?;
+    validate_bridge_token(token)
+}
+
+#[cfg(windows)]
+fn read_bridge_token() -> Result<String, String> {
+    use std::{ffi::OsStr, mem::size_of, os::windows::ffi::OsStrExt};
+    use windows::{
+        core::PCWSTR,
+        Win32::{
+            Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, HANDLE, HLOCAL},
+            Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT},
+            Security::{
+                EqualSid, GetAce, GetAclInformation, GetLengthSid, GetSecurityDescriptorControl,
+                GetTokenInformation, IsValidSid, TokenUser, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL,
+                ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+                PSECURITY_DESCRIPTOR, PSID, SE_DACL_PRESENT, SE_DACL_PROTECTED, SID, TOKEN_QUERY,
+                TOKEN_USER,
+            },
+            Storage::FileSystem::{
+                CreateFileW, GetFileInformationByHandle, GetFileSizeEx, GetFileType, ReadFile,
+                BY_HANDLE_FILE_INFORMATION, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
+                FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_DATA,
+                FILE_SHARE_NONE, FILE_TYPE_DISK, OPEN_EXISTING, READ_CONTROL,
+            },
+            System::Threading::{GetCurrentProcess, OpenProcessToken},
+        },
+    };
+
+    struct HandleGuard(HANDLE);
+    impl Drop for HandleGuard {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+    struct SecurityDescriptorGuard(PSECURITY_DESCRIPTOR);
+    impl Drop for SecurityDescriptorGuard {
+        fn drop(&mut self) {
+            if !self.0 .0.is_null() {
+                unsafe {
+                    let _ = windows::Win32::Foundation::LocalFree(Some(HLOCAL(self.0 .0)));
+                }
+            }
+        }
+    }
+
+    fn insecure_token_file() -> String {
+        // Deliberately omit a filesystem path or token content from an error
+        // that can be returned to a renderer or logs.
+        "DSH bridge token 文件不安全；请重启或重新安装 dsh-wallpaper-bridge".into()
+    }
+
+    unsafe fn current_user_sid() -> Result<(HandleGuard, Vec<usize>, PSID), String> {
+        let mut raw = HANDLE::default();
+        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw)
+            .map_err(|_| insecure_token_file())?;
+        let token = HandleGuard(raw);
+        let mut needed = 0u32;
+        match GetTokenInformation(token.0, TokenUser, None, 0, &mut needed) {
+            Ok(()) => return Err(insecure_token_file()),
+            Err(error)
+                if windows::Win32::Foundation::WIN32_ERROR::from_error(&error)
+                    == Some(ERROR_INSUFFICIENT_BUFFER) => {}
+            Err(_) => return Err(insecure_token_file()),
+        }
+        if needed < size_of::<TOKEN_USER>() as u32 || needed > 64 * 1024 {
+            return Err(insecure_token_file());
+        }
+        // `TOKEN_USER` has pointer alignment. A `Vec<u8>` only promises byte
+        // alignment, so casting it to `TOKEN_USER` would be undefined behavior
+        // on architectures that require aligned reads. Keep the backing storage
+        // word-aligned for the lifetime of the returned SID pointer instead.
+        let byte_count = usize::try_from(needed).map_err(|_| insecure_token_file())?;
+        let word_size = size_of::<usize>();
+        let words = byte_count
+            .checked_add(word_size.saturating_sub(1))
+            .map(|total| total / word_size)
+            .filter(|count| *count > 0)
+            .ok_or_else(insecure_token_file)?;
+        let mut storage = vec![0usize; words];
+        GetTokenInformation(
+            token.0,
+            TokenUser,
+            Some(storage.as_mut_ptr().cast()),
+            needed,
+            &mut needed,
+        )
+        .map_err(|_| insecure_token_file())?;
+        let user = &*(storage.as_ptr().cast::<TOKEN_USER>());
+        if user.User.Sid.0.is_null() || !IsValidSid(user.User.Sid).as_bool() {
+            return Err(insecure_token_file());
+        }
+        Ok((token, storage, user.User.Sid))
+    }
+
+    let path = bridge_token_path()?;
+    let wide: Vec<u16> = OsStr::new(&path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // Do not follow a final reparse point, do not share this handle with a
+    // writer/deleter, and use it for both ACL inspection and token bytes.
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            READ_CONTROL.0 | FILE_READ_DATA.0,
+            FILE_SHARE_NONE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+    }
+    .map(HandleGuard)
+    .map_err(|_| "未找到 DSH 壁纸 bridge token；请先安装并启动 dsh-wallpaper-bridge".to_string())?;
+
+    unsafe {
+        if GetFileType(handle.0) != FILE_TYPE_DISK {
+            return Err(insecure_token_file());
+        }
+        let mut file_info = BY_HANDLE_FILE_INFORMATION::default();
+        GetFileInformationByHandle(handle.0, &mut file_info).map_err(|_| insecure_token_file())?;
+        if file_info.dwFileAttributes
+            & (FILE_ATTRIBUTE_REPARSE_POINT.0 | FILE_ATTRIBUTE_DIRECTORY.0)
+            != 0
+        {
+            return Err(insecure_token_file());
+        }
+
+        let (_process_token, token_user_storage, current_sid) = current_user_sid()?;
+        // Keep the token-information backing bytes alive through SID checks.
+        let _keep_current_sid_alive = token_user_storage;
+        let mut owner = PSID::default();
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        let mut descriptor = PSECURITY_DESCRIPTOR::default();
+        GetSecurityInfo(
+            handle.0,
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            Some(&mut owner),
+            None,
+            Some(&mut dacl),
+            None,
+            Some(&mut descriptor),
+        )
+        .ok()
+        .map_err(|_| insecure_token_file())?;
+        let _descriptor = SecurityDescriptorGuard(descriptor);
+        // A missing descriptor or DACL is not equivalent to a private token
+        // file. Reject it before handing either pointer to additional Win32
+        // parsing APIs.
+        if descriptor.0.is_null() || dacl.is_null() {
+            return Err(insecure_token_file());
+        }
+        let owner_matches_current_user = !owner.0.is_null()
+            && IsValidSid(owner).as_bool()
+            && EqualSid(owner, current_sid).is_ok();
+
+        let mut control = 0u16;
+        let mut revision = 0u32;
+        GetSecurityDescriptorControl(descriptor, &mut control, &mut revision)
+            .map_err(|_| insecure_token_file())?;
+        let control = windows::Win32::Security::SECURITY_DESCRIPTOR_CONTROL(control);
+        let dacl_present_and_protected =
+            control.contains(SE_DACL_PRESENT) && control.contains(SE_DACL_PROTECTED);
+
+        let mut acl_info = ACL_SIZE_INFORMATION::default();
+        GetAclInformation(
+            dacl,
+            (&mut acl_info as *mut ACL_SIZE_INFORMATION).cast(),
+            size_of::<ACL_SIZE_INFORMATION>() as u32,
+            windows::Win32::Security::AclSizeInformation,
+        )
+        .map_err(|_| insecure_token_file())?;
+        if acl_info.AceCount == 0
+            || acl_info.AclBytesInUse < size_of::<ACL>() as u32
+            || acl_info.AclBytesInUse > (*dacl).AclSize as u32
+        {
+            return Err(insecure_token_file());
+        }
+        let mut raw_ace: *mut core::ffi::c_void = std::ptr::null_mut();
+        GetAce(dacl, 0, &mut raw_ace).map_err(|_| insecure_token_file())?;
+        if raw_ace.is_null() {
+            return Err(insecure_token_file());
+        }
+        let header = &*(raw_ace.cast::<ACE_HEADER>());
+        if header.AceSize < size_of::<ACCESS_ALLOWED_ACE>() as u16
+            || header.AceSize as u32 > acl_info.AclBytesInUse
+        {
+            return Err(insecure_token_file());
+        }
+        let ace = &*(raw_ace.cast::<ACCESS_ALLOWED_ACE>());
+        let ace_sid = PSID((&ace.SidStart as *const u32).cast_mut().cast());
+        let ace_sid_offset = std::mem::offset_of!(ACCESS_ALLOWED_ACE, SidStart);
+        let available_sid_bytes = (header.AceSize as usize).saturating_sub(ace_sid_offset);
+        // `IsValidSid` and `GetLengthSid` accept only a pointer, so they cannot
+        // know the enclosing ACE boundary. Check the fixed SID header and its
+        // declared sub-authority tail ourselves before passing the pointer to
+        // either API. This keeps a malformed on-disk ACL from making Win32 read
+        // beyond this ACE even though `GetAce` returned a pointer.
+        let sid_header_bytes = std::mem::offset_of!(SID, SubAuthority);
+        let ace_sid_fits = !ace_sid.0.is_null() && available_sid_bytes >= sid_header_bytes;
+        let declared_sid_bytes = if ace_sid_fits {
+            let sub_authority_count = (*ace_sid.0.cast::<SID>()).SubAuthorityCount as usize;
+            sid_header_bytes.checked_add(sub_authority_count.saturating_mul(size_of::<u32>()))
+        } else {
+            None
+        };
+        let ace_sid_fits = declared_sid_bytes
+            .filter(|sid_length| *sid_length > 0 && *sid_length <= available_sid_bytes)
+            .is_some_and(|sid_length| {
+                IsValidSid(ace_sid).as_bool()
+                    && usize::try_from(GetLengthSid(ace_sid)).ok() == Some(sid_length)
+            });
+        let ace_sid_matches_current_user =
+            !ace_sid.0.is_null() && ace_sid_fits && EqualSid(ace_sid, current_sid).is_ok();
+        if !bridge_token_acl_is_private(
+            owner_matches_current_user,
+            dacl_present_and_protected,
+            acl_info.AceCount,
+            header.AceType == 0,
+            header.AceFlags,
+            ace.Mask,
+            FILE_ALL_ACCESS.0,
+            ace_sid_matches_current_user,
+        ) {
+            return Err(insecure_token_file());
+        }
+
+        let mut size = 0i64;
+        GetFileSizeEx(handle.0, &mut size).map_err(|_| insecure_token_file())?;
+        if !(1..=MAX_BRIDGE_TOKEN_FILE_BYTES as i64).contains(&size) {
+            return Err(insecure_token_file());
+        }
+        let mut bytes = vec![0u8; size as usize];
+        let mut read = 0u32;
+        ReadFile(handle.0, Some(&mut bytes), Some(&mut read), None)
+            .map_err(|_| insecure_token_file())?;
+        if read as usize != bytes.len() {
+            return Err(insecure_token_file());
+        }
+        validate_bridge_token(String::from_utf8(bytes).map_err(|_| insecure_token_file())?)
+    }
 }
 
 fn auth(client: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {
@@ -1362,12 +2013,15 @@ pub async fn harness_connect(
     // gets a one-time new-session retry; never turn arbitrary failed resumes
     // into a fresh transcript silently.
     if resume_session_id.is_some() && response.status() == reqwest::StatusCode::CONFLICT {
-        let resume_unavailable = response
-            .json::<BridgeErrorResponse>()
-            .await
-            .ok()
-            .and_then(|body| body.error)
-            .as_deref()
+        let resume_unavailable = bounded_bridge_json::<BridgeErrorResponse>(
+            response,
+            MAX_HARNESS_SESSION_RESPONSE_BYTES,
+            "DSH bridge 返回了无法识别的会话响应。",
+        )
+        .await
+        .ok()
+        .and_then(|body| body.error)
+        .as_deref()
             == Some("resume-unavailable");
         if resume_unavailable {
             response = create_session(None)
@@ -1380,10 +2034,14 @@ pub async fn harness_connect(
     if !response.status().is_success() {
         return Err(generic_bridge_http_error(response.status()));
     }
-    let session: HarnessConnection = response
-        .json()
-        .await
-        .map_err(|_| "DSH bridge 返回了无法识别的会话响应。".to_string())?;
+    let session = parse_harness_connection(
+        bounded_bridge_json::<HarnessConnection>(
+            response,
+            MAX_HARNESS_SESSION_RESPONSE_BYTES,
+            "DSH bridge 返回了无法识别的会话响应。",
+        )
+        .await?,
+    )?;
     *state
         .harness_session
         .lock()
@@ -1481,46 +2139,50 @@ async fn connect_harness_events(
                 _ = &mut cancel_rx => break,
                 chunk = stream.next() => {
                     let Some(chunk) = chunk else {
-                        match decoder.finish() {
-                            Ok(tail) => buffer.push_str(&tail),
-                            Err(_) => emit_stream_error("HARNESS_SSE_ENCODING", generic_harness_error("事件流编码")),
-                        }
-                        for record in finish_sse_records(&mut buffer) {
-                            if let Some(line) = sse_record_payload(&record) {
-                                    if let Ok(event) = serde_json::from_str::<Value>(&line) {
-                                    if is_current_harness_stream(&state, stream_id, &session_id) {
-                                        let _ = app.emit_to(
-                                            EventTarget::webview_window("background"),
-                                            "chat-event",
-                                            scoped_harness_event(event, &session_id, &connection_id),
-                                        );
-                                    }
-                                }
+                        let tail = match decoder.finish() {
+                            Ok(tail) => tail,
+                            Err(_) => {
+                                emit_stream_error("HARNESS_SSE_ENCODING", generic_harness_error("事件流编码"));
+                                break;
                             }
-                        }
+                        };
+                        let records = match drain_bounded_harness_sse_records(&mut buffer, &tail) {
+                            Ok(records) => records,
+                            Err(()) => {
+                                emit_stream_error("HARNESS_SSE_LIMIT", "DSH bridge 返回的流式事件过大，已安全停止接收。".into());
+                                break;
+                            }
+                        };
+                        forward_harness_sse_records(&app, &state, stream_id, &session_id, &connection_id, records);
+                        let records = match finish_bounded_harness_sse_records(&mut buffer) {
+                            Ok(records) => records,
+                            Err(()) => {
+                                emit_stream_error("HARNESS_SSE_LIMIT", "DSH bridge 返回的流式事件过大，已安全停止接收。".into());
+                                break;
+                            }
+                        };
+                        forward_harness_sse_records(&app, &state, stream_id, &session_id, &connection_id, records);
                         emit_stream_error("HARNESS_DISCONNECTED", "DSH bridge 事件流已断开".into());
                         break;
                     };
                     match chunk {
                         Ok(bytes) => {
+                            if bytes.len() > MAX_HARNESS_SSE_CHUNK_BYTES {
+                                emit_stream_error("HARNESS_SSE_LIMIT", "DSH bridge 返回的流式事件过大，已安全停止接收。".into());
+                                break;
+                            }
                             let decoded = match decoder.push(&bytes) {
                                 Ok(decoded) => decoded,
                                 Err(_) => { emit_stream_error("HARNESS_SSE_ENCODING", generic_harness_error("事件流编码")); break; }
                             };
-                            buffer.push_str(&decoded);
-                            for record in drain_sse_records(&mut buffer) {
-                                if let Some(line) = sse_record_payload(&record) {
-                                    if let Ok(event) = serde_json::from_str::<Value>(&line) {
-                                        if is_current_harness_stream(&state, stream_id, &session_id) {
-                                            let _ = app.emit_to(
-                                                EventTarget::webview_window("background"),
-                                                "chat-event",
-                                                scoped_harness_event(event, &session_id, &connection_id),
-                                            );
-                                        }
-                                    }
+                            let records = match drain_bounded_harness_sse_records(&mut buffer, &decoded) {
+                                Ok(records) => records,
+                                Err(()) => {
+                                    emit_stream_error("HARNESS_SSE_LIMIT", "DSH bridge 返回的流式事件过大，已安全停止接收。".into());
+                                    break;
                                 }
-                            }
+                            };
+                            forward_harness_sse_records(&app, &state, stream_id, &session_id, &connection_id, records);
                         }
                         Err(_) => { emit_stream_error("HARNESS_SSE_READ", generic_harness_error("事件流读取")); break; }
                     }
@@ -1583,10 +2245,13 @@ pub async fn harness_history(state: tauri::State<'_, ChatState>) -> Result<Value
     if !response.status().is_success() {
         return Err(generic_bridge_http_error(response.status()));
     }
-    response
-        .json()
-        .await
-        .map_err(|_| "DSH bridge 返回了无法识别的历史记录。".to_string())
+    let history = bounded_bridge_json::<HarnessHistoryResponse>(
+        response,
+        MAX_HARNESS_HISTORY_RESPONSE_BYTES,
+        "DSH bridge 返回了无法识别的历史记录。",
+    )
+    .await?;
+    parse_harness_history(&session_id, history)
 }
 
 pub async fn harness_cancel(state: tauri::State<'_, ChatState>) -> Result<(), String> {
@@ -1625,11 +2290,15 @@ pub fn cancel_harness_stream(state: &ChatState) {
 #[cfg(test)]
 mod tests {
     use super::{
-        api_completion_url, api_request_messages, drain_sse_records, finish_api_request,
-        finish_harness_stream, finish_sse_records, is_current_api_request,
-        is_current_harness_stream, owns_api_request, sse_record_payload, ApiMessage, ApiPricing,
-        ApiUsage, ChatState, HarnessStreamCancellation, Usage, Utf8StreamDecoder,
-        MAX_API_RATE_PER_MILLION, MAX_API_REQUEST_CONTEXT_BYTES, MAX_HARNESS_MESSAGE_BYTES,
+        api_completion_url, api_request_messages, bridge_token_acl_is_private,
+        drain_bounded_harness_sse_records, drain_sse_records, finish_api_request,
+        finish_bounded_harness_sse_records, finish_harness_stream, finish_sse_records,
+        is_current_api_request, is_current_harness_stream, owns_api_request, parse_bridge_event,
+        parse_harness_connection, parse_harness_history, sse_record_payload, ApiMessage,
+        ApiPricing, ApiUsage, ChatEvent, ChatState, HarnessConnection, HarnessHistoryMessage,
+        HarnessHistoryResponse, HarnessStreamCancellation, Usage, Utf8StreamDecoder,
+        MAX_API_RATE_PER_MILLION, MAX_API_REQUEST_CONTEXT_BYTES, MAX_HARNESS_EVENT_TEXT_BYTES,
+        MAX_HARNESS_MESSAGE_BYTES, MAX_HARNESS_SSE_BUFFER_BYTES, MAX_HARNESS_SSE_EVENT_BYTES,
     };
     use crate::api_persistence::EncryptedJsonStore;
     use tokio::sync::oneshot;
@@ -1664,6 +2333,182 @@ mod tests {
         buffer.push_str("data: terminal\r\r");
         assert_eq!(finish_sse_records(&mut buffer), ["data: terminal"]);
         assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn harness_sse_enforces_bounded_retention_and_complete_event_limits() {
+        let mut incomplete = String::new();
+        assert!(drain_bounded_harness_sse_records(
+            &mut incomplete,
+            &format!("data: {}", "x".repeat(MAX_HARNESS_SSE_BUFFER_BYTES)),
+        )
+        .is_err());
+        // A complete final message may be larger than the retained incomplete
+        // buffer, as long as it fits the protocol's response/event limit.
+        let mut complete = String::new();
+        let payload = "x".repeat(MAX_HARNESS_SSE_BUFFER_BYTES + 1);
+        let record = format!("data: {payload}\n\n");
+        let records = drain_bounded_harness_sse_records(&mut complete, &record)
+            .expect("complete bounded record");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].len(), record.len() - 2);
+        assert!(complete.is_empty());
+
+        let mut oversized = String::new();
+        let record = format!("data: {}\n\n", "x".repeat(MAX_HARNESS_SSE_EVENT_BYTES));
+        assert!(drain_bounded_harness_sse_records(&mut oversized, &record).is_err());
+
+        let mut eof_tail = format!("data: {}", "x".repeat(MAX_HARNESS_SSE_BUFFER_BYTES + 1));
+        assert!(finish_bounded_harness_sse_records(&mut eof_tail).is_err());
+    }
+
+    #[test]
+    fn bridge_sse_events_are_closed_typed_and_origin_stamped_by_native_code() {
+        let session_id = "wallpaper-session";
+        assert!(matches!(
+            parse_bridge_event(r#"{"type":"delta","text":"鲸鱼"}"#, session_id),
+            Some(ChatEvent::Delta { text }) if text == "鲸鱼"
+        ));
+        assert!(matches!(
+            parse_bridge_event(
+                r#"{"type":"approval-required","sessionId":"wallpaper-session","summary":"工具需要批准"}"#,
+                session_id,
+            ),
+            Some(ChatEvent::ApprovalRequired { session_id: event_session_id, summary })
+                if event_session_id == session_id && summary == "工具需要批准"
+        ));
+        assert!(parse_bridge_event(
+            r#"{"type":"delta","text":"x","backend":"deepseek-api"}"#,
+            session_id,
+        )
+        .is_none());
+        assert!(
+            parse_bridge_event(r#"{"type":"status","activity":"forged"}"#, session_id,).is_none()
+        );
+        assert!(parse_bridge_event(
+            r#"{"type":"approval-required","sessionId":"other-session","summary":"工具需要批准"}"#,
+            session_id,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn bridge_sse_events_reject_oversized_text_and_non_finite_costs() {
+        let session_id = "wallpaper-session";
+        let oversized = format!(
+            r#"{{"type":"delta","text":"{}"}}"#,
+            "x".repeat(MAX_HARNESS_EVENT_TEXT_BYTES + 1)
+        );
+        assert!(parse_bridge_event(&oversized, session_id).is_none());
+        assert!(matches!(
+            parse_bridge_event(
+                r#"{"type":"usage","input":10,"output":2,"cacheRead":50,"cost":1.5}"#,
+                session_id,
+            ),
+            Some(ChatEvent::Usage {
+                input: 10,
+                output: 2,
+                cache_read: Some(10),
+                cost: Some(1.5),
+                ..
+            })
+        ));
+        assert!(parse_bridge_event(
+            r#"{"type":"usage","input":10,"output":2,"cost":1e999}"#,
+            session_id,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn bridge_non_streaming_responses_are_closed_typed_and_bounded() {
+        assert!(parse_harness_connection(HarnessConnection {
+            session_id: "wallpaper-session".into(),
+            status: "idle".into(),
+            provider: Some("deepseek".into()),
+            model: Some("deepseek-chat".into()),
+        })
+        .is_ok());
+        for invalid_id in ["", "../outside", "has/control", &"x".repeat(201)] {
+            assert!(parse_harness_connection(HarnessConnection {
+                session_id: invalid_id.into(),
+                status: "idle".into(),
+                provider: None,
+                model: None,
+            })
+            .is_err());
+        }
+        assert!(parse_harness_connection(HarnessConnection {
+            session_id: "wallpaper-session".into(),
+            status: "waiting-for-tool".into(),
+            provider: None,
+            model: None,
+        })
+        .is_ok());
+        assert!(parse_harness_connection(HarnessConnection {
+            session_id: "wallpaper-session".into(),
+            status: "contains\ncontrol".into(),
+            provider: None,
+            model: None,
+        })
+        .is_err());
+
+        let valid = HarnessHistoryResponse {
+            session_id: "wallpaper-session".into(),
+            messages: vec![HarnessHistoryMessage {
+                id: "message-1".into(),
+                role: "assistant".into(),
+                content: "鲸鱼回复".into(),
+            }],
+        };
+        let parsed = parse_harness_history("wallpaper-session", valid).expect("valid history");
+        assert_eq!(parsed["messages"][0]["content"], "鲸鱼回复");
+        assert!(parse_harness_history(
+            "wallpaper-session",
+            HarnessHistoryResponse {
+                session_id: "other-session".into(),
+                messages: vec![],
+            },
+        )
+        .is_err());
+        assert!(parse_harness_history(
+            "wallpaper-session",
+            HarnessHistoryResponse {
+                session_id: "wallpaper-session".into(),
+                messages: vec![HarnessHistoryMessage {
+                    id: "message-1".into(),
+                    role: "system".into(),
+                    content: "not a renderer role".into(),
+                }],
+            },
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn bridge_token_acl_policy_requires_one_private_full_control_allow_ace() {
+        assert!(bridge_token_acl_is_private(
+            true,
+            true,
+            1,
+            true,
+            0,
+            0x001F_01FF,
+            0x001F_01FF,
+            true,
+        ));
+        for rejected in [
+            bridge_token_acl_is_private(false, true, 1, true, 0, 7, 7, true),
+            bridge_token_acl_is_private(true, false, 1, true, 0, 7, 7, true),
+            bridge_token_acl_is_private(true, true, 0, true, 0, 7, 7, true),
+            bridge_token_acl_is_private(true, true, 2, true, 0, 7, 7, true),
+            bridge_token_acl_is_private(true, true, 1, false, 0, 7, 7, true),
+            bridge_token_acl_is_private(true, true, 1, true, 16, 7, 7, true),
+            bridge_token_acl_is_private(true, true, 1, true, 0, 1, 7, true),
+            bridge_token_acl_is_private(true, true, 1, true, 0, 7, 7, false),
+        ] {
+            assert!(!rejected);
+        }
     }
 
     #[test]

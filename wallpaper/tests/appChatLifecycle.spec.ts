@@ -36,7 +36,13 @@ describe('App chat lifecycle isolation', () => {
   })
 
   it('keeps Harness selected and supplies a controlled disconnected state', async () => {
-    const { HARNESS_DISCONNECTED_ERROR_PREFIX, canAutoSelectHarness, harnessAvailabilityPatch } = await import('../src/App.tsx')
+    const {
+      HARNESS_DISCONNECTED_ERROR_PREFIX,
+      canAutoSelectHarness,
+      canSelectBackend,
+      harnessAvailabilityPatch,
+      harnessSelectionUnavailableError,
+    } = await import('../src/App.tsx')
     const disconnected = harnessAvailabilityPatch('harness', 'offline')
 
     expect(disconnected).toMatchObject({ activity: 'idle' })
@@ -45,8 +51,15 @@ describe('App chat lifecycle isolation', () => {
     expect(harnessAvailabilityPatch('deepseek-web', 'offline')).toBeUndefined()
     expect(harnessAvailabilityPatch('harness', 'bridge-ready', disconnected?.error)).toEqual({ activity: 'idle', error: undefined })
     expect(canAutoSelectHarness('bridge-ready', 'deepseek-web', true)).toBe(true)
+    expect(canAutoSelectHarness('web-only', 'deepseek-web', true)).toBe(false)
     expect(canAutoSelectHarness('offline', 'harness', true)).toBe(false)
     expect(canAutoSelectHarness('offline', 'harness', false)).toBe(false)
+    expect(canSelectBackend('bridge-ready', 'harness')).toBe(true)
+    expect(canSelectBackend('web-only', 'harness')).toBe(false)
+    expect(canSelectBackend('offline', 'harness')).toBe(false)
+    expect(canSelectBackend('web-only', 'deepseek-api')).toBe(true)
+    expect(harnessSelectionUnavailableError('web-only')).toContain('未安装、未启动或不兼容')
+    expect(harnessSelectionUnavailableError('offline')).toContain('未能连接')
   })
 
   it('keeps an API adapter lifecycle stable while committing later request settings', async () => {

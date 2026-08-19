@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-appearance-resolve-asset"
+description = "Enables the appearance_resolve_asset command without any pre-configured scope."
+commands.allow = ["appearance_resolve_asset"]
+
+[[permission]]
+identifier = "deny-appearance-resolve-asset"
+description = "Denies the appearance_resolve_asset command without any pre-configured scope."
+commands.deny = ["appearance_resolve_asset"]

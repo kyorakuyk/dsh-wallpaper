@@ -53,14 +53,25 @@ describe('Harness bridge status contract', () => {
     expect(compatibleHarnessBridgeStatus(document)).toBeUndefined()
   })
 
-  it('does not promote an arbitrary successful status endpoint to bridge-ready', async () => {
+  it('uses an inspectable successful root response only as web-only, never as bridge-ready', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'unrelated-service' }) })
-      .mockResolvedValueOnce({ ok: true, type: 'opaque' })
+      .mockResolvedValueOnce({ ok: true })
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(fetchHarnessStatus('http://127.0.0.1:3080')).resolves.toEqual({ availability: 'web-only' })
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('fails closed when a browser fallback receives an opaque no-cors-style response', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 404 })
+      .mockResolvedValueOnce({ ok: false, type: 'opaque', status: 0 })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchHarnessStatus('http://127.0.0.1:3080')).resolves.toEqual({ availability: 'offline' })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[1]?.[1]).not.toMatchObject({ mode: 'no-cors' })
   })
 
   it('returns bridge-ready only after the full status document validates', async () => {

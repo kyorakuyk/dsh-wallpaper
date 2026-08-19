@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notify-appearance-changed"
+description = "Enables the notify_appearance_changed command without any pre-configured scope."
+commands.allow = ["notify_appearance_changed"]
+
+[[permission]]
+identifier = "deny-notify-appearance-changed"
+description = "Denies the notify_appearance_changed command without any pre-configured scope."
+commands.deny = ["notify_appearance_changed"]

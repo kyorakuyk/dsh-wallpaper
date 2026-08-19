@@ -1,6 +1,16 @@
 export type HarnessAvailability = 'offline' | 'web-only' | 'bridge-ready'
 export interface HarnessStatus { availability: HarnessAvailability; bridgeVersion?: string; model?: string; provider?: string; reasoningEffort?: string }
 
+/**
+ * A process listening on 3080 is not sufficient to create a wallpaper
+ * session.  Keep this small predicate as the single browser-side definition
+ * of Harness usability so prompts, automatic selection, and probe settling
+ * cannot accidentally disagree.
+ */
+export function isHarnessReady(availability: HarnessAvailability): boolean {
+  return availability === 'bridge-ready'
+}
+
 // Keep this browser-preview fallback aligned with the native monitor. A local
 // HTTP 200 is not enough to enable Harness: port 3080 may be DSH's regular
 // web UI, an older bridge, or an unrelated local service.
@@ -54,8 +64,13 @@ export async function fetchHarnessStatus(baseUrl = 'http://127.0.0.1:3080'): Pro
     }
   } catch { /* fall through */ }
   try {
-    const response = await fetch(baseUrl, { signal: AbortSignal.timeout(900), mode: 'no-cors' })
-    return response.type === 'opaque' || response.ok ? { availability: 'web-only' } : { availability: 'offline' }
+    // Do not use `no-cors` here. An opaque response proves neither the HTTP
+    // status nor the local process identity, so it must never turn a browser
+    // preview into a misleading "DSH online" state. Native builds use their
+    // direct Rust loopback probe instead; this fallback is intentionally
+    // conservative when the browser cannot inspect a cross-origin response.
+    const response = await fetch(baseUrl, { signal: AbortSignal.timeout(900) })
+    return response.ok ? { availability: 'web-only' } : { availability: 'offline' }
   } catch { return { availability: 'offline' } }
 }
 
@@ -69,15 +84,27 @@ export function monitorHarness(onChange: (status: HarnessStatus) => void, probe:
   const pollNow = async (): Promise<HarnessStatus> => {
     if (inFlight) return { availability: current }
     inFlight = true
-    const status = await probe()
-    inFlight = false
-    if (status.availability === 'offline') {
-      failures += 1; successes = 0
-      if (failures >= 3 && current !== 'offline') { current = 'offline'; onChange(status) }
-    } else {
+    let status: HarnessStatus
+    try {
+      status = await probe()
+    } catch {
+      // A custom preview probe is allowed to reject; preserve the same
+      // fail-closed behaviour as the built-in status fetcher.
+      status = { availability: 'offline' }
+    } finally {
+      inFlight = false
+    }
+    // Mirror the native monitor: only a compatible Bridge is a success.
+    // `web-only` is useful diagnostic state, but it is a failed Harness
+    // probe and therefore needs three consecutive observations before it can
+    // replace a previously ready Bridge.
+    if (isHarnessReady(status.availability)) {
       successes += 1; failures = 0
       if (successes >= 2 && current !== status.availability) { current = status.availability; onChange(status) }
       else if (current === status.availability) onChange(status)
+    } else {
+      failures += 1; successes = 0
+      if (failures >= 3 && current !== status.availability) { current = status.availability; onChange(status) }
     }
     return status
   }

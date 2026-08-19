@@ -13,6 +13,22 @@ use super::{
     ThemeSource,
 };
 
+// Keep the caller boundary with the commands that own the sensitive library
+// operations. Integration tests compile the appearance module independently
+// from the application's `lib.rs`, so this must not depend on a root-only
+// helper that would silently leave the command surface untested.
+fn require_appearance_settings(caller: &tauri::WebviewWindow) -> Result<(), String> {
+    (caller.label() == "settings")
+        .then_some(())
+        .ok_or_else(|| "该命令只允许设置中心调用。".into())
+}
+
+fn require_appearance_reader(caller: &tauri::WebviewWindow) -> Result<(), String> {
+    matches!(caller.label(), "background" | "settings")
+        .then_some(())
+        .ok_or_else(|| "该命令只允许壁纸或设置中心调用。".into())
+}
+
 pub struct AppearanceState {
     repository: Mutex<AppearanceRepository>,
     importer: Option<AppearanceImporter>,
@@ -358,6 +374,23 @@ impl AppearanceCommandError {
     }
 }
 
+impl From<String> for AppearanceCommandError {
+    fn from(_: String) -> Self {
+        // Caller identity failures deliberately do not expose native window
+        // labels or other process details to a renderer.
+        Self {
+            code: "APPEARANCE_FORBIDDEN",
+            message: "仅设置中心可以修改外观内容",
+        }
+    }
+}
+
+impl From<&str> for AppearanceCommandError {
+    fn from(_: &str) -> Self {
+        Self::from(String::new())
+    }
+}
+
 impl From<StoreError> for AppearanceCommandError {
     fn from(error: StoreError) -> Self {
         match error {
@@ -548,90 +581,112 @@ impl From<ImportResult> for ImportResultDto {
 
 #[tauri::command]
 pub(crate) fn appearance_get_state(
+    caller: tauri::WebviewWindow,
     state: State<'_, AppearanceState>,
 ) -> Result<AppearanceSnapshotDto, AppearanceCommandError> {
+    require_appearance_reader(&caller).map_err(AppearanceCommandError::from)?;
     state.get_state()
 }
 
 #[tauri::command]
 pub(crate) fn appearance_list_themes(
+    caller: tauri::WebviewWindow,
     state: State<'_, AppearanceState>,
 ) -> Result<Vec<ThemeSummaryDto>, AppearanceCommandError> {
+    require_appearance_settings(&caller).map_err(AppearanceCommandError::from)?;
     state.list_themes()
 }
 
 #[tauri::command]
 pub(crate) fn appearance_list_assets(
+    caller: tauri::WebviewWindow,
     state: State<'_, AppearanceState>,
     slot: Option<String>,
 ) -> Result<Vec<AssetSummaryDto>, AppearanceCommandError> {
+    require_appearance_settings(&caller).map_err(AppearanceCommandError::from)?;
     state.list_assets(slot.as_deref())
 }
 
 #[tauri::command]
 pub(crate) fn appearance_activate_theme(
+    caller: tauri::WebviewWindow,
     state: State<'_, AppearanceState>,
     id: String,
     version: String,
 ) -> Result<AppearanceSnapshotDto, AppearanceCommandError> {
+    require_appearance_settings(&caller).map_err(AppearanceCommandError::from)?;
     state.activate_theme(&id, &version)
 }
 
 #[tauri::command]
 pub(crate) fn appearance_set_override(
+    caller: tauri::WebviewWindow,
     state: State<'_, AppearanceState>,
     slot: String,
     asset_id: String,
 ) -> Result<AppearanceSnapshotDto, AppearanceCommandError> {
+    require_appearance_settings(&caller).map_err(AppearanceCommandError::from)?;
     state.set_override(&slot, &asset_id)
 }
 
 #[tauri::command]
 pub(crate) fn appearance_clear_override(
+    caller: tauri::WebviewWindow,
     state: State<'_, AppearanceState>,
     slot: Option<String>,
 ) -> Result<AppearanceSnapshotDto, AppearanceCommandError> {
+    require_appearance_settings(&caller).map_err(AppearanceCommandError::from)?;
     state.clear_override(slot.as_deref())
 }
 
 #[tauri::command]
 pub(crate) fn appearance_import_paths(
+    caller: tauri::WebviewWindow,
     state: State<'_, AppearanceState>,
     paths: Vec<String>,
 ) -> Result<ImportBatchDto, AppearanceCommandError> {
+    require_appearance_settings(&caller).map_err(AppearanceCommandError::from)?;
     state.import_paths(&paths)
 }
 
 #[tauri::command]
 pub(crate) fn appearance_classify_asset(
+    caller: tauri::WebviewWindow,
     state: State<'_, AppearanceState>,
     asset_id: String,
     slots: Vec<String>,
 ) -> Result<AssetSummaryDto, AppearanceCommandError> {
+    require_appearance_settings(&caller).map_err(AppearanceCommandError::from)?;
     state.classify_asset(&asset_id, &slots)
 }
 
 #[tauri::command]
 pub(crate) fn appearance_export_current_theme(
+    caller: tauri::WebviewWindow,
     state: State<'_, AppearanceState>,
     metadata: ExportThemeMetadataDto,
     destination: String,
 ) -> Result<ExportResult, AppearanceCommandError> {
+    require_appearance_settings(&caller).map_err(AppearanceCommandError::from)?;
     state.export_current_theme(metadata, &destination)
 }
 
 #[tauri::command]
 pub(crate) fn appearance_resolve_asset(
+    caller: tauri::WebviewWindow,
     state: State<'_, AppearanceState>,
     slot: String,
 ) -> Result<Option<ResolvedAssetDto>, AppearanceCommandError> {
+    require_appearance_reader(&caller).map_err(AppearanceCommandError::from)?;
     state.resolve_asset(&slot)
 }
 
 #[tauri::command]
 pub(crate) fn appearance_resolve_library_asset(
+    caller: tauri::WebviewWindow,
     state: State<'_, AppearanceState>,
     asset_id: String,
 ) -> Result<Option<ResolvedAssetDto>, AppearanceCommandError> {
+    require_appearance_reader(&caller).map_err(AppearanceCommandError::from)?;
     state.resolve_library_asset(&asset_id)
 }

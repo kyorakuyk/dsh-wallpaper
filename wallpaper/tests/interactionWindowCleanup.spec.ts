@@ -43,11 +43,16 @@ describe('legacy interaction window cleanup', () => {
     expect(labels).not.toContain('interaction')
   })
 
-  it('keeps the default capability scoped to the remaining native windows', async () => {
-    const capability = await readJson('src-tauri/capabilities/default.json') as { windows?: unknown }
+  it('keeps each capability scoped to one of the remaining native windows', async () => {
+    const [background, settings] = await Promise.all([
+      readJson('src-tauri/capabilities/background.json') as Promise<{ windows?: unknown }>,
+      readJson('src-tauri/capabilities/settings.json') as Promise<{ windows?: unknown }>,
+    ])
 
-    expect(capability.windows).toStrictEqual(['background', 'settings'])
-    expect(capability.windows).not.toContain('interaction')
+    expect(background.windows).toStrictEqual(['background'])
+    expect(settings.windows).toStrictEqual(['settings'])
+    expect(background.windows).not.toContain('interaction')
+    expect(settings.windows).not.toContain('interaction')
   })
 
   it('does not recreate or look up an independent interaction WebView window', async () => {

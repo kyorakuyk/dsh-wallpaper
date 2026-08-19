@@ -9,12 +9,51 @@ use app_core::{Activity, AppAction, AppCore, AppSnapshot, BackendMode, HarnessAv
 use std::sync::{OnceLock, RwLock};
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, EventTarget, Manager};
 
 /// Only the settings surface is allowed to request the API-key prompt. This
 /// is a defense in depth check: it prevents the desktop wallpaper WebView (or
 /// a future WebView) from opening a native credential capture dialog.
 const SETTINGS_WINDOW_LABEL: &str = "settings";
+
+/// The WorkerW-backed wallpaper WebView is the only surface that may send,
+/// cancel, or read chat conversations. Capabilities provide the primary ACL;
+/// this guard makes that boundary survive an accidental future capability
+/// change or a newly added WebView.
+const BACKGROUND_WINDOW_LABEL: &str = "background";
+
+/// Settings are always authored by the dedicated settings surface and then
+/// delivered to the wallpaper by Rust.  This prevents a renderer from
+/// selecting an arbitrary event target through `core:event:emit_to`.
+const SETTINGS_CHANGED_EVENT: &str = "settings-changed";
+const APPEARANCE_CHANGED_EVENT: &str = "appearance-changed";
+
+fn require_background(caller: &tauri::WebviewWindow) -> Result<(), String> {
+    if caller.label() == BACKGROUND_WINDOW_LABEL {
+        Ok(())
+    } else {
+        Err("该命令只允许壁纸宿主调用。".into())
+    }
+}
+
+fn require_settings(caller: &tauri::WebviewWindow) -> Result<(), String> {
+    if caller.label() == SETTINGS_WINDOW_LABEL {
+        Ok(())
+    } else {
+        Err("该命令只允许设置中心调用。".into())
+    }
+}
+
+/// These two commands expose no conversation body or system-setting write:
+/// the settings center needs a current runtime snapshot, and the wallpaper's
+/// experimental DeepSeek entry needs to launch one fixed public URL.  Keep
+/// even that small shared surface restricted to the two declared WebViews.
+fn require_wallpaper_surface(caller: &tauri::WebviewWindow) -> Result<(), String> {
+    match caller.label() {
+        BACKGROUND_WINDOW_LABEL | SETTINGS_WINDOW_LABEL => Ok(()),
+        _ => Err("该命令只允许壁纸或设置中心调用。".into()),
+    }
+}
 
 /// `keyring`'s Windows backend stores string secrets in a Generic Credential
 /// as a UTF-16 little-endian byte blob. CredUI returns UTF-16 code units, so
@@ -50,7 +89,11 @@ fn secure_zero_bytes(secret: &mut [u8]) {
 }
 
 fn emit_app_snapshot(app: &tauri::AppHandle, snapshot: &AppSnapshot) {
-    let _ = app.emit("app-snapshot", snapshot);
+    let _ = app.emit_to(
+        EventTarget::webview_window(BACKGROUND_WINDOW_LABEL),
+        "app-snapshot",
+        snapshot,
+    );
 }
 
 fn dispatch_ui_action(app: &tauri::AppHandle, action: AppAction, _request_focus: bool) {
@@ -94,27 +137,35 @@ fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_app_snapshot(state: tauri::State<'_, AppCore>) -> AppSnapshot {
-    state.snapshot()
+fn get_app_snapshot(
+    caller: tauri::WebviewWindow,
+    state: tauri::State<'_, AppCore>,
+) -> Result<AppSnapshot, String> {
+    require_wallpaper_surface(&caller)?;
+    Ok(state.snapshot())
 }
 
 #[tauri::command]
 fn set_interaction_enabled(
+    caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppCore>,
     enabled: bool,
-) -> AppSnapshot {
+) -> Result<AppSnapshot, String> {
+    require_settings(&caller)?;
     let snapshot = state.dispatch(AppAction::SetInteractionEnabled(enabled));
     emit_app_snapshot(&app, &snapshot);
-    snapshot
+    Ok(snapshot)
 }
 
 #[tauri::command]
 fn select_backend(
+    caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppCore>,
     backend: String,
 ) -> Result<AppSnapshot, String> {
+    require_background(&caller)?;
     let backend = match backend.as_str() {
         "deepseek-web" => BackendMode::DeepseekWeb,
         "deepseek-api" => BackendMode::DeepseekApi,
@@ -128,12 +179,14 @@ fn select_backend(
 
 #[tauri::command]
 fn dispatch_app_action(
+    caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppCore>,
     action: String,
     play_wake: Option<bool>,
     value: Option<String>,
 ) -> Result<AppSnapshot, String> {
+    require_background(&caller)?;
     let action = match action.as_str() {
         "boot-ready" => AppAction::BootReady {
             play_wake: play_wake.unwrap_or(true),
@@ -175,19 +228,56 @@ fn dispatch_app_action(
 }
 
 #[tauri::command]
-async fn set_lock_screen_enabled(app: tauri::AppHandle, enabled: bool) -> Result<String, String> {
+fn publish_settings(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    settings: serde_json::Value,
+) -> Result<(), String> {
+    require_settings(&caller)?;
+    let _ = app.emit_to(
+        EventTarget::webview_window(BACKGROUND_WINDOW_LABEL),
+        SETTINGS_CHANGED_EVENT,
+        settings,
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn notify_appearance_changed(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    require_settings(&caller)?;
+    let _ = app.emit_to(
+        EventTarget::webview_window(BACKGROUND_WINDOW_LABEL),
+        APPEARANCE_CHANGED_EVENT,
+        (),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_lock_screen_enabled(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<String, String> {
+    require_settings(&caller)?;
     windows_integration::set_lock_screen(&app, enabled).await
 }
 
 #[tauri::command]
 fn get_lock_screen_diagnostics(
+    caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
 ) -> Result<windows_integration::LockScreenDiagnostics, String> {
+    require_settings(&caller)?;
     windows_integration::lock_screen_diagnostics(&app)
 }
 
 #[tauri::command]
-fn set_autostart(enabled: bool) -> Result<(), String> {
+fn set_autostart(caller: tauri::WebviewWindow, enabled: bool) -> Result<(), String> {
+    require_settings(&caller)?;
     #[cfg(windows)]
     {
         use std::process::Command;
@@ -232,7 +322,8 @@ struct TranslucentTbStatus {
 }
 
 #[tauri::command]
-fn translucent_tb_status() -> TranslucentTbStatus {
+fn translucent_tb_status(caller: tauri::WebviewWindow) -> Result<TranslucentTbStatus, String> {
+    require_settings(&caller)?;
     #[cfg(windows)]
     {
         let running = std::process::Command::new("tasklist")
@@ -252,7 +343,7 @@ fn translucent_tb_status() -> TranslucentTbStatus {
         let packaged = std::process::Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", "if (Get-AppxPackage -Name TranslucentTB -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"])
             .status().ok().is_some_and(|status| status.success());
-        return TranslucentTbStatus {
+        return Ok(TranslucentTbStatus {
             installed: alias || packaged,
             running,
             source: if alias {
@@ -262,18 +353,19 @@ fn translucent_tb_status() -> TranslucentTbStatus {
             } else {
                 None
             },
-        };
+        });
     }
     #[cfg(not(windows))]
-    TranslucentTbStatus {
+    Ok(TranslucentTbStatus {
         installed: false,
         running: false,
         source: None,
-    }
+    })
 }
 
 #[tauri::command]
-fn launch_translucent_tb() -> Result<(), String> {
+fn launch_translucent_tb(caller: tauri::WebviewWindow) -> Result<(), String> {
+    require_settings(&caller)?;
     std::process::Command::new("ttb.exe")
         .spawn()
         .map(|_| ())
@@ -283,7 +375,8 @@ fn launch_translucent_tb() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn open_translucent_tb_install() -> Result<(), String> {
+fn open_translucent_tb_install(caller: tauri::WebviewWindow) -> Result<(), String> {
+    require_settings(&caller)?;
     // `explorer.exe <uri>` may treat the Store URI as a filesystem path and
     // open Documents instead. Ask ShellExecute to resolve the URI protocol.
     #[cfg(windows)]
@@ -466,7 +559,8 @@ mod api_credential_tests {
 }
 
 #[tauri::command]
-fn show_deepseek_login(app: tauri::AppHandle) -> Result<(), String> {
+fn show_deepseek_login(caller: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
+    require_wallpaper_surface(&caller)?;
     // A remote WebView2 created inside the wallpaper process can block the Tao
     // event loop while Chromium initializes or the page hangs. Keep third-party
     // login isolated from the wallpaper host until the bridge owns a dedicated
@@ -480,7 +574,8 @@ fn show_deepseek_login(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn start_settings_drag(app: tauri::AppHandle) -> Result<(), String> {
+fn start_settings_drag(caller: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
+    require_settings(&caller)?;
     app.get_webview_window("settings")
         .ok_or_else(|| "settings window missing".to_string())?
         .start_dragging()
@@ -488,7 +583,8 @@ fn start_settings_drag(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn hide_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+fn hide_settings_window(caller: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
+    require_settings(&caller)?;
     app.get_webview_window("settings")
         .ok_or_else(|| "settings window missing".to_string())?
         .hide()
@@ -496,22 +592,26 @@ fn hide_settings_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn begin_interaction_region_session() -> Result<u64, String> {
+fn begin_interaction_region_session(caller: tauri::WebviewWindow) -> Result<u64, String> {
+    require_background(&caller)?;
     windows_integration::begin_interaction_region_session()
 }
 
 #[tauri::command]
 fn update_interaction_regions(
+    caller: tauri::WebviewWindow,
     regions: Vec<windows_integration::InteractionRegionInput>,
     scale_factor: f64,
     session: u64,
     revision: u64,
 ) -> Result<windows_integration::InteractionRegionUpdateResult, String> {
+    require_background(&caller)?;
     windows_integration::update_interaction_regions(regions, scale_factor, session, revision)
 }
 
 #[tauri::command]
 async fn send_chat(
+    caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
     state: tauri::State<'_, chat::ChatState>,
     mode: String,
@@ -523,6 +623,7 @@ async fn send_chat(
     price_input_per_million: Option<f64>,
     price_output_per_million: Option<f64>,
 ) -> Result<Option<String>, String> {
+    require_background(&caller)?;
     match mode.as_str() {
         "deepseek-api" => chat::send_api(
             app,
@@ -544,14 +645,21 @@ async fn send_chat(
 
 #[tauri::command]
 fn api_history(
+    caller: tauri::WebviewWindow,
     state: tauri::State<'_, chat::ChatState>,
     conversation_id: String,
 ) -> Result<serde_json::Value, String> {
+    require_background(&caller)?;
     chat::api_history(state.inner(), &conversation_id)
 }
 
 #[tauri::command]
-async fn cancel_chat(state: tauri::State<'_, chat::ChatState>, mode: String) -> Result<(), String> {
+async fn cancel_chat(
+    caller: tauri::WebviewWindow,
+    state: tauri::State<'_, chat::ChatState>,
+    mode: String,
+) -> Result<(), String> {
+    require_background(&caller)?;
     if mode == "harness" {
         chat::harness_cancel(state).await
     } else {
@@ -562,18 +670,22 @@ async fn cancel_chat(state: tauri::State<'_, chat::ChatState>, mode: String) -> 
 
 #[tauri::command]
 async fn connect_harness(
+    caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
     state: tauri::State<'_, chat::ChatState>,
     resume_session_id: Option<String>,
     connection_id: String,
 ) -> Result<String, String> {
+    require_background(&caller)?;
     chat::harness_connect(app, state, resume_session_id, connection_id).await
 }
 
 #[tauri::command]
 async fn harness_history(
+    caller: tauri::WebviewWindow,
     state: tauri::State<'_, chat::ChatState>,
 ) -> Result<serde_json::Value, String> {
+    require_background(&caller)?;
     chat::harness_history(state).await
 }
 
@@ -651,6 +763,11 @@ fn compatible_harness_bridge_status(data: &serde_json::Value) -> Option<serde_js
 
 async fn fetch_harness_status() -> serde_json::Value {
     let client = match reqwest::Client::builder()
+        // Status probing decides whether the UI exposes Harness mode. It must
+        // be a direct loopback probe too: proxy configuration must not be able
+        // to spoof a ready Bridge or route a future authenticated probe away
+        // from the local DSH process.
+        .no_proxy()
         .timeout(std::time::Duration::from_millis(1200))
         .build()
     {
@@ -670,15 +787,39 @@ async fn fetch_harness_status() -> serde_json::Value {
             }
         }
     }
-    match client.get("http://127.0.0.1:3080/").send().await {
-        Ok(_) => serde_json::json!({ "availability": "web-only" }),
-        Err(_) => serde_json::json!({ "availability": "offline" }),
+    let root_status = client
+        .get("http://127.0.0.1:3080/")
+        .send()
+        .await
+        .ok()
+        .map(|response| response.status());
+    match root_probe_availability(root_status) {
+        // A root endpoint proves only that an HTTP service accepted a
+        // successful request. Authentication failures and error pages must
+        // not turn an unrelated process on 3080 into a misleading “DSH
+        // online” state.
+        HarnessAvailability::WebOnly => serde_json::json!({ "availability": "web-only" }),
+        HarnessAvailability::Offline | HarnessAvailability::BridgeReady => {
+            serde_json::json!({ "availability": "offline" })
+        }
+    }
+}
+
+/// A root-page response is diagnostic only. It is deliberately not part of
+/// the compatible Bridge validation above: any non-2xx response (including a
+/// gateway, auth challenge, or unrelated service error) must be treated as
+/// offline rather than an apparently usable local DSH instance.
+fn root_probe_availability(status: Option<reqwest::StatusCode>) -> HarnessAvailability {
+    match status {
+        Some(status) if status.is_success() => HarnessAvailability::WebOnly,
+        _ => HarnessAvailability::Offline,
     }
 }
 
 #[cfg(test)]
 mod harness_status_tests {
-    use super::compatible_harness_bridge_status;
+    use super::{compatible_harness_bridge_status, root_probe_availability};
+    use crate::app_core::HarnessAvailability;
     use serde_json::json;
 
     fn valid_status() -> serde_json::Value {
@@ -783,14 +924,38 @@ mod harness_status_tests {
         assert!(status.get("provider").is_none());
         assert!(status.get("reasoningEffort").is_none());
     }
+
+    #[test]
+    fn root_probe_requires_an_inspectable_success_status() {
+        assert_eq!(
+            root_probe_availability(Some(reqwest::StatusCode::OK)),
+            HarnessAvailability::WebOnly
+        );
+        assert_eq!(
+            root_probe_availability(Some(reqwest::StatusCode::NO_CONTENT)),
+            HarnessAvailability::WebOnly
+        );
+        for status in [
+            None,
+            Some(reqwest::StatusCode::UNAUTHORIZED),
+            Some(reqwest::StatusCode::NOT_FOUND),
+            Some(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
+        ] {
+            assert_eq!(
+                root_probe_availability(status),
+                HarnessAvailability::Offline
+            );
+        }
+    }
 }
 
 #[tauri::command]
-fn probe_harness() -> serde_json::Value {
-    harness_status_cache()
+fn probe_harness(caller: tauri::WebviewWindow) -> Result<serde_json::Value, String> {
+    require_background(&caller)?;
+    Ok(harness_status_cache()
         .read()
         .map(|status| status.clone())
-        .unwrap_or_else(|_| serde_json::json!({ "availability": "offline" }))
+        .unwrap_or_else(|_| serde_json::json!({ "availability": "offline" })))
 }
 
 fn start_harness_monitor(app: tauri::AppHandle) {
@@ -811,7 +976,12 @@ fn start_harness_monitor(app: tauri::AppHandle) {
                 Some("web-only") => HarnessAvailability::WebOnly,
                 _ => HarnessAvailability::Offline,
             };
-            if observed == HarnessAvailability::BridgeReady {
+            // A compatible Bridge is the only successful probe. `web-only`
+            // remains useful diagnostic information, but must settle through
+            // the same failure path as offline so a stale ready state cannot
+            // keep Harness selectable after the bridge disappears.
+            let bridge_ready = observed == HarnessAvailability::BridgeReady;
+            if bridge_ready {
                 consecutive_successes = consecutive_successes.saturating_add(1);
                 consecutive_failures = 0;
                 if consecutive_successes >= 2 && last != observed {
@@ -834,11 +1004,7 @@ fn start_harness_monitor(app: tauri::AppHandle) {
                     }
                 }
             }
-            let delay = if last == HarnessAvailability::Offline {
-                2
-            } else {
-                5
-            };
+            let delay = if !bridge_ready { 2 } else { 5 };
             tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
         }
     });
@@ -859,6 +1025,12 @@ pub fn run() {
     let appearance_exporter = appearance::AppearanceExporter::new(appearance_paths.clone())
         .expect("failed to initialize appearance exporter");
     tauri::Builder::default()
+        // This must be registered before plugins that start resident services
+        // or create native windows. A second launch then exits before it can
+        // create another WorkerW host or duplicate tray icon.
+        .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {
+            log::info!("second dsh-wallpaper launch redirected to existing instance");
+        }))
         .plugin(tauri_plugin_log::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppCore::default())
@@ -874,6 +1046,8 @@ pub fn run() {
             set_interaction_enabled,
             select_backend,
             dispatch_app_action,
+            publish_settings,
+            notify_appearance_changed,
             set_lock_screen_enabled,
             get_lock_screen_diagnostics,
             set_autostart,
@@ -947,7 +1121,11 @@ pub fn run() {
                         dispatch_ui_action(app, AppAction::SetInteractionEnabled(false), false)
                     }
                     "deepseek-web" | "deepseek-api" | "harness" => {
-                        let _ = app.emit("tray-backend", event.id().as_ref());
+                        let _ = app.emit_to(
+                            EventTarget::webview_window(BACKGROUND_WINDOW_LABEL),
+                            "tray-backend",
+                            event.id().as_ref(),
+                        );
                     }
                     "settings" => {
                         dispatch_tray_ui_action(app, AppAction::OpenSettings);

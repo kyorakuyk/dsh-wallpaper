@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-harness-history"
+description = "Enables the harness_history command without any pre-configured scope."
+commands.allow = ["harness_history"]
+
+[[permission]]
+identifier = "deny-harness-history"
+description = "Denies the harness_history command without any pre-configured scope."
+commands.deny = ["harness_history"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-api-history"
+description = "Enables the api_history command without any pre-configured scope."
+commands.allow = ["api_history"]
+
+[[permission]]
+identifier = "deny-api-history"
+description = "Denies the api_history command without any pre-configured scope."
+commands.deny = ["api_history"]

@@ -37,7 +37,7 @@ export interface NativeRuntime {
   connectHarness(resumeSessionId: string | undefined, connectionId: string): Promise<string>
   harnessHistory(): Promise<ChatMessage[]>
   apiHistory(conversationId: string): Promise<ChatMessage[]>
-  listenTray(listener: (event: { type: 'backend'; backend: BackendMode } | { type: 'settings' }) => void): Promise<() => void>
+  listenTray(listener: (event: { type: 'backend'; backend: BackendMode }) => void): Promise<() => void>
   probeHarness(): Promise<HarnessStatus>
 }
 
@@ -149,8 +149,7 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) return () => undefined
     const { listen } = await import('@tauri-apps/api/event')
     const backendDispose = await listen<BackendMode>('tray-backend', (event) => listener({ type: 'backend', backend: event.payload }))
-    const settingsDispose = await listen('tray-settings', () => listener({ type: 'settings' }))
-    return () => { backendDispose(); settingsDispose() }
+    return () => backendDispose()
   },
   async probeHarness() {
     if (!await tauriAvailable()) return { availability: 'offline' }

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-translucent-tb-install"
+description = "Enables the open_translucent_tb_install command without any pre-configured scope."
+commands.allow = ["open_translucent_tb_install"]
+
+[[permission]]
+identifier = "deny-open-translucent-tb-install"
+description = "Denies the open_translucent_tb_install command without any pre-configured scope."
+commands.deny = ["open_translucent_tb_install"]

@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import { emit } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import { appCoreClient } from '../runtime/appCoreClient.ts'
@@ -35,10 +34,11 @@ export function SettingsWindow() {
     settingsRef.current = next
     setSettings(next)
     saveSettings(next)
-    // Every Tauri WebView owns an isolated browser storage partition. Carry
-    // the new value with the event so the background WebView never rereads its
-    // own stale localStorage copy.
-    void emit('settings-changed', next)
+    // Every Tauri WebView owns an isolated browser storage partition. Route
+    // settings through Rust so this renderer cannot emit to arbitrary Tauri
+    // event targets; Rust delivers the snapshot only to the background host.
+    void invoke('publish_settings', { settings: next })
+      .catch((error) => setNotice(`设置同步失败：${String(error)}`))
   }
 
   useEffect(() => {
@@ -128,11 +128,11 @@ export function SettingsWindow() {
   }
   const selectAppearance = async (slot: AppearanceSlot, assetId: string) => {
     setAppearanceBusy(true)
-    try { setAppearanceOverrides((await nativeAppearance.setOverride(slot, assetId)).overrides); void emit('appearance-changed') } catch (error) { setNotice(`应用素材失败：${String(error)}`) } finally { setAppearanceBusy(false) }
+    try { setAppearanceOverrides((await nativeAppearance.setOverride(slot, assetId)).overrides); void invoke('notify_appearance_changed').catch((error) => setNotice(`外观同步失败：${String(error)}`)) } catch (error) { setNotice(`应用素材失败：${String(error)}`) } finally { setAppearanceBusy(false) }
   }
   const clearAppearance = async (slot: AppearanceSlot) => {
     setAppearanceBusy(true)
-    try { setAppearanceOverrides((await nativeAppearance.clearOverride(slot)).overrides); void emit('appearance-changed') } catch (error) { setNotice(`恢复默认失败：${String(error)}`) } finally { setAppearanceBusy(false) }
+    try { setAppearanceOverrides((await nativeAppearance.clearOverride(slot)).overrides); void invoke('notify_appearance_changed').catch((error) => setNotice(`外观同步失败：${String(error)}`)) } catch (error) { setNotice(`恢复默认失败：${String(error)}`) } finally { setAppearanceBusy(false) }
   }
 
   return <main className="settings-window">

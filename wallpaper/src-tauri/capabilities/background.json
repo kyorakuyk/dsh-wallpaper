@@ -1,0 +1,23 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "background",
+  "description": "WorkerW wallpaper host and its private chat surface",
+  "windows": ["background"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-get-app-snapshot",
+    "allow-select-backend",
+    "allow-dispatch-app-action",
+    "allow-show-deepseek-login",
+    "allow-begin-interaction-region-session",
+    "allow-update-interaction-regions",
+    "allow-send-chat",
+    "allow-cancel-chat",
+    "allow-connect-harness",
+    "allow-harness-history",
+    "allow-api-history",
+    "allow-probe-harness",
+    "allow-appearance-resolve-asset"
+  ]
+}

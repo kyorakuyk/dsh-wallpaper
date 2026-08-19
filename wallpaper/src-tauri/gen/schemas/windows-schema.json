@@ -177,6 +177,426 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the api_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-api-history",
+          "markdownDescription": "Enables the api_history command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the appearance_activate_theme command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-appearance-activate-theme",
+          "markdownDescription": "Enables the appearance_activate_theme command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the appearance_classify_asset command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-appearance-classify-asset",
+          "markdownDescription": "Enables the appearance_classify_asset command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the appearance_clear_override command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-appearance-clear-override",
+          "markdownDescription": "Enables the appearance_clear_override command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the appearance_export_current_theme command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-appearance-export-current-theme",
+          "markdownDescription": "Enables the appearance_export_current_theme command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the appearance_get_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-appearance-get-state",
+          "markdownDescription": "Enables the appearance_get_state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the appearance_import_paths command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-appearance-import-paths",
+          "markdownDescription": "Enables the appearance_import_paths command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the appearance_list_assets command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-appearance-list-assets",
+          "markdownDescription": "Enables the appearance_list_assets command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the appearance_list_themes command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-appearance-list-themes",
+          "markdownDescription": "Enables the appearance_list_themes command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the appearance_resolve_asset command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-appearance-resolve-asset",
+          "markdownDescription": "Enables the appearance_resolve_asset command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the appearance_resolve_library_asset command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-appearance-resolve-library-asset",
+          "markdownDescription": "Enables the appearance_resolve_library_asset command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the appearance_set_override command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-appearance-set-override",
+          "markdownDescription": "Enables the appearance_set_override command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the begin_interaction_region_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-begin-interaction-region-session",
+          "markdownDescription": "Enables the begin_interaction_region_session command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the cancel_chat command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-cancel-chat",
+          "markdownDescription": "Enables the cancel_chat command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the connect_harness command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-connect-harness",
+          "markdownDescription": "Enables the connect_harness command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the dispatch_app_action command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-dispatch-app-action",
+          "markdownDescription": "Enables the dispatch_app_action command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_app_snapshot command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-app-snapshot",
+          "markdownDescription": "Enables the get_app_snapshot command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_lock_screen_diagnostics command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-lock-screen-diagnostics",
+          "markdownDescription": "Enables the get_lock_screen_diagnostics command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the harness_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-harness-history",
+          "markdownDescription": "Enables the harness_history command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the hide_settings_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-hide-settings-window",
+          "markdownDescription": "Enables the hide_settings_window command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the launch_translucent_tb command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-launch-translucent-tb",
+          "markdownDescription": "Enables the launch_translucent_tb command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notify_appearance_changed command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notify-appearance-changed",
+          "markdownDescription": "Enables the notify_appearance_changed command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_translucent_tb_install command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-translucent-tb-install",
+          "markdownDescription": "Enables the open_translucent_tb_install command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the probe_harness command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-probe-harness",
+          "markdownDescription": "Enables the probe_harness command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the prompt_for_api_key command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-prompt-for-api-key",
+          "markdownDescription": "Enables the prompt_for_api_key command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the publish_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-publish-settings",
+          "markdownDescription": "Enables the publish_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the select_backend command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-select-backend",
+          "markdownDescription": "Enables the select_backend command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the send_chat command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-send-chat",
+          "markdownDescription": "Enables the send_chat command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_autostart command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-autostart",
+          "markdownDescription": "Enables the set_autostart command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_interaction_enabled command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-interaction-enabled",
+          "markdownDescription": "Enables the set_interaction_enabled command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_lock_screen_enabled command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-lock-screen-enabled",
+          "markdownDescription": "Enables the set_lock_screen_enabled command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the show_deepseek_login command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-show-deepseek-login",
+          "markdownDescription": "Enables the show_deepseek_login command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the start_settings_drag command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-start-settings-drag",
+          "markdownDescription": "Enables the start_settings_drag command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the translucent_tb_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-translucent-tb-status",
+          "markdownDescription": "Enables the translucent_tb_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the update_interaction_regions command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-update-interaction-regions",
+          "markdownDescription": "Enables the update_interaction_regions command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the api_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-api-history",
+          "markdownDescription": "Denies the api_history command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the appearance_activate_theme command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-appearance-activate-theme",
+          "markdownDescription": "Denies the appearance_activate_theme command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the appearance_classify_asset command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-appearance-classify-asset",
+          "markdownDescription": "Denies the appearance_classify_asset command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the appearance_clear_override command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-appearance-clear-override",
+          "markdownDescription": "Denies the appearance_clear_override command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the appearance_export_current_theme command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-appearance-export-current-theme",
+          "markdownDescription": "Denies the appearance_export_current_theme command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the appearance_get_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-appearance-get-state",
+          "markdownDescription": "Denies the appearance_get_state command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the appearance_import_paths command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-appearance-import-paths",
+          "markdownDescription": "Denies the appearance_import_paths command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the appearance_list_assets command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-appearance-list-assets",
+          "markdownDescription": "Denies the appearance_list_assets command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the appearance_list_themes command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-appearance-list-themes",
+          "markdownDescription": "Denies the appearance_list_themes command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the appearance_resolve_asset command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-appearance-resolve-asset",
+          "markdownDescription": "Denies the appearance_resolve_asset command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the appearance_resolve_library_asset command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-appearance-resolve-library-asset",
+          "markdownDescription": "Denies the appearance_resolve_library_asset command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the appearance_set_override command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-appearance-set-override",
+          "markdownDescription": "Denies the appearance_set_override command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the begin_interaction_region_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-begin-interaction-region-session",
+          "markdownDescription": "Denies the begin_interaction_region_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the cancel_chat command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-cancel-chat",
+          "markdownDescription": "Denies the cancel_chat command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the connect_harness command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-connect-harness",
+          "markdownDescription": "Denies the connect_harness command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the dispatch_app_action command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-dispatch-app-action",
+          "markdownDescription": "Denies the dispatch_app_action command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_app_snapshot command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-app-snapshot",
+          "markdownDescription": "Denies the get_app_snapshot command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_lock_screen_diagnostics command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-lock-screen-diagnostics",
+          "markdownDescription": "Denies the get_lock_screen_diagnostics command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the harness_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-harness-history",
+          "markdownDescription": "Denies the harness_history command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the hide_settings_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-hide-settings-window",
+          "markdownDescription": "Denies the hide_settings_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the launch_translucent_tb command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-launch-translucent-tb",
+          "markdownDescription": "Denies the launch_translucent_tb command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notify_appearance_changed command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notify-appearance-changed",
+          "markdownDescription": "Denies the notify_appearance_changed command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_translucent_tb_install command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-translucent-tb-install",
+          "markdownDescription": "Denies the open_translucent_tb_install command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the probe_harness command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-probe-harness",
+          "markdownDescription": "Denies the probe_harness command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the prompt_for_api_key command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-prompt-for-api-key",
+          "markdownDescription": "Denies the prompt_for_api_key command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the publish_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-publish-settings",
+          "markdownDescription": "Denies the publish_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the select_backend command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-select-backend",
+          "markdownDescription": "Denies the select_backend command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the send_chat command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-send-chat",
+          "markdownDescription": "Denies the send_chat command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_autostart command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-autostart",
+          "markdownDescription": "Denies the set_autostart command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_interaction_enabled command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-interaction-enabled",
+          "markdownDescription": "Denies the set_interaction_enabled command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_lock_screen_enabled command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-lock-screen-enabled",
+          "markdownDescription": "Denies the set_lock_screen_enabled command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the show_deepseek_login command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-show-deepseek-login",
+          "markdownDescription": "Denies the show_deepseek_login command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the start_settings_drag command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-start-settings-drag",
+          "markdownDescription": "Denies the start_settings_drag command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the translucent_tb_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-translucent-tb-status",
+          "markdownDescription": "Denies the translucent_tb_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the update_interaction_regions command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-update-interaction-regions",
+          "markdownDescription": "Denies the update_interaction_regions command without any pre-configured scope."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

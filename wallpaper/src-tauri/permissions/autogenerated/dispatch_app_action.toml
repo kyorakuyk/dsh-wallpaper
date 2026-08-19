@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dispatch-app-action"
+description = "Enables the dispatch_app_action command without any pre-configured scope."
+commands.allow = ["dispatch_app_action"]
+
+[[permission]]
+identifier = "deny-dispatch-app-action"
+description = "Denies the dispatch_app_action command without any pre-configured scope."
+commands.deny = ["dispatch_app_action"]

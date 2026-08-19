@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-appearance-import-paths"
+description = "Enables the appearance_import_paths command without any pre-configured scope."
+commands.allow = ["appearance_import_paths"]
+
+[[permission]]
+identifier = "deny-appearance-import-paths"
+description = "Denies the appearance_import_paths command without any pre-configured scope."
+commands.deny = ["appearance_import_paths"]
