@@ -18,7 +18,27 @@ use crate::lock_screen_backup::{
 };
 
 #[cfg(windows)]
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{Emitter, EventTarget, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+
+/// The wallpaper host is the sole consumer of system, tray, and desktop
+/// workspace events.  Keep native notifications out of the settings WebView:
+/// it has no need to observe chat/session state or to receive a future event
+/// carrying privacy-sensitive desktop metadata.
+#[cfg(windows)]
+const BACKGROUND_WINDOW_LABEL: &str = "background";
+
+#[cfg(windows)]
+fn emit_to_background<S: serde::Serialize + Clone>(
+    app: &tauri::AppHandle,
+    event: &str,
+    payload: S,
+) {
+    let _ = app.emit_to(
+        EventTarget::webview_window(BACKGROUND_WINDOW_LABEL),
+        event,
+        payload,
+    );
+}
 
 #[cfg(windows)]
 use windows::{
@@ -252,7 +272,7 @@ fn publish_wallpaper_host_status(
                 WallpaperHostMode::Starting => {}
             }
             let snapshot = core.dispatch(AppAction::SetWallpaperHost(status));
-            let _ = app.emit("app-snapshot", &snapshot);
+            emit_to_background(app, "app-snapshot", &snapshot);
         }
     }
 }
@@ -1091,7 +1111,7 @@ pub fn register_session_events(app: &tauri::AppHandle) -> Result<(), String> {
             return Err("无法安装 Windows 会话消息处理器".into());
         }
     }
-    let _ = app.emit("system-session", "resume");
+    emit_to_background(app, "system-session", "resume");
     Ok(())
 }
 
@@ -1101,7 +1121,7 @@ fn dispatch_system_action(app: &tauri::AppHandle, action: AppAction) {
         return;
     };
     let snapshot = core.dispatch(action);
-    let _ = app.emit("app-snapshot", &snapshot);
+    emit_to_background(app, "app-snapshot", &snapshot);
 }
 
 #[cfg(windows)]
@@ -1118,22 +1138,22 @@ unsafe extern "system" fn session_subclass_proc(
         WM_WTSSESSION_CHANGE => match wparam.0 as u32 {
             WTS_SESSION_LOCK => {
                 dispatch_system_action(app, AppAction::Lock);
-                let _ = app.emit("system-session", "locked");
+                emit_to_background(app, "system-session", "locked");
             }
             WTS_SESSION_UNLOCK => {
                 dispatch_system_action(app, AppAction::Unlock { play_wake: true });
-                let _ = app.emit("system-session", "unlocked");
+                emit_to_background(app, "system-session", "unlocked");
             }
             _ => {}
         },
         WM_POWERBROADCAST => match wparam.0 as u32 {
             PBT_APMSUSPEND => {
                 dispatch_system_action(app, AppAction::Lock);
-                let _ = app.emit("system-session", "suspend");
+                emit_to_background(app, "system-session", "suspend");
             }
             PBT_APMRESUMEAUTOMATIC => {
                 dispatch_system_action(app, AppAction::Unlock { play_wake: true });
-                let _ = app.emit("system-session", "resume");
+                emit_to_background(app, "system-session", "resume");
             }
             _ => {}
         },
@@ -1256,7 +1276,7 @@ pub fn start_foreground_monitor(app: tauri::AppHandle) {
                 // more importantly, turns an ordinary focus change into an
                 // implicit visibility command.  Explicit tray/settings
                 // commands and privacy transitions own that responsibility.
-                let _ = app.emit("app-snapshot", &snapshot);
+                emit_to_background(&app, "app-snapshot", &snapshot);
             }
         }
         if app.get_webview_window("background").is_none() {
@@ -1344,7 +1364,8 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                             "桌面空白双击：切换至{}桌面",
                             if entering { "里" } else { "表" }
                         );
-                        let _ = app.emit(
+                        emit_to_background(
+                            &app,
                             "desktop-workspace-toggle",
                             if entering { "enter" } else { "leave" },
                         );
@@ -1368,14 +1389,19 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
         .await;
     let _cross_process_transaction = CrossProcessLockScreenTransaction::acquire()?;
     let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    // Both takeover *and* restoration call the system setter.  Do not let an
+    // unpackaged dev/NSIS process mutate the lock screen just because it finds
+    // a recovery manifest left by an earlier run. The supported surface is an
+    // MSIX-identified process only; preserving the manifest is safer than an
+    // unverified write from a different installation context.
+    let has_package_identity = has_package_identity()?;
+    if !can_attempt_lock_screen_takeover(has_package_identity) {
+        return Err("当前进程没有 MSIX 包身份。为确保锁屏接管和恢复可验证，常规桌面版不会修改系统锁屏；现有恢复点已保留。请安装 MSIX 包后重试。".into());
+    }
+    if !UserProfilePersonalizationSettings::IsSupported().map_err(|e| e.to_string())? {
+        return Err("当前 Windows 策略不允许应用修改锁屏图片；现有恢复点已保留。".into());
+    }
     if enabled {
-        let has_package_identity = has_package_identity()?;
-        if !can_attempt_lock_screen_takeover(has_package_identity) {
-            return Err("当前是无 MSIX 包身份的正式桌面版。为确保锁屏接管可验证且可恢复，请安装 MSIX 包后再启用；NSIS 版不会修改锁屏。".into());
-        }
-        if !UserProfilePersonalizationSettings::IsSupported().map_err(|e| e.to_string())? {
-            return Err("当前 Windows 策略不允许应用修改锁屏图片".into());
-        }
         let original = LockScreen::OriginalImageFile()
             .map_err(|_| "无法读取当前锁屏图片；为避免无法恢复，已取消接管。".to_string())?
             .AbsoluteUri()
@@ -1551,13 +1577,12 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
                 .get()
                 .map_err(|_| "Windows 未能完成锁屏图片设置。".to_string())?;
             if !changed {
-                // Some Windows 11 editions deny TrySet… to unpackaged desktop
-                // apps even with no policy configured. The older LockScreen API
-                // is the compatible path for a local static PNG.
-                LockScreen::SetImageFileAsync(&file)
-                    .map_err(|_| "Windows 拒绝设置锁屏图片。请检查系统策略，或在 Windows 设置中手动选择该图片。".to_string())?
-                    .get()
-                    .map_err(|_| "Windows 拒绝设置锁屏图片。请检查系统策略，或在 Windows 设置中手动选择该图片。".to_string())?;
+                // The supported MSIX route has one authoritative setter.
+                // Microsoft defines `false` as an unsuccessful change, not as
+                // permission to silently try a legacy API.  Fail closed and
+                // keep the just-created recovery point for the final ownership
+                // check below instead of risking a second, unverified write.
+                return Err("Windows 未接受锁屏图片设置请求（可能被组织策略或 Spotlight 管理）。恢复点已保留，应用没有尝试其他锁屏接口。".into());
             }
             Ok(())
         })();
@@ -1579,6 +1604,7 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
         }
         if let LockScreenBackupState::Valid(manifest) = backup_state {
             if let Ok(path) = restore_snapshot_path(&config_dir, &manifest) {
+                let manifest_managed_path = managed_image_path(&config_dir, &manifest)?;
                 let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(
                     path.to_string_lossy().as_ref(),
                 ))
@@ -1587,6 +1613,22 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
                 .map_err(|e| e.to_string())?;
                 let settings =
                     UserProfilePersonalizationSettings::Current().map_err(|e| e.to_string())?;
+                // Do not restore over a lock-screen image selected after the
+                // first stale-state check above. Opening the snapshot and the
+                // settings object can take long enough for the user, Windows,
+                // or another program to change the image. Re-read immediately
+                // before the only restore setter and fail closed if this
+                // durable manifest no longer owns the current image.
+                let current_before_restore = LockScreen::OriginalImageFile()
+                    .ok()
+                    .and_then(|uri| uri.AbsoluteUri().ok())
+                    .map(|uri| uri.to_string());
+                if !restore_precondition_is_satisfied(
+                    current_before_restore.as_deref(),
+                    &manifest_managed_path,
+                ) {
+                    return Err("检测到锁屏图片在恢复准备期间已由用户或其他程序更改；应用没有覆盖新图片，原备份已保留。".into());
+                }
                 let restored = settings
                     .TrySetLockScreenImageAsync(&file)
                     .map_err(|e| e.to_string())?
@@ -1595,18 +1637,22 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
                 if restored {
                     return finish_verified_lock_screen_restore(&config_dir, &manifest, &path);
                 }
-                // Match the enable path: unpackaged desktop processes on
-                // some Windows 11 builds report false from TrySet… while the
-                // compatibility LockScreen API succeeds for the same file.
-                if LockScreen::SetImageFileAsync(&file)
-                    .is_ok_and(|operation| operation.get().is_ok())
-                {
-                    return finish_verified_lock_screen_restore(&config_dir, &manifest, &path);
-                }
             }
         }
         Err("未能恢复原静态锁屏图片；接管仍保持启用，原备份没有被删除。请稍后重试或在 Windows 设置中手动恢复。".into())
     }
+}
+
+/// Restoring a snapshot is only safe while the current lock-screen image is
+/// still the application-owned image recorded by the durable manifest.  Keep
+/// this decision separate from the WinRT setter so the unit test documents the
+/// fail-closed boundary without changing a real system setting.
+#[cfg(windows)]
+fn restore_precondition_is_satisfied(
+    current_image_uri: Option<&str>,
+    managed_image: &std::path::Path,
+) -> bool {
+    managed_image_is_active(current_image_uri, managed_image)
 }
 
 #[cfg(windows)]
@@ -1989,6 +2035,23 @@ mod tests {
             std::fs::read(unique_destination).expect("new managed image contents"),
             b"new image"
         );
+    }
+
+    #[test]
+    fn restore_precondition_requires_the_current_managed_image() {
+        let managed = std::path::Path::new(
+            r"C:\Users\Test\AppData\Roaming\dsh-wallpaper\lock-screen\managed.png",
+        );
+
+        assert!(restore_precondition_is_satisfied(
+            Some("file:///c:/users/test/AppData/Roaming/dsh-wallpaper/lock-screen/managed.png"),
+            managed,
+        ));
+        assert!(!restore_precondition_is_satisfied(
+            Some("file:///C:/Users/Test/Pictures/user-selected.png"),
+            managed,
+        ));
+        assert!(!restore_precondition_is_satisfied(None, managed));
     }
 
     static REGION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

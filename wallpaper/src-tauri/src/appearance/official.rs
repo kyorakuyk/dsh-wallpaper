@@ -39,7 +39,7 @@ pub fn official_base_theme() -> ThemeRecord {
         // This is a Vite public-resource path, not a path in the user library.
         // Consumers that cannot safely resolve a bundled preview should omit it
         // rather than exposing a raw local path.
-        preview: Some("personas/deepsea-bg/bg-cand1.png".into()),
+        preview: Some("personas/deepsea-bg/deepsea-studio.png".into()),
         source: ThemeSource::Official,
         manifest_path: format!(
             "builtin://dsh-wallpaper/{OFFICIAL_BASE_THEME_ID}/{OFFICIAL_BASE_THEME_VERSION}/theme.json"

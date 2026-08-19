@@ -13,11 +13,11 @@ export const MAX_PRICE_PER_MILLION = 1_000_000
 export const assetUrl = (path: string): string => `${import.meta.env.BASE_URL}${path.replace(/^\//, '')}`
 const CONVERSATION_KEY = 'dsh-wallpaper:conversations:v1'
 
-/** 背景选项：'default' = 主题色渐变；'deepsea-1/2/3' = 深海室内插画 */
+/** 背景选项：'default' = 主题色渐变；其他项 = 正式深海室内插画。 */
 export const BACKGROUND_OPTIONS = [
-  { id: 'workspace', name: '深夜工作室', path: 'personas/deepsea-bg/bg-cand1.png' },
-  { id: 'deepsea-2', name: '深海穹顶舱', path: 'personas/deepsea-bg/bg-cand2.png' },
-  { id: 'deepsea-3', name: '深海书房', path: 'personas/deepsea-bg/bg-cand3.png' },
+  { id: 'workspace', name: '深夜工作室', path: 'personas/deepsea-bg/deepsea-studio.png' },
+  { id: 'deepsea-2', name: '深海穹顶舱', path: 'personas/deepsea-bg/deepsea-dome.png' },
+  { id: 'deepsea-3', name: '深海书房', path: 'personas/deepsea-bg/deepsea-study.png' },
   { id: 'default', name: '默认主题渐变', path: '' },
 ] as const
 

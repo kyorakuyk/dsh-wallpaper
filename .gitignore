@@ -11,6 +11,9 @@ wallpaper/src-tauri/target/
 .tmp-lockscreen-verify/
 .tmp-r6-check/
 .tmp-r6-final/
+# Generated only by ad-hoc Windows SDK metadata inspection.  The leading
+# slash keeps legitimate source files in nested directories visible to Git.
+/Windows.*.idl
 artifacts/
 *.pfx
 *.cer
