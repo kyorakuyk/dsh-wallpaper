@@ -1,22 +1,28 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { API_PREFIX } from '../src/protocol.ts'
-import { apply } from '../src/index.ts'
+import { apply, tokenFileForRoot, windowsTokenAclCommands, windowsTokenDirectoryAclCommands } from '../src/index.ts'
 
 interface CapturedResponse {
   status: number
   headers: Record<string, string>
   body: string
   chunks: string[]
+  destroyed: boolean
   response: ServerResponse
+}
+
+interface ResponseOptions {
+  writeResult?: boolean | ((chunk: string, writeNumber: number) => boolean)
 }
 
 interface RouteHarness {
   root: string
+  tokenRoot: string
   tokenFile: string
   routes: Map<string, (req: IncomingMessage, res: ServerResponse) => void | Promise<void>>
   listeners: Map<string, (...args: never[]) => unknown>
@@ -61,33 +67,49 @@ function request(
   } as unknown as IncomingMessage
 }
 
-function response(): CapturedResponse {
+function response(options: ResponseOptions = {}): CapturedResponse {
   const captured: Omit<CapturedResponse, 'response'> = {
     status: 200,
-    headers: {},
-    body: '',
-    chunks: [],
+  headers: {},
+  body: '',
+  chunks: [],
+  // The returned test facade exposes the live getter below. Seed the backing
+  // shape as well so it stays structurally complete under `tsc --noEmit`.
+  destroyed: false,
   }
   let ended = false
+  let destroyed = false
+  let writeNumber = 0
   const native = {
     get writableEnded(): boolean { return ended },
-    destroyed: false,
+    get destroyed(): boolean { return destroyed },
     statusCode: 200,
     setHeader(name: string, value: string): void { captured.headers[name.toLowerCase()] = value },
     flushHeaders: () => undefined,
-    write(chunk: string): boolean { captured.chunks.push(String(chunk)); return true },
+    write(chunk: string): boolean {
+      captured.chunks.push(String(chunk))
+      writeNumber += 1
+      return typeof options.writeResult === 'function'
+        ? options.writeResult(chunk, writeNumber)
+        : options.writeResult ?? true
+    },
+    destroy(): void { destroyed = true },
     end(body?: string): void { if (body !== undefined) captured.body += body; ended = true },
   } as unknown as ServerResponse
   return {
     get body() { return captured.body },
     get headers() { return captured.headers },
     get chunks() { return captured.chunks },
+    get destroyed() { return destroyed },
     get status() { return native.statusCode },
     response: native,
   }
 }
 
-async function createHarness(persistenceEnabled = false): Promise<RouteHarness> {
+async function createHarness(
+  persistenceEnabled = false,
+  prepareTokenRoot?: (tokenRoot: string) => Promise<void>,
+): Promise<RouteHarness> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-wallpaper-bridge-'))
   cleanups.push(root)
   const routes = new Map<string, (req: IncomingMessage, res: ServerResponse) => void | Promise<void>>()
@@ -121,9 +143,13 @@ async function createHarness(persistenceEnabled = false): Promise<RouteHarness> 
     get: (name: string) => name === 'sessionPersistence' && persistence.enabled ? {} : undefined,
     inject: (_dependencies: string[], callback: (scope: unknown) => void) => callback({ webServer, agents: { create, resume: create }, logger, effect: () => undefined }),
   } as unknown as Context
-  const tokenFile = join(root, 'bridge-token')
-  apply(context, { tokenFile })
-  return { root, tokenFile, routes, listeners, agent, create, logger, persistence }
+  // This is deliberately a host-owned root, not a token path. The bridge can
+  // only touch its dedicated `wallpaper` child beneath it.
+  const tokenRoot = join(root, 'host-owned-dsh-root')
+  const tokenFile = tokenFileForRoot(tokenRoot)
+  await prepareTokenRoot?.(tokenRoot)
+  apply(context, { tokenRoot })
+  return { root, tokenRoot, tokenFile, routes, listeners, agent, create, logger, persistence }
 }
 
 async function call(
@@ -137,6 +163,45 @@ async function call(
 }
 
 describe('wallpaper bridge HTTP routes', () => {
+  it('uses only its fixed token slot beneath the host-owned root', () => {
+    const root = 'C:\\Users\\whale\\.dsh'
+    expect(tokenFileForRoot(root)).toBe('C:\\Users\\whale\\.dsh\\wallpaper\\bridge-token')
+    expect(tokenFileForRoot(`${root}\\custom-token.txt`)).toBe(
+      'C:\\Users\\whale\\.dsh\\custom-token.txt\\wallpaper\\bridge-token',
+    )
+  })
+
+  it('fails closed instead of treating a configured root as an arbitrary token filename', async () => {
+    const unrelatedContent = 'this file is not a bridge token'
+    const harness = await createHarness(false, async (tokenRoot) => {
+      // Simulates an old `tokenFile`-style value being supplied as the new
+      // root. The bridge must not reset this file or its parent ACL.
+      await writeFile(tokenRoot, unrelatedContent, 'utf8')
+    })
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+
+    const status = await call(statusRoute, request('GET', `${API_PREFIX}/status`))
+    expect(status.status).toBe(200)
+    expect(JSON.parse(status.body)).toMatchObject({ authentication: 'unavailable' })
+    expect(await readFile(harness.tokenRoot, 'utf8')).toBe(unrelatedContent)
+  })
+
+  it('replaces every previous Windows token ACL grant before allowing the current user', () => {
+    expect(windowsTokenAclCommands('C:\\Users\\whale\\.dsh\\wallpaper\\bridge-token', 'S-1-5-21-42')).toEqual([
+      ['C:\\Users\\whale\\.dsh\\wallpaper\\bridge-token', '/setowner', '*S-1-5-21-42'],
+      ['C:\\Users\\whale\\.dsh\\wallpaper\\bridge-token', '/reset'],
+      ['C:\\Users\\whale\\.dsh\\wallpaper\\bridge-token', '/inheritance:r'],
+      ['C:\\Users\\whale\\.dsh\\wallpaper\\bridge-token', '/grant:r', '*S-1-5-21-42:(F)'],
+    ])
+    expect(windowsTokenAclCommands('token', 'S-1-5-21-42').flat()).not.toContain('/inheritance:e')
+    expect(windowsTokenDirectoryAclCommands('C:\\Users\\whale\\.dsh\\wallpaper', 'S-1-5-21-42')).toEqual([
+      ['C:\\Users\\whale\\.dsh\\wallpaper', '/setowner', '*S-1-5-21-42'],
+      ['C:\\Users\\whale\\.dsh\\wallpaper', '/reset'],
+      ['C:\\Users\\whale\\.dsh\\wallpaper', '/inheritance:r'],
+      ['C:\\Users\\whale\\.dsh\\wallpaper', '/grant:r', '*S-1-5-21-42:(OI)(CI)(F)'],
+    ])
+  })
+
   it('keeps status public while protecting standard session operations with the generated token', async () => {
     const harness = await createHarness(true)
     const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
@@ -171,6 +236,10 @@ describe('wallpaper bridge HTTP routes', () => {
     expect(created.status).toBe(201)
     expect(JSON.parse(created.body)).toMatchObject({ sessionId: 'wallpaper-test', provider: 'mock', model: 'deepseek-chat' })
     expect(harness.create).toHaveBeenCalledOnce()
+    expect(harness.create).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'wallpaper-test',
+      meta: { cwd: undefined },
+    }))
 
     const accepted = await call(sessionsRoute, request('POST', `${API_PREFIX}/sessions/wallpaper-test/messages`, { text: 'hello' }, `Bearer ${token}`))
     expect(accepted.status).toBe(202)
@@ -198,6 +267,67 @@ describe('wallpaper bridge HTTP routes', () => {
     expect(malformed.body).toContain('invalid-request')
     expect(malformed.body).not.toContain(secret)
     expect(harness.logger.warn.mock.calls.flat().join(' ')).not.toContain(secret)
+  })
+
+  it('does not let an authenticated HTTP request choose the DSH working directory', async () => {
+    const harness = await createHarness()
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+    const sessionsRoute = harness.routes.get(`${API_PREFIX}/sessions`)
+    await call(statusRoute, request('GET', `${API_PREFIX}/status`))
+    const token = (await readFile(harness.tokenFile, 'utf8')).trim()
+
+    const created = await call(
+      sessionsRoute,
+      request('POST', `${API_PREFIX}/sessions`, {
+        sessionId: 'host-owned-cwd',
+        cwd: 'C:\\sensitive\\not-authorized-by-the-host',
+      }, `Bearer ${token}`),
+    )
+
+    expect(created.status).toBe(201)
+    expect(harness.create).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'host-owned-cwd',
+      meta: { cwd: undefined },
+    }))
+  })
+
+  it('single-flights concurrent creation of the same live session', async () => {
+    const harness = await createHarness()
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+    const sessionsRoute = harness.routes.get(`${API_PREFIX}/sessions`)
+    await call(statusRoute, request('GET', `${API_PREFIX}/status`))
+    const token = (await readFile(harness.tokenFile, 'utf8')).trim()
+
+    let releaseCreate: (() => void) | undefined
+    harness.create.mockImplementationOnce(async (options: { sessionId: string }) => {
+      harness.agent.session.id = options.sessionId
+      await new Promise<void>((resolve) => { releaseCreate = resolve })
+      return { agent: harness.agent, dispose: async () => undefined }
+    })
+
+    const first = response()
+    const firstRequest = sessionsRoute?.(
+      request('POST', `${API_PREFIX}/sessions`, { sessionId: 'single-flight' }, `Bearer ${token}`),
+      first.response,
+    )
+    await vi.waitFor(() => expect(harness.create).toHaveBeenCalledOnce())
+
+    const second = response()
+    const secondRequest = sessionsRoute?.(
+      request('POST', `${API_PREFIX}/sessions`, { sessionId: 'single-flight' }, `Bearer ${token}`),
+      second.response,
+    )
+    await vi.waitFor(() => expect(harness.create).toHaveBeenCalledOnce())
+
+    expect(releaseCreate).toBeTypeOf('function')
+    releaseCreate?.()
+    await Promise.all([firstRequest, secondRequest])
+
+    expect(harness.create).toHaveBeenCalledOnce()
+    expect(first.status).toBe(201)
+    expect(second.status).toBe(200)
+    expect(JSON.parse(first.body)).toMatchObject({ sessionId: 'single-flight' })
+    expect(JSON.parse(second.body)).toMatchObject({ sessionId: 'single-flight' })
   })
 
   it('enforces the message limit in UTF-8 bytes at the HTTP boundary', async () => {

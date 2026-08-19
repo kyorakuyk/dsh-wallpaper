@@ -10,7 +10,7 @@ import { execFile } from 'node:child_process'
 import { chmod, lstat, mkdir, open, readFile } from 'node:fs/promises'
 import { promisify } from 'node:util'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { API_PREFIX, BRIDGE_VERSION, bearerAuthorized, contentText, errorReference, isSafeSessionId, mapSessionEvent, parseSessionRoute, type BridgeEvent } from './protocol.ts'
 
@@ -18,12 +18,23 @@ export const name = 'wallpaper-bridge'
 export const inject = ['agents', 'webServer']
 
 export interface Config {
-  tokenFile?: string
+  /**
+   * Host-owned DSH data root. The bridge always creates its bearer token at
+   * `<tokenRoot>/wallpaper/bridge-token`; it never treats a configured path as
+   * a token file or rewrites ACLs on the configured root itself.
+   */
+  tokenRoot?: string
+  /**
+   * Optional host-owned working directory for newly created sessions.
+   * This is bridge configuration, never a value accepted over the wallpaper
+   * HTTP protocol: a bearer token authorizes chat, not arbitrary filesystem
+   * context selection.
+   */
   cwd?: string
 }
 
 export const Config: Schema<Config> = Schema.object({
-  tokenFile: Schema.string(),
+  tokenRoot: Schema.string(),
   cwd: Schema.string(),
 }) as Schema<Config>
 
@@ -35,10 +46,19 @@ interface LiveSession {
 // This is an HTTP boundary, so measure the actual UTF-8 payload rather than
 // JavaScript UTF-16 code units. Keep it in lockstep with the native client.
 const MAX_MESSAGE_BYTES = 100_000
-const MAX_CWD_LENGTH = 4_096
 const MAX_REQUEST_BODY_BYTES = 1_048_576
+// The native wallpaper client rejects individual Harness SSE records above
+// this size. Keep the producer at the same boundary so an unexpected DSH
+// payload cannot first accumulate in this process's HTTP write queue.
+const MAX_SSE_EVENT_BYTES = 4 * 1024 * 1024
+const MAX_SSE_IDENTIFIER_BYTES = 200
+const MAX_SSE_SUMMARY_BYTES = 500
+const MAX_SSE_TOKEN_COUNT = 1_000_000_000_000
+const MAX_SSE_COST = 1_000_000
 const MIN_TOKEN_LENGTH = 32
 const execFileAsync = promisify(execFile)
+const TOKEN_DIRECTORY_NAME = 'wallpaper'
+const TOKEN_FILE_NAME = 'bridge-token'
 
 class RequestBodyError extends Error {
   constructor(readonly status: 400 | 413, readonly code: 'invalid-request' | 'request-too-large') {
@@ -46,9 +66,24 @@ class RequestBodyError extends Error {
   }
 }
 
-function defaultTokenFile(): string {
-  const root = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
-  return join(root, 'wallpaper', 'bridge-token')
+function defaultTokenRoot(): string {
+  return process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
+}
+
+/**
+ * Resolve the one supported on-disk location for the local bearer token.
+ *
+ * `root` may be host-configured, but only the dedicated `wallpaper` child is
+ * ever ACL-rewritten. This deliberately replaces the old `tokenFile` option:
+ * accepting an arbitrary token filename would make its parent directory an
+ * unsafe target for a private-ACL reset.
+ */
+export function tokenFileForRoot(root: string): string {
+  return join(resolve(root), TOKEN_DIRECTORY_NAME, TOKEN_FILE_NAME)
+}
+
+function configuredTokenRoot(config: Config): string {
+  return config.tokenRoot?.trim() || defaultTokenRoot()
 }
 
 function validateToken(token: string): string {
@@ -72,6 +107,45 @@ async function currentWindowsSid(): Promise<string> {
 }
 
 /**
+ * Build the deliberately narrow ACL rewrite used for the local bearer token.
+ *
+ * `icacls /grant:r` replaces only the named SID's existing explicit ACEs;
+ * it does not clear ACEs belonging to Everyone, Users, or another account.
+ * Start with `/reset` so those stale explicit entries are removed, then remove
+ * the inherited defaults before granting exactly the current user.  See the
+ * Microsoft `icacls` reference for the semantics of `/reset`,
+ * `/inheritancelevel:r`, and `/grant:r`.
+ *
+ * Exported only for the source-level regression test; it is not part of the
+ * wallpaper HTTP protocol.
+ */
+export function windowsTokenAclCommands(file: string, sid: string): ReadonlyArray<readonly string[]> {
+  return [
+    [file, '/setowner', `*${sid}`],
+    [file, '/reset'],
+    [file, '/inheritance:r'],
+    [file, '/grant:r', `*${sid}:(F)`],
+  ]
+}
+
+/**
+ * The containing directory is private before a token is ever written. This
+ * avoids a newly-created token briefly inheriting a broad ACL and is also the
+ * barrier that prevents another local account from replacing the token
+ * between the bridge's ACL repair and write steps. This is always the
+ * application-owned `<tokenRoot>/wallpaper` child, never an arbitrary parent
+ * supplied by configuration.
+ */
+export function windowsTokenDirectoryAclCommands(directory: string, sid: string): ReadonlyArray<readonly string[]> {
+  return [
+    [directory, '/setowner', `*${sid}`],
+    [directory, '/reset'],
+    [directory, '/inheritance:r'],
+    [directory, '/grant:r', `*${sid}:(OI)(CI)(F)`],
+  ]
+}
+
+/**
  * The bridge token is a local bearer credential. POSIX modes are sufficient
  * there; on Windows explicitly replace inherited ACLs with the current SID.
  * Failing to establish that boundary is an authentication setup failure, not
@@ -85,55 +159,81 @@ async function restrictTokenFile(file: string): Promise<void> {
   const sid = await currentWindowsSid()
   const absoluteFile = resolve(file)
   const options = { windowsHide: true, timeout: 5_000, maxBuffer: 8_192 }
-  // Remove inherited grants and add exactly the current account's full-control
-  // ACE. Do not use `/reset`: it fails for a newly-created file when its ACL
-  // owner cannot be resolved in constrained environments. Arguments are passed
-  // directly (never through a shell).
-  await execFileAsync('icacls.exe', [absoluteFile, '/inheritance:r'], options)
-  try {
-    await execFileAsync('icacls.exe', [absoluteFile, '/grant:r', `*${sid}:(F)`], options)
-  } catch (error) {
-    // A narrow pre-existing DACL can reject `/grant:r` after inheritance is
-    // removed. Re-enable inherited ACLs before failing closed so a user can
-    // repair or delete the file rather than being locked out of their profile.
-    await execFileAsync('icacls.exe', [absoluteFile, '/inheritance:e'], options).catch(() => undefined)
-    throw error
+  // A bearer credential must not retain an explicit ACE belonging to another
+  // user.  Run every step directly (never through a shell), and fail closed on
+  // the first error: restoring inherited access as a "recovery" fallback
+  // would make an unsafe token usable again.
+  for (const args of windowsTokenAclCommands(absoluteFile, sid)) {
+    await execFileAsync('icacls.exe', [...args], options)
   }
 }
 
-async function readAndRestrictToken(file: string): Promise<string> {
-  // `icacls` reports a generic process failure for a missing file rather than
-  // Node's ENOENT. Check first so initial bridge startup creates the token
-  // instead of treating the normal first-run state as an ACL failure.
+async function restrictTokenDirectory(directory: string): Promise<void> {
+  if (process.platform !== 'win32') {
+    await chmod(directory, 0o700)
+    return
+  }
+  const sid = await currentWindowsSid()
+  const absoluteDirectory = resolve(directory)
+  const options = { windowsHide: true, timeout: 5_000, maxBuffer: 8_192 }
+  for (const args of windowsTokenDirectoryAclCommands(absoluteDirectory, sid)) {
+    await execFileAsync('icacls.exe', [...args], options)
+  }
+}
+
+async function assertRegularTokenFile(file: string): Promise<void> {
   const stat = await lstat(file)
-  if (!stat.isFile() || stat.isSymbolicLink()) {
+  // A pre-existing hard link could make token rotation overwrite an unrelated
+  // file. The token path has no legitimate link count other than one.
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
     throw new Error('bridge token path is not a regular file')
   }
-  await restrictTokenFile(file)
-  // Only read a pre-existing credential after its permissions are repaired.
-  // Re-reading after ACL mutation also prevents an EEXIST winner from leaving
-  // us using a token swapped while permissions were being established.
-  return validateToken((await readFile(file, 'utf8')).trim())
 }
 
-async function ensureToken(file: string): Promise<string> {
-  try {
-    return await readAndRestrictToken(file)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+async function assertTokenDirectory(directory: string): Promise<void> {
+  const stat = await lstat(directory)
+  // Do this before ACL changes: a junction/symlink must never redirect the
+  // ACL rewrite onto a directory outside of the bridge-owned namespace.
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error('bridge token directory is not a regular directory')
   }
-  await mkdir(dirname(file), { recursive: true })
+}
+
+async function ensureToken(root: string): Promise<string> {
+  const file = tokenFileForRoot(root)
+  const directory = join(resolve(root), TOKEN_DIRECTORY_NAME)
+  // Creating the directory is harmless even when it initially inherits a
+  // broad DACL: no credential exists yet. Tighten it before creating or
+  // rotating the bearer value.
+  await mkdir(directory, { recursive: true })
+  await assertTokenDirectory(directory)
+  await restrictTokenDirectory(directory)
+
+  // Never reuse a legacy token whose old ACL may already have exposed it.
+  // Rotation happens only after the directory is private and the final file
+  // itself has been locked down, so a copied predecessor cannot authenticate
+  // against a new Bridge instance.
   const generated = randomBytes(32).toString('base64url')
   try {
     const handle = await open(file, 'wx', 0o600)
-    try { await handle.writeFile(`${generated}\n`, 'utf8') } finally { await handle.close() }
-    return await readAndRestrictToken(file)
+    await handle.close()
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-    // Another bridge instance won creation. Apply exactly the same validation
-    // and platform permission rules as the ordinary existing-token path.
-    return await readAndRestrictToken(file)
   }
+  await assertRegularTokenFile(file)
+  await restrictTokenFile(file)
+  // The directory and file now reject other Windows accounts. Open after the
+  // postcondition rather than writing the secret during the creation window.
+  const handle = await open(file, 'r+')
+  try {
+    await handle.truncate(0)
+    await handle.writeFile(`${generated}\n`, 'utf8')
+  } finally {
+    await handle.close()
+  }
+  // Read back only to validate the actual persisted value; do not return a
+  // caller-provided or pre-rotation token.
+  return validateToken((await readFile(file, 'utf8')).trim())
 }
 
 function json(res: ServerResponse, status: number, value: unknown): void {
@@ -187,8 +287,151 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
   return value as Record<string, unknown>
 }
 
-function sse(res: ServerResponse, event: BridgeEvent): void {
-  if (!res.writableEnded) res.write(`data: ${JSON.stringify(event)}\n\n`)
+function boundedSseText(value: unknown, maximum: number): string | undefined {
+  return typeof value === 'string' && Buffer.byteLength(value, 'utf8') <= maximum ? value : undefined
+}
+
+function boundedSseInteger(value: unknown): number | undefined {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value >= 0
+    && value <= MAX_SSE_TOKEN_COUNT
+    ? value
+    : undefined
+}
+
+function safeSseSessionId(value: unknown): string | undefined {
+  const sessionId = boundedSseText(value, MAX_SSE_IDENTIFIER_BYTES)
+  return sessionId !== undefined && isSafeSessionId(sessionId) ? sessionId : undefined
+}
+
+/**
+ * Rebuild every outbound event before serializing it. Session events come
+ * from DSH rather than this HTTP server, so their runtime values must still
+ * be treated as untrusted at the SSE boundary. In particular, check large
+ * strings before JSON.stringify can duplicate them into Node's response
+ * buffer.
+ */
+function serializeSseEvent(event: BridgeEvent): string | undefined {
+  let safe: BridgeEvent
+  switch (event.type) {
+    case 'status': {
+      if (!['idle', 'sending', 'thinking', 'streaming', 'tool', 'done'].includes(event.activity)) return undefined
+      safe = { type: 'status', activity: event.activity }
+      break
+    }
+    case 'delta': {
+      const text = boundedSseText(event.text, MAX_MESSAGE_BYTES)
+      if (text === undefined) return undefined
+      safe = { type: 'delta', text }
+      break
+    }
+    case 'message': {
+      const content = boundedSseText(event.content, MAX_MESSAGE_BYTES)
+      if (content === undefined || (event.role !== 'user' && event.role !== 'assistant')) return undefined
+      safe = { type: 'message', role: event.role, content }
+      break
+    }
+    case 'usage': {
+      const input = boundedSseInteger(event.input)
+      const output = boundedSseInteger(event.output)
+      const cacheRead = event.cacheRead === undefined ? undefined : boundedSseInteger(event.cacheRead)
+      const cost = event.cost === undefined
+        ? undefined
+        : typeof event.cost === 'number' && Number.isFinite(event.cost) && event.cost >= 0 && event.cost <= MAX_SSE_COST
+          ? event.cost
+          : undefined
+      if (input === undefined || output === undefined
+        || (event.cacheRead !== undefined && (cacheRead === undefined || cacheRead > input))
+        || (event.cost !== undefined && cost === undefined)) return undefined
+      safe = {
+        type: 'usage',
+        input,
+        output,
+        ...(cacheRead === undefined ? {} : { cacheRead }),
+        ...(cost === undefined ? {} : { cost }),
+      }
+      break
+    }
+    case 'model': {
+      const model = boundedSseText(event.model, MAX_SSE_IDENTIFIER_BYTES)
+      const provider = event.provider === undefined ? undefined : boundedSseText(event.provider, MAX_SSE_IDENTIFIER_BYTES)
+      const effort = event.effort === undefined ? undefined : boundedSseText(event.effort, MAX_SSE_IDENTIFIER_BYTES)
+      if (model === undefined || (event.provider !== undefined && provider === undefined)
+        || (event.effort !== undefined && effort === undefined)) return undefined
+      safe = {
+        type: 'model',
+        model,
+        ...(provider === undefined ? {} : { provider }),
+        ...(effort === undefined ? {} : { effort }),
+      }
+      break
+    }
+    case 'approval-required': {
+      const sessionId = safeSseSessionId(event.sessionId)
+      const summary = boundedSseText(event.summary, MAX_SSE_SUMMARY_BYTES)
+      if (sessionId === undefined || summary === undefined) return undefined
+      safe = { type: 'approval-required', sessionId, summary }
+      break
+    }
+    case 'error': {
+      const code = boundedSseText(event.code, MAX_SSE_IDENTIFIER_BYTES)
+      const message = boundedSseText(event.message, MAX_MESSAGE_BYTES)
+      if (code === undefined || message === undefined || typeof event.recoverable !== 'boolean') return undefined
+      safe = { type: 'error', code, recoverable: event.recoverable, message }
+      break
+    }
+    case 'disconnected': {
+      if (event.recoverable !== true) return undefined
+      safe = { type: 'disconnected', recoverable: true }
+      break
+    }
+    default:
+      return undefined
+  }
+  const record = `data: ${JSON.stringify(safe)}\n\n`
+  return Buffer.byteLength(record, 'utf8') <= MAX_SSE_EVENT_BYTES ? record : undefined
+}
+
+function closeSseClient(res: ServerResponse): void {
+  if (!res.writableEnded && !res.destroyed) res.destroy?.()
+}
+
+function writeSseRecord(res: ServerResponse, record: string): boolean {
+  if (res.writableEnded || res.destroyed) return false
+  try {
+    // A false return means Node has crossed its high-water mark. Do not keep
+    // publishing while it waits for drain: this is a one-way live stream, so
+    // disconnecting a slow client bounds memory and lets it reconnect.
+    if (res.write(record)) return true
+  } catch {
+    // A peer can close between the state check and write(). Treat it exactly
+    // like a slow or dead client and keep it out of the subscriber set.
+  }
+  closeSseClient(res)
+  return false
+}
+
+function sse(res: ServerResponse, event: BridgeEvent): boolean {
+  const record = serializeSseEvent(event)
+  if (record !== undefined) return writeSseRecord(res, record)
+
+  // Do not serialize, truncate, or log an oversize DSH-derived value. A
+  // bounded protocol error tells the native client why the stream ended while
+  // ensuring no further data is queued for this subscriber.
+  const failure = serializeSseEvent({
+    type: 'error',
+    code: 'HARNESS_SSE_EVENT_LIMIT',
+    recoverable: true,
+    message: 'DSH bridge 事件超过安全大小限制，连接已关闭。',
+  })
+  if (failure !== undefined) void writeSseRecord(res, failure)
+  closeSseClient(res)
+  return false
+}
+
+function heartbeatSse(res: ServerResponse): boolean {
+  return writeSseRecord(res, ': heartbeat\n\n')
 }
 
 function initialEvents(entry: LiveSession): BridgeEvent[] {
@@ -241,6 +484,13 @@ function historyOf(session: Session): Array<Record<string, unknown>> {
 
 export function apply(ctx: Context, config: Config = {}): void {
   const live = new Map<string, LiveSession>()
+  // A collection POST awaits agent creation. Without this per-session
+  // single-flight map, two requests that arrive in that await gap can each
+  // create an AgentHandle for the same logical session and leak one of them.
+  // Keep pending work separate from `live`: only a fully created handle is
+  // allowed to receive messages or SSE subscribers.
+  const creating = new Map<string, Promise<LiveSession>>()
+  let stopping = false
   const canResume = (): boolean => {
     // Keep the lightweight unit-test harness compatible while production
     // Cordis contexts use `get()` for optional service discovery.
@@ -249,7 +499,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   }
   let token = ''
   let tokenFailure: string | undefined
-  const tokenReady = ensureToken(config.tokenFile?.trim() || defaultTokenFile())
+  const tokenReady = ensureToken(configuredTokenRoot(config))
     .then((value) => { token = value })
     .catch((error: unknown) => { tokenFailure = errorReference(error) })
 
@@ -258,7 +508,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     if (!entry) return
     for (const client of [...entry.clients]) {
       if (client.writableEnded || client.destroyed) entry.clients.delete(client)
-      else sse(client, event)
+      else if (!sse(client, event)) entry.clients.delete(client)
     }
   }
 
@@ -310,12 +560,18 @@ export function apply(ctx: Context, config: Config = {}): void {
   })
 
   ctx.effect(() => async () => {
+    stopping = true
     const disposals: Promise<void>[] = []
     for (const entry of live.values()) {
       for (const client of entry.clients) client.end()
       disposals.push(entry.handle.dispose())
     }
     live.clear()
+    // A create already in flight cannot be cancelled through the public DSH
+    // API. Await it so its post-await shutdown check can dispose the handle
+    // instead of installing it after this bridge has been torn down.
+    await Promise.allSettled([...creating.values()])
+    creating.clear()
     await Promise.allSettled(disposals)
   })
 
@@ -371,18 +627,44 @@ export function apply(ctx: Context, config: Config = {}): void {
             const provider = typeof body.provider === 'string' && body.provider.trim() ? body.provider.trim() : undefined
             const model = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : undefined
             const agentOptions = provider || model ? { provider, model } : undefined
-            const cwd = typeof body.cwd === 'string' && body.cwd.trim() ? body.cwd.trim() : config.cwd
-            if (cwd && cwd.length > MAX_CWD_LENGTH) return json(res, 400, { error: 'invalid-cwd' })
-            const handle = resume
-              ? await wctx.agents.resume({ resumeSessionId: SessionId(id), agentOptions })
-              : await wctx.agents.create({
-                  sessionId: SessionId(id),
-                  meta: { cwd },
-                  agentOptions,
-                })
-            const entry = { handle, clients: new Set<ServerResponse>() }
-            live.set(id, entry)
-            return json(res, 201, sessionSummary(entry))
+            // A session's workspace is a host policy choice.  Do not permit a
+            // local HTTP caller to override it, even if it holds the Bridge
+            // token; the wallpaper never needs this control to create a
+            // standard DSH session.
+            const cwd = config.cwd?.trim() || undefined
+            let pending = creating.get(id)
+            const createdByThisRequest = pending === undefined
+            if (!pending) {
+              pending = (async (): Promise<LiveSession> => {
+                if (stopping) throw new Error('wallpaper bridge is shutting down')
+                const handle = resume
+                  ? await wctx.agents.resume({ resumeSessionId: SessionId(id), agentOptions })
+                  : await wctx.agents.create({
+                      sessionId: SessionId(id),
+                      meta: { cwd },
+                      agentOptions,
+                    })
+                // Plugin teardown may have started while DSH created the
+                // agent. Dispose it rather than leaving a live handle that no
+                // route can own or clean up.
+                if (stopping) {
+                  await handle.dispose().catch(() => undefined)
+                  throw new Error('wallpaper bridge is shutting down')
+                }
+                const entry: LiveSession = { handle, clients: new Set<ServerResponse>() }
+                live.set(id, entry)
+                return entry
+              })()
+              creating.set(id, pending)
+              const clearPending = () => {
+                if (creating.get(id) === pending) creating.delete(id)
+              }
+              // Handle both resolution and rejection so this bookkeeping
+              // promise never becomes an unhandled rejection of its own.
+              void pending.then(clearPending, clearPending)
+            }
+            const entry = await pending
+            return json(res, createdByThisRequest ? 201 : 200, sessionSummary(entry))
           }
 
           const entry = live.get(route.sessionId)
@@ -407,9 +689,24 @@ export function apply(ctx: Context, config: Config = {}): void {
             // successful response proves the bridge will observe the first
             // followup submitted after `connect_harness` returns.
             res.setHeader('x-dsh-wallpaper-sse-ready', '1')
-            for (const event of initialEvents(entry)) sse(res, event)
+            let subscribed = true
+            for (const event of initialEvents(entry)) {
+              if (!sse(res, event)) {
+                subscribed = false
+                break
+              }
+            }
+            if (!subscribed) {
+              entry.clients.delete(res)
+              return
+            }
             res.flushHeaders()
-            const heartbeat = setInterval(() => { if (!res.writableEnded) res.write(': heartbeat\n\n') }, 15_000)
+            const heartbeat = setInterval(() => {
+              if (!heartbeatSse(res)) {
+                clearInterval(heartbeat)
+                entry.clients.delete(res)
+              }
+            }, 15_000)
             req.on('close', () => { clearInterval(heartbeat); entry.clients.delete(res) })
             return
           }
