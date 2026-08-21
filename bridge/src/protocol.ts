@@ -78,6 +78,19 @@ export function contentText(message: Pick<Message, 'content'>): string {
     .join('')
 }
 
+/**
+ * The DSH durable transcript includes plugin-injected user-shaped context
+ * (agent instructions, time context, workspace facts, and similar runtime
+ * material). It is model input, not a user-visible chat turn. The wallpaper
+ * must show only an explicit human user message or a final assistant message.
+ */
+export function isVisibleWallpaperMessage(
+  message: Pick<Message, 'role'> & { source?: { kind?: string } },
+): boolean {
+  return message.role === 'assistant'
+    || (message.role === 'user' && message.source?.kind === 'user')
+}
+
 export function usageEvent(usage: TokenUsage): BridgeEvent {
   return {
     type: 'usage',
@@ -103,7 +116,11 @@ export function mapSessionEvent(event: SessionEvent): BridgeEvent[] {
       if (event.data.usage) result.push(usageEvent(event.data.usage))
       return result
     }
-    case 'user/message': return [{ type: 'message', role: 'user', content: contentText(event.data) }]
+    case 'user/message': {
+      return event.data.source.kind === 'user'
+        ? [{ type: 'message', role: 'user', content: contentText(event.data) }]
+        : []
+    }
     case 'tool/call': return [{ type: 'status', activity: 'tool' }]
     case 'turn/end': return [{ type: 'status', activity: event.data.reason.kind === 'completed' ? 'done' : 'idle' }]
     case 'request/context': return [{

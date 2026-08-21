@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { SessionId, Session } from '@deepseek-ai/dsh-session'
-import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
-import { bearerAuthorized, errorReference, isSafeSessionId, mapSessionEvent, parseSessionRoute } from '../src/protocol.ts'
+import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { bearerAuthorized, errorReference, isSafeSessionId, isVisibleWallpaperMessage, mapSessionEvent, parseSessionRoute } from '../src/protocol.ts'
 
 describe('wallpaper bridge protocol', () => {
   it('parses only versioned session routes', () => {
@@ -49,6 +49,27 @@ describe('wallpaper bridge protocol', () => {
     expect(mapSessionEvent(event)).toEqual([
       { type: 'message', role: 'assistant', content: 'done' },
       { type: 'usage', input: 12, output: 3, cacheRead: 4 },
+    ])
+  })
+
+  it('never exposes plugin-injected runtime context as a user chat message', () => {
+    const session = Session.create(SessionId('bridge-context-filter'))
+    const injected = createUserMessage({
+      content: [{ type: 'text', text: 'internal runtime context' }],
+      source: { kind: 'plugin', plugin: 'agent-instructions' },
+    })
+    const user = createUserMessage({
+      content: [{ type: 'text', text: 'visible user message' }],
+      source: { kind: 'user' },
+    })
+    const injectedEvent = session.append('user/message', injected, { surfaceOp: 'append' })
+    const userEvent = session.append('user/message', user, { surfaceOp: 'append' })
+
+    expect(isVisibleWallpaperMessage(injected)).toBe(false)
+    expect(isVisibleWallpaperMessage(user)).toBe(true)
+    expect(mapSessionEvent(injectedEvent)).toEqual([])
+    expect(mapSessionEvent(userEvent)).toEqual([
+      { type: 'message', role: 'user', content: 'visible user message' },
     ])
   })
 })

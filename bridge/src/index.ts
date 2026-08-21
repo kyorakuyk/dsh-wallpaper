@@ -12,7 +12,7 @@ import { promisify } from 'node:util'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { API_PREFIX, BRIDGE_VERSION, bearerAuthorized, contentText, errorReference, isSafeSessionId, mapSessionEvent, parseSessionRoute, type BridgeEvent } from './protocol.ts'
+import { API_PREFIX, BRIDGE_VERSION, bearerAuthorized, contentText, errorReference, isSafeSessionId, isVisibleWallpaperMessage, mapSessionEvent, parseSessionRoute, type BridgeEvent } from './protocol.ts'
 
 export const name = 'wallpaper-bridge'
 export const inject = ['agents', 'webServer']
@@ -480,7 +480,7 @@ function approvalSummary(toolName: unknown): string {
 
 function historyOf(session: Session): Array<Record<string, unknown>> {
   return session.deriveMessages()
-    .filter((message) => message.role === 'user' || message.role === 'assistant')
+    .filter(isVisibleWallpaperMessage)
     .map((message) => ({ id: message.id, role: message.role, content: contentText(message) }))
 }
 
