@@ -23,6 +23,7 @@ param(
   [string]$CertificatePath,
   [securestring]$CertificatePassword,
   [switch]$InstallCertificate,
+  [switch]$InstallMachineCertificate,
   [switch]$InstallPackage,
   [switch]$SkipBuild
 )
@@ -32,6 +33,12 @@ $ErrorActionPreference = 'Stop'
 
 function Require-Path([string]$Path, [string]$Message) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "$Message`n$Path" }
+}
+
+function Test-Administrator {
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+  return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
 function Invoke-Checked([string]$FilePath, [string[]]$Arguments, [string]$FailureMessage) {
@@ -261,6 +268,15 @@ $manifestPublisher = $manifest.Publisher
 if ($InstallCertificate -and -not $CreateTestCertificate -and -not $CertificatePath) {
   throw '-InstallCertificate 需要 -CreateTestCertificate 或 -CertificatePath。'
 }
+if ($InstallMachineCertificate -and -not $InstallCertificate) {
+  throw '-InstallMachineCertificate 需要同时指定 -InstallCertificate。'
+}
+if ($InstallPackage -and -not $InstallMachineCertificate) {
+  throw '-InstallPackage 需要 -InstallMachineCertificate：Windows AppX 部署服务不会把当前用户证书存储当作自签名包的受信任发布者。请使用管理员 PowerShell 重新运行。'
+}
+if ($InstallMachineCertificate -and -not $WhatIfPreference -and -not (Test-Administrator)) {
+  throw '-InstallMachineCertificate 需要管理员 PowerShell，因为它会把专用测试发布者证书导入 LocalMachine\\TrustedPeople。'
+}
 if ($CreateTestCertificate -and $CertificatePath) {
   throw '-CreateTestCertificate 与 -CertificatePath 不能同时使用。'
 }
@@ -322,6 +338,11 @@ Copy-Item -LiteralPath $manifestTemplate -Destination (Join-Path $packageRoot 'A
 Copy-Item -LiteralPath (Join-Path $tauriRoot 'icons\icon.png') -Destination (Join-Path $packageRoot 'Assets\StoreLogo.png') -Force -WhatIf:$false
 Copy-Item -LiteralPath (Join-Path $tauriRoot 'icons\icon.png') -Destination (Join-Path $packageRoot 'Assets\Square150x150Logo.png') -Force -WhatIf:$false
 Copy-Item -LiteralPath (Join-Path $tauriRoot 'icons\icon.png') -Destination (Join-Path $packageRoot 'Assets\Square44x44Logo.png') -Force -WhatIf:$false
+# LockScreen's WinRT setter accepts a standard MSIX Assets payload on Windows
+# 11, while the same PNG under Tauri's `_up_` resource directory can be
+# rejected even though StorageFile can enumerate it. Keep this dedicated,
+# immutable copy separate from the web asset tree.
+Copy-Item -LiteralPath (Join-Path $projectRoot 'wallpaper\public\personas\wake-frames\variant-anima\sleep.png') -Destination (Join-Path $packageRoot 'Assets\LockScreenSleep.png') -Force -WhatIf:$false
 Copy-Tree $frontendDist (Join-Path $packageRoot 'dist') '前端资源'
 Copy-Item -LiteralPath (Join-Path $projectRoot 'wallpaper\public\personas\wake-frames\variant-anima\sleep.png') -Destination (Join-Path $packageRoot '_up_\public\personas\wake-frames\variant-anima\sleep.png') -Force -WhatIf:$false
 
@@ -334,7 +355,7 @@ Copy-Item -LiteralPath $webView2Loader -Destination (Join-Path $packageRoot 'Web
 $requiredPackageFiles = @(
   'AppxManifest.xml', 'dsh-wallpaper.exe', 'WebView2Loader.dll', 'dist\index.html',
   '_up_\public\personas\wake-frames\variant-anima\sleep.png',
-  'Assets\StoreLogo.png', 'Assets\Square150x150Logo.png', 'Assets\Square44x44Logo.png'
+  'Assets\StoreLogo.png', 'Assets\Square150x150Logo.png', 'Assets\Square44x44Logo.png', 'Assets\LockScreenSleep.png'
 )
 foreach ($relative in $requiredPackageFiles) {
   Require-Path (Join-Path $packageRoot $relative) "MSIX 打包布局不完整，缺少：$relative"
@@ -342,6 +363,8 @@ foreach ($relative in $requiredPackageFiles) {
 $packagedSleep = Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $packageRoot '_up_\public\personas\wake-frames\variant-anima\sleep.png')
 $sourceSleep = Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $projectRoot 'wallpaper\public\personas\wake-frames\variant-anima\sleep.png')
 if ($packagedSleep.Hash -ne $sourceSleep.Hash) { throw 'MSIX 包中的锁屏睡眠图与正式素材不一致。' }
+$packagedLockScreenSleep = Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $packageRoot 'Assets\LockScreenSleep.png')
+if ($packagedLockScreenSleep.Hash -ne $sourceSleep.Hash) { throw 'MSIX Assets 中的锁屏睡眠图与正式素材不一致。' }
 # Layout packaging is intentionally possible on a build machine that does not
 # have the runtime installed. The prerequisites are only required before an
 # explicit local installation attempt.
@@ -428,12 +451,16 @@ if ($CertificatePath -and $WhatIfPreference) {
 }
 
 if ($InstallCertificate) {
+  $certificateStore = if ($InstallMachineCertificate) { 'Cert:\LocalMachine\TrustedPeople' } else { 'Cert:\CurrentUser\TrustedPeople' }
   if ($WhatIfPreference -and -not $cerPath) {
-    Write-Host 'WhatIf：未导入测试证书到 CurrentUser\TrustedPeople。'
+    Write-Host "WhatIf：未导入测试证书到 $certificateStore。"
   } else {
     Require-Path $cerPath '未找到对应 .cer 公钥证书，无法导入当前用户信任存储。'
-    if ($PSCmdlet.ShouldProcess('Cert:\CurrentUser\TrustedPeople', "导入测试证书 $cerPath")) {
-      Import-Certificate -FilePath $cerPath -CertStoreLocation 'Cert:\CurrentUser\TrustedPeople' | Out-Null
+    # AppX deployment needs a trusted publisher. Machine-wide placement is
+    # an explicit opt-in; do not silently grant a test certificate root-CA
+    # authority just to validate this local package.
+    if ($PSCmdlet.ShouldProcess($certificateStore, "导入测试证书 $cerPath")) {
+      Import-Certificate -FilePath $cerPath -CertStoreLocation $certificateStore | Out-Null
     }
   }
 }

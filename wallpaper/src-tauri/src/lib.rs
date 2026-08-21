@@ -267,6 +267,15 @@ async fn set_lock_screen_enabled(
 }
 
 #[tauri::command]
+async fn clear_stale_lock_screen_backup(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    require_settings(&caller)?;
+    windows_integration::clear_stale_lock_screen_backup(&app).await
+}
+
+#[tauri::command]
 fn get_lock_screen_diagnostics(
     caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -408,6 +417,31 @@ fn open_translucent_tb_install(caller: tauri::WebviewWindow) -> Result<(), Strin
     }
     #[cfg(not(windows))]
     Err("TranslucentTB 仅支持 Windows。".into())
+}
+
+/// Opens the system-owned lock-screen settings page. During the current
+/// MSIX-only test phase Windows accepts the package's bundled sleep image but
+/// may reject a user-image restore snapshot; delegating the choice to Windows
+/// is clearer and safer than pretending a restore has completed.
+#[tauri::command]
+fn open_windows_lock_screen_settings(caller: tauri::WebviewWindow) -> Result<(), String> {
+    require_settings(&caller)?;
+    #[cfg(windows)]
+    {
+        std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Process",
+                "ms-settings:lockscreen",
+            ])
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("无法打开 Windows 锁屏设置：{error}"))
+    }
+    #[cfg(not(windows))]
+    Err("锁屏设置仅支持 Windows。".into())
 }
 
 /// Opens the Windows-owned credential prompt and stores the API key without
@@ -1049,11 +1083,13 @@ pub fn run() {
             publish_settings,
             notify_appearance_changed,
             set_lock_screen_enabled,
+            clear_stale_lock_screen_backup,
             get_lock_screen_diagnostics,
             set_autostart,
             translucent_tb_status,
             launch_translucent_tb,
             open_translucent_tb_install,
+            open_windows_lock_screen_settings,
             prompt_for_api_key,
             show_deepseek_login,
             start_settings_drag,

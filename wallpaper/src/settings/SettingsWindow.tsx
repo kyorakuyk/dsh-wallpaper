@@ -42,8 +42,12 @@ export function SettingsWindow() {
   }
 
   useEffect(() => {
-    if (!notice || !notice.startsWith('已恢复')) return
-    const timer = window.setTimeout(() => setNotice(undefined), 3400)
+    if (!notice) return
+    // Notices are transient feedback, not a second persistent UI layer.
+    // Failures stay long enough to read; every notice still has a keyboard-
+    // and pointer-accessible dismissal control below.
+    const delay = /失败|错误|拒绝|无法|不允许/.test(notice) ? 8200 : 4200
+    const timer = window.setTimeout(() => setNotice(undefined), delay)
     return () => window.clearTimeout(timer)
   }, [notice])
 
@@ -86,7 +90,28 @@ export function SettingsWindow() {
       setLockScreenBusy(false)
     }
   }
-  const restoreLockScreen = () => setLockScreenEnabled(false, true)
+  const openWindowsLockScreenSettings = async () => {
+    try {
+      await nativeRuntime.openWindowsLockScreenSettings()
+      setNotice('已打开 Windows 锁屏设置；请在系统设置中选择要恢复的图片。')
+    } catch (error) {
+      setNotice(`无法打开 Windows 锁屏设置：${String(error)}`)
+    }
+  }
+  const clearStaleLockScreenBackup = async () => {
+    if (lockScreenOperationRef.current) return
+    lockScreenOperationRef.current = true
+    setLockScreenBusy(true)
+    try {
+      setNotice(await nativeRuntime.clearStaleLockScreenBackup())
+      await refreshLockScreenDiagnostics()
+    } catch (error) {
+      setNotice(`清理旧恢复点失败：${String(error)}`)
+    } finally {
+      lockScreenOperationRef.current = false
+      setLockScreenBusy(false)
+    }
+  }
   useEffect(() => {
     void appCoreClient.snapshot().then((snapshot) => { setHarness(snapshot.harness); setInteractionEnabled(snapshot.interaction.enabled) })
     refreshTranslucentTb()
@@ -136,7 +161,7 @@ export function SettingsWindow() {
   }
 
   return <main className="settings-window">
-    {notice && <div className="settings-window__notice">{notice}<button onClick={() => setNotice(undefined)}>×</button></div>}
+    {notice && <div className="settings-window__notice" role="status"><span>{notice}</span><button type="button" aria-label="关闭通知" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); setNotice(undefined) }}>×</button></div>}
     <SettingsPanel
       settings={settings}
       harnessStatus={harness}
@@ -154,7 +179,8 @@ export function SettingsWindow() {
       onClearAppearance={(slot) => { void clearAppearance(slot) }}
       lockScreenDiagnostics={lockScreenDiagnostics}
       onRefreshLockScreenDiagnostics={refreshLockScreenDiagnostics}
-      onRestoreLockScreen={() => { void restoreLockScreen() }}
+      onRestoreLockScreen={() => { void openWindowsLockScreenSettings() }}
+      onClearStaleLockScreenBackup={() => { void clearStaleLockScreenBackup() }}
       onSetLockScreenEnabled={(enabled) => { void setLockScreenEnabled(enabled) }}
       lockScreenBusy={lockScreenBusy}
       onRequestDeepSeekLogin={() => void nativeRuntime.requestDeepSeekLogin()}

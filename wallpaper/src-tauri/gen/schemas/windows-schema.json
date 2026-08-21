@@ -261,6 +261,12 @@
           "markdownDescription": "Enables the cancel_chat command without any pre-configured scope."
         },
         {
+          "description": "Enables the clear_stale_lock_screen_backup command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-clear-stale-lock-screen-backup",
+          "markdownDescription": "Enables the clear_stale_lock_screen_backup command without any pre-configured scope."
+        },
+        {
           "description": "Enables the connect_harness command without any pre-configured scope.",
           "type": "string",
           "const": "allow-connect-harness",
@@ -313,6 +319,12 @@
           "type": "string",
           "const": "allow-open-translucent-tb-install",
           "markdownDescription": "Enables the open_translucent_tb_install command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_windows_lock_screen_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-windows-lock-screen-settings",
+          "markdownDescription": "Enables the open_windows_lock_screen_settings command without any pre-configured scope."
         },
         {
           "description": "Enables the probe_harness command without any pre-configured scope.",
@@ -471,6 +483,12 @@
           "markdownDescription": "Denies the cancel_chat command without any pre-configured scope."
         },
         {
+          "description": "Denies the clear_stale_lock_screen_backup command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-clear-stale-lock-screen-backup",
+          "markdownDescription": "Denies the clear_stale_lock_screen_backup command without any pre-configured scope."
+        },
+        {
           "description": "Denies the connect_harness command without any pre-configured scope.",
           "type": "string",
           "const": "deny-connect-harness",
@@ -523,6 +541,12 @@
           "type": "string",
           "const": "deny-open-translucent-tb-install",
           "markdownDescription": "Denies the open_translucent_tb_install command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_windows_lock_screen_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-windows-lock-screen-settings",
+          "markdownDescription": "Denies the open_windows_lock_screen_settings command without any pre-configured scope."
         },
         {
           "description": "Denies the probe_harness command without any pre-configured scope.",

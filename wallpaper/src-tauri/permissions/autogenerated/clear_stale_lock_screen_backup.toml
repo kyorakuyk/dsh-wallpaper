@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-clear-stale-lock-screen-backup"
+description = "Enables the clear_stale_lock_screen_backup command without any pre-configured scope."
+commands.allow = ["clear_stale_lock_screen_backup"]
+
+[[permission]]
+identifier = "deny-clear-stale-lock-screen-backup"
+description = "Denies the clear_stale_lock_screen_backup command without any pre-configured scope."
+commands.deny = ["clear_stale_lock_screen_backup"]

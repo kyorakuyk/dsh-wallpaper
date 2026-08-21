@@ -316,6 +316,41 @@ pub fn discard_backup_after_failed_takeover(
     Ok(())
 }
 
+/// Discards an explicitly user-authorized stale recovery point without
+/// touching Windows' current lock-screen setting.  This is intentionally
+/// narrower than restoration: it is available only when Windows is no longer
+/// using our managed image, so it can never overwrite a picture chosen after
+/// the earlier takeover attempt.
+pub fn discard_stale_backup(
+    config_dir: &Path,
+    managed_image_active: bool,
+) -> Result<(), String> {
+    let state = inspect_backup(config_dir);
+    if !has_stale_backup(&state, managed_image_active) {
+        return Err("当前没有可安全清理的旧锁屏恢复点。".into());
+    }
+
+    match state {
+        LockScreenBackupState::Valid(manifest) => {
+            let snapshot = restore_snapshot_path(config_dir, &manifest)?;
+            let managed_image = managed_image_path(config_dir, &manifest)?;
+            fs::remove_file(manifest_path(config_dir))
+                .map_err(|error| format!("无法清理旧锁屏恢复点：{error}"))?;
+            let _ = fs::remove_file(snapshot);
+            let _ = fs::remove_file(managed_image);
+            let _ = fs::remove_file(legacy_manifest_path(config_dir));
+            Ok(())
+        }
+        LockScreenBackupState::LegacyUri { .. } => {
+            fs::remove_file(legacy_manifest_path(config_dir))
+                .map_err(|error| format!("无法清理旧锁屏恢复点：{error}"))
+        }
+        LockScreenBackupState::Missing | LockScreenBackupState::Invalid { .. } => {
+            Err("当前没有可安全清理的旧锁屏恢复点。".into())
+        }
+    }
+}
+
 /// Returns the private snapshot that native code must pass to WinRT when
 /// restoring.  Do not use `original_image_uri` for restoration: the original
 /// source may have moved since takeover.

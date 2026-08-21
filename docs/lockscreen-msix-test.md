@@ -52,9 +52,9 @@ AppxManifest.xml
 
 ## 显式创建本机测试证书并安装
 
-以下命令才会产生有副作用的操作：在**当前用户**的 `My` 证书存储创建可导出的代码签名测试证书、导出 PFX/CER、尝试将 CER 加入**当前用户**的 `TrustedPeople`，然后注册当前用户的 MSIX。
+以下命令会产生有副作用：在**当前用户**的 `My` 证书存储创建可导出的代码签名测试证书并导出 PFX/CER；为安装自签名 MSIX，则将 CER 加入**本机**的 `TrustedPeople`，然后注册当前用户的 MSIX。
 
-`CurrentUser\TrustedPeople` 是脚本刻意采用的最小作用域测试路径，但它不是对所有 Windows 配置都足以信任 MSIX 的保证。Microsoft 的手工旁加载示例常要求将发布者证书信任到 `LocalMachine\TrustedPeople`；企业策略、App Installer 配置和 Windows 版本也可能改变结果。若 `Add-AppxPackage` 报签名/信任错误，应先停止，不要把它当作锁屏实现失败；由测试者按所在组织的受控流程确认是否需要管理员协助的机器级信任，或改用 Microsoft Store / 已受信任的发行证书。脚本不会自动写入 `LocalMachine` 证书存储。
+Windows 的 AppX 部署服务不会把 `CurrentUser` 证书存储当作自签名发布者的机器级信任；因此安装路径必须显式传入 `-InstallMachineCertificate`，并在管理员 PowerShell 中把这张专用测试发布者证书放入 `LocalMachine\TrustedPeople`。这会信任该测试发布者签名的包，故它只能用于本机测试，验收结束后应移除。未使用该开关时，`-InstallCertificate` 只会导入 `CurrentUser\TrustedPeople` 供签名验证，脚本拒绝继续安装。
 
 ```powershell
 .\scripts\build-msix-test.ps1 `
@@ -69,12 +69,15 @@ AppxManifest.xml
 
 如需通过自动化提供密码，先在当前 PowerShell 会话内创建 `SecureString`：
 
+以**管理员 PowerShell**执行：
+
 ```powershell
 $password = Read-Host 'PFX password' -AsSecureString
 .\scripts\build-msix-test.ps1 `
   -CreateTestCertificate `
   -CertificatePassword $password `
   -InstallCertificate `
+  -InstallMachineCertificate `
   -InstallPackage
 ```
 
@@ -116,14 +119,14 @@ $password = Read-Host 'PFX password' -AsSecureString
 ```powershell
 # 查看（不修改）
 Get-AppxPackage -Name com.dsh.wallpaper
-Get-ChildItem Cert:\CurrentUser\TrustedPeople |
+Get-ChildItem Cert:\LocalMachine\TrustedPeople |
   Where-Object Subject -eq 'CN=DSH Wallpaper Test'
 
 # 删除测试包
 Get-AppxPackage -Name com.dsh.wallpaper | Remove-AppxPackage
 
 # 删除仅供测试的信任证书（确认 Subject / Thumbprint 后再执行）
-Get-ChildItem Cert:\CurrentUser\TrustedPeople |
+Get-ChildItem Cert:\LocalMachine\TrustedPeople |
   Where-Object Subject -eq 'CN=DSH Wallpaper Test' |
   Remove-Item
 ```

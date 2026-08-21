@@ -18,11 +18,13 @@ export interface LockScreenDiagnostics { supported: boolean; packageIdentity: bo
 export interface NativeRuntime {
   isNative: boolean
   setLockScreen(enabled: boolean): Promise<string>
+  clearStaleLockScreenBackup(): Promise<string>
   lockScreenDiagnostics(): Promise<LockScreenDiagnostics>
   setAutostart(enabled: boolean): Promise<void>
   translucentTbStatus(): Promise<TranslucentTbStatus>
   launchTranslucentTb(): Promise<void>
   openTranslucentTbInstall(): Promise<void>
+  openWindowsLockScreenSettings(): Promise<void>
   /**
    * Opens Windows' native credential dialog. The API key never crosses the
    * WebView IPC boundary: Windows persists it directly in Credential Manager.
@@ -54,6 +56,11 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<string>('set_lock_screen_enabled', { enabled })
   },
+  async clearStaleLockScreenBackup() {
+    if (!await tauriAvailable()) return '浏览器预览不支持清理系统锁屏恢复点。'
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<string>('clear_stale_lock_screen_backup')
+  },
   async lockScreenDiagnostics() {
     if (!await tauriAvailable()) return { supported: false, packageIdentity: false, takeoverAvailable: false, backupExists: false, backupValid: false, staleBackup: false, managedImageReady: false, managedImageActive: false, developmentBuild: false, warnings: ['浏览器预览不支持系统锁屏诊断。'] }
     const { invoke } = await import('@tauri-apps/api/core')
@@ -76,6 +83,11 @@ export const nativeRuntime: NativeRuntime = {
   async openTranslucentTbInstall() {
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('open_translucent_tb_install')
+  },
+  async openWindowsLockScreenSettings() {
+    if (!await tauriAvailable()) return
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('open_windows_lock_screen_settings')
   },
   async promptForApiKeyCredential() {
     if (!await tauriAvailable()) throw new Error('仅桌面版支持 Windows 凭据管理器')
