@@ -12,6 +12,10 @@ export const SETTINGS_VERSION = 7
 export const MAX_PRICE_PER_MILLION = 1_000_000
 export const assetUrl = (path: string): string => `${import.meta.env.BASE_URL}${path.replace(/^\//, '')}`
 const CONVERSATION_KEY = 'dsh-wallpaper:conversations:v1'
+// Existing v1 Harness pointers were created before the bridge supplied the
+// required DSH model/cwd context. Do not resume those invalid sessions; API
+// and web pointers remain unaffected.
+const HARNESS_POINTER_REVISION = 2
 
 /** 背景选项：'default' = 主题色渐变；其他项 = 正式深海室内插画。 */
 export const BACKGROUND_OPTIONS = [
@@ -155,7 +159,7 @@ export function saveSettings(s: WallpaperSettings): void {
 export interface ConversationPointers {
   'deepseek-web'?: { id: string; updatedAt: number; day: string }
   'deepseek-api'?: { id: string; updatedAt: number; day: string }
-  harness?: { id: string; updatedAt: number; day: string }
+  harness?: { id: string; updatedAt: number; day: string; bridgeRevision?: number }
 }
 
 /**
@@ -180,7 +184,12 @@ export function loadConversationPointers(): ConversationPointers {
 export function saveConversationPointer(backend: BackendMode, id: string, now: Date = new Date()): void {
   try {
     const pointers = loadConversationPointers()
-    pointers[backend] = { id, updatedAt: now.getTime(), day: localCalendarDay(now) }
+    pointers[backend] = {
+      id,
+      updatedAt: now.getTime(),
+      day: localCalendarDay(now),
+      ...(backend === 'harness' ? { bridgeRevision: HARNESS_POINTER_REVISION } : {}),
+    }
     localStorage.setItem(CONVERSATION_KEY, JSON.stringify(pointers))
   } catch { /* unavailable storage: start a fresh conversation next time */ }
 }
@@ -189,6 +198,8 @@ export function resumeConversationId(backend: BackendMode, policy: ConversationP
   if (policy === 'new-on-unlock') return undefined
   const pointer = loadConversationPointers()[backend]
   if (!pointer) return undefined
+  if (backend === 'harness'
+    && (pointer as ConversationPointers['harness'])?.bridgeRevision !== HARNESS_POINTER_REVISION) return undefined
   if (policy === 'daily' && pointer.day !== localCalendarDay(now)) return undefined
   return pointer.id
 }

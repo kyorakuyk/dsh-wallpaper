@@ -254,7 +254,7 @@ describe('wallpaper bridge HTTP routes', () => {
     expect(harness.create).toHaveBeenCalledOnce()
     expect(harness.create).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'wallpaper-test',
-      meta: { cwd: undefined },
+      meta: { cwd: process.cwd() },
       agentOptions: { provider: 'default-provider', model: 'default-model' },
     }))
 
@@ -304,7 +304,7 @@ describe('wallpaper bridge HTTP routes', () => {
     expect(created.status).toBe(201)
     expect(harness.create).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'host-owned-cwd',
-      meta: { cwd: undefined },
+      meta: { cwd: process.cwd() },
     }))
   })
 

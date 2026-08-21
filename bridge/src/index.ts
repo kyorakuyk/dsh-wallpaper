@@ -15,7 +15,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { API_PREFIX, BRIDGE_VERSION, bearerAuthorized, contentText, errorReference, isSafeSessionId, isVisibleWallpaperMessage, mapSessionEvent, parseSessionRoute, type BridgeEvent } from './protocol.ts'
 
 export const name = 'wallpaper-bridge'
-export const inject = ['agents', 'webServer']
+export const inject = ['agentDefaultModel', 'agents', 'webServer']
 
 export interface Config {
   /**
@@ -653,7 +653,11 @@ export function apply(ctx: Context, config: Config = {}): void {
             // local HTTP caller to override it, even if it holds the Bridge
             // token; the wallpaper never needs this control to create a
             // standard DSH session.
-            const cwd = config.cwd?.trim() || undefined
+            // The deployment persona contains a strict `{{cwd}}` variable.
+            // A fresh DSH session therefore needs a host-owned workspace even
+            // when the operator did not configure a narrower bridge cwd.
+            // `process.cwd()` is the DSH launch directory, never HTTP input.
+            const cwd = config.cwd?.trim() || process.cwd()
             let pending = creating.get(id)
             const createdByThisRequest = pending === undefined
             if (!pending) {
