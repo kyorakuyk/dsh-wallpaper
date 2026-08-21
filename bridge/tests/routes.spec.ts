@@ -36,6 +36,7 @@ interface RouteHarness {
   create: ReturnType<typeof vi.fn>
   logger: { warn: ReturnType<typeof vi.fn> }
   persistence: { enabled: boolean }
+  injectedDependencies: string[] | undefined
 }
 
 const cleanups: string[] = []
@@ -134,6 +135,7 @@ async function createHarness(
       return () => { routes.delete(route.path) }
     },
   }
+  let injectedDependencies: string[] | undefined
   const context = {
     on: (event: string, listener: (...args: never[]) => unknown) => {
       listeners.set(event, listener)
@@ -141,7 +143,10 @@ async function createHarness(
     },
     effect: () => undefined,
     get: (name: string) => name === 'sessionPersistence' && persistence.enabled ? {} : undefined,
-    inject: (_dependencies: string[], callback: (scope: unknown) => void) => callback({ webServer, agents: { create, resume: create }, logger, effect: () => undefined }),
+    inject: (dependencies: string[], callback: (scope: unknown) => void) => {
+      injectedDependencies = dependencies
+      callback({ webServer, agents: { create, resume: create }, logger, effect: () => undefined })
+    },
   } as unknown as Context
   // This is deliberately a host-owned root, not a token path. The bridge can
   // only touch its dedicated `wallpaper` child beneath it.
@@ -149,7 +154,7 @@ async function createHarness(
   const tokenFile = tokenFileForRoot(tokenRoot)
   await prepareTokenRoot?.(tokenRoot)
   apply(context, { tokenRoot })
-  return { root, tokenRoot, tokenFile, routes, listeners, agent, create, logger, persistence }
+  return { root, tokenRoot, tokenFile, routes, listeners, agent, create, logger, persistence, injectedDependencies }
 }
 
 async function call(
@@ -163,6 +168,11 @@ async function call(
 }
 
 describe('wallpaper bridge HTTP routes', () => {
+  it('declares both agent lifecycle and web-server dependencies for HTTP routes', async () => {
+    const harness = await createHarness()
+    expect(harness.injectedDependencies).toEqual(['agents', 'webServer'])
+  })
+
   it('uses only its fixed token slot beneath the host-owned root', () => {
     const root = 'C:\\Users\\whale\\.dsh'
     expect(tokenFileForRoot(root)).toBe('C:\\Users\\whale\\.dsh\\wallpaper\\bridge-token')
@@ -190,15 +200,15 @@ describe('wallpaper bridge HTTP routes', () => {
     expect(windowsTokenAclCommands('C:\\Users\\whale\\.dsh\\wallpaper\\bridge-token', 'S-1-5-21-42')).toEqual([
       ['C:\\Users\\whale\\.dsh\\wallpaper\\bridge-token', '/setowner', '*S-1-5-21-42'],
       ['C:\\Users\\whale\\.dsh\\wallpaper\\bridge-token', '/reset'],
-      ['C:\\Users\\whale\\.dsh\\wallpaper\\bridge-token', '/inheritance:r'],
       ['C:\\Users\\whale\\.dsh\\wallpaper\\bridge-token', '/grant:r', '*S-1-5-21-42:(F)'],
+      ['C:\\Users\\whale\\.dsh\\wallpaper\\bridge-token', '/inheritance:r'],
     ])
     expect(windowsTokenAclCommands('token', 'S-1-5-21-42').flat()).not.toContain('/inheritance:e')
     expect(windowsTokenDirectoryAclCommands('C:\\Users\\whale\\.dsh\\wallpaper', 'S-1-5-21-42')).toEqual([
       ['C:\\Users\\whale\\.dsh\\wallpaper', '/setowner', '*S-1-5-21-42'],
       ['C:\\Users\\whale\\.dsh\\wallpaper', '/reset'],
-      ['C:\\Users\\whale\\.dsh\\wallpaper', '/inheritance:r'],
       ['C:\\Users\\whale\\.dsh\\wallpaper', '/grant:r', '*S-1-5-21-42:(OI)(CI)(F)'],
+      ['C:\\Users\\whale\\.dsh\\wallpaper', '/inheritance:r'],
     ])
   })
 

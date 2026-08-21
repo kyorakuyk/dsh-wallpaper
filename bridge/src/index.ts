@@ -111,10 +111,12 @@ async function currentWindowsSid(): Promise<string> {
  *
  * `icacls /grant:r` replaces only the named SID's existing explicit ACEs;
  * it does not clear ACEs belonging to Everyone, Users, or another account.
- * Start with `/reset` so those stale explicit entries are removed, then remove
- * the inherited defaults before granting exactly the current user.  See the
- * Microsoft `icacls` reference for the semantics of `/reset`,
- * `/inheritancelevel:r`, and `/grant:r`.
+ * Start with `/reset` so stale explicit entries are removed, then establish
+ * the current user's explicit allow ACE *before* removing inherited defaults.
+ * This ordering matters: a filesystem watcher can otherwise observe the
+ * directory in the small `/inheritance:r` -> `/grant:r` gap with no usable
+ * ACE and fail its whole watch with EPERM. See the Microsoft `icacls`
+ * reference for `/reset`, `/inheritancelevel:r`, and `/grant:r` semantics.
  *
  * Exported only for the source-level regression test; it is not part of the
  * wallpaper HTTP protocol.
@@ -123,8 +125,8 @@ export function windowsTokenAclCommands(file: string, sid: string): ReadonlyArra
   return [
     [file, '/setowner', `*${sid}`],
     [file, '/reset'],
-    [file, '/inheritance:r'],
     [file, '/grant:r', `*${sid}:(F)`],
+    [file, '/inheritance:r'],
   ]
 }
 
@@ -140,8 +142,8 @@ export function windowsTokenDirectoryAclCommands(directory: string, sid: string)
   return [
     [directory, '/setowner', `*${sid}`],
     [directory, '/reset'],
-    [directory, '/inheritance:r'],
     [directory, '/grant:r', `*${sid}:(OI)(CI)(F)`],
+    [directory, '/inheritance:r'],
   ]
 }
 
@@ -575,7 +577,11 @@ export function apply(ctx: Context, config: Config = {}): void {
     await Promise.allSettled(disposals)
   })
 
-  ctx.inject(['webServer'], (wctx) => {
+  // The HTTP handlers create and resume standard DSH agents.  Keep both
+  // services in this child scope explicitly: a test mock that happens to
+  // expose `agents` next to `webServer` must not hide a real Cordis scope
+  // where only the declared dependencies are available.
+  ctx.inject(['agents', 'webServer'], (wctx) => {
     if (wctx.webServer.host !== '127.0.0.1') {
       throw new Error('dsh-wallpaper-bridge refuses to run on a non-loopback WebServer')
     }
