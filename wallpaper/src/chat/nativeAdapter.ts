@@ -36,7 +36,7 @@ export class NativeChatAdapter extends EventChatAdapter {
     const harnessConnectionId = this.mode === 'harness' ? crypto.randomUUID() : undefined
     if (harnessConnectionId) this.requestId = harnessConnectionId
     this.nativeUnsubscribe = await nativeRuntime.listenChat((event) => this.receiveNativeEvent(event))
-    if (this.mode === 'harness') this.sessionId = await nativeRuntime.connectHarness(this.sessionId, harnessConnectionId!)
+    if (this.mode === 'harness') this.sessionId = await nativeRuntime.connectHarness(this.sessionId, harnessConnectionId!, this.nativeOptions.model)
   }
 
   disconnect(): void {

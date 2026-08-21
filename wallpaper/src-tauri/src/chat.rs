@@ -1007,6 +1007,8 @@ impl ApiPricing {
 struct HarnessSessionRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     resume_session_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<&'a str>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1990,6 +1992,7 @@ pub async fn harness_connect(
     state: tauri::State<'_, ChatState>,
     resume_session_id: Option<String>,
     connection_id: String,
+    model: Option<String>,
 ) -> Result<String, String> {
     let connection_id = connection_id.trim().to_string();
     if connection_id.is_empty() || connection_id.len() > 200 {
@@ -1998,12 +2001,20 @@ pub async fn harness_connect(
     cancel_harness_stream(&state);
     let token = read_bridge_token()?;
     let client = bridge_request_client()?;
+    let model = model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_owned);
+    if model.as_ref().is_some_and(|model| !valid_bridge_status(model)) {
+        return Err("Harness 模型标识无效".into());
+    }
     let create_session = |resume_session_id: Option<&str>| {
         auth(
             client.post("http://127.0.0.1:3080/api/wallpaper/v1/sessions"),
             &token,
         )
-        .json(&HarnessSessionRequest { resume_session_id })
+        .json(&HarnessSessionRequest { resume_session_id, model: model.as_deref() })
         .send()
     };
     let mut response = create_session(resume_session_id.as_deref())

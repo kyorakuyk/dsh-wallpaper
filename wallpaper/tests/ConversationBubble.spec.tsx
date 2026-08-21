@@ -75,4 +75,24 @@ describe('ConversationBubble', () => {
     expect(html).toContain('会话 约 ¥0.0000')
     expect(html).not.toContain('价格未配置')
   })
+
+  it('places a functional model picker beside conversation history', () => {
+    const html = renderToStaticMarkup(<ConversationBubble
+      backend="harness"
+      activity="idle"
+      modelLabel="deepseek-v4-flash"
+      messages={[]}
+      streamingText=""
+      historyExpanded={false}
+      modelOptions={['deepseek-v4-flash', 'deepseek-v4-pro']}
+      selectedModel="deepseek-v4-flash"
+      onSelectModel={() => undefined}
+      {...callbacks}
+    />)
+
+    expect(html).toContain('aria-label="切换模型"')
+    expect(html).toContain('deepseek-v4-flash')
+    expect(html).toContain('deepseek-v4-pro')
+    expect(html).toContain('会话记录')
+  })
 })

@@ -709,9 +709,10 @@ async fn connect_harness(
     state: tauri::State<'_, chat::ChatState>,
     resume_session_id: Option<String>,
     connection_id: String,
+    model: Option<String>,
 ) -> Result<String, String> {
     require_background(&caller)?;
-    chat::harness_connect(app, state, resume_session_id, connection_id).await
+    chat::harness_connect(app, state, resume_session_id, connection_id, model).await
 }
 
 #[tauri::command]

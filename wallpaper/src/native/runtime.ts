@@ -36,7 +36,7 @@ export interface NativeRuntime {
   listenChat(listener: (event: ScopedChatEvent) => void): Promise<() => void>
   sendChat(mode: BackendMode, text: string, options?: NativeSendOptions): Promise<string | undefined>
   cancelChat(mode: BackendMode): Promise<void>
-  connectHarness(resumeSessionId: string | undefined, connectionId: string): Promise<string>
+  connectHarness(resumeSessionId: string | undefined, connectionId: string, model?: string): Promise<string>
   harnessHistory(): Promise<ChatMessage[]>
   apiHistory(conversationId: string): Promise<ChatMessage[]>
   listenTray(listener: (event: { type: 'backend'; backend: BackendMode }) => void): Promise<() => void>
@@ -127,9 +127,9 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('cancel_chat', { mode })
   },
-  async connectHarness(resumeSessionId, connectionId) {
+  async connectHarness(resumeSessionId, connectionId, model) {
     const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<string>('connect_harness', { resumeSessionId, connectionId })
+    return invoke<string>('connect_harness', { resumeSessionId, connectionId, model })
   },
   async harnessHistory() {
     const { invoke } = await import('@tauri-apps/api/core')

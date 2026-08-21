@@ -24,6 +24,9 @@ export interface ConversationBubbleProps {
   /** Bridge availability drives the DSH indicator and mode switch. */
   harnessAvailability?: RuntimeState['harness']
   onSelectBackend?: (backend: BackendMode) => void
+  modelOptions?: readonly string[]
+  selectedModel?: string
+  onSelectModel?: (model: string) => void
   onExpand?: () => void
   onToggleHistory: () => void
   onSend: (text: string) => void
@@ -165,6 +168,18 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           <span className="dsh-chat__separator" />
           <span>{totalCost ? `会话 ${formatCost(totalCost.cost, totalCost.estimated)}` : '会话费用未提供'}</span>
         </span>
+        <label className="dsh-chat__model-picker" title={props.onSelectModel ? '切换模型' : '当前后端不支持在壁纸中切换模型'}>
+          <Icon name="model" size={13} />
+          <select
+            aria-label="切换模型"
+            value={props.selectedModel ?? ''}
+            disabled={!props.onSelectModel || !props.modelOptions?.length}
+            onChange={(event) => props.onSelectModel?.(event.target.value)}
+          >
+            {!props.modelOptions?.length && <option value="">模型不可切换</option>}
+            {props.modelOptions?.map((model) => <option key={model} value={model}>{model}</option>)}
+          </select>
+        </label>
         <Button className="dsh-chat__history-button" variant="ghost" onClick={props.onToggleHistory} aria-expanded={showHistory}>
           <Icon name="history" size={14} />{showHistory ? '收起记录' : '会话记录'}<Icon name="chevron-up" size={13} />
         </Button>
