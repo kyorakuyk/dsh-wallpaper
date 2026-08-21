@@ -43,6 +43,11 @@ interface LiveSession {
   clients: Set<ServerResponse>
 }
 
+/** The narrow host-owned default model API consumed by the bridge. */
+interface DefaultModelSelection {
+  currentSelection(): { provider: string; model: string }
+}
+
 // This is an HTTP boundary, so measure the actual UTF-8 payload rather than
 // JavaScript UTF-16 code units. Keep it in lockstep with the native client.
 const MAX_MESSAGE_BYTES = 100_000
@@ -581,7 +586,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   // services in this child scope explicitly: a test mock that happens to
   // expose `agents` next to `webServer` must not hide a real Cordis scope
   // where only the declared dependencies are available.
-  ctx.inject(['agents', 'webServer'], (wctx) => {
+  ctx.inject(['agentDefaultModel', 'agents', 'webServer'], (wctx) => {
     if (wctx.webServer.host !== '127.0.0.1') {
       throw new Error('dsh-wallpaper-bridge refuses to run on a non-loopback WebServer')
     }
@@ -632,7 +637,18 @@ export function apply(ctx: Context, config: Config = {}): void {
             if (existing) return json(res, 200, sessionSummary(existing))
             const provider = typeof body.provider === 'string' && body.provider.trim() ? body.provider.trim() : undefined
             const model = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : undefined
-            const agentOptions = provider || model ? { provider, model } : undefined
+            // `ctx.agents.create()` is intentionally low-level: unlike the
+            // Web API gateway it does not apply the host's default model on
+            // behalf of a caller. A blank provider/model would therefore let
+            // a session start and only fail later when `{{model}}` is rendered
+            // in the deployment persona. Read the host-owned selection here;
+            // request values remain an explicit override for future clients.
+            const defaults = (wctx as unknown as { agentDefaultModel: DefaultModelSelection })
+              .agentDefaultModel.currentSelection()
+            const agentOptions = {
+              provider: provider ?? defaults.provider,
+              model: model ?? defaults.model,
+            }
             // A session's workspace is a host policy choice.  Do not permit a
             // local HTTP caller to override it, even if it holds the Bridge
             // token; the wallpaper never needs this control to create a

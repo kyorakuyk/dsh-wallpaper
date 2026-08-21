@@ -145,7 +145,13 @@ async function createHarness(
     get: (name: string) => name === 'sessionPersistence' && persistence.enabled ? {} : undefined,
     inject: (dependencies: string[], callback: (scope: unknown) => void) => {
       injectedDependencies = dependencies
-      callback({ webServer, agents: { create, resume: create }, logger, effect: () => undefined })
+      callback({
+        webServer,
+        agents: { create, resume: create },
+        agentDefaultModel: { currentSelection: () => ({ provider: 'default-provider', model: 'default-model' }) },
+        logger,
+        effect: () => undefined,
+      })
     },
   } as unknown as Context
   // This is deliberately a host-owned root, not a token path. The bridge can
@@ -170,7 +176,7 @@ async function call(
 describe('wallpaper bridge HTTP routes', () => {
   it('declares both agent lifecycle and web-server dependencies for HTTP routes', async () => {
     const harness = await createHarness()
-    expect(harness.injectedDependencies).toEqual(['agents', 'webServer'])
+    expect(harness.injectedDependencies).toEqual(['agentDefaultModel', 'agents', 'webServer'])
   })
 
   it('uses only its fixed token slot beneath the host-owned root', () => {
@@ -249,6 +255,7 @@ describe('wallpaper bridge HTTP routes', () => {
     expect(harness.create).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'wallpaper-test',
       meta: { cwd: undefined },
+      agentOptions: { provider: 'default-provider', model: 'default-model' },
     }))
 
     const accepted = await call(sessionsRoute, request('POST', `${API_PREFIX}/sessions/wallpaper-test/messages`, { text: 'hello' }, `Bearer ${token}`))
