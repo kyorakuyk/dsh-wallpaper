@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Activity, BackendMode, ChatMessage, TokenUsage } from '../../domain/types.ts'
+import type { Activity, BackendMode, ChatMessage, RuntimeState, TokenUsage } from '../../domain/types.ts'
 import { Button, Glass, Icon } from '../../ui/primitives/index.ts'
-import { ACTIVITY_LABEL, BACKEND_PRESENTATION, composerPlaceholder, formatCost, isBusyActivity, sessionCostSummary, turnUsageSummary } from './conversationViewModel.ts'
+import { BACKEND_PRESENTATION, composerPlaceholder, formatCost, isBusyActivity, sessionCostSummary, turnUsageSummary } from './conversationViewModel.ts'
 import './ConversationBubble.css'
 
 export interface ConversationBubbleProps {
@@ -21,6 +21,9 @@ export interface ConversationBubbleProps {
   acrylicBlur?: number
   /** Both API rates are explicitly configured; zero is still configured. */
   apiPricingConfigured?: boolean
+  /** Bridge availability drives the DSH indicator and mode switch. */
+  harnessAvailability?: RuntimeState['harness']
+  onSelectBackend?: (backend: BackendMode) => void
   onExpand?: () => void
   onToggleHistory: () => void
   onSend: (text: string) => void
@@ -44,6 +47,13 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const backend = BACKEND_PRESENTATION[props.backend]
   const totalCost = sessionCostSummary(props.messages)
   const turnUsage = turnUsageSummary(props.usage, props.backend, Boolean(props.apiPricingConfigured))
+  const harnessAvailability = props.harnessAvailability ?? 'offline'
+  const harnessReady = harnessAvailability === 'bridge-ready'
+  const harnessLabel = harnessAvailability === 'bridge-ready'
+    ? 'DSH Bridge 已连接'
+    : harnessAvailability === 'web-only'
+      ? 'DSH 在线，缺少壁纸 Bridge'
+      : 'DSH Bridge 离线'
   // An empty drawer has no information value and turns the workspace into a
   // large blank panel. It appears only once there is transcript content.
   const showHistory = props.historyExpanded && (props.messages.length > 0 || Boolean(props.streamingText))
@@ -102,9 +112,22 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           <span className="dsh-chat__backend-detail">{backend.description}</span>
         </div>
         <span className="dsh-chat__topbar-spacer" />
-        <span className="dsh-chat__status" title={backend.name}>
-          <span className="dsh-chat__status-dot" />{ACTIVITY_LABEL[props.activity]}
+        <span className={`dsh-chat__status dsh-chat__status--harness dsh-chat__status--${harnessAvailability}`} title={harnessLabel}>
+          <span className="dsh-chat__status-dot" />{harnessLabel}
         </span>
+        <button
+          type="button"
+          className={`dsh-chat__mode-switch ${props.backend === 'harness' ? 'is-harness' : ''}`}
+          role="switch"
+          aria-checked={props.backend === 'harness'}
+          aria-label={harnessReady ? `切换至${props.backend === 'harness' ? ' DeepSeek' : ' Harness'} 模式` : harnessLabel}
+          title={harnessReady ? `当前：${props.backend === 'harness' ? 'Harness，点击切回 DeepSeek' : 'DeepSeek，点击切换 Harness'}` : harnessLabel}
+          disabled={!harnessReady}
+          onClick={() => props.onSelectBackend?.(props.backend === 'harness' ? 'deepseek-web' : 'harness')}
+        >
+          <span className="dsh-chat__mode-switch-track"><span className="dsh-chat__mode-switch-knob" /></span>
+          <span className="dsh-chat__mode-switch-label" aria-hidden="true">DSH</span>
+        </button>
         {!props.persistent && <Button variant="ghost" iconOnly onClick={props.onClose} aria-label="收起对话"><Icon name="close" /></Button>}
       </header>
 

@@ -446,53 +446,6 @@
   border-top: 12px solid var(--persona-primary);
 }
 
-/* DSH 上线询问 */
-.harness-prompt {
-  position: absolute;
-  bottom: 22%;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 16px;
-  border-radius: 12px;
-  background: rgba(20, 24, 44, 0.85);
-  border: 1px solid var(--persona-primary);
-  backdrop-filter: blur(10px);
-  font-size: 14px;
-  z-index: 5;
-}
-
-.harness-prompt button {
-  padding: 5px 12px;
-  border: none;
-  border-radius: 8px;
-  background: var(--persona-primary);
-  color: #fff;
-  cursor: pointer;
-  font-size: 13px;
-}
-
-.harness-prompt button + button {
-  background: rgba(255, 255, 255, 0.14);
-}
-
-/* 连接状态角标 */
-.conn-badge {
-  position: absolute;
-  top: 14px;
-  left: 14px;
-  padding: 5px 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  backdrop-filter: blur(8px);
-  background: rgba(0, 0, 0, 0.35);
-}
-
-.conn-badge.on { color: #6dffa8; }
-.conn-badge.off { color: #ffd0a0; }
-
 /* ===== 会话窗 ===== */
 .scene-chat {
   background: rgba(14, 18, 34, 0.88);

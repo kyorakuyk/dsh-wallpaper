@@ -46,7 +46,8 @@ describe('ConversationBubble', () => {
 
     expect(html).toContain('data-dsh-theme="harness"')
     expect(html).toContain('当前会话记录')
-    expect(html).toContain('正在回复')
+    expect(html).toContain('DSH Bridge 离线')
+    expect(html).toContain('role="switch"')
     expect(html).toContain('本轮 入 10')
     expect(html).toContain('出 20')
     expect(html).toContain('缓存 未提供')

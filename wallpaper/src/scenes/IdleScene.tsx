@@ -10,10 +10,6 @@ export interface IdleSceneProps {
   persona: PersonaManifest
   /** 当前气泡文案（父组件根据事件更新） */
   bubbleText: string
-  /** 是否显示 DSH 上线询问条 */
-  showHarnessPrompt: boolean
-  /** 3080 是否在线（角标显示） */
-  harnessOnline: boolean
   /** 待机背景图 URL（空字符串 = 默认主题渐变） */
   backgroundUrl?: string
   portraitAmbientLength?: number
@@ -21,22 +17,16 @@ export interface IdleSceneProps {
   /** 进入里桌面后由中央会话窗承担沟通入口，避免双气泡并存。 */
   hideBubble?: boolean
   onOpenChat: () => void
-  onSwitchToHarness: () => void
-  onDismissHarnessPrompt: () => void
 }
 
 export function IdleScene({
   persona,
   bubbleText,
-  showHarnessPrompt,
-  harnessOnline,
   backgroundUrl = '',
   portraitAmbientLength = 82,
   portraitAmbientStrength = .72,
   hideBubble = false,
   onOpenChat,
-  onSwitchToHarness,
-  onDismissHarnessPrompt,
 }: IdleSceneProps) {
   const img = useMemo(
     () => persona.assets.portrait ?? placeholderPortrait(persona.kind, 'idle'),
@@ -66,18 +56,6 @@ export function IdleScene({
         <div className="portrait-environment" aria-hidden="true"><i className="portrait-glow" /><i className="portrait-rim" /><i className="portrait-fade" /><i className="portrait-contact" /></div>
         {/* 气泡定位在立绘头部上方（跟随大肥鱼） */}
         {!hideBubble && <Bubble text={bubbleText} theme={persona.theme} from="top" />}
-      </div>
-      {/* DSH 上线询问 */}
-      {showHarnessPrompt && (
-        <div className="harness-prompt">
-          <span>{persona.bubbles.harnessOnline}</span>
-          <button onClick={onSwitchToHarness}>切换到 Harness</button>
-          <button onClick={onDismissHarnessPrompt}>暂不</button>
-        </div>
-      )}
-      {/* 状态角标：3080 在线/离线 */}
-      <div className={`conn-badge ${harnessOnline ? 'on' : 'off'}`}>
-        {harnessOnline ? '● DSH 在线' : '○ DeepSeek 网页模式'}
       </div>
     </div>
   )
