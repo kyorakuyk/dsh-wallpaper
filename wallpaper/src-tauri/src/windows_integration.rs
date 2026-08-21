@@ -77,6 +77,7 @@ use windows::{
             WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WS_BORDER, WS_CAPTION, WS_CHILD, WS_DLGFRAME,
             WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE, WS_EX_TOOLWINDOW,
             WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
+            WindowFromPoint,
             WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
         },
         UI::{
@@ -1318,6 +1319,66 @@ fn cursor_is_over_desktop_blank(automation: &IUIAutomation) -> bool {
     }
 }
 
+/// The wallpaper host is a child of Explorer's WorkerW. After click-through,
+/// Explorer does not reliably become the foreground window, so foreground
+/// state cannot decide whether a global double click belongs to the desktop.
+/// Walk the actual HWND below the cursor instead; normal top-level apps do
+/// not have WorkerW/Progman in their parent chain.
+#[cfg(windows)]
+fn cursor_is_on_desktop_surface(background: HWND) -> bool {
+    let mut point = POINT::default();
+    unsafe {
+        if GetCursorPos(&mut point).is_err() {
+            return false;
+        }
+        let mut current = WindowFromPoint(point);
+        for _ in 0..16 {
+            if current.0.is_null() {
+                return false;
+            }
+            if current == background
+                || current == GetDesktopWindow()
+                || is_desktop_foreground_class(window_class(current).as_deref())
+            {
+                return true;
+            }
+            let Ok(parent) = GetParent(current) else {
+                return false;
+            };
+            if parent.0.is_null() || parent == current {
+                return false;
+            }
+            current = parent;
+        }
+    }
+    false
+}
+
+#[cfg(windows)]
+fn cursor_hits_interaction_region(root_hwnd: HWND) -> bool {
+    let mut cursor = POINT::default();
+    let mut origin = POINT::default();
+    unsafe {
+        if GetCursorPos(&mut cursor).is_err() || !ClientToScreen(root_hwnd, &mut origin).as_bool() {
+            return false;
+        }
+    }
+    let local_x = cursor.x - origin.x;
+    let local_y = cursor.y - origin.y;
+    interaction_regions()
+        .read()
+        .map(|state| point_hits_interaction_region(&state.regions, local_x, local_y))
+        .unwrap_or(false)
+}
+
+fn should_toggle_desktop_workspace(
+    cursor_on_desktop_surface: bool,
+    cursor_hits_interaction: bool,
+    automation_reports_blank: bool,
+) -> bool {
+    cursor_on_desktop_surface && !cursor_hits_interaction && automation_reports_blank
+}
+
 #[cfg(windows)]
 pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
     std::thread::spawn(move || {
@@ -1342,10 +1403,18 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
             }
             let down = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0;
             if down && !was_down {
-                let foreground = unsafe { GetForegroundWindow() };
-                let on_desktop = foreground == unsafe { GetDesktopWindow() }
-                    || is_desktop_foreground_class(window_class(foreground).as_deref());
-                if on_desktop && cursor_is_over_desktop_blank(&automation) {
+                let background = app
+                    .get_webview_window(BACKGROUND_WINDOW_LABEL)
+                    .and_then(|window| window.hwnd().ok())
+                    .map(|window| HWND(window.0));
+                let can_toggle = background.is_some_and(|background| {
+                    should_toggle_desktop_workspace(
+                        cursor_is_on_desktop_surface(background),
+                        cursor_hits_interaction_region(background),
+                        cursor_is_over_desktop_blank(&automation),
+                    )
+                });
+                if can_toggle {
                     let now = std::time::Instant::now();
                     if last_blank_click.is_some_and(|previous| {
                         now.duration_since(previous) <= std::time::Duration::from_millis(500)
@@ -2240,6 +2309,14 @@ mod tests {
         assert!(!is_desktop_foreground_class(Some("Shell_TrayWnd")));
         assert!(!is_desktop_foreground_class(Some("Chrome_WidgetWin_1")));
         assert!(!is_desktop_foreground_class(None));
+    }
+
+    #[test]
+    fn workspace_toggle_requires_a_blank_desktop_and_never_a_chat_region() {
+        assert!(should_toggle_desktop_workspace(true, false, true));
+        assert!(!should_toggle_desktop_workspace(false, false, true));
+        assert!(!should_toggle_desktop_workspace(true, true, true));
+        assert!(!should_toggle_desktop_workspace(true, false, false));
     }
 
     #[test]
