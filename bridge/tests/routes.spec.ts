@@ -37,6 +37,8 @@ interface RouteHarness {
   logger: { warn: ReturnType<typeof vi.fn> }
   persistence: { enabled: boolean }
   injectedDependencies: string[] | undefined
+  workspace: { title: string; path: string; sessionIds: string[]; attachSession: ReturnType<typeof vi.fn> }
+  workspaceRegistry: { list: () => unknown[]; create: ReturnType<typeof vi.fn> }
 }
 
 const cleanups: string[] = []
@@ -113,6 +115,7 @@ async function createHarness(
 ): Promise<RouteHarness> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-wallpaper-bridge-'))
   cleanups.push(root)
+  const tokenRoot = join(root, 'host-owned-dsh-root')
   const routes = new Map<string, (req: IncomingMessage, res: ServerResponse) => void | Promise<void>>()
   const listeners = new Map<string, (...args: never[]) => unknown>()
   const agent = {
@@ -128,6 +131,22 @@ async function createHarness(
   })
   const logger = { warn: vi.fn() }
   const persistence = { enabled: persistenceEnabled }
+  let workspaceCreated = false
+  const workspace = {
+    title: '桌面会话',
+    path: join(tokenRoot, 'workspace', 'dsh-wallpaper-desktop'),
+    sessionIds: [] as string[],
+    attachSession: vi.fn(async (sessionId: string) => { workspace.sessionIds.unshift(sessionId) }),
+  }
+  const workspaceRegistry = {
+    list: () => workspaceCreated ? [workspace] : [],
+    create: vi.fn(async (path: string, title?: string) => {
+      workspaceCreated = true
+      workspace.path = path
+      workspace.title = title ?? workspace.title
+      return workspace
+    }),
+  }
   const webServer = {
     host: '127.0.0.1' as const,
     register: (route: { path: string; handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void> }) => {
@@ -149,6 +168,7 @@ async function createHarness(
         webServer,
         agents: { create, resume: create },
         agentDefaultModel: { currentSelection: () => ({ provider: 'default-provider', model: 'default-model' }) },
+        workspaceRegistry,
         logger,
         effect: () => undefined,
       })
@@ -156,11 +176,10 @@ async function createHarness(
   } as unknown as Context
   // This is deliberately a host-owned root, not a token path. The bridge can
   // only touch its dedicated `wallpaper` child beneath it.
-  const tokenRoot = join(root, 'host-owned-dsh-root')
   const tokenFile = tokenFileForRoot(tokenRoot)
   await prepareTokenRoot?.(tokenRoot)
   apply(context, { tokenRoot })
-  return { root, tokenRoot, tokenFile, routes, listeners, agent, create, logger, persistence, injectedDependencies }
+  return { root, tokenRoot, tokenFile, routes, listeners, agent, create, logger, persistence, injectedDependencies, workspace, workspaceRegistry }
 }
 
 async function call(
@@ -176,7 +195,7 @@ async function call(
 describe('wallpaper bridge HTTP routes', () => {
   it('declares both agent lifecycle and web-server dependencies for HTTP routes', async () => {
     const harness = await createHarness()
-    expect(harness.injectedDependencies).toEqual(['agentDefaultModel', 'agents', 'webServer'])
+    expect(harness.injectedDependencies).toEqual(['agentDefaultModel', 'agents', 'webServer', 'workspaceRegistry'])
   })
 
   it('uses only its fixed token slot beneath the host-owned root', () => {
@@ -265,6 +284,30 @@ describe('wallpaper bridge HTTP routes', () => {
     const cancelled = await call(sessionsRoute, request('POST', `${API_PREFIX}/sessions/wallpaper-test/cancel`, {}, `Bearer ${token}`))
     expect(cancelled.status).toBe(202)
     expect(harness.agent.cancel).toHaveBeenCalledWith({ kind: 'user' })
+  })
+
+  it('owns one dated session inside the desktop workspace and resumes it while live', async () => {
+    const harness = await createHarness(true)
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+    const sessionsRoute = harness.routes.get(`${API_PREFIX}/sessions`)
+    await call(statusRoute, request('GET', `${API_PREFIX}/status`))
+    const token = (await readFile(harness.tokenFile, 'utf8')).trim()
+
+    const first = await call(sessionsRoute, request('POST', `${API_PREFIX}/sessions`, {}, `Bearer ${token}`))
+    const sessionId = JSON.parse(first.body).sessionId as string
+    expect(first.status).toBe(201)
+    expect(sessionId).toMatch(/^wallpaper-\d{4}-\d{2}-\d{2}$/)
+    expect(harness.workspaceRegistry.create).toHaveBeenCalledWith(harness.workspace.path, '桌面会话')
+    expect(harness.create).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId,
+      meta: { cwd: harness.workspace.path },
+    }))
+    expect(harness.workspace.attachSession).toHaveBeenCalledWith(sessionId)
+
+    const second = await call(sessionsRoute, request('POST', `${API_PREFIX}/sessions`, {}, `Bearer ${token}`))
+    expect(second.status).toBe(200)
+    expect(JSON.parse(second.body).sessionId).toBe(sessionId)
+    expect(harness.create).toHaveBeenCalledOnce()
   })
 
   it('rejects malformed or unsafe client input without returning request content', async () => {

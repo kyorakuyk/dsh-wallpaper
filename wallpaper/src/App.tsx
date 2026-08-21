@@ -404,8 +404,11 @@ export function App({ surface = 'combined' }: AppProps) {
               : adapterBackend === 'harness' && harnessModelChoice
                 ? { model: harnessModelChoice }
                 : {},
+            // Harness owns its own daily workspace/session lifecycle. Never
+            // feed it a renderer-local resume pointer, which could belong to
+            // an unrelated DSH project or an old bridge contract.
             adapterBackend === 'harness'
-              ? harnessModelChoice ? undefined : resumeConversationId('harness', conversationPolicy)
+              ? undefined
               : adapterBackend === 'deepseek-api'
                 ? resumeConversationId('deepseek-api', conversationPolicy)
                 : undefined,

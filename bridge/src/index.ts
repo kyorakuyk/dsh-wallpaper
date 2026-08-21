@@ -15,7 +15,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { API_PREFIX, BRIDGE_VERSION, bearerAuthorized, contentText, errorReference, isSafeSessionId, isVisibleWallpaperMessage, mapSessionEvent, parseSessionRoute, type BridgeEvent } from './protocol.ts'
 
 export const name = 'wallpaper-bridge'
-export const inject = ['agentDefaultModel', 'agents', 'webServer']
+export const inject = ['agentDefaultModel', 'agents', 'webServer', 'workspaceRegistry']
 
 export interface Config {
   /**
@@ -31,11 +31,17 @@ export interface Config {
    * context selection.
    */
   cwd?: string
+  /** Host-owned directory registered as the wallpaper's DSH workspace. */
+  workspacePath?: string
+  /** Durable DSH workspace display title for wallpaper sessions. */
+  workspaceTitle?: string
 }
 
 export const Config: Schema<Config> = Schema.object({
   tokenRoot: Schema.string(),
   cwd: Schema.string(),
+  workspacePath: Schema.string(),
+  workspaceTitle: Schema.string(),
 }) as Schema<Config>
 
 interface LiveSession {
@@ -46,6 +52,18 @@ interface LiveSession {
 /** The narrow host-owned default model API consumed by the bridge. */
 interface DefaultModelSelection {
   currentSelection(): { provider: string; model: string }
+}
+
+interface DesktopWorkspace {
+  readonly title: string
+  readonly path: string
+  readonly sessionIds: readonly SessionId[]
+  attachSession(sessionId: SessionId): Promise<void>
+}
+
+interface WorkspaceRegistry {
+  list(): readonly DesktopWorkspace[]
+  create(path: string, title?: string): Promise<DesktopWorkspace>
 }
 
 // This is an HTTP boundary, so measure the actual UTF-8 payload rather than
@@ -89,6 +107,28 @@ export function tokenFileForRoot(root: string): string {
 
 function configuredTokenRoot(config: Config): string {
   return config.tokenRoot?.trim() || defaultTokenRoot()
+}
+
+function desktopWorkspaceTitle(config: Config): string {
+  return config.workspaceTitle?.trim() || '桌面会话'
+}
+
+function desktopWorkspacePath(config: Config): string {
+  return resolve(config.workspacePath?.trim() || join(configuredTokenRoot(config), 'workspace', 'dsh-wallpaper-desktop'))
+}
+
+function localDailyWallpaperSessionId(now: Date = new Date()): string {
+  const date = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-')
+  return `wallpaper-${date}`
+}
+
+async function ensureDesktopWorkspace(registry: WorkspaceRegistry, config: Config): Promise<DesktopWorkspace> {
+  const title = desktopWorkspaceTitle(config)
+  const existing = registry.list().find((workspace) => workspace.title === title)
+  if (existing) return existing
+  const path = desktopWorkspacePath(config)
+  await mkdir(path, { recursive: true })
+  return registry.create(path, title)
 }
 
 function validateToken(token: string): string {
@@ -586,7 +626,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   // services in this child scope explicitly: a test mock that happens to
   // expose `agents` next to `webServer` must not hide a real Cordis scope
   // where only the declared dependencies are available.
-  ctx.inject(['agentDefaultModel', 'agents', 'webServer'], (wctx) => {
+  ctx.inject(['agentDefaultModel', 'agents', 'webServer', 'workspaceRegistry'], (wctx) => {
     if (wctx.webServer.host !== '127.0.0.1') {
       throw new Error('dsh-wallpaper-bridge refuses to run on a non-loopback WebServer')
     }
@@ -629,9 +669,17 @@ export function apply(ctx: Context, config: Config = {}): void {
             if (req.method !== 'POST') return json(res, 405, { error: 'method-not-allowed' })
             const body = await readJson(req)
             const requested = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
-            const resume = typeof body.resumeSessionId === 'string' ? body.resumeSessionId.trim() : ''
+            const requestedResume = typeof body.resumeSessionId === 'string' ? body.resumeSessionId.trim() : ''
+            const automaticDailySession = !requested && !requestedResume
+            const workspace = automaticDailySession
+              ? await ensureDesktopWorkspace(
+                (wctx as unknown as { workspaceRegistry: WorkspaceRegistry }).workspaceRegistry,
+                config,
+              )
+              : undefined
+            const id = automaticDailySession ? localDailyWallpaperSessionId() : requestedResume || requested || `wallpaper-${randomUUID()}`
+            const resume = requestedResume || (workspace?.sessionIds.some((sessionId) => String(sessionId) === id) ? id : '')
             if (resume && !canResume()) return json(res, 409, { error: 'resume-unavailable' })
-            const id = resume || requested || `wallpaper-${randomUUID()}`
             if (!isSafeSessionId(id)) return json(res, 400, { error: 'invalid-session-id' })
             const existing = live.get(id)
             if (existing) return json(res, 200, sessionSummary(existing))
@@ -657,7 +705,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             // A fresh DSH session therefore needs a host-owned workspace even
             // when the operator did not configure a narrower bridge cwd.
             // `process.cwd()` is the DSH launch directory, never HTTP input.
-            const cwd = config.cwd?.trim() || process.cwd()
+            const cwd = workspace?.path || config.cwd?.trim() || process.cwd()
             let pending = creating.get(id)
             const createdByThisRequest = pending === undefined
             if (!pending) {
@@ -679,6 +727,7 @@ export function apply(ctx: Context, config: Config = {}): void {
                 }
                 const entry: LiveSession = { handle, clients: new Set<ServerResponse>() }
                 live.set(id, entry)
+                if (workspace && !resume) await workspace.attachSession(SessionId(id))
                 return entry
               })()
               creating.set(id, pending)
