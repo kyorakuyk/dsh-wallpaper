@@ -78,6 +78,7 @@ interface AgentPresets {
   readonly defaultId: string
   list(): Promise<readonly AgentPresetDirectory[]>
   mount(agentContext: Context, preset?: string): Promise<unknown>
+  recompose(agentContext: Context, preset: string): Promise<AgentPresetDirectory>
 }
 
 // This is an HTTP boundary, so measure the actual UTF-8 payload rather than
@@ -676,11 +677,9 @@ export function apply(ctx: Context, config: Config = {}): void {
         if (tokenFailure !== undefined) return json(res, 503, { error: 'bridge-token-unavailable', reference: tokenFailure })
         if (!bearerAuthorized(req.headers.authorization, token)) return json(res, 401, { error: 'unauthorized' })
         const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname
-        if (pathname !== `${API_PREFIX}/control/presets` || req.method !== 'GET') {
-          return json(res, 404, { error: 'not-found' })
-        }
         try {
           const host = wctx as unknown as { agentPresets: AgentPresets }
+          if (pathname === `${API_PREFIX}/control/presets` && req.method === 'GET') {
           const presets = await host.agentPresets.list()
           // Preset composition paths are host-private. Expose only the
           // metadata needed to render a picker and explain unavailable rows.
@@ -694,6 +693,25 @@ export function apply(ctx: Context, config: Config = {}): void {
               isDefault: preset.id === host.agentPresets.defaultId,
             })),
           })
+          }
+          const presetSwitch = pathname.match(new RegExp(`^${API_PREFIX}/control/sessions/([^/]+)/preset$`))
+          if (!presetSwitch || req.method !== 'POST') return json(res, 404, { error: 'not-found' })
+          const sessionId = decodeURIComponent(presetSwitch[1] ?? '')
+          if (!isSafeSessionId(sessionId)) return json(res, 400, { error: 'invalid-session-id' })
+          const entry = live.get(sessionId)
+          if (!entry) return json(res, 404, { error: 'session-not-live' })
+          if (entry.handle.agent.session.events.some((event) => event.type === 'turn/start')) {
+            return json(res, 409, { error: 'agent-preset-locked' })
+          }
+          const body = await readJson(req)
+          const preset = typeof body.agentPreset === 'string' ? body.agentPreset.trim() : ''
+          if (!preset) return json(res, 400, { error: 'agent-preset-required' })
+          const selected = (await host.agentPresets.list()).find((candidate) => candidate.id === preset)
+          if (!selected) return json(res, 400, { error: 'unknown-agent-preset' })
+          if (selected.broken) return json(res, 409, { error: 'agent-preset-unavailable' })
+          await host.agentPresets.recompose(entry.handle.agent.ctx, preset)
+          entry.handle.agent.session.append('agent-preset/selected' as never, { agentPreset: preset } as never)
+          return json(res, 200, { sessionId, agentPreset: preset })
         } catch (error) {
           const reference = errorReference(error)
           wctx.logger.warn(`wallpaper bridge control query failed (${reference})`)
