@@ -168,6 +168,11 @@ async function createHarness(
         webServer,
         agents: { create, resume: create },
         agentDefaultModel: { currentSelection: () => ({ provider: 'default-provider', model: 'default-model' }) },
+        agentPresets: {
+          defaultId: 'standard',
+          list: async () => [{ id: 'standard', trust: 'system' as const }],
+          mount: async () => undefined,
+        },
         workspaceRegistry,
         logger,
         effect: () => undefined,
@@ -195,7 +200,7 @@ async function call(
 describe('wallpaper bridge HTTP routes', () => {
   it('declares both agent lifecycle and web-server dependencies for HTTP routes', async () => {
     const harness = await createHarness()
-    expect(harness.injectedDependencies).toEqual(['agentDefaultModel', 'agents', 'webServer', 'workspaceRegistry'])
+    expect(harness.injectedDependencies).toEqual(['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry'])
   })
 
   it('uses only its fixed token slot beneath the host-owned root', () => {
@@ -273,7 +278,7 @@ describe('wallpaper bridge HTTP routes', () => {
     expect(harness.create).toHaveBeenCalledOnce()
     expect(harness.create).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'wallpaper-test',
-      meta: { cwd: process.cwd() },
+      meta: { cwd: process.cwd(), agentPreset: 'standard' },
       agentOptions: { provider: 'default-provider', model: 'default-model' },
     }))
 
@@ -300,7 +305,7 @@ describe('wallpaper bridge HTTP routes', () => {
     expect(harness.workspaceRegistry.create).toHaveBeenCalledWith(harness.workspace.path, '桌面会话')
     expect(harness.create).toHaveBeenCalledWith(expect.objectContaining({
       sessionId,
-      meta: { cwd: harness.workspace.path },
+      meta: { cwd: harness.workspace.path, agentPreset: 'standard' },
     }))
     expect(harness.workspace.attachSession).toHaveBeenCalledWith(sessionId)
 
@@ -347,7 +352,7 @@ describe('wallpaper bridge HTTP routes', () => {
     expect(created.status).toBe(201)
     expect(harness.create).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'host-owned-cwd',
-      meta: { cwd: process.cwd() },
+      meta: { cwd: process.cwd(), agentPreset: 'standard' },
     }))
   })
 

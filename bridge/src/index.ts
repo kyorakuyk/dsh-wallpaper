@@ -15,7 +15,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { API_PREFIX, BRIDGE_VERSION, bearerAuthorized, contentText, errorReference, isSafeSessionId, isVisibleWallpaperMessage, mapSessionEvent, parseSessionRoute, type BridgeEvent } from './protocol.ts'
 
 export const name = 'wallpaper-bridge'
-export const inject = ['agentDefaultModel', 'agents', 'webServer', 'workspaceRegistry']
+export const inject = ['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry']
 
 export interface Config {
   /**
@@ -64,6 +64,20 @@ interface DesktopWorkspace {
 interface WorkspaceRegistry {
   list(): readonly DesktopWorkspace[]
   create(path: string, title?: string): Promise<DesktopWorkspace>
+}
+
+interface AgentPresetDirectory {
+  readonly id: string
+  readonly name?: string
+  readonly description?: string
+  readonly trust: 'system' | 'user'
+  readonly broken?: string
+}
+
+interface AgentPresets {
+  readonly defaultId: string
+  list(): Promise<readonly AgentPresetDirectory[]>
+  mount(agentContext: Context, preset?: string): Promise<unknown>
 }
 
 // This is an HTTP boundary, so measure the actual UTF-8 payload rather than
@@ -626,7 +640,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   // services in this child scope explicitly: a test mock that happens to
   // expose `agents` next to `webServer` must not hide a real Cordis scope
   // where only the declared dependencies are available.
-  ctx.inject(['agentDefaultModel', 'agents', 'webServer', 'workspaceRegistry'], (wctx) => {
+  ctx.inject(['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry'], (wctx) => {
     if (wctx.webServer.host !== '127.0.0.1') {
       throw new Error('dsh-wallpaper-bridge refuses to run on a non-loopback WebServer')
     }
@@ -691,8 +705,16 @@ export function apply(ctx: Context, config: Config = {}): void {
             // a session start and only fail later when `{{model}}` is rendered
             // in the deployment persona. Read the host-owned selection here;
             // request values remain an explicit override for future clients.
-            const defaults = (wctx as unknown as { agentDefaultModel: DefaultModelSelection })
+            const host = wctx as unknown as { agentDefaultModel: DefaultModelSelection; agentPresets: AgentPresets }
+            const defaults = host
               .agentDefaultModel.currentSelection()
+            const preset = typeof body.agentPreset === 'string' && body.agentPreset.trim()
+              ? body.agentPreset.trim()
+              : host.agentPresets.defaultId
+            const availablePresets = await host.agentPresets.list()
+            const selectedPreset = availablePresets.find((candidate) => candidate.id === preset)
+            if (!selectedPreset) return json(res, 400, { error: 'unknown-agent-preset' })
+            if (selectedPreset.broken) return json(res, 409, { error: 'agent-preset-unavailable' })
             const agentOptions = {
               provider: provider ?? defaults.provider,
               model: model ?? defaults.model,
@@ -712,11 +734,16 @@ export function apply(ctx: Context, config: Config = {}): void {
               pending = (async (): Promise<LiveSession> => {
                 if (stopping) throw new Error('wallpaper bridge is shutting down')
                 const handle = resume
-                  ? await wctx.agents.resume({ resumeSessionId: SessionId(id), agentOptions })
+                  ? await wctx.agents.resume({
+                    resumeSessionId: SessionId(id),
+                    agentOptions,
+                    setup: (agentContext) => host.agentPresets.mount(agentContext, preset).then(() => undefined),
+                  })
                   : await wctx.agents.create({
                       sessionId: SessionId(id),
-                      meta: { cwd },
+                      meta: { cwd, agentPreset: preset },
                       agentOptions,
+                      setup: (agentContext) => host.agentPresets.mount(agentContext, preset).then(() => undefined),
                     })
                 // Plugin teardown may have started while DSH created the
                 // agent. Dispose it rather than leaving a live handle that no
