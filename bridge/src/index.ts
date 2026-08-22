@@ -668,6 +668,40 @@ export function apply(ctx: Context, config: Config = {}): void {
       },
     })
 
+    const controlDispose = wctx.webServer.register({
+      kind: 'prefix',
+      path: `${API_PREFIX}/control`,
+      handler: async (req, res) => {
+        await tokenReady
+        if (tokenFailure !== undefined) return json(res, 503, { error: 'bridge-token-unavailable', reference: tokenFailure })
+        if (!bearerAuthorized(req.headers.authorization, token)) return json(res, 401, { error: 'unauthorized' })
+        const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname
+        if (pathname !== `${API_PREFIX}/control/presets` || req.method !== 'GET') {
+          return json(res, 404, { error: 'not-found' })
+        }
+        try {
+          const host = wctx as unknown as { agentPresets: AgentPresets }
+          const presets = await host.agentPresets.list()
+          // Preset composition paths are host-private. Expose only the
+          // metadata needed to render a picker and explain unavailable rows.
+          return json(res, 200, {
+            presets: presets.map((preset) => ({
+              id: preset.id,
+              ...(preset.name ? { name: preset.name } : {}),
+              ...(preset.description ? { description: preset.description } : {}),
+              trust: preset.trust,
+              ...(preset.broken ? { broken: preset.broken } : {}),
+              isDefault: preset.id === host.agentPresets.defaultId,
+            })),
+          })
+        } catch (error) {
+          const reference = errorReference(error)
+          wctx.logger.warn(`wallpaper bridge control query failed (${reference})`)
+          return json(res, 500, { error: 'bridge-error', reference })
+        }
+      },
+    })
+
     const sessionsDispose = wctx.webServer.register({
       kind: 'prefix',
       path: `${API_PREFIX}/sessions`,
@@ -840,7 +874,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         }
       },
     })
-    wctx.effect(() => () => { statusDispose(); sessionsDispose() })
+    wctx.effect(() => () => { statusDispose(); controlDispose(); sessionsDispose() })
   })
 }
 

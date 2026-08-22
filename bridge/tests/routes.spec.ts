@@ -291,6 +291,22 @@ describe('wallpaper bridge HTTP routes', () => {
     expect(harness.agent.cancel).toHaveBeenCalledWith({ kind: 'user' })
   })
 
+  it('lists preset metadata only for an authenticated local wallpaper client', async () => {
+    const harness = await createHarness()
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+    const controlRoute = harness.routes.get(`${API_PREFIX}/control`)
+    await call(statusRoute, request('GET', `${API_PREFIX}/status`))
+    const token = (await readFile(harness.tokenFile, 'utf8')).trim()
+
+    const rejected = await call(controlRoute, request('GET', `${API_PREFIX}/control/presets`))
+    expect(rejected.status).toBe(401)
+    const listed = await call(controlRoute, request('GET', `${API_PREFIX}/control/presets`, undefined, `Bearer ${token}`))
+    expect(listed.status).toBe(200)
+    expect(JSON.parse(listed.body)).toEqual({
+      presets: [expect.objectContaining({ id: 'standard', trust: 'system', isDefault: true })],
+    })
+  })
+
   it('owns one dated session inside the desktop workspace and resumes it while live', async () => {
     const harness = await createHarness(true)
     const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
