@@ -2274,6 +2274,26 @@ pub async fn harness_presets() -> Result<Value, String> {
     bounded_bridge_json::<Value>(response, MAX_HARNESS_SESSION_RESPONSE_BYTES, "DSH bridge 返回了无法识别的模式目录。" ).await
 }
 
+pub async fn harness_controls(state: tauri::State<'_, ChatState>) -> Result<Value, String> {
+    let session_id = state.harness_session.lock().map_err(|_| "Harness session state poisoned")?.clone().ok_or("Harness 会话尚未建立")?;
+    let token = read_bridge_token()?;
+    let client = bridge_request_client()?;
+    let url = format!("http://127.0.0.1:3080/api/wallpaper/v1/control/sessions/{}", urlencoding::encode(&session_id));
+    let response = auth(client.get(url), &token).send().await.map_err(|_| generic_harness_error("控制目录读取"))?;
+    if !response.status().is_success() { return Err(generic_bridge_http_error(response.status())); }
+    bounded_bridge_json::<Value>(response, MAX_HARNESS_SESSION_RESPONSE_BYTES, "DSH bridge 返回了无法识别的控制目录。" ).await
+}
+
+pub async fn harness_set_permission(state: tauri::State<'_, ChatState>, permission: String) -> Result<Value, String> {
+    let session_id = state.harness_session.lock().map_err(|_| "Harness session state poisoned")?.clone().ok_or("Harness 会话尚未建立")?;
+    let token = read_bridge_token()?;
+    let client = bridge_request_client()?;
+    let url = format!("http://127.0.0.1:3080/api/wallpaper/v1/control/sessions/{}/permission", urlencoding::encode(&session_id));
+    let response = auth(client.post(url), &token).json(&serde_json::json!({ "permission": permission })).send().await.map_err(|_| generic_harness_error("权限切换"))?;
+    if !response.status().is_success() { return Err(generic_bridge_http_error(response.status())); }
+    bounded_bridge_json::<Value>(response, MAX_HARNESS_SESSION_RESPONSE_BYTES, "DSH bridge 返回了无法识别的权限响应。" ).await
+}
+
 pub async fn harness_cancel(state: tauri::State<'_, ChatState>) -> Result<(), String> {
     let session_id = state
         .harness_session

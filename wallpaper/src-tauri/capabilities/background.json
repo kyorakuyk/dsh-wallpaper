@@ -18,6 +18,8 @@
     "allow-connect-harness",
     "allow-harness-history",
     "allow-harness-presets",
+    "allow-harness-controls",
+    "allow-harness-set-permission",
     "allow-api-history",
     "allow-probe-harness",
     "allow-appearance-resolve-asset"

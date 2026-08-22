@@ -39,6 +39,8 @@ export interface NativeRuntime {
   connectHarness(resumeSessionId: string | undefined, connectionId: string, model?: string): Promise<string>
   harnessHistory(): Promise<ChatMessage[]>
   harnessPresets(): Promise<Array<{ id: string; name?: string; description?: string; trust: 'system' | 'user'; broken?: string; isDefault: boolean }>>
+  harnessControls(): Promise<{ permission: { current: string; options: string[] }; commands: Array<{ name: string; description: string; input?: { hint: string } }> }>
+  setHarnessPermission(permission: string): Promise<void>
   apiHistory(conversationId: string): Promise<ChatMessage[]>
   listenTray(listener: (event: { type: 'backend'; backend: BackendMode }) => void): Promise<() => void>
   probeHarness(): Promise<HarnessStatus>
@@ -142,6 +144,14 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     const result = await invoke<{ presets: Array<{ id: string; name?: string; description?: string; trust: 'system' | 'user'; broken?: string; isDefault: boolean }> }>('harness_presets')
     return result.presets
+  },
+  async harnessControls() {
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<{ permission: { current: string; options: string[] }; commands: Array<{ name: string; description: string; input?: { hint: string } }> }>('harness_controls')
+  },
+  async setHarnessPermission(permission) {
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('harness_set_permission', { permission })
   },
   async apiHistory(conversationId) {
     if (!await tauriAvailable()) return []

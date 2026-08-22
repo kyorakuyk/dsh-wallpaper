@@ -297,6 +297,12 @@
           "markdownDescription": "Enables the get_lock_screen_diagnostics command without any pre-configured scope."
         },
         {
+          "description": "Enables the harness_controls command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-harness-controls",
+          "markdownDescription": "Enables the harness_controls command without any pre-configured scope."
+        },
+        {
           "description": "Enables the harness_history command without any pre-configured scope.",
           "type": "string",
           "const": "allow-harness-history",
@@ -307,6 +313,12 @@
           "type": "string",
           "const": "allow-harness-presets",
           "markdownDescription": "Enables the harness_presets command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the harness_set_permission command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-harness-set-permission",
+          "markdownDescription": "Enables the harness_set_permission command without any pre-configured scope."
         },
         {
           "description": "Enables the hide_settings_window command without any pre-configured scope.",
@@ -531,6 +543,12 @@
           "markdownDescription": "Denies the get_lock_screen_diagnostics command without any pre-configured scope."
         },
         {
+          "description": "Denies the harness_controls command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-harness-controls",
+          "markdownDescription": "Denies the harness_controls command without any pre-configured scope."
+        },
+        {
           "description": "Denies the harness_history command without any pre-configured scope.",
           "type": "string",
           "const": "deny-harness-history",
@@ -541,6 +559,12 @@
           "type": "string",
           "const": "deny-harness-presets",
           "markdownDescription": "Denies the harness_presets command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the harness_set_permission command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-harness-set-permission",
+          "markdownDescription": "Denies the harness_set_permission command without any pre-configured scope."
         },
         {
           "description": "Denies the hide_settings_window command without any pre-configured scope.",
