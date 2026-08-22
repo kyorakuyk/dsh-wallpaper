@@ -45,6 +45,8 @@ function UsageLine({ usage }: { usage?: TokenUsage }) {
 
 export function ConversationBubble(props: ConversationBubbleProps) {
   const [draft, setDraft] = useState('')
+  const [hovered, setHovered] = useState(false)
+  const [focused, setFocused] = useState(false)
   const historyRef = useRef<HTMLDivElement>(null)
   const busy = isBusyActivity(props.activity)
   const backend = BACKEND_PRESENTATION[props.backend]
@@ -57,9 +59,8 @@ export function ConversationBubble(props: ConversationBubbleProps) {
     : harnessAvailability === 'web-only'
       ? 'DSH 在线，缺少壁纸 Bridge'
       : 'DSH Bridge 离线'
-  // An empty drawer has no information value and turns the workspace into a
-  // large blank panel. It appears only once there is transcript content.
-  const showHistory = props.historyExpanded && (props.messages.length > 0 || Boolean(props.streamingText))
+  const showHistory = props.historyExpanded
+  const today = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(new Date())
 
   const submit = () => {
     const text = draft.trim()
@@ -86,14 +87,14 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   </button>
 
   return <section
-    className={`conversation-shell dsh-chat dsh-theme-${props.backend === 'harness' ? 'harness' : 'deepseek'} ${showHistory ? 'expanded' : ''} ${busy ? 'dsh-chat--busy' : ''}`}
+    className={`conversation-shell dsh-chat dsh-theme-${props.backend === 'harness' ? 'harness' : 'deepseek'} ${showHistory ? 'expanded' : ''} ${busy ? 'dsh-chat--busy' : ''} ${hovered ? 'dsh-chat--hovered' : ''} ${focused ? 'dsh-chat--focused' : ''}`}
     data-persistent={props.persistent ? 'true' : undefined}
     style={{ ['--dsh-chat-acrylic-opacity' as string]: (props.acrylicOpacity ?? .74).toFixed(2), ['--dsh-chat-acrylic-blur' as string]: `${props.acrylicBlur ?? 19}px` }}
     data-dsh-theme={props.backend === 'harness' ? 'harness' : 'deepseek'}
     data-interaction-region="chat"
     aria-label="AI 对话"
   >
-    {showHistory && <Glass className="dsh-chat__history-wrap" strength="strong" elevation="floating">
+    {showHistory && <div className="dsh-chat__history-wrap">
       <div className="dsh-chat__history" ref={historyRef} aria-label="当前会话记录" aria-live="polite">
         {props.messages.map((message, index) => <article key={message.id} className={`dsh-chat__message dsh-chat__message--${message.role}`} style={{ ['--message-index' as string]: String(Math.max(0, props.messages.length - index - 1)) }}>
           <span className="dsh-chat__message-label">{message.role === 'user' ? '你' : '大肥鱼'}</span>
@@ -105,14 +106,14 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           <p className="dsh-chat__message-body">{props.streamingText}<span className="dsh-chat__caret" aria-hidden="true" /></p>
         </article>}
       </div>
-    </Glass>}
+    </div>}
 
-    <Glass className="dsh-chat__card" strength="strong" elevation="floating">
-      <header className="dsh-chat__topbar">
+    <header className="dsh-chat__topbar">
         <div className="dsh-chat__identity">
           <span className="dsh-chat__sigil"><Icon name="spark" size={14} /></span>
-          <span className="dsh-chat__backend">{backend.shortName}</span>
-          <span className="dsh-chat__backend-detail">{backend.description}</span>
+          <span className="dsh-chat__backend">桌面会话</span>
+          <span className="dsh-chat__backend-detail">{today}</span>
+          <span className="dsh-chat__backend-detail dsh-chat__backend-route">{backend.shortName}</span>
         </div>
         <span className="dsh-chat__topbar-spacer" />
         <span className={`dsh-chat__status dsh-chat__status--harness dsh-chat__status--${harnessAvailability}`} title={harnessLabel}>
@@ -131,9 +132,19 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           <span className="dsh-chat__mode-switch-track"><span className="dsh-chat__mode-switch-knob" /></span>
           <span className="dsh-chat__mode-switch-label" aria-hidden="true">DSH</span>
         </button>
+        <span className="dsh-chat__preset">标准模式⌄</span>
         {!props.persistent && <Button variant="ghost" iconOnly onClick={props.onClose} aria-label="收起对话"><Icon name="close" /></Button>}
       </header>
 
+    <Glass
+      className="dsh-chat__card"
+      strength="strong"
+      elevation="floating"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocusCapture={() => setFocused(true)}
+      onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false) }}
+    >
       <form className="dsh-chat__composer" onSubmit={(event) => { event.preventDefault(); submit() }}>
         <textarea
           className="dsh-chat__textarea"
