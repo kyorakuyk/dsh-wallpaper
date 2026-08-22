@@ -273,6 +273,12 @@
           "markdownDescription": "Enables the connect_harness command without any pre-configured scope."
         },
         {
+          "description": "Enables the desktop_layout_metrics command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-desktop-layout-metrics",
+          "markdownDescription": "Enables the desktop_layout_metrics command without any pre-configured scope."
+        },
+        {
           "description": "Enables the dispatch_app_action command without any pre-configured scope.",
           "type": "string",
           "const": "allow-dispatch-app-action",
@@ -493,6 +499,12 @@
           "type": "string",
           "const": "deny-connect-harness",
           "markdownDescription": "Denies the connect_harness command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the desktop_layout_metrics command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-desktop-layout-metrics",
+          "markdownDescription": "Denies the desktop_layout_metrics command without any pre-configured scope."
         },
         {
           "description": "Denies the dispatch_app_action command without any pre-configured scope.",
