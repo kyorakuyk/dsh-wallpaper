@@ -17,6 +17,7 @@
     "allow-cancel-chat",
     "allow-connect-harness",
     "allow-harness-history",
+    "allow-harness-presets",
     "allow-api-history",
     "allow-probe-harness",
     "allow-appearance-resolve-asset"

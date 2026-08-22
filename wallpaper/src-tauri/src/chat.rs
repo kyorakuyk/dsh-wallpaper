@@ -2265,6 +2265,15 @@ pub async fn harness_history(state: tauri::State<'_, ChatState>) -> Result<Value
     parse_harness_history(&session_id, history)
 }
 
+pub async fn harness_presets() -> Result<Value, String> {
+    let token = read_bridge_token()?;
+    let client = bridge_request_client()?;
+    let response = auth(client.get("http://127.0.0.1:3080/api/wallpaper/v1/control/presets"), &token)
+        .send().await.map_err(|_| generic_harness_error("模式目录读取"))?;
+    if !response.status().is_success() { return Err(generic_bridge_http_error(response.status())); }
+    bounded_bridge_json::<Value>(response, MAX_HARNESS_SESSION_RESPONSE_BYTES, "DSH bridge 返回了无法识别的模式目录。" ).await
+}
+
 pub async fn harness_cancel(state: tauri::State<'_, ChatState>) -> Result<(), String> {
     let session_id = state
         .harness_session

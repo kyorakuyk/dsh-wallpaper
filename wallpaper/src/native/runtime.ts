@@ -38,6 +38,7 @@ export interface NativeRuntime {
   cancelChat(mode: BackendMode): Promise<void>
   connectHarness(resumeSessionId: string | undefined, connectionId: string, model?: string): Promise<string>
   harnessHistory(): Promise<ChatMessage[]>
+  harnessPresets(): Promise<Array<{ id: string; name?: string; description?: string; trust: 'system' | 'user'; broken?: string; isDefault: boolean }>>
   apiHistory(conversationId: string): Promise<ChatMessage[]>
   listenTray(listener: (event: { type: 'backend'; backend: BackendMode }) => void): Promise<() => void>
   probeHarness(): Promise<HarnessStatus>
@@ -136,6 +137,11 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     const result = await invoke<{ messages: Array<{ id: string; role: 'user' | 'assistant'; content: string }> }>('harness_history')
     return result.messages.map((message) => ({ ...message, createdAt: Date.now() }))
+  },
+  async harnessPresets() {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const result = await invoke<{ presets: Array<{ id: string; name?: string; description?: string; trust: 'system' | 'user'; broken?: string; isDefault: boolean }> }>('harness_presets')
+    return result.presets
   },
   async apiHistory(conversationId) {
     if (!await tauriAvailable()) return []

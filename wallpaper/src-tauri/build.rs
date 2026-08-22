@@ -30,6 +30,7 @@ fn main() {
             "cancel_chat",
             "connect_harness",
             "harness_history",
+            "harness_presets",
             "api_history",
             "probe_harness",
             "appearance_get_state",

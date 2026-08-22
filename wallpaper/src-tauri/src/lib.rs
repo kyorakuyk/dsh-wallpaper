@@ -730,6 +730,12 @@ async fn harness_history(
     chat::harness_history(state).await
 }
 
+#[tauri::command]
+async fn harness_presets(caller: tauri::WebviewWindow) -> Result<serde_json::Value, String> {
+    require_background(&caller)?;
+    chat::harness_presets().await
+}
+
 static HARNESS_STATUS_CACHE: OnceLock<RwLock<serde_json::Value>> = OnceLock::new();
 
 /// The wallpaper bridge exposes a small, versioned protocol of its own.  A
@@ -1108,6 +1114,7 @@ pub fn run() {
             cancel_chat,
             connect_harness,
             harness_history,
+            harness_presets,
             api_history,
             probe_harness,
             appearance::commands::appearance_get_state,

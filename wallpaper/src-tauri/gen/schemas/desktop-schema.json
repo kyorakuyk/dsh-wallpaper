@@ -303,6 +303,12 @@
           "markdownDescription": "Enables the harness_history command without any pre-configured scope."
         },
         {
+          "description": "Enables the harness_presets command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-harness-presets",
+          "markdownDescription": "Enables the harness_presets command without any pre-configured scope."
+        },
+        {
           "description": "Enables the hide_settings_window command without any pre-configured scope.",
           "type": "string",
           "const": "allow-hide-settings-window",
@@ -529,6 +535,12 @@
           "type": "string",
           "const": "deny-harness-history",
           "markdownDescription": "Denies the harness_history command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the harness_presets command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-harness-presets",
+          "markdownDescription": "Denies the harness_presets command without any pre-configured scope."
         },
         {
           "description": "Denies the hide_settings_window command without any pre-configured scope.",
