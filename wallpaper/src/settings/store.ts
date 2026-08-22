@@ -36,6 +36,12 @@ export interface ApiSettings {
   priceOutputPerMillion?: number
 }
 
+export interface DshLaunchSettings {
+  rootPath?: string
+  profile: string
+  command?: string
+}
+
 export interface WallpaperSettings {
   version: number
   defaultBackend: BackendMode
@@ -66,6 +72,7 @@ export interface WallpaperSettings {
   /** 中央会话窗背景模糊半径（px）。 */
   conversationBlur: number
   deepseekApi: ApiSettings
+  dshLaunch: DshLaunchSettings
 }
 
 export const DEFAULT_SETTINGS: WallpaperSettings = {
@@ -92,6 +99,7 @@ export const DEFAULT_SETTINGS: WallpaperSettings = {
   conversationOpacity: 0.74,
   conversationBlur: 19,
   deepseekApi: { baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
+  dshLaunch: { profile: 'desktop' },
 }
 
 const KEY = 'dsh-wallpaper:settings:v6'
@@ -112,6 +120,7 @@ function migrate(raw: unknown): WallpaperSettings {
     conversationOpacity: typeof value.conversationOpacity === 'number' ? Math.min(.96, Math.max(.2, value.conversationOpacity)) : DEFAULT_SETTINGS.conversationOpacity,
     conversationBlur: typeof value.conversationBlur === 'number' ? Math.min(40, Math.max(0, value.conversationBlur)) : DEFAULT_SETTINGS.conversationBlur,
     deepseekApi: normalizeApiSettings(value.deepseekApi),
+    dshLaunch: { profile: value.dshLaunch?.profile?.trim() || 'desktop', rootPath: value.dshLaunch?.rootPath?.trim() || undefined, command: value.dshLaunch?.command?.trim() || undefined },
   }
 }
 

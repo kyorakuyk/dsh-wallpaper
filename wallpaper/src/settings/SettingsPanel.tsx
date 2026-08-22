@@ -152,6 +152,11 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <Field title="启动时使用"><Choice label="启动时使用" value={settings.defaultBackend} onChange={(value) => set({ defaultBackend: value as BackendMode })} options={[{ value: 'deepseek-web', label: 'DeepSeek 网页入口（实验）' }, { value: 'deepseek-api', label: 'DeepSeek API（付费）' }, { value: 'harness', label: 'DeepSeek Harness' }]} /></Field>
           <Field title="DSH 就绪时自动切换" detail="仅检测到兼容的壁纸 Bridge 才会切换。"><Toggle label="DSH 自动切换" checked={settings.autoSwitchHarness} onChange={(value) => set({ autoSwitchHarness: value })} /></Field>
         </Card>
+        <Card title="DeepSeek Harness 启动" description="自动扫描只建议候选路径；壁纸只启动自己登记的 DSH 进程，不会关闭其他 3080 服务。">
+          <Field title="DSH 根目录"><input value={settings.dshLaunch.rootPath ?? ''} placeholder="自动扫描或手动填写 dsh 项目目录" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, rootPath: e.target.value || undefined } })} /></Field>
+          <Field title="Profile"><input value={settings.dshLaunch.profile} placeholder="desktop" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, profile: e.target.value || 'desktop' } })} /></Field>
+          <Field title="启动命令"><input value={settings.dshLaunch.command ?? ''} placeholder="留空时使用 pnpm dsh" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, command: e.target.value || undefined } })} /></Field>
+        </Card>
         <Card title="DeepSeek 网页入口（实验）" description="当前仅在默认浏览器打开 DeepSeek 官方页面，不能在壁纸内聊天或同步消息。"><Field title="官方页面" detail="本应用不创建登录 WebView、不读取 Cookie，也不能使用或保存官方页面的登录状态。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开官方页面</button></Field></Card>
         <Card title="DeepSeek API" description="API 模式会产生实际费用，密钥只保存在 Windows 凭据管理器。">
           <Field title="API 地址"><input value={settings.deepseekApi.baseUrl} onChange={(e) => set({ deepseekApi: { ...settings.deepseekApi, baseUrl: e.target.value } })} /></Field>
