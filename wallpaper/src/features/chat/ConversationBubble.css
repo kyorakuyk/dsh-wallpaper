@@ -284,6 +284,7 @@
 .dsh-chat--busy .dsh-chat__status-dot { background: var(--dsh-accent-soft); animation: dsh-chat-breathe 1.8s ease-in-out infinite; }
 
 .dsh-chat__composer { display: grid; min-height: 86px; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; padding: 2px 15px 12px 20px; }
+.dsh-chat__command-picker { align-self: end; width: 72px; margin-bottom: 9px; border: 0; background: transparent; color: var(--dsh-text-muted); font: inherit; font-size: 10px; }
 .dsh-chat__textarea {
   box-sizing: border-box;
   width: 100%;
@@ -313,6 +314,8 @@
 .dsh-chat__session-cost { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
 .dsh-chat__turn-usage[data-usage-available='false'] { color: var(--dsh-text-faint); }
 .dsh-chat__model-picker { display: inline-flex; min-width: 0; align-items: center; gap: 4px; padding: 3px 6px; border: 1px solid color-mix(in srgb, var(--dsh-text-strong) 10%, transparent); border-radius: 8px; color: var(--dsh-text-faint); background: rgba(255,255,255,.025); }
+.dsh-chat__permission-picker { display: inline-flex; align-items: center; gap: 4px; color: var(--dsh-text-faint); }
+.dsh-chat__permission-picker select { border: 0; outline: 0; background: transparent; color: inherit; font: inherit; font-size: 10px; }
 .dsh-chat__model-picker:focus-within { border-color: color-mix(in srgb, var(--dsh-accent-soft) 42%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsh-accent) 12%, transparent); }
 .dsh-chat__model-picker select { min-width: 0; max-width: 150px; border: 0; outline: 0; background: transparent; color: var(--dsh-text-muted); font: inherit; font-size: 10px; cursor: pointer; }
 .dsh-chat__model-picker select:disabled { cursor: default; opacity: .62; }

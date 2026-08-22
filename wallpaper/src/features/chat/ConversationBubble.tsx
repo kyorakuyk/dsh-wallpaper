@@ -31,6 +31,9 @@ export interface ConversationBubbleProps {
   presetOptions?: readonly { id: string; name?: string; broken?: string }[]
   selectedPreset?: string
   onSelectPreset?: (preset: string) => void
+  permission?: { current: string; options: string[] }
+  commands?: readonly { name: string; description: string; input?: { hint: string } }[]
+  onSelectPermission?: (permission: string) => void
   onExpand?: () => void
   onToggleHistory: () => void
   onSend: (text: string) => void
@@ -155,6 +158,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
       onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false) }}
     >
       <form className="dsh-chat__composer" onSubmit={(event) => { event.preventDefault(); submit() }}>
+        {props.commands?.length ? <select className="dsh-chat__command-picker" aria-label="选择命令" value="" onChange={(event) => { const command = event.target.value; if (command) setDraft(`/${command} `) }}><option value="">⌘ 命令</option>{props.commands.map((command) => <option key={command.name} value={command.name}>/{command.name} · {command.description}</option>)}</select> : null}
         <textarea
           className="dsh-chat__textarea"
           value={draft}
@@ -176,6 +180,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
       </form>
 
       <footer className="dsh-chat__footer">
+        {props.permission && <label className="dsh-chat__permission-picker">◈<select aria-label="选择权限" value={props.permission.current} onChange={(event) => props.onSelectPermission?.(event.target.value)}>{props.permission.options.map((permission) => <option key={permission} value={permission}>{permission}</option>)}</select></label>}
         <span className="dsh-chat__meta"><Icon name="model" size={13} /><span className="dsh-chat__model">{props.modelLabel}</span></span>
         <span className="dsh-chat__turn-usage" data-usage-available={turnUsage.available ? 'true' : 'false'} aria-label={turnUsage.available ? '本轮用量' : '本轮用量未提供'}>
           <span className="dsh-chat__separator" />
