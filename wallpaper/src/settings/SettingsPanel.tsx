@@ -23,6 +23,9 @@ export interface SettingsPanelProps {
   onRefreshTranslucentTb: () => void
   onLaunchTranslucentTb: () => void
   onInstallTranslucentTb: () => void
+  dshCandidates: Array<{ rootPath: string; source: string }>
+  onScanDsh: () => void
+  onAdoptDsh: (rootPath: string) => void
   appearanceAssets: AppearanceAssetSummary[]
   appearanceOverrides: Partial<Record<AppearanceSlot, string>>
   appearanceBusy: boolean
@@ -153,6 +156,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <Field title="DSH 就绪时自动切换" detail="仅检测到兼容的壁纸 Bridge 才会切换。"><Toggle label="DSH 自动切换" checked={settings.autoSwitchHarness} onChange={(value) => set({ autoSwitchHarness: value })} /></Field>
         </Card>
         <Card title="DeepSeek Harness 启动" description="自动扫描只建议候选路径；壁纸只启动自己登记的 DSH 进程，不会关闭其他 3080 服务。">
+          <Field title="自动扫描"><button className="settings-action secondary" onClick={props.onScanDsh}>扫描 DSH</button></Field>
+          {props.dshCandidates.map((candidate) => <Field key={candidate.rootPath} title={candidate.rootPath} detail={candidate.source}><button className="settings-action secondary" onClick={() => props.onAdoptDsh(candidate.rootPath)}>采用</button></Field>)}
           <Field title="DSH 根目录"><input value={settings.dshLaunch.rootPath ?? ''} placeholder="自动扫描或手动填写 dsh 项目目录" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, rootPath: e.target.value || undefined } })} /></Field>
           <Field title="Profile"><input value={settings.dshLaunch.profile} placeholder="desktop" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, profile: e.target.value || 'desktop' } })} /></Field>
           <Field title="启动命令"><input value={settings.dshLaunch.command ?? ''} placeholder="留空时使用 pnpm dsh" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, command: e.target.value || undefined } })} /></Field>

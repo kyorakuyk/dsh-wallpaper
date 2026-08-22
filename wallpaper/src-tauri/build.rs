@@ -15,6 +15,7 @@ fn main() {
             "clear_stale_lock_screen_backup",
             "get_lock_screen_diagnostics",
             "set_autostart",
+            "scan_dsh_paths",
             "translucent_tb_status",
             "launch_translucent_tb",
             "open_translucent_tb_install",

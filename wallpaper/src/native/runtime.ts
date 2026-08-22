@@ -45,6 +45,7 @@ export interface NativeRuntime {
   listenTray(listener: (event: { type: 'backend'; backend: BackendMode }) => void): Promise<() => void>
   probeHarness(): Promise<HarnessStatus>
   desktopLayoutMetrics(): Promise<{ expandedBottomInset: number; taskbarVisible: boolean }>
+  scanDshPaths(): Promise<Array<{ rootPath: string; source: string }>>
 }
 
 async function tauriAvailable(): Promise<boolean> {
@@ -189,5 +190,9 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) return { expandedBottomInset: 48, taskbarVisible: false }
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<{ expandedBottomInset: number; taskbarVisible: boolean }>('desktop_layout_metrics')
+  },
+  async scanDshPaths() {
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<Array<{ rootPath: string; source: string }>>('scan_dsh_paths')
   },
 }

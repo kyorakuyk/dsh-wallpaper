@@ -16,6 +16,7 @@ export function SettingsWindow() {
   const [harness, setHarness] = useState<'offline' | 'web-only' | 'bridge-ready'>('offline')
   const [interactionEnabled, setInteractionEnabled] = useState(true)
   const [translucentTb, setTranslucentTb] = useState<TranslucentTbStatus>({ installed: false, running: false })
+  const [dshCandidates, setDshCandidates] = useState<Array<{ rootPath: string; source: string }>>([])
   const [lockScreenDiagnostics, setLockScreenDiagnostics] = useState<LockScreenDiagnostics>()
   const [lockScreenBusy, setLockScreenBusy] = useState(false)
   const [notice, setNotice] = useState<string>()
@@ -56,6 +57,7 @@ export function SettingsWindow() {
     .catch((error) => setNotice(`素材库读取失败：${String(error)}`))
 
   const refreshTranslucentTb = () => void nativeRuntime.translucentTbStatus().then(setTranslucentTb).catch((error) => setNotice(String(error)))
+  const scanDsh = () => void nativeRuntime.scanDshPaths().then(setDshCandidates).catch((error) => setNotice(String(error)))
   const refreshLockScreenDiagnostics = async () => {
     const request = ++lockScreenDiagnosticsRequestRef.current
     try {
@@ -115,6 +117,7 @@ export function SettingsWindow() {
   useEffect(() => {
     void appCoreClient.snapshot().then((snapshot) => { setHarness(snapshot.harness); setInteractionEnabled(snapshot.interaction.enabled) })
     refreshTranslucentTb()
+    scanDsh()
     refreshLockScreenDiagnostics()
     refreshAppearance()
     const current = getCurrentWindow()
@@ -166,6 +169,9 @@ export function SettingsWindow() {
       settings={settings}
       harnessStatus={harness}
       translucentTb={translucentTb}
+      dshCandidates={dshCandidates}
+      onScanDsh={scanDsh}
+      onAdoptDsh={(rootPath) => change({ ...settingsRef.current, dshLaunch: { ...settingsRef.current.dshLaunch, rootPath } })}
       onChange={change}
       onRefreshTranslucentTb={refreshTranslucentTb}
       onLaunchTranslucentTb={() => void nativeRuntime.launchTranslucentTb().then(refreshTranslucentTb).catch((error) => setNotice(String(error)))}

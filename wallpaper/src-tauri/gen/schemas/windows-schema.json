@@ -369,6 +369,12 @@
           "markdownDescription": "Enables the publish_settings command without any pre-configured scope."
         },
         {
+          "description": "Enables the scan_dsh_paths command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-scan-dsh-paths",
+          "markdownDescription": "Enables the scan_dsh_paths command without any pre-configured scope."
+        },
+        {
           "description": "Enables the select_backend command without any pre-configured scope.",
           "type": "string",
           "const": "allow-select-backend",
@@ -613,6 +619,12 @@
           "type": "string",
           "const": "deny-publish-settings",
           "markdownDescription": "Denies the publish_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the scan_dsh_paths command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-scan-dsh-paths",
+          "markdownDescription": "Denies the scan_dsh_paths command without any pre-configured scope."
         },
         {
           "description": "Denies the select_backend command without any pre-configured scope.",

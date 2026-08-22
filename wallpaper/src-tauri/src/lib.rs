@@ -11,6 +11,10 @@ use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, EventTarget, Manager};
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DshPathCandidate { root_path: String, source: String }
+
 /// Only the settings surface is allowed to request the API-key prompt. This
 /// is a defense in depth check: it prevents the desktop wallpaper WebView (or
 /// a future WebView) from opening a native credential capture dialog.
@@ -21,6 +25,21 @@ const SETTINGS_WINDOW_LABEL: &str = "settings";
 /// this guard makes that boundary survive an accidental future capability
 /// change or a newly added WebView.
 const BACKGROUND_WINDOW_LABEL: &str = "background";
+
+#[tauri::command]
+fn scan_dsh_paths(caller: tauri::WebviewWindow) -> Result<Vec<DshPathCandidate>, String> {
+    require_settings(&caller)?;
+    let mut candidates = Vec::new();
+    let mut push = |path: std::path::PathBuf, source: &str| {
+        if path.join("package.json").is_file() && path.join("apps").join("cli").is_dir() {
+            candidates.push(DshPathCandidate { root_path: path.to_string_lossy().into_owned(), source: source.into() });
+        }
+    };
+    if let Ok(current) = std::env::current_dir() { push(current, "当前目录"); }
+    if let Ok(home) = std::env::var("USERPROFILE") { push(std::path::PathBuf::from(home).join("source").join("deepseek-harness"), "常见项目目录"); }
+    push(std::path::PathBuf::from(r"C:\DeepSeekHarness\deepseek-harness"), "常见项目目录");
+    Ok(candidates)
+}
 
 /// Settings are always authored by the dedicated settings surface and then
 /// delivered to the wallpaper by Rust.  This prevents a renderer from
@@ -1111,6 +1130,7 @@ pub fn run() {
             clear_stale_lock_screen_backup,
             get_lock_screen_diagnostics,
             set_autostart,
+            scan_dsh_paths,
             translucent_tb_status,
             launch_translucent_tb,
             open_translucent_tb_install,

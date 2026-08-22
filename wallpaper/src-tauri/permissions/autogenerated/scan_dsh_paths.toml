@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-scan-dsh-paths"
+description = "Enables the scan_dsh_paths command without any pre-configured scope."
+commands.allow = ["scan_dsh_paths"]
+
+[[permission]]
+identifier = "deny-scan-dsh-paths"
+description = "Denies the scan_dsh_paths command without any pre-configured scope."
+commands.deny = ["scan_dsh_paths"]
