@@ -644,6 +644,12 @@ fn update_interaction_regions(
 }
 
 #[tauri::command]
+fn desktop_layout_metrics(caller: tauri::WebviewWindow) -> Result<windows_integration::DesktopLayoutMetrics, String> {
+    require_background(&caller)?;
+    Ok(windows_integration::desktop_layout_metrics(&caller))
+}
+
+#[tauri::command]
 async fn send_chat(
     caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -1097,6 +1103,7 @@ pub fn run() {
             hide_settings_window,
             begin_interaction_region_session,
             update_interaction_regions,
+            desktop_layout_metrics,
             send_chat,
             cancel_chat,
             connect_harness,

@@ -41,6 +41,7 @@ export interface NativeRuntime {
   apiHistory(conversationId: string): Promise<ChatMessage[]>
   listenTray(listener: (event: { type: 'backend'; backend: BackendMode }) => void): Promise<() => void>
   probeHarness(): Promise<HarnessStatus>
+  desktopLayoutMetrics(): Promise<{ expandedBottomInset: number; taskbarVisible: boolean }>
 }
 
 async function tauriAvailable(): Promise<boolean> {
@@ -167,5 +168,10 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) return { availability: 'offline' }
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<HarnessStatus>('probe_harness')
+  },
+  async desktopLayoutMetrics() {
+    if (!await tauriAvailable()) return { expandedBottomInset: 48, taskbarVisible: false }
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<{ expandedBottomInset: number; taskbarVisible: boolean }>('desktop_layout_metrics')
   },
 }

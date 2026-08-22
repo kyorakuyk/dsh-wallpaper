@@ -19,6 +19,7 @@ export interface ConversationBubbleProps {
   persistent?: boolean
   acrylicOpacity?: number
   acrylicBlur?: number
+  expandedBottomInset?: number
   /** Both API rates are explicitly configured; zero is still configured. */
   apiPricingConfigured?: boolean
   /** Bridge availability drives the DSH indicator and mode switch. */
@@ -89,7 +90,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   return <section
     className={`conversation-shell dsh-chat dsh-theme-${props.backend === 'harness' ? 'harness' : 'deepseek'} ${showHistory ? 'expanded' : ''} ${busy ? 'dsh-chat--busy' : ''} ${hovered ? 'dsh-chat--hovered' : ''} ${focused ? 'dsh-chat--focused' : ''}`}
     data-persistent={props.persistent ? 'true' : undefined}
-    style={{ ['--dsh-chat-acrylic-opacity' as string]: (props.acrylicOpacity ?? .74).toFixed(2), ['--dsh-chat-acrylic-blur' as string]: `${props.acrylicBlur ?? 19}px` }}
+    style={{ ['--dsh-chat-acrylic-opacity' as string]: (props.acrylicOpacity ?? .74).toFixed(2), ['--dsh-chat-acrylic-blur' as string]: `${props.acrylicBlur ?? 19}px`, ['--dsh-chat-expanded-bottom' as string]: `${props.expandedBottomInset ?? 48}px` }}
     data-dsh-theme={props.backend === 'harness' ? 'harness' : 'deepseek'}
     data-interaction-region="chat"
     aria-label="AI 对话"

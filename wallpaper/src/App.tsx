@@ -222,6 +222,7 @@ export function App({ surface = 'combined' }: AppProps) {
   const [interactionEnabled, setInteractionEnabled] = useState(true)
   const [workspace, setWorkspace] = useState<DesktopWorkspace>('front')
   const [innerHistoryExpanded, setInnerHistoryExpanded] = useState(false)
+  const [expandedBottomInset, setExpandedBottomInset] = useState(48)
   const adapterRef = useRef<ChatAdapter>(new PreviewAdapter(settings.defaultBackend))
   // Do not put mutable API request settings in the adapter lifecycle effect.
   // The adapter captures this object by reference and snapshots it only when
@@ -389,6 +390,16 @@ export function App({ surface = 'combined' }: AppProps) {
       setSettings(event.payload)
     }).then((unlisten) => { dispose = unlisten })
     return () => dispose()
+  }, [])
+
+  useEffect(() => {
+    if (!nativeRuntime.isNative) return
+    let disposed = false
+    const refresh = () => { void nativeRuntime.desktopLayoutMetrics().then((metrics) => { if (!disposed) setExpandedBottomInset(metrics.expandedBottomInset) }) }
+    refresh()
+    window.addEventListener('resize', refresh)
+    const timer = window.setInterval(refresh, 1000)
+    return () => { disposed = true; window.removeEventListener('resize', refresh); window.clearInterval(timer) }
   }, [])
 
   useEffect(() => {
@@ -630,7 +641,7 @@ export function App({ surface = 'combined' }: AppProps) {
     {scene}
     <>
       <WidgetHost workspace={workspace} widgets={[]} />
-      {interactionEnabled && runtime.phase !== 'booting' && runtime.phase !== 'locked' && (settings.interactionLayout === 'taskbar-docked' || workspace !== 'front') && <ConversationBubble backend={runtime.backend} activity={runtime.activity} modelLabel={modelLabel} messages={messages} streamingText={streamingText} historyExpanded={workspace === 'front' ? runtime.historyExpanded : innerHistoryExpanded} usage={usage} collapsed={settings.interactionLayout === 'taskbar-docked' && interactionState === 'collapsed'} layout={settings.interactionLayout} expandDirection={interactionDirection} persistent={settings.interactionLayout === 'floating'} acrylicOpacity={settings.conversationOpacity} acrylicBlur={settings.conversationBlur} apiPricingConfigured={settings.deepseekApi.priceInputPerMillion !== undefined && settings.deepseekApi.priceOutputPerMillion !== undefined} harnessAvailability={runtime.harness} onSelectBackend={changeBackend} modelOptions={modelOptions} selectedModel={selectedModel} onSelectModel={runtime.backend === 'deepseek-web' ? undefined : (model) => { if (runtime.backend === 'deepseek-api') { setApiModelChoice(model); apiAdapterOptionsRef.current.model = model; patchRuntime({ model }); } else { setHarnessModelChoice(model); setConversationGeneration((value) => value + 1); patchRuntime({ model, provider: 'deepseek-official', activity: 'idle' }); } }} onExpand={() => { setInteractionState('expanded'); if (workspace === 'front') enterInnerWorkspace(); else { baseDispatch({ type: 'OPEN_CHAT' }); dispatchCore('open-chat') } }} disabled={runtime.backend === 'harness' && runtime.harness !== 'bridge-ready'} onToggleHistory={() => { if (workspace !== 'front') setInnerHistoryExpanded((value) => !value); else { baseDispatch({ type: 'TOGGLE_HISTORY' }); dispatchCore('toggle-history') } }} onSend={(text) => {
+      {interactionEnabled && runtime.phase !== 'booting' && runtime.phase !== 'locked' && (settings.interactionLayout === 'taskbar-docked' || workspace !== 'front') && <ConversationBubble backend={runtime.backend} activity={runtime.activity} modelLabel={modelLabel} messages={messages} streamingText={streamingText} historyExpanded={workspace === 'front' ? runtime.historyExpanded : innerHistoryExpanded} usage={usage} collapsed={settings.interactionLayout === 'taskbar-docked' && interactionState === 'collapsed'} layout={settings.interactionLayout} expandDirection={interactionDirection} persistent={settings.interactionLayout === 'floating'} acrylicOpacity={settings.conversationOpacity} acrylicBlur={settings.conversationBlur} expandedBottomInset={expandedBottomInset} apiPricingConfigured={settings.deepseekApi.priceInputPerMillion !== undefined && settings.deepseekApi.priceOutputPerMillion !== undefined} harnessAvailability={runtime.harness} onSelectBackend={changeBackend} modelOptions={modelOptions} selectedModel={selectedModel} onSelectModel={runtime.backend === 'deepseek-web' ? undefined : (model) => { if (runtime.backend === 'deepseek-api') { setApiModelChoice(model); apiAdapterOptionsRef.current.model = model; patchRuntime({ model }); } else { setHarnessModelChoice(model); setConversationGeneration((value) => value + 1); patchRuntime({ model, provider: 'deepseek-official', activity: 'idle' }); } }} onExpand={() => { setInteractionState('expanded'); if (workspace === 'front') enterInnerWorkspace(); else { baseDispatch({ type: 'OPEN_CHAT' }); dispatchCore('open-chat') } }} disabled={runtime.backend === 'harness' && runtime.harness !== 'bridge-ready'} onToggleHistory={() => { if (workspace !== 'front') setInnerHistoryExpanded((value) => !value); else { baseDispatch({ type: 'TOGGLE_HISTORY' }); dispatchCore('toggle-history') } }} onSend={(text) => {
         const adapter = adapterRef.current
         const adapterBackend = adapter.mode
         const isCurrent = () => isCurrentChatOperation(adapterRef.current, activeBackendRef.current, adapter, adapterBackend, false)

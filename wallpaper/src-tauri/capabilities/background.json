@@ -12,6 +12,7 @@
     "allow-show-deepseek-login",
     "allow-begin-interaction-region-session",
     "allow-update-interaction-regions",
+    "allow-desktop-layout-metrics",
     "allow-send-chat",
     "allow-cancel-chat",
     "allow-connect-harness",

@@ -194,6 +194,44 @@ pub struct InteractionRegionUpdateResult {
     pub stale: bool,
 }
 
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopLayoutMetrics {
+    /// Logical pixels reserved below the expanded input island.
+    pub expanded_bottom_inset: f64,
+    pub taskbar_visible: bool,
+}
+
+pub fn desktop_layout_metrics(window: &WebviewWindow) -> DesktopLayoutMetrics {
+    #[cfg(windows)]
+    {
+        let scale = window.scale_factor().unwrap_or(1.0).clamp(MIN_SCALE_FACTOR, MAX_SCALE_FACTOR);
+        let fallback = 48.0;
+        let Ok(raw) = window.hwnd() else { return DesktopLayoutMetrics { expanded_bottom_inset: fallback, taskbar_visible: false } };
+        let background = HWND(raw.0);
+        let mut background_rect = RECT::default();
+        let mut taskbar_rect = RECT::default();
+        let taskbar = unsafe { FindWindowW(windows::core::w!("Shell_TrayWnd"), PCWSTR::null()) }.ok();
+        let visible = taskbar.is_some_and(|taskbar| unsafe { IsWindowVisible(taskbar).as_bool() })
+            && unsafe { GetWindowRect(background, &mut background_rect).is_ok() }
+            && taskbar.is_some_and(|taskbar| unsafe { GetWindowRect(taskbar, &mut taskbar_rect).is_ok() });
+        if visible {
+            let physical_height = (taskbar_rect.bottom - taskbar_rect.top).max(0);
+            let at_bottom = taskbar_rect.top >= background_rect.bottom.saturating_sub(physical_height + 2);
+            let logical_height = physical_height as f64 / scale;
+            if at_bottom && logical_height >= 12.0 {
+                return DesktopLayoutMetrics { expanded_bottom_inset: logical_height * 2.0, taskbar_visible: true };
+            }
+        }
+        DesktopLayoutMetrics { expanded_bottom_inset: fallback, taskbar_visible: false }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        DesktopLayoutMetrics { expanded_bottom_inset: 48.0, taskbar_visible: false }
+    }
+}
+
 static INTERACTION_REGIONS: OnceLock<RwLock<InteractionRegionState>> = OnceLock::new();
 
 static INTERACTION_REGION_SESSION: std::sync::atomic::AtomicU64 =

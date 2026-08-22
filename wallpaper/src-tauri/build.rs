@@ -25,6 +25,7 @@ fn main() {
             "hide_settings_window",
             "begin_interaction_region_session",
             "update_interaction_regions",
+            "desktop_layout_metrics",
             "send_chat",
             "cancel_chat",
             "connect_harness",
