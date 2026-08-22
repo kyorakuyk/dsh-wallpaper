@@ -710,7 +710,10 @@ export function apply(ctx: Context, config: Config = {}): void {
           if (!selected) return json(res, 400, { error: 'unknown-agent-preset' })
           if (selected.broken) return json(res, 409, { error: 'agent-preset-unavailable' })
           await host.agentPresets.recompose(entry.handle.agent.ctx, preset)
-          entry.handle.agent.session.append('agent-preset/selected' as never, { agentPreset: preset } as never)
+          ;(entry.handle.agent.session.append as (...args: unknown[]) => unknown)(
+            'agent-preset/selected',
+            { agentPreset: preset },
+          )
           return json(res, 200, { sessionId, agentPreset: preset })
         } catch (error) {
           const reference = errorReference(error)
