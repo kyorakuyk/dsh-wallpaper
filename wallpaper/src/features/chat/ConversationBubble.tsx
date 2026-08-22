@@ -28,6 +28,9 @@ export interface ConversationBubbleProps {
   modelOptions?: readonly string[]
   selectedModel?: string
   onSelectModel?: (model: string) => void
+  presetOptions?: readonly { id: string; name?: string; broken?: string }[]
+  selectedPreset?: string
+  onSelectPreset?: (preset: string) => void
   onExpand?: () => void
   onToggleHistory: () => void
   onSend: (text: string) => void
@@ -133,7 +136,12 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           <span className="dsh-chat__mode-switch-track"><span className="dsh-chat__mode-switch-knob" /></span>
           <span className="dsh-chat__mode-switch-label" aria-hidden="true">DSH</span>
         </button>
-        <span className="dsh-chat__preset">标准模式⌄</span>
+        <label className="dsh-chat__preset">
+          <select aria-label="选择 DSH 模式" value={props.selectedPreset ?? ''} disabled={!props.onSelectPreset || props.messages.length > 0} onChange={(event) => props.onSelectPreset?.(event.target.value)}>
+            {!props.presetOptions?.length && <option value="">标准模式</option>}
+            {props.presetOptions?.map((preset) => <option key={preset.id} value={preset.id} disabled={Boolean(preset.broken)}>{preset.name ?? preset.id}{preset.broken ? '（不可用）' : ''}</option>)}
+          </select>
+        </label>
         {!props.persistent && <Button variant="ghost" iconOnly onClick={props.onClose} aria-label="收起对话"><Icon name="close" /></Button>}
       </header>
 

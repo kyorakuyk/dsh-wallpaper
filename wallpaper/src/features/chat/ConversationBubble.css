@@ -332,6 +332,9 @@
 .dsh-chat[data-persistent='true'] .dsh-chat__backend { font-size: 13px; letter-spacing: .02em; }
 .dsh-chat[data-persistent='true'] .dsh-chat__backend-detail { display: inline; font-size: 11px; }
 .dsh-chat__preset { padding-left: 9px; border-left: 1px solid color-mix(in srgb, var(--dsh-text-strong) 14%, transparent); color: var(--dsh-text-faint); font-size: 11px; white-space: nowrap; }
+.dsh-chat__preset select { max-width: 140px; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.dsh-chat__preset select:disabled { cursor: default; opacity: .58; }
+.dsh-chat__preset option { background: #102034; color: #eaf6ff; }
 .dsh-chat[data-persistent='true'] .dsh-chat__card { min-height: 0; overflow: visible; border-color: color-mix(in srgb, var(--dsh-text-strong) 11%, transparent); border-radius: 24px; background: color-mix(in srgb, var(--dsh-glass-fill-strong) 13%, transparent); box-shadow: 0 10px 36px rgba(0,0,0,.08); backdrop-filter: blur(2px) saturate(105%); transition: transform var(--dsh-duration-normal) var(--dsh-ease-expressive), background var(--dsh-duration-normal), backdrop-filter var(--dsh-duration-normal), box-shadow var(--dsh-duration-normal), border-color var(--dsh-duration-normal); }
 .dsh-chat[data-persistent='true'] .dsh-chat__card::before { display: none; }
 .dsh-chat[data-persistent='true'].dsh-chat--hovered .dsh-chat__card,
