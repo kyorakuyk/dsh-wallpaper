@@ -200,7 +200,7 @@ async function call(
 describe('wallpaper bridge HTTP routes', () => {
   it('declares both agent lifecycle and web-server dependencies for HTTP routes', async () => {
     const harness = await createHarness()
-    expect(harness.injectedDependencies).toEqual(['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry'])
+    expect(harness.injectedDependencies).toEqual(['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry', 'permissionPresets', 'commands'])
   })
 
   it('uses only its fixed token slot beneath the host-owned root', () => {

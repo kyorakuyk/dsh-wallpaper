@@ -15,7 +15,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { API_PREFIX, BRIDGE_VERSION, bearerAuthorized, contentText, errorReference, isSafeSessionId, isVisibleWallpaperMessage, mapSessionEvent, parseSessionRoute, type BridgeEvent } from './protocol.ts'
 
 export const name = 'wallpaper-bridge'
-export const inject = ['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry']
+export const inject = ['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry', 'permissionPresets', 'commands']
 
 export interface Config {
   /**
@@ -80,6 +80,9 @@ interface AgentPresets {
   mount(agentContext: Context, preset?: string): Promise<unknown>
   recompose(agentContext: Context, preset: string): Promise<AgentPresetDirectory>
 }
+
+interface PermissionPresets { readonly names: readonly string[]; current(session: Session): string; set(session: Session, name: string): void }
+interface Commands { list(agent: { id: unknown }): readonly { name: string; description: string; input?: { hint: string } }[] }
 
 // This is an HTTP boundary, so measure the actual UTF-8 payload rather than
 // JavaScript UTF-16 code units. Keep it in lockstep with the native client.
@@ -641,7 +644,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   // services in this child scope explicitly: a test mock that happens to
   // expose `agents` next to `webServer` must not hide a real Cordis scope
   // where only the declared dependencies are available.
-  ctx.inject(['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry'], (wctx) => {
+  ctx.inject(['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry', 'permissionPresets', 'commands'], (wctx) => {
     if (wctx.webServer.host !== '127.0.0.1') {
       throw new Error('dsh-wallpaper-bridge refuses to run on a non-loopback WebServer')
     }
@@ -678,7 +681,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         if (!bearerAuthorized(req.headers.authorization, token)) return json(res, 401, { error: 'unauthorized' })
         const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname
         try {
-          const host = wctx as unknown as { agentPresets: AgentPresets }
+          const host = wctx as unknown as { agentPresets: AgentPresets; permissionPresets: PermissionPresets; commands: Commands }
           if (pathname === `${API_PREFIX}/control/presets` && req.method === 'GET') {
           const presets = await host.agentPresets.list()
           // Preset composition paths are host-private. Expose only the
@@ -695,6 +698,29 @@ export function apply(ctx: Context, config: Config = {}): void {
           })
           }
           const presetSwitch = pathname.match(new RegExp(`^${API_PREFIX}/control/sessions/([^/]+)/preset$`))
+          const sessionControls = pathname.match(new RegExp(`^${API_PREFIX}/control/sessions/([^/]+)$`))
+          if (sessionControls && req.method === 'GET') {
+            const sessionId = decodeURIComponent(sessionControls[1] ?? '')
+            if (!isSafeSessionId(sessionId)) return json(res, 400, { error: 'invalid-session-id' })
+            const entry = live.get(sessionId)
+            if (!entry) return json(res, 404, { error: 'session-not-live' })
+            return json(res, 200, {
+              permission: { current: host.permissionPresets.current(entry.handle.agent.session), options: host.permissionPresets.names },
+              commands: host.commands.list(entry.handle.agent).map((command) => ({ name: command.name, description: command.description, ...(command.input ? { input: command.input } : {}) })),
+            })
+          }
+          const permissionSwitch = pathname.match(new RegExp(`^${API_PREFIX}/control/sessions/([^/]+)/permission$`))
+          if (permissionSwitch && req.method === 'POST') {
+            const sessionId = decodeURIComponent(permissionSwitch[1] ?? '')
+            if (!isSafeSessionId(sessionId)) return json(res, 400, { error: 'invalid-session-id' })
+            const entry = live.get(sessionId)
+            if (!entry) return json(res, 404, { error: 'session-not-live' })
+            const body = await readJson(req)
+            const permission = typeof body.permission === 'string' ? body.permission.trim() : ''
+            if (!host.permissionPresets.names.includes(permission)) return json(res, 400, { error: 'unknown-permission-preset' })
+            host.permissionPresets.set(entry.handle.agent.session, permission)
+            return json(res, 200, { sessionId, permission })
+          }
           if (!presetSwitch || req.method !== 'POST') return json(res, 404, { error: 'not-found' })
           const sessionId = decodeURIComponent(presetSwitch[1] ?? '')
           if (!isSafeSessionId(sessionId)) return json(res, 400, { error: 'invalid-session-id' })
