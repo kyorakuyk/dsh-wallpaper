@@ -15,6 +15,8 @@
     "allow-set-autostart",
     "allow-scan-dsh-paths",
     "allow-launch-dsh",
+    "allow-managed-dsh-status",
+    "allow-stop-managed-dsh",
     "allow-translucent-tb-status",
     "allow-launch-translucent-tb",
     "allow-open-translucent-tb-install",

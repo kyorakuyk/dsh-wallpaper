@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import { appCoreClient } from '../runtime/appCoreClient.ts'
-import { nativeRuntime, type LockScreenDiagnostics, type TranslucentTbStatus } from '../native/runtime.ts'
+import { nativeRuntime, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
 import { loadSettings, saveSettings, type WallpaperSettings } from './store.ts'
 import { SettingsPanel } from './SettingsPanel.tsx'
 import { chooseAppearanceImportPaths, nativeAppearance } from '../native/appearance.ts'
@@ -17,6 +17,7 @@ export function SettingsWindow() {
   const [interactionEnabled, setInteractionEnabled] = useState(true)
   const [translucentTb, setTranslucentTb] = useState<TranslucentTbStatus>({ installed: false, running: false })
   const [dshCandidates, setDshCandidates] = useState<Array<{ rootPath: string; source: string }>>([])
+  const [managedDsh, setManagedDsh] = useState<ManagedDshStatus>({ managed: false, running: false })
   const [lockScreenDiagnostics, setLockScreenDiagnostics] = useState<LockScreenDiagnostics>()
   const [lockScreenBusy, setLockScreenBusy] = useState(false)
   const [notice, setNotice] = useState<string>()
@@ -58,6 +59,7 @@ export function SettingsWindow() {
 
   const refreshTranslucentTb = () => void nativeRuntime.translucentTbStatus().then(setTranslucentTb).catch((error) => setNotice(String(error)))
   const scanDsh = () => void nativeRuntime.scanDshPaths().then(setDshCandidates).catch((error) => setNotice(String(error)))
+  const refreshManagedDsh = () => void nativeRuntime.managedDshStatus().then(setManagedDsh).catch((error) => setNotice(String(error)))
   const refreshLockScreenDiagnostics = async () => {
     const request = ++lockScreenDiagnosticsRequestRef.current
     try {
@@ -118,6 +120,7 @@ export function SettingsWindow() {
     void appCoreClient.snapshot().then((snapshot) => { setHarness(snapshot.harness); setInteractionEnabled(snapshot.interaction.enabled) })
     refreshTranslucentTb()
     scanDsh()
+    refreshManagedDsh()
     refreshLockScreenDiagnostics()
     refreshAppearance()
     const current = getCurrentWindow()
@@ -172,7 +175,10 @@ export function SettingsWindow() {
       dshCandidates={dshCandidates}
       onScanDsh={scanDsh}
       onAdoptDsh={(rootPath) => change({ ...settingsRef.current, dshLaunch: { ...settingsRef.current.dshLaunch, rootPath } })}
-      onLaunchDsh={() => { const dsh = settingsRef.current.dshLaunch; if (!dsh.rootPath) return; void nativeRuntime.launchDsh(dsh.rootPath, dsh.profile, dsh.command).then((pid) => setNotice(`已启动 DSH（PID ${pid}），等待 Bridge 就绪后可在桌面切换。`)).catch((error) => setNotice(String(error))) }}
+      onLaunchDsh={() => { const dsh = settingsRef.current.dshLaunch; if (!dsh.rootPath) return; void nativeRuntime.launchDsh(dsh.rootPath, dsh.profile, dsh.command).then((pid) => { setNotice(`已启动 DSH（PID ${pid}），等待 Bridge 就绪后可在桌面切换。`); refreshManagedDsh() }).catch((error) => setNotice(String(error))) }}
+      managedDsh={managedDsh}
+      onRefreshManagedDsh={refreshManagedDsh}
+      onStopManagedDsh={() => void nativeRuntime.stopManagedDsh().then(() => { setNotice('已停止本应用启动的 DSH。'); refreshManagedDsh() }).catch((error) => setNotice(String(error)))}
       onChange={change}
       onRefreshTranslucentTb={refreshTranslucentTb}
       onLaunchTranslucentTb={() => void nativeRuntime.launchTranslucentTb().then(refreshTranslucentTb).catch((error) => setNotice(String(error)))}

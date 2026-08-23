@@ -17,6 +17,8 @@ fn main() {
             "set_autostart",
             "scan_dsh_paths",
             "launch_dsh",
+            "managed_dsh_status",
+            "stop_managed_dsh",
             "translucent_tb_status",
             "launch_translucent_tb",
             "open_translucent_tb_install",

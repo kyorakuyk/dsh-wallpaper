@@ -23,6 +23,7 @@
     "allow-harness-set-permission",
     "allow-api-history",
     "allow-probe-harness",
+    "allow-managed-dsh-status",
     "allow-appearance-resolve-asset"
   ]
 }

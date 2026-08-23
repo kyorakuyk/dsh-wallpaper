@@ -14,6 +14,7 @@ export interface NativeSendOptions {
 
 export interface TranslucentTbStatus { installed: boolean; running: boolean; source?: string }
 export interface LockScreenDiagnostics { supported: boolean; packageIdentity: boolean; takeoverAvailable: boolean; originalImageUri?: string; backupExists: boolean; backupValid: boolean; staleBackup: boolean; managedImageReady: boolean; managedImageActive: boolean; developmentBuild: boolean; warnings: string[] }
+export interface ManagedDshStatus { managed: boolean; running: boolean; pid?: number; rootPath?: string; profile?: string }
 
 export interface NativeRuntime {
   isNative: boolean
@@ -48,6 +49,8 @@ export interface NativeRuntime {
   desktopLayoutMetrics(): Promise<{ expandedBottomInset: number; taskbarVisible: boolean }>
   scanDshPaths(): Promise<Array<{ rootPath: string; source: string }>>
   launchDsh(rootPath: string, profile: string, command?: string): Promise<number>
+  managedDshStatus(): Promise<ManagedDshStatus>
+  stopManagedDsh(): Promise<void>
 }
 
 async function tauriAvailable(): Promise<boolean> {
@@ -204,5 +207,13 @@ export const nativeRuntime: NativeRuntime = {
   async launchDsh(rootPath, profile, command) {
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<number>('launch_dsh', { rootPath, profile, command })
+  },
+  async managedDshStatus() {
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<ManagedDshStatus>('managed_dsh_status')
+  },
+  async stopManagedDsh() {
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('stop_managed_dsh')
   },
 }

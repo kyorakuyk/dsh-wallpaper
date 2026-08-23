@@ -6,7 +6,8 @@ mod lock_screen_backup;
 mod windows_integration;
 
 use app_core::{Activity, AppAction, AppCore, AppSnapshot, BackendMode, HarnessAvailability};
-use std::sync::{OnceLock, RwLock};
+use std::process::Child;
+use std::sync::{Mutex, OnceLock, RwLock};
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, EventTarget, Manager};
@@ -14,6 +15,27 @@ use tauri::{Emitter, EventTarget, Manager};
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DshPathCandidate { root_path: String, source: String }
+
+/// A DSH process is only "managed" when this instance spawned it and still
+/// owns its `Child` handle. Port 3080 alone never proves ownership.
+struct ManagedDshProcess {
+    child: Child,
+    root_path: String,
+    profile: String,
+}
+
+#[derive(Default)]
+struct ManagedDshState(Mutex<Option<ManagedDshProcess>>);
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedDshStatus {
+    managed: bool,
+    running: bool,
+    pid: Option<u32>,
+    root_path: Option<String>,
+    profile: Option<String>,
+}
 
 /// Only the settings surface is allowed to request the API-key prompt. This
 /// is a defense in depth check: it prevents the desktop wallpaper WebView (or
@@ -42,7 +64,7 @@ fn scan_dsh_paths(caller: tauri::WebviewWindow) -> Result<Vec<DshPathCandidate>,
 }
 
 #[tauri::command]
-fn launch_dsh(caller: tauri::WebviewWindow, root_path: String, profile: String, command: Option<String>) -> Result<u32, String> {
+fn launch_dsh(caller: tauri::WebviewWindow, state: tauri::State<'_, ManagedDshState>, root_path: String, profile: String, command: Option<String>) -> Result<u32, String> {
     require_settings(&caller)?;
     let root = std::fs::canonicalize(root_path.trim()).map_err(|_| "DSH 根目录不存在或不可访问".to_string())?;
     if !root.join("package.json").is_file() || !root.join("apps").join("cli").is_dir() { return Err("选择的目录不是可识别的 DSH 项目根目录".into()); }
@@ -50,8 +72,66 @@ fn launch_dsh(caller: tauri::WebviewWindow, root_path: String, profile: String, 
     if profile.is_empty() || !profile.chars().all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_')) { return Err("DSH profile 只能包含字母、数字、连字符或下划线".into()); }
     let launcher = command.as_deref().map(str::trim).filter(|value| !value.is_empty()).unwrap_or("pnpm.cmd");
     if (launcher.contains('/') || launcher.contains('\\')) && !std::path::Path::new(launcher).is_file() { return Err("自定义 DSH 启动器不存在".into()); }
-    let child = std::process::Command::new(launcher).args(["dsh", "--profile", profile]).current_dir(root).spawn().map_err(|error| format!("无法启动 DSH：{error}"))?;
-    Ok(child.id())
+    let mut managed = state.0.lock().map_err(|_| "DSH 进程状态不可用".to_string())?;
+    if let Some(existing) = managed.as_mut() {
+        match existing.child.try_wait() {
+            Ok(None) => return Ok(existing.child.id()),
+            Ok(Some(_)) | Err(_) => *managed = None,
+        }
+    }
+    let child = std::process::Command::new(launcher)
+        .args(["dsh", "--profile", profile])
+        .current_dir(&root)
+        .spawn()
+        .map_err(|error| format!("无法启动 DSH：{error}"))?;
+    let pid = child.id();
+    *managed = Some(ManagedDshProcess {
+        child,
+        root_path: root.to_string_lossy().into_owned(),
+        profile: profile.into(),
+    });
+    Ok(pid)
+}
+
+#[tauri::command]
+fn managed_dsh_status(caller: tauri::WebviewWindow, state: tauri::State<'_, ManagedDshState>) -> Result<ManagedDshStatus, String> {
+    require_wallpaper_surface(&caller)?;
+    let mut managed = state.0.lock().map_err(|_| "DSH 进程状态不可用".to_string())?;
+    let Some(process) = managed.as_mut() else {
+        return Ok(ManagedDshStatus { managed: false, running: false, pid: None, root_path: None, profile: None });
+    };
+    match process.child.try_wait() {
+        Ok(None) => Ok(ManagedDshStatus {
+            managed: true,
+            running: true,
+            pid: Some(process.child.id()),
+            root_path: Some(process.root_path.clone()),
+            profile: Some(process.profile.clone()),
+        }),
+        Ok(Some(_)) | Err(_) => {
+            *managed = None;
+            Ok(ManagedDshStatus { managed: false, running: false, pid: None, root_path: None, profile: None })
+        }
+    }
+}
+
+#[tauri::command]
+fn stop_managed_dsh(caller: tauri::WebviewWindow, state: tauri::State<'_, ManagedDshState>) -> Result<(), String> {
+    require_settings(&caller)?;
+    let mut managed = state.0.lock().map_err(|_| "DSH 进程状态不可用".to_string())?;
+    let Some(mut process) = managed.take() else { return Ok(()); };
+    // Scope termination to the exact process spawned by this application;
+    // never infer a target by probing a port or executable name.
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill.exe")
+            .args(["/PID", &process.child.id().to_string(), "/T", "/F"])
+            .output();
+    }
+    #[cfg(not(windows))]
+    { let _ = process.child.kill(); }
+    let _ = process.child.wait();
+    Ok(())
 }
 
 /// Settings are always authored by the dedicated settings surface and then
@@ -1138,6 +1218,7 @@ pub fn run() {
             appearance_paths,
         ))
         .manage(chat::ChatState::default())
+        .manage(ManagedDshState::default())
         .invoke_handler(tauri::generate_handler![
             get_app_snapshot,
             set_interaction_enabled,
@@ -1151,6 +1232,8 @@ pub fn run() {
             set_autostart,
             scan_dsh_paths,
             launch_dsh,
+            managed_dsh_status,
+            stop_managed_dsh,
             translucent_tb_status,
             launch_translucent_tb,
             open_translucent_tb_install,
