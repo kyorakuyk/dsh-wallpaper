@@ -16,6 +16,7 @@ fn main() {
             "get_lock_screen_diagnostics",
             "set_autostart",
             "scan_dsh_paths",
+            "launch_dsh",
             "translucent_tb_status",
             "launch_translucent_tb",
             "open_translucent_tb_install",

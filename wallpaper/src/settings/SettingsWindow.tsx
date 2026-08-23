@@ -172,6 +172,7 @@ export function SettingsWindow() {
       dshCandidates={dshCandidates}
       onScanDsh={scanDsh}
       onAdoptDsh={(rootPath) => change({ ...settingsRef.current, dshLaunch: { ...settingsRef.current.dshLaunch, rootPath } })}
+      onLaunchDsh={() => { const dsh = settingsRef.current.dshLaunch; if (!dsh.rootPath) return; void nativeRuntime.launchDsh(dsh.rootPath, dsh.profile, dsh.command).then((pid) => setNotice(`已启动 DSH（PID ${pid}），等待 Bridge 就绪后可在桌面切换。`)).catch((error) => setNotice(String(error))) }}
       onChange={change}
       onRefreshTranslucentTb={refreshTranslucentTb}
       onLaunchTranslucentTb={() => void nativeRuntime.launchTranslucentTb().then(refreshTranslucentTb).catch((error) => setNotice(String(error)))}

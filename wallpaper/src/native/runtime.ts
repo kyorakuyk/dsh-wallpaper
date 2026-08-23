@@ -46,6 +46,7 @@ export interface NativeRuntime {
   probeHarness(): Promise<HarnessStatus>
   desktopLayoutMetrics(): Promise<{ expandedBottomInset: number; taskbarVisible: boolean }>
   scanDshPaths(): Promise<Array<{ rootPath: string; source: string }>>
+  launchDsh(rootPath: string, profile: string, command?: string): Promise<number>
 }
 
 async function tauriAvailable(): Promise<boolean> {
@@ -194,5 +195,9 @@ export const nativeRuntime: NativeRuntime = {
   async scanDshPaths() {
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<Array<{ rootPath: string; source: string }>>('scan_dsh_paths')
+  },
+  async launchDsh(rootPath, profile, command) {
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<number>('launch_dsh', { rootPath, profile, command })
   },
 }

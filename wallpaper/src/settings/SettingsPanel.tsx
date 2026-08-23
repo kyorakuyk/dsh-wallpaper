@@ -26,6 +26,7 @@ export interface SettingsPanelProps {
   dshCandidates: Array<{ rootPath: string; source: string }>
   onScanDsh: () => void
   onAdoptDsh: (rootPath: string) => void
+  onLaunchDsh: () => void
   appearanceAssets: AppearanceAssetSummary[]
   appearanceOverrides: Partial<Record<AppearanceSlot, string>>
   appearanceBusy: boolean
@@ -161,6 +162,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <Field title="DSH 根目录"><input value={settings.dshLaunch.rootPath ?? ''} placeholder="自动扫描或手动填写 dsh 项目目录" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, rootPath: e.target.value || undefined } })} /></Field>
           <Field title="Profile"><input value={settings.dshLaunch.profile} placeholder="desktop" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, profile: e.target.value || 'desktop' } })} /></Field>
           <Field title="启动命令"><input value={settings.dshLaunch.command ?? ''} placeholder="留空时使用 pnpm dsh" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, command: e.target.value || undefined } })} /></Field>
+          <Field title="启动 DSH" detail="仅启动此处配置的 profile，不会接管已有 3080 服务。"><button className="settings-action" disabled={!settings.dshLaunch.rootPath} onClick={props.onLaunchDsh}>启动</button></Field>
         </Card>
         <Card title="DeepSeek 网页入口（实验）" description="当前仅在默认浏览器打开 DeepSeek 官方页面，不能在壁纸内聊天或同步消息。"><Field title="官方页面" detail="本应用不创建登录 WebView、不读取 Cookie，也不能使用或保存官方页面的登录状态。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开官方页面</button></Field></Card>
         <Card title="DeepSeek API" description="API 模式会产生实际费用，密钥只保存在 Windows 凭据管理器。">

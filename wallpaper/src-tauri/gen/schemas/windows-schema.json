@@ -327,6 +327,12 @@
           "markdownDescription": "Enables the hide_settings_window command without any pre-configured scope."
         },
         {
+          "description": "Enables the launch_dsh command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-launch-dsh",
+          "markdownDescription": "Enables the launch_dsh command without any pre-configured scope."
+        },
+        {
           "description": "Enables the launch_translucent_tb command without any pre-configured scope.",
           "type": "string",
           "const": "allow-launch-translucent-tb",
@@ -577,6 +583,12 @@
           "type": "string",
           "const": "deny-hide-settings-window",
           "markdownDescription": "Denies the hide_settings_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the launch_dsh command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-launch-dsh",
+          "markdownDescription": "Denies the launch_dsh command without any pre-configured scope."
         },
         {
           "description": "Denies the launch_translucent_tb command without any pre-configured scope.",

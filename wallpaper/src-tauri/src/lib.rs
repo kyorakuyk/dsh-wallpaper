@@ -41,6 +41,19 @@ fn scan_dsh_paths(caller: tauri::WebviewWindow) -> Result<Vec<DshPathCandidate>,
     Ok(candidates)
 }
 
+#[tauri::command]
+fn launch_dsh(caller: tauri::WebviewWindow, root_path: String, profile: String, command: Option<String>) -> Result<u32, String> {
+    require_settings(&caller)?;
+    let root = std::fs::canonicalize(root_path.trim()).map_err(|_| "DSH 根目录不存在或不可访问".to_string())?;
+    if !root.join("package.json").is_file() || !root.join("apps").join("cli").is_dir() { return Err("选择的目录不是可识别的 DSH 项目根目录".into()); }
+    let profile = profile.trim();
+    if profile.is_empty() || !profile.chars().all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_')) { return Err("DSH profile 只能包含字母、数字、连字符或下划线".into()); }
+    let launcher = command.as_deref().map(str::trim).filter(|value| !value.is_empty()).unwrap_or("pnpm.cmd");
+    if (launcher.contains('/') || launcher.contains('\\')) && !std::path::Path::new(launcher).is_file() { return Err("自定义 DSH 启动器不存在".into()); }
+    let child = std::process::Command::new(launcher).args(["dsh", "--profile", profile]).current_dir(root).spawn().map_err(|error| format!("无法启动 DSH：{error}"))?;
+    Ok(child.id())
+}
+
 /// Settings are always authored by the dedicated settings surface and then
 /// delivered to the wallpaper by Rust.  This prevents a renderer from
 /// selecting an arbitrary event target through `core:event:emit_to`.
@@ -1131,6 +1144,7 @@ pub fn run() {
             get_lock_screen_diagnostics,
             set_autostart,
             scan_dsh_paths,
+            launch_dsh,
             translucent_tb_status,
             launch_translucent_tb,
             open_translucent_tb_install,
