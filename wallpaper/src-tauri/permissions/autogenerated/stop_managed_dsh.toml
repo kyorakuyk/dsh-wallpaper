@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-stop-managed-dsh"
+description = "Enables the stop_managed_dsh command without any pre-configured scope."
+commands.allow = ["stop_managed_dsh"]
+
+[[permission]]
+identifier = "deny-stop-managed-dsh"
+description = "Denies the stop_managed_dsh command without any pre-configured scope."
+commands.deny = ["stop_managed_dsh"]

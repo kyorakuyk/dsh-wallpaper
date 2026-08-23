@@ -345,6 +345,12 @@
           "markdownDescription": "Enables the launch_translucent_tb command without any pre-configured scope."
         },
         {
+          "description": "Enables the managed_dsh_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-managed-dsh-status",
+          "markdownDescription": "Enables the managed_dsh_status command without any pre-configured scope."
+        },
+        {
           "description": "Enables the notify_appearance_changed command without any pre-configured scope.",
           "type": "string",
           "const": "allow-notify-appearance-changed",
@@ -427,6 +433,12 @@
           "type": "string",
           "const": "allow-start-settings-drag",
           "markdownDescription": "Enables the start_settings_drag command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stop_managed_dsh command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stop-managed-dsh",
+          "markdownDescription": "Enables the stop_managed_dsh command without any pre-configured scope."
         },
         {
           "description": "Enables the translucent_tb_status command without any pre-configured scope.",
@@ -609,6 +621,12 @@
           "markdownDescription": "Denies the launch_translucent_tb command without any pre-configured scope."
         },
         {
+          "description": "Denies the managed_dsh_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-managed-dsh-status",
+          "markdownDescription": "Denies the managed_dsh_status command without any pre-configured scope."
+        },
+        {
           "description": "Denies the notify_appearance_changed command without any pre-configured scope.",
           "type": "string",
           "const": "deny-notify-appearance-changed",
@@ -691,6 +709,12 @@
           "type": "string",
           "const": "deny-start-settings-drag",
           "markdownDescription": "Denies the start_settings_drag command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stop_managed_dsh command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stop-managed-dsh",
+          "markdownDescription": "Denies the stop_managed_dsh command without any pre-configured scope."
         },
         {
           "description": "Denies the translucent_tb_status command without any pre-configured scope.",
