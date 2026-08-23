@@ -33,6 +33,7 @@ fn main() {
             "connect_harness",
             "harness_history",
             "harness_presets",
+            "harness_set_preset",
             "harness_controls",
             "harness_set_permission",
             "api_history",

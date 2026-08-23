@@ -769,6 +769,12 @@ async fn harness_presets(caller: tauri::WebviewWindow) -> Result<serde_json::Val
 }
 
 #[tauri::command]
+async fn harness_set_preset(caller: tauri::WebviewWindow, state: tauri::State<'_, chat::ChatState>, preset: String) -> Result<serde_json::Value, String> {
+    require_background(&caller)?;
+    chat::harness_set_preset(state, preset).await
+}
+
+#[tauri::command]
 async fn harness_controls(caller: tauri::WebviewWindow, state: tauri::State<'_, chat::ChatState>) -> Result<serde_json::Value, String> {
     require_background(&caller)?;
     chat::harness_controls(state).await
@@ -1161,6 +1167,7 @@ pub fn run() {
             connect_harness,
             harness_history,
             harness_presets,
+            harness_set_preset,
             harness_controls,
             harness_set_permission,
             api_history,

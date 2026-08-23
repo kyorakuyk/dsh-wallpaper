@@ -18,6 +18,7 @@
     "allow-connect-harness",
     "allow-harness-history",
     "allow-harness-presets",
+    "allow-harness-set-preset",
     "allow-harness-controls",
     "allow-harness-set-permission",
     "allow-api-history",
