@@ -82,7 +82,10 @@ interface AgentPresets {
 }
 
 interface PermissionPresets { readonly names: readonly string[]; current(session: Session): string; set(session: Session, name: string): void }
-interface Commands { list(agent: { id: unknown }): readonly { name: string; description: string; input?: { hint: string } }[] }
+interface Commands {
+  list(agent: { id: unknown }): readonly { name: string; description: string; input?: { hint: string } }[]
+  execute(agent: { id: unknown }, text: string, signal: AbortSignal): Promise<unknown>
+}
 
 // This is an HTTP boundary, so measure the actual UTF-8 payload rather than
 // JavaScript UTF-16 code units. Keep it in lockstep with the native client.
@@ -753,6 +756,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       kind: 'prefix',
       path: `${API_PREFIX}/sessions`,
       handler: async (req, res) => {
+        const host = wctx as unknown as { commands: Commands }
         await tokenReady
         if (tokenFailure !== undefined) return json(res, 503, { error: 'bridge-token-unavailable', reference: tokenFailure })
         if (!bearerAuthorized(req.headers.authorization, token)) return json(res, 401, { error: 'unauthorized' })
@@ -899,7 +903,15 @@ export function apply(ctx: Context, config: Config = {}): void {
             const text = typeof body.text === 'string' ? body.text.trim() : ''
             if (!text) return json(res, 400, { error: 'text-required' })
             if (Buffer.byteLength(text, 'utf8') > MAX_MESSAGE_BYTES) return json(res, 413, { error: 'text-too-large' })
-            entry.handle.agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+            // Slash commands belong to DSH's scoped command registry. Running
+            // them here preserves their normal session events/side effects;
+            // ordinary prose remains a model followup. The wallpaper never
+            // interprets command names itself.
+            if (text.startsWith('/')) {
+              await host.commands.execute(entry.handle.agent, text, new AbortController().signal)
+            } else {
+              entry.handle.agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+            }
             return json(res, 202, { accepted: true, sessionId: route.sessionId })
           }
           if (route.kind === 'cancel') {

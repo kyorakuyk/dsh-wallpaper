@@ -174,6 +174,8 @@ async function createHarness(
           mount: async () => undefined,
         },
         workspaceRegistry,
+        permissionPresets: { names: ['workspace-write', 'danger-full-access'], current: () => 'workspace-write', set: vi.fn() },
+        commands: { list: () => [], execute: vi.fn(async () => undefined) },
         logger,
         effect: () => undefined,
       })
