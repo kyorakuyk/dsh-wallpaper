@@ -25,6 +25,8 @@ export interface ConversationBubbleProps {
   /** Bridge availability drives the DSH indicator and mode switch. */
   harnessAvailability?: RuntimeState['harness']
   onSelectBackend?: (backend: BackendMode) => void
+  onStartHarness?: () => void
+  harnessStarting?: boolean
   modelOptions?: readonly string[]
   selectedModel?: string
   onSelectModel?: (model: string) => void
@@ -61,7 +63,8 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const turnUsage = turnUsageSummary(props.usage, props.backend, Boolean(props.apiPricingConfigured))
   const harnessAvailability = props.harnessAvailability ?? 'offline'
   const harnessReady = harnessAvailability === 'bridge-ready'
-  const harnessLabel = harnessAvailability === 'bridge-ready'
+  const harnessLabel = props.harnessStarting ? 'DSH 正在启动'
+    : harnessAvailability === 'bridge-ready'
     ? 'DSH Bridge 已连接'
     : harnessAvailability === 'web-only'
       ? 'DSH 在线，缺少壁纸 Bridge'
@@ -131,10 +134,10 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           className={`dsh-chat__mode-switch ${props.backend === 'harness' ? 'is-harness' : ''}`}
           role="switch"
           aria-checked={props.backend === 'harness'}
-          aria-label={harnessReady ? `切换至${props.backend === 'harness' ? ' DeepSeek' : ' Harness'} 模式` : harnessLabel}
-          title={harnessReady ? `当前：${props.backend === 'harness' ? 'Harness，点击切回 DeepSeek' : 'DeepSeek，点击切换 Harness'}` : harnessLabel}
-          disabled={!harnessReady}
-          onClick={() => props.onSelectBackend?.(props.backend === 'harness' ? 'deepseek-web' : 'harness')}
+          aria-label={harnessReady ? `切换至${props.backend === 'harness' ? ' DeepSeek' : ' Harness'} 模式` : props.harnessStarting ? harnessLabel : '启动 DSH'}
+          title={harnessReady ? `当前：${props.backend === 'harness' ? 'Harness，点击切回 DeepSeek' : 'DeepSeek，点击切换 Harness'}` : props.harnessStarting ? harnessLabel : '启动已配置的 DSH 后端'}
+          disabled={props.harnessStarting || (!harnessReady && !props.onStartHarness)}
+          onClick={() => harnessReady ? props.onSelectBackend?.(props.backend === 'harness' ? 'deepseek-web' : 'harness') : props.onStartHarness?.()}
         >
           <span className="dsh-chat__mode-switch-track"><span className="dsh-chat__mode-switch-knob" /></span>
           <span className="dsh-chat__mode-switch-label" aria-hidden="true">DSH</span>
