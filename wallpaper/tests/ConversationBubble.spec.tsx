@@ -96,6 +96,7 @@ describe('ConversationBubble', () => {
     expect(html).toContain('deepseek-v4-pro')
     expect(html).toContain('会话记录')
     expect(html).toContain('dsh-chat__composer--with-command')
+    expect(html).not.toContain('dsh-chat__meta')
   })
 
   it('keeps the offline DSH switch clickable and offers setup when no path is configured', () => {

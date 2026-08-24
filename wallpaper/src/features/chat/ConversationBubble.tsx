@@ -194,7 +194,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
 
       <footer className="dsh-chat__footer">
         {props.permission && <label className="dsh-chat__permission-picker">◈<select aria-label="选择权限" value={props.permission.current} onChange={(event) => props.onSelectPermission?.(event.target.value)}>{props.permission.options.map((permission) => <option key={permission} value={permission}>{permission}</option>)}</select></label>}
-        <span className="dsh-chat__meta"><Icon name="model" size={13} /><span className="dsh-chat__model">{props.modelLabel}</span></span>
+        {(!props.onSelectModel || !props.modelOptions?.length) && <span className="dsh-chat__meta"><Icon name="model" size={13} /><span className="dsh-chat__model">{props.modelLabel}</span></span>}
         <span className="dsh-chat__turn-usage" data-usage-available={turnUsage.available ? 'true' : 'false'} aria-label={turnUsage.available ? '本轮用量' : '本轮用量未提供'}>
           <span className="dsh-chat__separator" />
           <span>本轮 入 {turnUsage.input}</span>
