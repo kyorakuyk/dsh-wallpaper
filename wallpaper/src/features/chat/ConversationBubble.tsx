@@ -139,9 +139,26 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           </span>
         </div>
         <span className="dsh-chat__topbar-spacer" />
+        <div className="dsh-chat__bottom-status">
         <span className={`dsh-chat__status dsh-chat__status--harness dsh-chat__status--${harnessAvailability}`} title={harnessLabel}>
           <span className="dsh-chat__status-dot" />{harnessLabel}
         </span>
+        <button
+          type="button"
+          className={`dsh-chat__mode-switch ${props.backend === 'harness' ? 'is-harness' : ''}`}
+          role="switch"
+          aria-checked={props.backend === 'harness'}
+          aria-label={harnessReady ? `切换至${props.backend === 'harness' ? ' DeepSeek' : ' Harness'} 模式` : props.harnessStarting ? harnessLabel : props.onStartHarness ? '启动 DSH' : '配置 DSH'}
+          title={harnessReady ? `当前：${props.backend === 'harness' ? 'Harness，点击切回 DeepSeek' : 'DeepSeek，点击切换 Harness'}` : props.harnessStarting ? harnessLabel : props.onStartHarness ? '启动已配置的 DSH 后端' : '先配置 DSH 根目录与 profile'}
+          disabled={props.harnessStarting}
+          onClick={() => harnessReady
+            ? props.onSelectBackend?.(props.backend === 'harness' ? 'deepseek-web' : 'harness')
+            : props.onStartHarness?.() ?? props.onConfigureHarness?.()}
+        >
+          <span className="dsh-chat__mode-switch-track"><span className="dsh-chat__mode-switch-knob" /></span>
+          <span className="dsh-chat__mode-switch-label" aria-hidden="true">DSH</span>
+        </button>
+        </div>
         {!props.persistent && <Button variant="ghost" iconOnly onClick={props.onClose} aria-label="收起对话"><Icon name="close" /></Button>}
       </header>
 
@@ -156,21 +173,6 @@ export function ConversationBubble(props: ConversationBubbleProps) {
     >
       <div className="dsh-chat__island-toolbar">
         <div className="dsh-chat__island-toolbar-left">
-          <button
-            type="button"
-            className={`dsh-chat__mode-switch ${props.backend === 'harness' ? 'is-harness' : ''}`}
-            role="switch"
-            aria-checked={props.backend === 'harness'}
-            aria-label={harnessReady ? `切换至${props.backend === 'harness' ? ' DeepSeek' : ' Harness'} 模式` : props.harnessStarting ? harnessLabel : props.onStartHarness ? '启动 DSH' : '配置 DSH'}
-            title={harnessReady ? `当前：${props.backend === 'harness' ? 'Harness，点击切回 DeepSeek' : 'DeepSeek，点击切换 Harness'}` : props.harnessStarting ? harnessLabel : props.onStartHarness ? '启动已配置的 DSH 后端' : '先配置 DSH 根目录与 profile'}
-            disabled={props.harnessStarting}
-            onClick={() => harnessReady
-              ? props.onSelectBackend?.(props.backend === 'harness' ? 'deepseek-web' : 'harness')
-              : props.onStartHarness?.() ?? props.onConfigureHarness?.()}
-          >
-            <span className="dsh-chat__mode-switch-track"><span className="dsh-chat__mode-switch-knob" /></span>
-            <span className="dsh-chat__mode-switch-label" aria-hidden="true">DSH</span>
-          </button>
           <label className="dsh-chat__preset">
             <select aria-label="选择 DSH 模式" value={props.selectedPreset ?? ''} disabled={!props.onSelectPreset || props.messages.length > 0} onChange={(event) => props.onSelectPreset?.(event.target.value)}>
               {!props.presetOptions?.length && <option value="">标准模式</option>}
