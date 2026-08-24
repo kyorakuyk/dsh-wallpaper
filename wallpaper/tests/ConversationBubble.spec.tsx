@@ -87,6 +87,7 @@ describe('ConversationBubble', () => {
       modelOptions={['deepseek-v4-flash', 'deepseek-v4-pro']}
       selectedModel="deepseek-v4-flash"
       onSelectModel={() => undefined}
+      commands={[{ name: 'plan', description: '进入计划模式' }]}
       {...callbacks}
     />)
 
@@ -94,6 +95,7 @@ describe('ConversationBubble', () => {
     expect(html).toContain('deepseek-v4-flash')
     expect(html).toContain('deepseek-v4-pro')
     expect(html).toContain('会话记录')
+    expect(html).toContain('dsh-chat__composer--with-command')
   })
 
   it('keeps the offline DSH switch clickable and offers setup when no path is configured', () => {

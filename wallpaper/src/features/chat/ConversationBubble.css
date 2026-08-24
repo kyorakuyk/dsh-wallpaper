@@ -284,6 +284,11 @@
 .dsh-chat--busy .dsh-chat__status-dot { background: var(--dsh-accent-soft); animation: dsh-chat-breathe 1.8s ease-in-out infinite; }
 
 .dsh-chat__composer { display: grid; min-height: 86px; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; padding: 2px 15px 12px 20px; }
+.dsh-chat__composer--with-command { grid-template-columns: auto minmax(0, 1fr) auto; }
+.dsh-chat__composer--with-command .dsh-chat__command-picker { grid-column: 1; grid-row: 1; }
+.dsh-chat__composer--with-command .dsh-chat__textarea { grid-column: 2; grid-row: 1; }
+.dsh-chat__composer--with-command .dsh-chat__send,
+.dsh-chat__composer--with-command .dsh-chat__stop { grid-column: 3; grid-row: 1; }
 .dsh-chat__command-picker { align-self: end; width: 72px; margin-bottom: 9px; border: 0; background: transparent; color: var(--dsh-text-muted); font: inherit; font-size: 10px; }
 .dsh-chat__textarea {
   box-sizing: border-box;

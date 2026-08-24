@@ -163,7 +163,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
       onFocusCapture={() => setFocused(true)}
       onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false) }}
     >
-      <form className="dsh-chat__composer" onSubmit={(event) => { event.preventDefault(); submit() }}>
+      <form className={`dsh-chat__composer ${props.commands?.length ? 'dsh-chat__composer--with-command' : ''}`} onSubmit={(event) => { event.preventDefault(); submit() }}>
         {props.commands?.length ? <select className="dsh-chat__command-picker" aria-label="选择命令" value="" onChange={(event) => { const command = event.target.value; if (command) setDraft(`/${command} `) }}><option value="">⌘ 命令</option>{props.commands.map((command) => <option key={command.name} value={command.name}>/{command.name} · {command.description}</option>)}</select> : null}
         <textarea
           className="dsh-chat__textarea"
