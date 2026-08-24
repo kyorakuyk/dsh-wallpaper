@@ -196,7 +196,6 @@ export function ConversationBubble(props: ConversationBubbleProps) {
             }
           }}
           placeholder={composerPlaceholder(Boolean(props.disabled), props.activity)}
-          disabled={props.disabled}
           rows={3}
           aria-label="输入消息"
         />

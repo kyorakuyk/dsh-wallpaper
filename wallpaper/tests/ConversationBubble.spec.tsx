@@ -116,4 +116,21 @@ describe('ConversationBubble', () => {
     expect(html).toContain('aria-label="配置 DSH"')
     expect(html).not.toMatch(/class="dsh-chat__mode-switch"[^>]*disabled/)
   })
+
+  it('keeps the composer editable while Harness is offline', () => {
+    const html = renderToStaticMarkup(<ConversationBubble
+      backend="harness"
+      activity="idle"
+      modelLabel="deepseek-v4-flash"
+      messages={[]}
+      streamingText=""
+      historyExpanded={false}
+      disabled
+      {...callbacks}
+    />)
+
+    expect(html).toContain('aria-label="输入消息"')
+    expect(html).not.toMatch(/<textarea[^>]*disabled/)
+    expect(html).toMatch(/<button[^>]*disabled[^>]*aria-label="发送消息"/)
+  })
 })
