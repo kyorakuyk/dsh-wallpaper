@@ -57,6 +57,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const [draft, setDraft] = useState('')
   const [hovered, setHovered] = useState(false)
   const [focused, setFocused] = useState(false)
+  const [commandMenuOpen, setCommandMenuOpen] = useState(false)
   const historyRef = useRef<HTMLDivElement>(null)
   const busy = isBusyActivity(props.activity)
   const backend = BACKEND_PRESENTATION[props.backend]
@@ -181,8 +182,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           <Icon name="history" size={14} />{showHistory ? '收起记录' : '会话记录'}<Icon name="chevron-up" size={13} />
         </Button>
       </div>
-      <form className={`dsh-chat__composer ${props.commands?.length ? 'dsh-chat__composer--with-command' : ''}`} onSubmit={(event) => { event.preventDefault(); submit() }}>
-        {props.commands?.length ? <select className="dsh-chat__command-picker" aria-label="选择命令" value="" onChange={(event) => { const command = event.target.value; if (command) setDraft(`/${command} `) }}><option value="">⌘ 命令</option>{props.commands.map((command) => <option key={command.name} value={command.name}>/{command.name} · {command.description}</option>)}</select> : null}
+      <form className="dsh-chat__composer" onSubmit={(event) => { event.preventDefault(); submit() }}>
         <textarea
           className="dsh-chat__textarea"
           value={draft}
@@ -204,6 +204,16 @@ export function ConversationBubble(props: ConversationBubbleProps) {
       </form>
 
       <footer className="dsh-chat__footer">
+        {props.commands?.length ? <div className="dsh-chat__command-menu">
+          <button type="button" className="dsh-chat__command-menu-button" aria-haspopup="menu" aria-expanded={commandMenuOpen} onClick={() => setCommandMenuOpen((value) => !value)}>
+            <span aria-hidden="true">⌘</span> 命令 <span aria-hidden="true">⌄</span>
+          </button>
+          {commandMenuOpen && <div className="dsh-chat__command-menu-list" role="menu" aria-label="选择命令">
+            {props.commands.map((command) => <button key={command.name} type="button" role="menuitem" className="dsh-chat__command-menu-item" onClick={() => { setDraft(`/${command.name} `); setCommandMenuOpen(false) }}>
+              <strong>/{command.name}</strong><span>{command.description}</span>
+            </button>)}
+          </div>}
+        </div> : null}
         {props.permission && <label className="dsh-chat__permission-picker">◈<select aria-label="选择权限" value={props.permission.current} onChange={(event) => props.onSelectPermission?.(event.target.value)}>{props.permission.options.map((permission) => <option key={permission} value={permission}>{permission}</option>)}</select></label>}
         {(!props.onSelectModel || !props.modelOptions?.length) && <span className="dsh-chat__meta"><Icon name="model" size={13} /><span className="dsh-chat__model">{props.modelLabel}</span></span>}
         <label className="dsh-chat__model-picker" title={props.onSelectModel ? '切换模型' : '当前后端不支持在壁纸中切换模型'}>
