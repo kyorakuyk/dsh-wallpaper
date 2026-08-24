@@ -50,7 +50,7 @@ const BACKGROUND_WINDOW_LABEL: &str = "background";
 
 #[tauri::command]
 fn scan_dsh_paths(caller: tauri::WebviewWindow) -> Result<Vec<DshPathCandidate>, String> {
-    require_settings(&caller)?;
+    require_wallpaper_surface(&caller)?;
     let mut candidates = Vec::new();
     let mut push = |path: std::path::PathBuf, source: &str| {
         if path.join("package.json").is_file() && path.join("apps").join("cli").is_dir() {
@@ -83,9 +83,15 @@ fn launch_dsh(caller: tauri::WebviewWindow, state: tauri::State<'_, ManagedDshSt
             Ok(Some(_)) | Err(_) => *managed = None,
         }
     }
-    let child = std::process::Command::new(launcher)
-        .args(["dsh", "--profile", profile])
-        .current_dir(&root)
+    let mut launch = std::process::Command::new(launcher);
+    launch.args(["dsh", "--profile", profile]).current_dir(&root);
+    // DSH is a resident background service. `pnpm.cmd` otherwise inherits a
+    // new visible console from the desktop process, leaving a stray CMD
+    // window beside the wallpaper. Keep the child hidden while preserving its
+    // stdout/stderr for the process lifetime and managed PID tracking.
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut launch, 0x08000000);
+    let child = launch
         .spawn()
         .map_err(|error| format!("无法启动 DSH：{error}"))?;
     let pid = child.id();

@@ -11,6 +11,7 @@
     "allow-dispatch-app-action",
     "allow-show-deepseek-login",
     "allow-open-settings-window",
+    "allow-scan-dsh-paths",
     "allow-begin-interaction-region-session",
     "allow-update-interaction-regions",
     "allow-desktop-layout-metrics",
