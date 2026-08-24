@@ -930,6 +930,19 @@ fn parse_bridge_event(line: &str, expected_session_id: &str) -> Option<ChatEvent
     }
 }
 
+/// A normal DSH turn can close its SSE response after publishing the final
+/// assistant message or `status: done`. Treat that EOF as a clean completion;
+/// only a stream that ends before either terminal marker is a disconnect.
+fn harness_records_have_terminal_event(records: &[String], session_id: &str) -> bool {
+    records.iter().filter_map(|record| {
+        sse_record_payload(record).and_then(|line| parse_bridge_event(&line, session_id))
+    }).any(|event| match event {
+        ChatEvent::Message { role, .. } => role == "assistant",
+        ChatEvent::Status { activity } => activity == "done",
+        _ => false,
+    })
+}
+
 #[derive(Deserialize)]
 struct ApiChunk {
     choices: Option<Vec<Choice>>,
@@ -2145,6 +2158,7 @@ async fn connect_harness_events(
         let mut stream = response.bytes_stream();
         let mut decoder = Utf8StreamDecoder::default();
         let mut buffer = String::new();
+        let mut turn_completed = false;
         loop {
             tokio::select! {
                 _ = &mut cancel_rx => break,
@@ -2164,6 +2178,7 @@ async fn connect_harness_events(
                                 break;
                             }
                         };
+                        turn_completed |= harness_records_have_terminal_event(&records, &session_id);
                         forward_harness_sse_records(&app, &state, stream_id, &session_id, &connection_id, records);
                         let records = match finish_bounded_harness_sse_records(&mut buffer) {
                             Ok(records) => records,
@@ -2172,8 +2187,11 @@ async fn connect_harness_events(
                                 break;
                             }
                         };
+                        turn_completed |= harness_records_have_terminal_event(&records, &session_id);
                         forward_harness_sse_records(&app, &state, stream_id, &session_id, &connection_id, records);
-                        emit_stream_error("HARNESS_DISCONNECTED", "DSH bridge 事件流已断开".into());
+                        if !turn_completed {
+                            emit_stream_error("HARNESS_DISCONNECTED", "DSH bridge 事件流已断开".into());
+                        }
                         break;
                     };
                     match chunk {
@@ -2193,6 +2211,7 @@ async fn connect_harness_events(
                                     break;
                                 }
                             };
+                            turn_completed |= harness_records_have_terminal_event(&records, &session_id);
                             forward_harness_sse_records(&app, &state, stream_id, &session_id, &connection_id, records);
                         }
                         Err(_) => { emit_stream_error("HARNESS_SSE_READ", generic_harness_error("事件流读取")); break; }
@@ -2343,6 +2362,7 @@ mod tests {
         api_completion_url, api_request_messages, bridge_token_acl_is_private,
         drain_bounded_harness_sse_records, drain_sse_records, finish_api_request,
         finish_bounded_harness_sse_records, finish_harness_stream, finish_sse_records,
+        harness_records_have_terminal_event,
         is_current_api_request, is_current_harness_stream, owns_api_request, parse_bridge_event,
         parse_harness_connection, parse_harness_history, sse_record_payload, ApiMessage,
         ApiPricing, ApiUsage, ChatEvent, ChatState, HarnessConnection, HarnessHistoryMessage,
@@ -2533,6 +2553,25 @@ mod tests {
             },
         )
         .is_err());
+    }
+
+    #[test]
+    fn normal_terminal_sse_records_do_not_count_as_disconnects() {
+        let session = "wallpaper-session";
+        assert!(harness_records_have_terminal_event(
+            &[
+                "data: {\"type\":\"message\",\"role\":\"assistant\",\"content\":\"完成\"}\n\n".into(),
+            ],
+            session,
+        ));
+        assert!(harness_records_have_terminal_event(
+            &["data: {\"type\":\"status\",\"activity\":\"done\"}\n\n".into()],
+            session,
+        ));
+        assert!(!harness_records_have_terminal_event(
+            &["data: {\"type\":\"status\",\"activity\":\"streaming\"}\n\n".into()],
+            session,
+        ));
     }
 
     #[test]

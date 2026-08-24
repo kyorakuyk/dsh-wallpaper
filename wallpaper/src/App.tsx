@@ -466,7 +466,7 @@ export function App({ surface = 'combined' }: AppProps) {
       if (event.type === 'model') patchRuntime({ model: event.model, provider: event.provider, modelTier: event.tier, reasoningEffort: event.effort })
       if (event.type === 'auth-required') { baseDispatch({ type: 'AUTH_REQUIRED' }); dispatchCore('auth-required') }
       if (event.type === 'approval-required') { patchRuntime({ activity: 'tool', error: `${event.summary}；请打开 Harness 处理。` }); dispatchCore('set-activity', { value: 'tool' }) }
-      if (event.type === 'error') patchRuntime({ activity: 'idle', error: event.message })
+      if (event.type === 'error') { setStreamingText(''); patchRuntime({ activity: 'idle', error: event.message }) }
     })
     void (async () => {
       try {
@@ -667,6 +667,7 @@ export function App({ surface = 'combined' }: AppProps) {
         // its predecessor. It changes to an explicit waiting/unavailable
         // state until a provider supplies fresh usage.
         setUsage(undefined)
+        setStreamingText('')
         const sending = adapter.send(text)
         // NativeChatAdapter allocates an API conversation ID before its first
         // await. Saving immediately survives a settings update or backend
