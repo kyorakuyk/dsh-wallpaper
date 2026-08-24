@@ -643,16 +643,16 @@ export function apply(ctx: Context, config: Config = {}): void {
     await Promise.allSettled(disposals)
   })
 
-  // The HTTP handlers create and resume standard DSH agents.  Keep both
-  // services in this child scope explicitly: a test mock that happens to
-  // expose `agents` next to `webServer` must not hide a real Cordis scope
-  // where only the declared dependencies are available.
-  ctx.inject(['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry', 'permissionPresets', 'commands'], (wctx) => {
-    if (wctx.webServer.host !== '127.0.0.1') {
+  // Status must not depend on optional session-control services.  A Web
+  // profile may take longer to compose commands, presets, or workspaces than
+  // its HTTP listener; reporting the bridge as missing during that interval
+  // makes the wallpaper's route toggle misleading.  The mutating routes
+  // below still wait for their complete service set.
+  ctx.inject(['webServer'], (statusContext) => {
+    if (statusContext.webServer.host !== '127.0.0.1') {
       throw new Error('dsh-wallpaper-bridge refuses to run on a non-loopback WebServer')
     }
-
-    const statusDispose = wctx.webServer.register({
+    const dispose = statusContext.webServer.register({
       kind: 'exact',
       path: `${API_PREFIX}/status`,
       handler: async (_req, res) => {
@@ -674,7 +674,14 @@ export function apply(ctx: Context, config: Config = {}): void {
         })
       },
     })
+    statusContext.effect(() => () => { dispose() })
+  })
 
+  // The HTTP handlers create and resume standard DSH agents.  Keep both
+  // services in this child scope explicitly: a test mock that happens to
+  // expose `agents` next to `webServer` must not hide a real Cordis scope
+  // where only the declared dependencies are available.
+  ctx.inject(['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry', 'permissionPresets', 'commands'], (wctx) => {
     const controlDispose = wctx.webServer.register({
       kind: 'prefix',
       path: `${API_PREFIX}/control`,
@@ -708,7 +715,15 @@ export function apply(ctx: Context, config: Config = {}): void {
             const entry = live.get(sessionId)
             if (!entry) return json(res, 404, { error: 'session-not-live' })
             return json(res, 200, {
-              permission: { current: host.permissionPresets.current(entry.handle.agent.session), options: host.permissionPresets.names },
+              // DSH's permission service derives its display value from the
+              // durable event stream.  Keep this narrow structural view here:
+              // a few pre-release package builds exposed an older declaration
+              // accepting Session while the runtime already expects events.
+              permission: {
+                current: (host.permissionPresets as unknown as { current(events: readonly SessionEvent[]): string })
+                  .current(entry.handle.agent.session.events),
+                options: host.permissionPresets.names,
+              },
               commands: host.commands.list(entry.handle.agent).map((command) => ({ name: command.name, description: command.description, ...(command.input ? { input: command.input } : {}) })),
             })
           }
@@ -933,7 +948,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         }
       },
     })
-    wctx.effect(() => () => { statusDispose(); controlDispose(); sessionsDispose() })
+    wctx.effect(() => () => { controlDispose(); sessionsDispose() })
   })
 }
 
