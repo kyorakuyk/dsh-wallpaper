@@ -325,6 +325,11 @@
 .dsh-chat__model-picker select { min-width: 0; max-width: 150px; border: 0; outline: 0; background: transparent; color: var(--dsh-text-muted); font: inherit; font-size: 10px; cursor: pointer; }
 .dsh-chat__model-picker select:disabled { cursor: default; opacity: .62; }
 .dsh-chat__model-picker option { background: #102034; color: #eaf6ff; }
+.dsh-chat__usage-rail { display: flex; min-height: 20px; align-items: center; justify-content: center; gap: 9px; padding: 4px 18px 0; color: var(--dsh-text-faint); font-size: 10px; pointer-events: none; }
+.dsh-chat__usage-rail .dsh-chat__turn-usage,
+.dsh-chat__usage-rail .dsh-chat__session-cost { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.dsh-chat__usage-rail .dsh-chat__turn-usage[data-usage-available='false'] { color: var(--dsh-text-faint); }
+.dsh-chat[data-persistent='true'] .dsh-chat__usage-rail { padding-top: 6px; }
 .dsh-chat__history-button { margin-left: auto; min-height: 28px; padding: 4px 9px; color: var(--dsh-text-muted); font-size: 11px; }
 .dsh-chat__history-button svg { transition: transform var(--dsh-duration-normal) var(--dsh-ease-standard); }
 .dsh-chat.expanded .dsh-chat__history-button svg { transform: rotate(180deg); }

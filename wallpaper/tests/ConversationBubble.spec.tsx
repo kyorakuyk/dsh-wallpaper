@@ -21,7 +21,7 @@ describe('ConversationBubble', () => {
       {...callbacks}
     />)
 
-    expect(html).toContain('DeepSeek Web')
+    expect(html).not.toContain('DeepSeek Web')
     expect(html).toContain('aria-label="输入消息"')
     expect(html).toContain('aria-label="发送消息"')
     expect(html).not.toContain('当前会话记录')
@@ -30,6 +30,7 @@ describe('ConversationBubble', () => {
     expect(html).toContain('缓存 未提供')
     expect(html).toContain('费用未提供')
     expect(html).toContain('会话费用未提供')
+    expect(html).toContain('dsh-chat__usage-rail')
   })
 
   it('renders Harness theme, history, streaming state and usage metadata', () => {

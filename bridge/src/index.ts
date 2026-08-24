@@ -271,22 +271,33 @@ async function ensureToken(root: string): Promise<string> {
   const file = tokenFileForRoot(root)
   const directory = join(resolve(root), TOKEN_DIRECTORY_NAME)
   // Creating the directory is harmless even when it initially inherits a
-  // broad DACL: no credential exists yet. Tighten it before creating or
-  // rotating the bearer value.
+  // broad DACL: no credential exists yet. Tighten it before reading or
+  // creating the bearer value.
   await mkdir(directory, { recursive: true })
   await assertTokenDirectory(directory)
   await restrictTokenDirectory(directory)
 
-  // Never reuse a legacy token whose old ACL may already have exposed it.
-  // Rotation happens only after the directory is private and the final file
-  // itself has been locked down, so a copied predecessor cannot authenticate
-  // against a new Bridge instance.
+  // Reuse an existing private token. Rotating it on every startup breaks an
+  // already-running bridge when a second DSH launch races for port 3080: the
+  // old server keeps the previous in-memory token while the new process
+  // overwrites the shared file before its listen attempt fails.
+  try {
+    await assertRegularTokenFile(file)
+    await restrictTokenFile(file)
+    return validateToken((await readFile(file, 'utf8')).trim())
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+
   const generated = randomBytes(32).toString('base64url')
   try {
     const handle = await open(file, 'wx', 0o600)
     await handle.close()
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    await assertRegularTokenFile(file)
+    await restrictTokenFile(file)
+    return validateToken((await readFile(file, 'utf8')).trim())
   }
   await assertRegularTokenFile(file)
   await restrictTokenFile(file)
