@@ -126,6 +126,18 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           <span className="dsh-chat__backend-detail">{today}</span>
         </div>
         <span className="dsh-chat__topbar-spacer" />
+        <div className="dsh-chat__usage-rail">
+          <span className="dsh-chat__turn-usage" data-usage-available={turnUsage.available ? 'true' : 'false'} aria-label={turnUsage.available ? '本轮用量' : '本轮用量未提供'}>
+            <span>本轮 入 {turnUsage.input}</span>
+            <span>出 {turnUsage.output}</span>
+            <span>缓存 {turnUsage.cacheRead}</span>
+            <span className={turnUsage.cost === '价格未配置' ? 'dsh-chat__billing' : undefined}>费用 {turnUsage.cost}</span>
+          </span>
+          <span className="dsh-chat__session-cost">
+            <span>{totalCost ? `会话 ${formatCost(totalCost.cost, totalCost.estimated)}` : '会话费用未提供'}</span>
+          </span>
+        </div>
+        <span className="dsh-chat__topbar-spacer" />
         <span className={`dsh-chat__status dsh-chat__status--harness dsh-chat__status--${harnessAvailability}`} title={harnessLabel}>
           <span className="dsh-chat__status-dot" />{harnessLabel}
         </span>
@@ -208,16 +220,5 @@ export function ConversationBubble(props: ConversationBubbleProps) {
         </label>
       </footer>
     </Glass>
-    <div className="dsh-chat__usage-rail">
-      <span className="dsh-chat__turn-usage" data-usage-available={turnUsage.available ? 'true' : 'false'} aria-label={turnUsage.available ? '本轮用量' : '本轮用量未提供'}>
-        <span>本轮 入 {turnUsage.input}</span>
-        <span>出 {turnUsage.output}</span>
-        <span>缓存 {turnUsage.cacheRead}</span>
-        <span className={turnUsage.cost === '价格未配置' ? 'dsh-chat__billing' : undefined}>费用 {turnUsage.cost}</span>
-      </span>
-      <span className="dsh-chat__session-cost">
-        <span>{totalCost ? `会话 ${formatCost(totalCost.cost, totalCost.estimated)}` : '会话费用未提供'}</span>
-      </span>
-    </div>
   </section>
 }
