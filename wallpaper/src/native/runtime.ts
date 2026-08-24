@@ -33,6 +33,7 @@ export interface NativeRuntime {
    */
   promptForApiKeyCredential(): Promise<boolean>
   requestDeepSeekLogin(): Promise<void>
+  openSettingsWindow(): Promise<void>
   listenSystem(listener: (event: 'locked' | 'unlocked' | 'suspend' | 'resume') => void): Promise<() => void>
   listenChat(listener: (event: ScopedChatEvent) => void): Promise<() => void>
   sendChat(mode: BackendMode, text: string, options?: NativeSendOptions): Promise<string | undefined>
@@ -108,6 +109,11 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) return
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('show_deepseek_login')
+  },
+  async openSettingsWindow() {
+    if (!await tauriAvailable()) return
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('open_settings_window')
   },
   async listenSystem(listener) {
     if (!await tauriAvailable()) return () => undefined

@@ -95,4 +95,21 @@ describe('ConversationBubble', () => {
     expect(html).toContain('deepseek-v4-pro')
     expect(html).toContain('会话记录')
   })
+
+  it('keeps the offline DSH switch clickable and offers setup when no path is configured', () => {
+    const html = renderToStaticMarkup(<ConversationBubble
+      backend="deepseek-web"
+      activity="idle"
+      modelLabel="deepseek-chat"
+      messages={[]}
+      streamingText=""
+      historyExpanded={false}
+      harnessAvailability="offline"
+      onConfigureHarness={() => undefined}
+      {...callbacks}
+    />)
+
+    expect(html).toContain('aria-label="配置 DSH"')
+    expect(html).not.toMatch(/class="dsh-chat__mode-switch"[^>]*disabled/)
+  })
 })

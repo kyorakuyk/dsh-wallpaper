@@ -10,6 +10,7 @@
     "allow-select-backend",
     "allow-dispatch-app-action",
     "allow-show-deepseek-login",
+    "allow-open-settings-window",
     "allow-begin-interaction-region-session",
     "allow-update-interaction-regions",
     "allow-desktop-layout-metrics",

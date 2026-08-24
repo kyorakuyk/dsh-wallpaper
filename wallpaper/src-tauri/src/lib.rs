@@ -253,6 +253,16 @@ fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_settings_window(caller: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
+    require_background(&caller)?;
+    if let Some(core) = app.try_state::<AppCore>() {
+        let snapshot = core.dispatch(AppAction::OpenSettings);
+        emit_app_snapshot(&app, &snapshot);
+    }
+    show_settings_window(&app)
+}
+
+#[tauri::command]
 fn get_app_snapshot(
     caller: tauri::WebviewWindow,
     state: tauri::State<'_, AppCore>,
@@ -1244,6 +1254,7 @@ pub fn run() {
             open_windows_lock_screen_settings,
             prompt_for_api_key,
             show_deepseek_login,
+            open_settings_window,
             start_settings_drag,
             hide_settings_window,
             begin_interaction_region_session,

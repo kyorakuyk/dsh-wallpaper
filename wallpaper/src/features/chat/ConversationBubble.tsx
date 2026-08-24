@@ -26,6 +26,7 @@ export interface ConversationBubbleProps {
   harnessAvailability?: RuntimeState['harness']
   onSelectBackend?: (backend: BackendMode) => void
   onStartHarness?: () => void
+  onConfigureHarness?: () => void
   harnessStarting?: boolean
   modelOptions?: readonly string[]
   selectedModel?: string
@@ -134,10 +135,12 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           className={`dsh-chat__mode-switch ${props.backend === 'harness' ? 'is-harness' : ''}`}
           role="switch"
           aria-checked={props.backend === 'harness'}
-          aria-label={harnessReady ? `切换至${props.backend === 'harness' ? ' DeepSeek' : ' Harness'} 模式` : props.harnessStarting ? harnessLabel : '启动 DSH'}
-          title={harnessReady ? `当前：${props.backend === 'harness' ? 'Harness，点击切回 DeepSeek' : 'DeepSeek，点击切换 Harness'}` : props.harnessStarting ? harnessLabel : '启动已配置的 DSH 后端'}
-          disabled={props.harnessStarting || (!harnessReady && !props.onStartHarness)}
-          onClick={() => harnessReady ? props.onSelectBackend?.(props.backend === 'harness' ? 'deepseek-web' : 'harness') : props.onStartHarness?.()}
+          aria-label={harnessReady ? `切换至${props.backend === 'harness' ? ' DeepSeek' : ' Harness'} 模式` : props.harnessStarting ? harnessLabel : props.onStartHarness ? '启动 DSH' : '配置 DSH'}
+          title={harnessReady ? `当前：${props.backend === 'harness' ? 'Harness，点击切回 DeepSeek' : 'DeepSeek，点击切换 Harness'}` : props.harnessStarting ? harnessLabel : props.onStartHarness ? '启动已配置的 DSH 后端' : '先配置 DSH 根目录与 profile'}
+          disabled={props.harnessStarting}
+          onClick={() => harnessReady
+            ? props.onSelectBackend?.(props.backend === 'harness' ? 'deepseek-web' : 'harness')
+            : props.onStartHarness?.() ?? props.onConfigureHarness?.()}
         >
           <span className="dsh-chat__mode-switch-track"><span className="dsh-chat__mode-switch-knob" /></span>
           <span className="dsh-chat__mode-switch-label" aria-hidden="true">DSH</span>

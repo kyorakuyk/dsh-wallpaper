@@ -25,6 +25,7 @@ fn main() {
             "open_windows_lock_screen_settings",
             "prompt_for_api_key",
             "show_deepseek_login",
+            "open_settings_window",
             "start_settings_drag",
             "hide_settings_window",
             "begin_interaction_region_session",

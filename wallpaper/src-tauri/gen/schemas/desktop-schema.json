@@ -357,6 +357,12 @@
           "markdownDescription": "Enables the notify_appearance_changed command without any pre-configured scope."
         },
         {
+          "description": "Enables the open_settings_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-settings-window",
+          "markdownDescription": "Enables the open_settings_window command without any pre-configured scope."
+        },
+        {
           "description": "Enables the open_translucent_tb_install command without any pre-configured scope.",
           "type": "string",
           "const": "allow-open-translucent-tb-install",
@@ -631,6 +637,12 @@
           "type": "string",
           "const": "deny-notify-appearance-changed",
           "markdownDescription": "Denies the notify_appearance_changed command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_settings_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-settings-window",
+          "markdownDescription": "Denies the open_settings_window command without any pre-configured scope."
         },
         {
           "description": "Denies the open_translucent_tb_install command without any pre-configured scope.",
