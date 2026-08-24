@@ -65,7 +65,11 @@ fn scan_dsh_paths(caller: tauri::WebviewWindow) -> Result<Vec<DshPathCandidate>,
 
 #[tauri::command]
 fn launch_dsh(caller: tauri::WebviewWindow, state: tauri::State<'_, ManagedDshState>, root_path: String, profile: String, command: Option<String>) -> Result<u32, String> {
-    require_settings(&caller)?;
+    // The settings center configures this launch target, while the visible
+    // route switch in the WorkerW wallpaper is the user-facing "start DSH"
+    // action. Both declared surfaces may request a launch; process ownership
+    // and all executable/profile validation remain native below.
+    require_wallpaper_surface(&caller)?;
     let root = std::fs::canonicalize(root_path.trim()).map_err(|_| "DSH 根目录不存在或不可访问".to_string())?;
     if !root.join("package.json").is_file() || !root.join("apps").join("cli").is_dir() { return Err("选择的目录不是可识别的 DSH 项目根目录".into()); }
     let profile = profile.trim();
