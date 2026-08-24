@@ -107,7 +107,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
     aria-label="AI 对话"
   >
     {showHistory && <div className="dsh-chat__history-wrap">
-      <div className="dsh-chat__history" ref={historyRef} aria-label="当前会话记录" aria-live="polite">
+      <div className="dsh-chat__history" ref={historyRef} data-interaction-region="chat-history" aria-label="当前会话记录" aria-live="polite" onWheel={(event) => event.stopPropagation()}>
         {props.messages.map((message, index) => <article key={message.id} className={`dsh-chat__message dsh-chat__message--${message.role}`} style={{ ['--message-index' as string]: String(Math.max(0, props.messages.length - index - 1)) }}>
           <span className="dsh-chat__message-label">{message.role === 'user' ? '你' : '大肥鱼'}</span>
           <p className="dsh-chat__message-body">{message.content}</p>
