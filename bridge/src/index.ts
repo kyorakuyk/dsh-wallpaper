@@ -59,6 +59,7 @@ interface DesktopWorkspace {
   readonly path: string
   readonly sessionIds: readonly SessionId[]
   attachSession(sessionId: SessionId): Promise<void>
+  detachSession(sessionId: SessionId): Promise<void>
 }
 
 interface WorkspaceRegistry {
@@ -141,6 +142,15 @@ function desktopWorkspacePath(config: Config): string {
 function localDailyWallpaperSessionId(now: Date = new Date()): string {
   const date = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-')
   return `wallpaper-${date}`
+}
+
+function recoveredDailyWallpaperSessionId(sessionId: string): string {
+  return `${sessionId}-recovered`
+}
+
+function isCorruptSessionResumeError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /corrupt session log|seq gap|committed region/i.test(message)
 }
 
 async function ensureDesktopWorkspace(registry: WorkspaceRegistry, config: Config): Promise<DesktopWorkspace> {
@@ -802,7 +812,13 @@ export function apply(ctx: Context, config: Config = {}): void {
                 config,
               )
               : undefined
-            const id = automaticDailySession ? localDailyWallpaperSessionId() : requestedResume || requested || `wallpaper-${randomUUID()}`
+            const dailyId = localDailyWallpaperSessionId()
+            const recoveredDailyId = recoveredDailyWallpaperSessionId(dailyId)
+            const recoveredDailyExists = automaticDailySession
+              && workspace?.sessionIds.some((sessionId) => String(sessionId) === recoveredDailyId)
+            const id = automaticDailySession
+              ? (recoveredDailyExists ? recoveredDailyId : dailyId)
+              : requestedResume || requested || `wallpaper-${randomUUID()}`
             const resume = requestedResume || (workspace?.sessionIds.some((sessionId) => String(sessionId) === id) ? id : '')
             if (resume && !canResume()) return json(res, 409, { error: 'resume-unavailable' })
             if (!isSafeSessionId(id)) return json(res, 400, { error: 'invalid-session-id' })
@@ -844,18 +860,37 @@ export function apply(ctx: Context, config: Config = {}): void {
             if (!pending) {
               pending = (async (): Promise<LiveSession> => {
                 if (stopping) throw new Error('wallpaper bridge is shutting down')
-                const handle = resume
-                  ? await wctx.agents.resume({
-                    resumeSessionId: SessionId(id),
-                    agentOptions,
-                    setup: (agentContext) => host.agentPresets.mount(agentContext, preset).then(() => undefined),
-                  })
-                  : await wctx.agents.create({
-                      sessionId: SessionId(id),
+                let effectiveId = id
+                let handle
+                if (resume) {
+                  try {
+                    handle = await wctx.agents.resume({
+                      resumeSessionId: SessionId(id),
+                      agentOptions,
+                      setup: (agentContext) => host.agentPresets.mount(agentContext, preset).then(() => undefined),
+                    })
+                  } catch (error) {
+                    if (!automaticDailySession || !isCorruptSessionResumeError(error)) throw error
+                    // Preserve the corrupt log for diagnosis. Remove only its
+                    // workspace pointer and create a deterministic replacement
+                    // so the next request on the same day resumes cleanly.
+                    await workspace?.detachSession(SessionId(id))
+                    effectiveId = recoveredDailyWallpaperSessionId(dailyId)
+                    handle = await wctx.agents.create({
+                      sessionId: SessionId(effectiveId),
                       meta: { cwd, agentPreset: preset },
                       agentOptions,
                       setup: (agentContext) => host.agentPresets.mount(agentContext, preset).then(() => undefined),
                     })
+                  }
+                } else {
+                  handle = await wctx.agents.create({
+                    sessionId: SessionId(effectiveId),
+                    meta: { cwd, agentPreset: preset },
+                    agentOptions,
+                    setup: (agentContext) => host.agentPresets.mount(agentContext, preset).then(() => undefined),
+                  })
+                }
                 // Plugin teardown may have started while DSH created the
                 // agent. Dispose it rather than leaving a live handle that no
                 // route can own or clean up.
@@ -864,8 +899,8 @@ export function apply(ctx: Context, config: Config = {}): void {
                   throw new Error('wallpaper bridge is shutting down')
                 }
                 const entry: LiveSession = { handle, clients: new Set<ServerResponse>() }
-                live.set(id, entry)
-                if (workspace && !resume) await workspace.attachSession(SessionId(id))
+                live.set(effectiveId, entry)
+                if (workspace && (!resume || effectiveId !== id)) await workspace.attachSession(SessionId(effectiveId))
                 return entry
               })()
               creating.set(id, pending)
