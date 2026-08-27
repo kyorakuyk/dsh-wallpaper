@@ -7,7 +7,10 @@ const wallpaperRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const nativeRoot = resolve(wallpaperRoot, 'src-tauri')
 
 async function readNative(relativePath: string): Promise<string> {
-  return readFile(resolve(nativeRoot, relativePath), 'utf8')
+  // Git for Windows may check the same source out as CRLF. Normalize before
+  // applying source-boundary assertions so CI verifies the contract rather
+  // than the runner's checkout line-ending policy.
+  return (await readFile(resolve(nativeRoot, relativePath), 'utf8')).replace(/\r\n?/g, '\n')
 }
 
 async function readCapability(name: 'background' | 'settings'): Promise<{ windows?: unknown; permissions?: unknown }> {
