@@ -61,6 +61,12 @@ pnpm desktop:build   # 构建安装包
 - 右下角圆点 / 托盘图标：打开设置面板
 - 兼容的 Wallpaper Bridge 连续就绪时，待机界面出现「切换到 Harness」询问条；仅 3080 根页面可访问时只显示诊断，不可切换
 
+## GitHub Actions
+
+- `.github/workflows/ci.yml`：在 `master`、`codex/**` 的推送和面向 `master` 的 PR 上运行 Windows x64 类型检查、前端/Bridge 测试、Rust 全目标测试与前端构建。
+- `.github/workflows/package.yml`：支持手动运行或推送 `v*` 标签时构建 NSIS 安装器和未签名锁屏测试 MSIX；两者作为 Actions 工件保留 14 天，只有 NSIS 安装器会附加到 GitHub Release。
+- 测试 MSIX 不会自动签名、安装或修改锁屏。正式 MSIX 签名应在后续配置发布证书和独立正式清单后接入，证书不得提交到仓库。
+
 ## 形态系统（persona）
 
 形态由 `assets/personas/<id>/` 目录 + `manifest.json` 定义。内置 4 个形态（均有专属透明立绘）：
