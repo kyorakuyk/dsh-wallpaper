@@ -39,3 +39,5 @@ Lite 的普通设置保存在自己的应用目录；锁屏恢复点使用用户
 ## CI
 
 `.github/workflows/package.yml` 使用 `full/lite` 矩阵构建 NSIS 和未签名 MSIX 测试产物；`.github/workflows/ci.yml` 会分别检查 Lite 前端、Lite Rust feature 和禁止内容边界。
+
+GitHub 的手动 `workflow_dispatch` 入口要求工作流文件已经存在于默认分支。当前开发分支的 CI 已通过；合并到默认分支或由发布者推送版本标签后，Package workflow 才会生成远端安装包工件。
