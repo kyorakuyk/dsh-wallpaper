@@ -43,6 +43,7 @@ export interface SettingsPanelProps {
   onClearStaleLockScreenBackup: () => void
   onSetLockScreenEnabled: (enabled: boolean) => void
   lockScreenBusy: boolean
+  autostartBusy: boolean
 }
 
 const componentSlots: Array<{ slot: AppearanceSlot; label: string; detail: string }> = [
@@ -168,7 +169,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <Field title="启动 DSH" detail="仅启动此处配置的 profile，不会接管已有 3080 服务。"><button className="settings-action" disabled={!settings.dshLaunch.rootPath || props.managedDsh.running} onClick={props.onLaunchDsh}>{props.managedDsh.running ? `运行中 · PID ${props.managedDsh.pid}` : '启动'}</button></Field>
           <Field title="受管进程" detail={props.managedDsh.managed ? `${props.managedDsh.rootPath} · profile ${props.managedDsh.profile}` : '未由本应用启动 DSH；外部 DSH 不会被停止。'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshManagedDsh}>刷新</button><button className="settings-action secondary" disabled={!props.managedDsh.running} onClick={props.onStopManagedDsh}>停止本应用启动的 DSH</button></span></Field>
         </Card>
-        <Card title="DeepSeek 网页入口（实验）" description="当前仅在默认浏览器打开 DeepSeek 官方页面，不能在壁纸内聊天或同步消息。"><Field title="官方页面" detail="本应用不创建登录 WebView、不读取 Cookie，也不能使用或保存官方页面的登录状态。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开官方页面</button></Field></Card>
+        <Card title="DeepSeek 网页入口（实验）" description="在应用内持久 WebView2 中打开 DeepSeek 官方页面，登录后可从桌面会话窗发送消息。"><Field title="官方页面" detail="页面和登录状态由独立 WebView2 配置目录保存；本应用不读取、复制或记录 Cookie。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开应用内页面</button></Field></Card>
         <Card title="DeepSeek API" description="API 模式会产生实际费用，密钥只保存在 Windows 凭据管理器。">
           <Field title="API 地址"><input value={settings.deepseekApi.baseUrl} onChange={(e) => set({ deepseekApi: { ...settings.deepseekApi, baseUrl: e.target.value } })} /></Field>
           <Field title="模型"><input value={settings.deepseekApi.model} onChange={(e) => set({ deepseekApi: { ...settings.deepseekApi, model: e.target.value } })} /></Field>
@@ -211,7 +212,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
       {page === 'system' && <>
         <Card title="Windows 集成">
-          <Field title="登录后自动启动" detail="以当前用户身份启动，无需管理员权限。"><Toggle label="登录后自动启动" checked={settings.autostart} onChange={(value) => set({ autostart: value })} /></Field>
+          <Field title="登录后自动启动" detail={props.autostartBusy ? '正在更新 Windows 启动任务，请稍候；设置中心仍可继续使用。' : 'MSIX 优先使用 Windows StartupTask，旧版/开发版回退到当前用户启动项；版本更新会保留此状态。'}><Toggle label="登录后自动启动" checked={settings.autostart} onChange={(value) => set({ autostart: value })} disabled={props.autostartBusy} /></Field>
           <Field title="接管锁屏图片" detail={props.lockScreenBusy ? '正在应用系统锁屏设置，请稍候。' : '使用内置且已审计的熟睡画面；密码界面仍由 Windows 原生安全桌面处理。正式版需要 MSIX 包身份。'}><Toggle label="接管锁屏图片" checked={settings.lockScreenEnabled} onChange={props.onSetLockScreenEnabled} disabled={props.lockScreenBusy} /></Field>
           <div className="lockscreen-diagnostics">
             <div className="lockscreen-diagnostics__row"><div><strong>接管状态</strong><small>{props.lockScreenDiagnostics?.managedImageActive ? '正在使用大肥鱼的熟睡画面' : '未检测到本应用的锁屏图片'}</small></div>{props.lockScreenDiagnostics?.managedImageActive ? <button className="settings-action secondary" disabled={props.lockScreenBusy} onClick={props.onRestoreLockScreen}>打开 Windows 锁屏设置</button> : props.lockScreenDiagnostics?.staleBackup ? <button className="settings-action secondary" disabled={props.lockScreenBusy} onClick={props.onClearStaleLockScreenBackup}>{props.lockScreenBusy ? '正在清理…' : '清理旧恢复点'}</button> : null}</div>

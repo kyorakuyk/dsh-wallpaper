@@ -14,7 +14,7 @@ export interface WakeSceneProps {
 }
 
 /** 帧序列（按播放顺序）。若用户素材提供 animations.wake.frames 则优先使用。 */
-const DEFAULT_FRAMES = [
+export const DEFAULT_WAKE_FRAMES = [
   assetUrl('personas/wake-frames/variant-anima/sleep.png'),
   assetUrl('personas/wake-frames/variant-anima/frame-2-eyes.png'),
   assetUrl('personas/wake-frames/variant-anima/frame-3-situp.png'),
@@ -24,39 +24,45 @@ const DEFAULT_FRAMES = [
 /** 每帧停留时长（ms）：睡脸稍久，中间过渡稍快 */
 const FRAME_DURATIONS = [2200, 1400, 1600, 2000]
 
-export function WakeScene({ persona, onWakeDone, enabled = true, speed = 1 }: WakeSceneProps) {
-  const frames = persona.animations?.wake?.frames?.length
+export function wakeFrameSources(persona: PersonaManifest): string[] {
+  return persona.animations?.wake?.frames?.length
     ? persona.animations.wake.frames
-    : DEFAULT_FRAMES
+    : DEFAULT_WAKE_FRAMES
+}
+
+export function WakeScene({ persona, onWakeDone, enabled = true, speed = 1 }: WakeSceneProps) {
+  const frames = wakeFrameSources(persona)
   const [index, setIndex] = useState(0)
   const [img] = useState(() =>
     persona.assets.wake ?? placeholderPortrait(persona.kind, 'wake'),
   )
   const hasFrames = frames.length > 1
   const frameIndexRef = useRef(0)
+  const onWakeDoneRef = useRef(onWakeDone)
+  onWakeDoneRef.current = onWakeDone
 
   useEffect(() => {
     if (!enabled) {
-      const immediate = setTimeout(onWakeDone, 0)
+      const immediate = setTimeout(() => onWakeDoneRef.current(), 0)
       return () => clearTimeout(immediate)
     }
     if (!hasFrames) {
       // 无帧序列：单图渐显模式，播完回调
-      const t = setTimeout(onWakeDone, 2400)
+      const t = setTimeout(() => onWakeDoneRef.current(), 2400)
       return () => clearTimeout(t)
     }
     // 帧序列模式：按 FRAME_DURATIONS 逐帧切换，播完回调
     const duration = FRAME_DURATIONS[Math.min(frameIndexRef.current, FRAME_DURATIONS.length - 1)] / Math.max(0.25, speed)
     const t = setTimeout(() => {
       if (frameIndexRef.current >= frames.length - 1) {
-        onWakeDone()
+        onWakeDoneRef.current()
       } else {
         frameIndexRef.current += 1
         setIndex(frameIndexRef.current)
       }
     }, duration)
     return () => clearTimeout(t)
-  }, [enabled, index, frames, hasFrames, onWakeDone, speed])
+  }, [enabled, index, frames, hasFrames, speed])
 
   return (
     <div

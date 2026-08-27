@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { ConversationBubble } from '../src/features/chat/ConversationBubble.tsx'
+import { ConversationBubble, insertNewlineAtSelection } from '../src/features/chat/ConversationBubble.tsx'
 
 const callbacks = {
   onToggleHistory: () => undefined,
@@ -10,6 +10,11 @@ const callbacks = {
 }
 
 describe('ConversationBubble', () => {
+  it('inserts a newline at the selected range without submitting', () => {
+    expect(insertNewlineAtSelection('前后', 1, 1)).toEqual({ value: '前\n后', caret: 2 })
+    expect(insertNewlineAtSelection('保留这段', 1, 3)).toEqual({ value: '保\n段', caret: 2 })
+  })
+
   it('renders the compact DeepSeek composer with accessible controls', () => {
     const html = renderToStaticMarkup(<ConversationBubble
       backend="deepseek-web"
@@ -54,6 +59,29 @@ describe('ConversationBubble', () => {
     expect(html).toContain('缓存 未提供')
     expect(html).toContain('费用未提供')
     expect(html).toContain('正在处理')
+  })
+
+  it('hides default speaker labels while allowing custom labels', () => {
+    const baseProps = {
+      backend: 'deepseek-web' as const,
+      activity: 'idle' as const,
+      modelLabel: 'Flash · 幼年形态',
+      messages: [{ id: 'message-1', role: 'user' as const, content: '测试', createdAt: 1 }],
+      streamingText: '回复',
+      historyExpanded: true,
+      ...callbacks,
+    }
+    const hidden = renderToStaticMarkup(<ConversationBubble {...baseProps} />)
+    expect(hidden).not.toContain('dsh-chat__message-label')
+    expect(hidden).not.toContain('大肥鱼')
+    expect(hidden).not.toContain('你')
+
+    const custom = renderToStaticMarkup(<ConversationBubble
+      {...baseProps}
+      speakerLabels={{ user: '访客', assistant: '助手' }}
+    />)
+    expect(custom).toContain('访客')
+    expect(custom).toContain('助手')
   })
 
   it('renders zero-priced API usage as measured rather than unavailable', () => {

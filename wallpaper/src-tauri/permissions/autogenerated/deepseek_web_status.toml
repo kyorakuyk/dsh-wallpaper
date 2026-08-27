@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-deepseek-web-status"
+description = "Enables the deepseek_web_status command without any pre-configured scope."
+commands.allow = ["deepseek_web_status"]
+
+[[permission]]
+identifier = "deny-deepseek-web-status"
+description = "Denies the deepseek_web_status command without any pre-configured scope."
+commands.deny = ["deepseek_web_status"]

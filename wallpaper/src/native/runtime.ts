@@ -15,13 +15,17 @@ export interface NativeSendOptions {
 export interface TranslucentTbStatus { installed: boolean; running: boolean; source?: string }
 export interface LockScreenDiagnostics { supported: boolean; packageIdentity: boolean; takeoverAvailable: boolean; originalImageUri?: string; backupExists: boolean; backupValid: boolean; staleBackup: boolean; managedImageReady: boolean; managedImageActive: boolean; developmentBuild: boolean; warnings: string[] }
 export interface ManagedDshStatus { managed: boolean; running: boolean; pid?: number; rootPath?: string; profile?: string }
+export interface AutostartStatus { enabled: boolean; source: 'startup-task' | 'run' | 'none' | 'disabled-by-user' | 'disabled-by-policy' | 'unsupported' }
+export interface DeepSeekWebStatus { state: 'loading' | 'logged-out' | 'ready' | 'generating' | 'unsupported'; conversationId?: string; model?: string; signature: string }
+export interface DeepSeekWebHistory { messages: ChatMessage[]; conversationId?: string; model?: string; state: DeepSeekWebStatus['state'] | 'loading' }
 
 export interface NativeRuntime {
   isNative: boolean
   setLockScreen(enabled: boolean): Promise<string>
   clearStaleLockScreenBackup(): Promise<string>
   lockScreenDiagnostics(): Promise<LockScreenDiagnostics>
-  setAutostart(enabled: boolean): Promise<void>
+  setAutostart(enabled: boolean): Promise<AutostartStatus>
+  autostartStatus(): Promise<AutostartStatus>
   translucentTbStatus(): Promise<TranslucentTbStatus>
   launchTranslucentTb(): Promise<void>
   openTranslucentTbInstall(): Promise<void>
@@ -33,6 +37,9 @@ export interface NativeRuntime {
    */
   promptForApiKeyCredential(): Promise<boolean>
   requestDeepSeekLogin(): Promise<void>
+  ensureDeepSeekWeb(): Promise<void>
+  deepseekWebStatus(): Promise<DeepSeekWebStatus>
+  deepseekWebHistory(): Promise<DeepSeekWebHistory>
   openSettingsWindow(): Promise<void>
   listenSystem(listener: (event: 'locked' | 'unlocked' | 'suspend' | 'resume') => void): Promise<() => void>
   listenChat(listener: (event: ScopedChatEvent) => void): Promise<() => void>
@@ -78,9 +85,14 @@ export const nativeRuntime: NativeRuntime = {
     return invoke<LockScreenDiagnostics>('get_lock_screen_diagnostics')
   },
   async setAutostart(enabled) {
-    if (!await tauriAvailable()) return
+    if (!await tauriAvailable()) return { enabled: false, source: 'unsupported' }
     const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('set_autostart', { enabled })
+    return invoke<AutostartStatus>('set_autostart', { enabled })
+  },
+  async autostartStatus() {
+    if (!await tauriAvailable()) return { enabled: false, source: 'unsupported' }
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<AutostartStatus>('autostart_status')
   },
   async translucentTbStatus() {
     if (!await tauriAvailable()) return { installed: false, running: false }
@@ -109,6 +121,21 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) return
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('show_deepseek_login')
+  },
+  async ensureDeepSeekWeb() {
+    if (!await tauriAvailable()) return
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('deepseek_web_ensure')
+  },
+  async deepseekWebStatus() {
+    if (!await tauriAvailable()) return { state: 'loading', signature: 'deepseek-chat-dom-v1' }
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<DeepSeekWebStatus>('deepseek_web_status')
+  },
+  async deepseekWebHistory() {
+    if (!await tauriAvailable()) return { messages: [], state: 'loading' }
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<DeepSeekWebHistory>('deepseek_web_history')
   },
   async openSettingsWindow() {
     if (!await tauriAvailable()) return

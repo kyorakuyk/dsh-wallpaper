@@ -4,7 +4,7 @@ import { NativeChatAdapter } from './chat/nativeAdapter.ts'
 import { DeepSeekWebAdapter } from './chat/deepseekWebAdapter.ts'
 import type { ChatAdapter } from './chat/adapter.ts'
 import { ConversationBubble } from './chat/ConversationBubble.tsx'
-import type { BackendMode, ChatMessage, RuntimeState, TokenUsage } from './domain/types.ts'
+import type { BackendMode, ChatMessage, ChatQuestion, RuntimeState, TokenUsage } from './domain/types.ts'
 import { personaIdFor, resolveModelTier } from './domain/modelTier.ts'
 import { isHarnessReady, monitorHarness } from './connect/harness.ts'
 import { PersonaRegistry } from './persona/registry.ts'
@@ -20,6 +20,7 @@ import { beginInteractionRegionSession, collectInteractionRegions, publishIntera
 import type { AppearanceSlot } from './appearance/theme/index.ts'
 import { nativeAppearance } from './native/appearance.ts'
 import { appCoreClient } from './runtime/appCoreClient.ts'
+import { shouldApplyAppSnapshot } from './runtime/appSnapshot.ts'
 import type { DesktopWorkspace } from './runtime/desktopWorkspace.ts'
 import { WidgetHost } from './widgets/WidgetHost.tsx'
 
@@ -152,6 +153,13 @@ export function chatAdapterLifecycleKey(
 }
 
 /**
+ * Native actions are serialized in Rust, but their IPC responses can arrive
+ * out of order in a busy WebView.  AppCore increments `revision` for every
+ * state change; only snapshots at or after the last applied revision may
+ * repaint the renderer.  Without this guard a late `sending` snapshot could
+ * overwrite a newer `done` event and leave the composer stuck.
+ */
+/**
  * Daily sessions roll over on a real session return, rather than on an
  * arbitrary timer. This is important for a resident wallpaper: it may stay
  * alive across midnight with yesterday's adapter still mounted.
@@ -214,6 +222,7 @@ export function App({ surface = 'combined' }: AppProps) {
   const [resolvedAssets, setResolvedAssets] = useState<Partial<Record<AppearanceSlot, string>>>({})
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [streamingText, setStreamingText] = useState('')
+  const [questionPrompt, setQuestionPrompt] = useState<ChatQuestion[]>()
   const [usage, setUsage] = useState<TokenUsage>()
   const [conversationGeneration, setConversationGeneration] = useState(0)
   const [apiModelChoice, setApiModelChoice] = useState(settings.deepseekApi.model)
@@ -227,6 +236,8 @@ export function App({ surface = 'combined' }: AppProps) {
   const [selectedPreset, setSelectedPreset] = useState<string>()
   const [harnessControls, setHarnessControls] = useState<{ permission: { current: string; options: string[] }; commands: Array<{ name: string; description: string; input?: { hint: string } }> }>()
   const [harnessStarting, setHarnessStarting] = useState(false)
+  const harnessLaunchPendingRef = useRef(false)
+  const harnessLaunchStartedAtRef = useRef<number>()
   const adapterRef = useRef<ChatAdapter>(new PreviewAdapter(settings.defaultBackend))
   // Do not put mutable API request settings in the adapter lifecycle effect.
   // The adapter captures this object by reference and snapshots it only when
@@ -246,6 +257,7 @@ export function App({ surface = 'combined' }: AppProps) {
   activeBackendRef.current = runtime.backend
   const runtimeRef = useRef(runtime)
   runtimeRef.current = runtime
+  const appSnapshotRevisionRef = useRef(-1)
   // Resolving library data URLs can finish out of order.  Each refresh gets a
   // monotonic epoch, so a slower pre-change resolve can never repaint the
   // previous background/persona after a user has selected a new one.
@@ -352,6 +364,8 @@ export function App({ surface = 'combined' }: AppProps) {
     }
     let unsubscribe: () => void = () => undefined
     const applySnapshot = (snapshot: Awaited<ReturnType<typeof appCoreClient.snapshot>>) => {
+      if (!shouldApplyAppSnapshot(appSnapshotRevisionRef.current, snapshot.revision)) return
+      appSnapshotRevisionRef.current = snapshot.revision
       // Native tray/system actions can change the selected backend without
       // going through this WebView's changeBackend callback. Advance the
       // synchronous identity first so an old async adapter cannot win during
@@ -409,6 +423,53 @@ export function App({ surface = 'combined' }: AppProps) {
     void nativeRuntime.harnessControls().then(setHarnessControls).catch(() => setHarnessControls(undefined))
   }, [runtime.backend, runtime.harness, conversationGeneration])
 
+  // The launcher returns before DSH has finished booting. Keep the switch in
+  // its starting state until the Bridge is genuinely ready, and surface an
+  // early child exit instead of letting the old eight-second timer make the
+  // button look available again while nothing is listening on 3080.
+  useEffect(() => {
+    if (harnessStarting && !harnessLaunchPendingRef.current) {
+      harnessLaunchPendingRef.current = true
+      harnessLaunchStartedAtRef.current = Date.now()
+    }
+  }, [harnessStarting])
+
+  useEffect(() => {
+    if (!nativeRuntime.isNative || !harnessLaunchPendingRef.current) return
+    if (runtime.harness === 'bridge-ready') {
+      harnessLaunchPendingRef.current = false
+      harnessLaunchStartedAtRef.current = undefined
+      if (harnessStarting) setHarnessStarting(false)
+      return
+    }
+    if (!harnessStarting) setHarnessStarting(true)
+    let disposed = false
+    const check = async () => {
+      try {
+        const managed = await nativeRuntime.managedDshStatus()
+        if (disposed || !harnessLaunchPendingRef.current) return
+        if (!managed.managed || !managed.running) {
+          harnessLaunchPendingRef.current = false
+          harnessLaunchStartedAtRef.current = undefined
+          setHarnessStarting(false)
+          patchRuntime({ error: 'DSH 启动后立即退出；请检查 DSH 配置或启动日志。' })
+          return
+        }
+        if (Date.now() - (harnessLaunchStartedAtRef.current ?? Date.now()) > 45_000) {
+          harnessLaunchPendingRef.current = false
+          harnessLaunchStartedAtRef.current = undefined
+          setHarnessStarting(false)
+          patchRuntime({ error: 'DSH 启动超时；进程仍在运行但 Bridge 尚未上线。' })
+        }
+      } catch (error) {
+        if (!disposed) patchRuntime({ error: String(error) })
+      }
+    }
+    void check()
+    const timer = window.setInterval(() => { void check() }, 1000)
+    return () => { disposed = true; window.clearInterval(timer) }
+  }, [harnessStarting, runtime.harness])
+
   useEffect(() => {
     if (!nativeRuntime.isNative) return
     let disposed = false
@@ -453,19 +514,20 @@ export function App({ surface = 'combined' }: AppProps) {
     )
     const unsubscribe = adapter.subscribe((event) => {
       if (!isCurrent()) return
-      if (event.type === 'status') { patchRuntime({ activity: event.activity }); dispatchCore('set-activity', { value: event.activity }) }
+      if (event.type === 'status') { patchRuntime({ activity: event.activity }); dispatchCore('set-activity', { value: event.activity }); if (event.activity === 'idle' || event.activity === 'done') setQuestionPrompt(undefined) }
       if (event.type === 'delta') { patchRuntime({ activity: 'streaming' }); dispatchCore('set-activity', { value: 'streaming' }); setStreamingText((value) => value + event.text) }
       if (event.type === 'message') {
         setMessages((items) => [...items, { id: crypto.randomUUID(), role: event.role, content: event.content, createdAt: Date.now(), usage: event.usage }])
         // Harness and future providers may attach final usage directly to the
         // final message instead of publishing a separate usage event.
         if (event.usage) setUsage(event.usage)
-        if (event.role === 'assistant') setStreamingText('')
+        if (event.role === 'assistant') { setStreamingText(''); setQuestionPrompt(undefined) }
       }
       if (event.type === 'usage') setUsage(event)
       if (event.type === 'model') patchRuntime({ model: event.model, provider: event.provider, modelTier: event.tier, reasoningEffort: event.effort })
       if (event.type === 'auth-required') { baseDispatch({ type: 'AUTH_REQUIRED' }); dispatchCore('auth-required') }
       if (event.type === 'approval-required') { patchRuntime({ activity: 'tool', error: `${event.summary}；请打开 Harness 处理。` }); dispatchCore('set-activity', { value: 'tool' }) }
+      if (event.type === 'question-required') { setQuestionPrompt(event.questions); patchRuntime({ activity: 'tool', error: undefined }); dispatchCore('set-activity', { value: 'tool' }) }
       if (event.type === 'error') { setStreamingText(''); patchRuntime({ activity: 'idle', error: event.message }) }
     })
     void (async () => {
@@ -651,8 +713,13 @@ export function App({ surface = 'combined' }: AppProps) {
   const scene = useMemo(() => {
     if (runtime.phase === 'booting' || runtime.phase === 'locked') return <SleepScene persona={persona} mode="system" />
     if (runtime.phase === 'waking') return <WakeScene persona={persona} enabled={settings.animationsEnabled && !settings.skipWakeAnimation} speed={settings.animationSpeed} onWakeDone={() => { baseDispatch({ type: 'WAKE_DONE' }); dispatchCore('wake-done') }} />
-    return <IdleScene persona={{ ...persona, bubbles, assets: { ...persona.assets, portrait: resolvedPersona ?? persona.assets.portrait } }} bubbleText={runtime.activity === 'thinking' ? '正在认真思考…' : bubbles.morning} backgroundUrl={resolvedBackground ?? (background?.path ? assetUrl(background.path) : undefined)} portraitAmbientLength={settings.portraitAmbientLength} portraitAmbientStrength={settings.portraitAmbientStrength} hideBubble={workspace !== 'front'} onOpenChat={enterInnerWorkspace} />
-  }, [background?.path, bubbles, persona, resolvedBackground, resolvedPersona, runtime, settings, workspace])
+    const question = questionPrompt?.[0]
+    const questionOptions = question?.options?.map((option) => option.label).join(' / ')
+    const bubbleText = question
+      ? `想听听你的意见：${question.question}${questionOptions ? `（${questionOptions}）` : ''}`
+      : runtime.activity === 'thinking' ? '正在认真思考…' : bubbles.morning
+    return <IdleScene persona={{ ...persona, bubbles, assets: { ...persona.assets, portrait: resolvedPersona ?? persona.assets.portrait } }} bubbleText={bubbleText} backgroundUrl={resolvedBackground ?? (background?.path ? assetUrl(background.path) : undefined)} portraitAmbientLength={settings.portraitAmbientLength} portraitAmbientStrength={settings.portraitAmbientStrength} hideBubble={workspace !== 'front'} onOpenChat={enterInnerWorkspace} />
+  }, [background?.path, bubbles, persona, questionPrompt, resolvedBackground, resolvedPersona, runtime, settings, workspace])
 
   return <div className={`wallpaper-root surface-${surface} effort-${runtime.reasoningEffort ?? 'normal'} workspace-${workspace}`} data-workspace={workspace}>
     {scene}
@@ -689,7 +756,7 @@ export function App({ surface = 'combined' }: AppProps) {
         })
       }} onClose={() => undefined} />}
       {runtime.error && runtime.phase !== 'error' && <div className="runtime-notice" role="status">{runtime.error}<button onClick={() => patchRuntime({ error: undefined })}>×</button></div>}
-      {runtime.phase === 'auth-required' && <div className="auth-overlay" data-interaction-region="auth"><div className="auth-card"><h2>DeepSeek 网页模式（实验入口）</h2><p>已通过默认浏览器打开 DeepSeek 官方页面。当前尚未启用持久 WebView2 或 DOM 消息桥接：本应用不读取 Cookie，不能使用或保存官方页面的登录状态，也不会自动切换到付费 API。</p><button onClick={() => { baseDispatch({ type: 'AUTH_READY' }); dispatchCore('auth-ready') }}>关闭提示</button></div></div>}
+      {runtime.phase === 'auth-required' && <div className="auth-overlay" data-interaction-region="auth"><div className="auth-card"><h2>需要登录 DeepSeek 网页入口</h2><p>应用内官方页面已经打开，请在其中完成登录。登录状态只保存在独立 WebView2 配置目录，本应用不会读取或复制 Cookie；登录完成后回到桌面即可继续发送。</p><button onClick={() => { baseDispatch({ type: 'AUTH_READY' }); dispatchCore('auth-ready') }}>我已完成登录</button></div></div>}
     </>
   </div>
 }

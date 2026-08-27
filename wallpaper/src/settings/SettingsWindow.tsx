@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import { appCoreClient } from '../runtime/appCoreClient.ts'
-import { nativeRuntime, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
+import { nativeRuntime, type AutostartStatus, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
 import { loadSettings, saveSettings, type WallpaperSettings } from './store.ts'
 import { SettingsPanel } from './SettingsPanel.tsx'
 import { chooseAppearanceImportPaths, nativeAppearance } from '../native/appearance.ts'
@@ -20,6 +20,7 @@ export function SettingsWindow() {
   const [managedDsh, setManagedDsh] = useState<ManagedDshStatus>({ managed: false, running: false })
   const [lockScreenDiagnostics, setLockScreenDiagnostics] = useState<LockScreenDiagnostics>()
   const [lockScreenBusy, setLockScreenBusy] = useState(false)
+  const [autostartBusy, setAutostartBusy] = useState(false)
   const [notice, setNotice] = useState<string>()
   const [appearanceAssets, setAppearanceAssets] = useState<AppearanceAssetSummary[]>([])
   const [appearanceOverrides, setAppearanceOverrides] = useState<Partial<Record<AppearanceSlot, string>>>({})
@@ -30,6 +31,7 @@ export function SettingsWindow() {
   // was in flight.
   const settingsRef = useRef(settings)
   const lockScreenOperationRef = useRef(false)
+  const autostartOperationRef = useRef(false)
   const lockScreenDiagnosticsRequestRef = useRef(0)
 
   const commitSettings = (next: WallpaperSettings) => {
@@ -69,6 +71,24 @@ export function SettingsWindow() {
       if (request === lockScreenDiagnosticsRequestRef.current) setLockScreenDiagnostics(diagnostics)
     } catch (error) {
       if (request === lockScreenDiagnosticsRequestRef.current) setNotice(`锁屏检查失败：${String(error)}`)
+    }
+  }
+  const refreshAutostartStatus = async () => {
+    if (!nativeRuntime.isNative) return
+    try {
+      const status: AutostartStatus = await nativeRuntime.autostartStatus()
+      const current = settingsRef.current
+      if (current.autostart !== status.enabled) {
+        const next = { ...current, autostart: status.enabled }
+        settingsRef.current = next
+        setSettings(next)
+        saveSettings(next)
+        void invoke('publish_settings', { settings: next }).catch((error) => setNotice(`设置同步失败：${String(error)}`))
+      }
+      if (status.source === 'disabled-by-user') setNotice('Windows 已禁用 DSH Wallpaper 开机启动，请在系统设置中允许。')
+      if (status.source === 'disabled-by-policy') setNotice('Windows 策略禁止 DSH Wallpaper 开机启动。')
+    } catch (error) {
+      setNotice(`读取开机自启状态失败：${String(error)}`)
     }
   }
   const setLockScreenEnabled = async (enabled: boolean, force = false) => {
@@ -121,6 +141,7 @@ export function SettingsWindow() {
     refreshTranslucentTb()
     scanDsh()
     refreshManagedDsh()
+    void refreshAutostartStatus()
     refreshLockScreenDiagnostics()
     refreshAppearance()
     const current = getCurrentWindow()
@@ -133,14 +154,31 @@ export function SettingsWindow() {
 
   const change = (next: WallpaperSettings) => {
     const previous = settingsRef.current
+    const autostartChanged = next.autostart !== previous.autostart
     // System lock-screen ownership is deliberately excluded from the normal
     // immediate-save path. The dedicated async operation above is the only
     // place allowed to persist or broadcast a change to this field.
     const normalNext = next.lockScreenEnabled === previous.lockScreenEnabled
       ? next
       : { ...next, lockScreenEnabled: previous.lockScreenEnabled }
+    if (autostartChanged) {
+      if (autostartOperationRef.current) return
+      autostartOperationRef.current = true
+      setAutostartBusy(true)
+      void nativeRuntime.setAutostart(next.autostart)
+        .then((status) => {
+          const current = settingsRef.current
+          commitSettings({ ...current, autostart: status.enabled })
+          if (status.enabled !== next.autostart) setNotice('Windows 没有接受这次开机自启变更，请检查系统启动应用权限。')
+        })
+        .catch((error) => setNotice(`开机自启更新失败：${String(error)}`))
+        .finally(() => {
+          autostartOperationRef.current = false
+          setAutostartBusy(false)
+        })
+      return
+    }
     commitSettings(normalNext)
-    if (next.autostart !== previous.autostart) void nativeRuntime.setAutostart(next.autostart).catch((error) => setNotice(String(error)))
   }
 
   const close = () => void invoke('hide_settings_window')
@@ -196,7 +234,8 @@ export function SettingsWindow() {
       onClearStaleLockScreenBackup={() => { void clearStaleLockScreenBackup() }}
       onSetLockScreenEnabled={(enabled) => { void setLockScreenEnabled(enabled) }}
       lockScreenBusy={lockScreenBusy}
-      onRequestDeepSeekLogin={() => void nativeRuntime.requestDeepSeekLogin()}
+      autostartBusy={autostartBusy}
+      onRequestDeepSeekLogin={() => void nativeRuntime.requestDeepSeekLogin().catch((error) => setNotice(`无法打开 DeepSeek 应用内页面：${String(error)}`))}
       onConfigureApiKey={() => void nativeRuntime.promptForApiKeyCredential()
         .then((saved) => { if (saved) setNotice('DeepSeek API Key 已更新到 Windows 凭据管理器。') })
         .catch((error) => setNotice(String(error)))}

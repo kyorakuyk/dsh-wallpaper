@@ -754,6 +754,11 @@ enum ChatEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         effort: Option<String>,
     },
+    QuestionRequired {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        questions: Vec<ChatQuestion>,
+    },
     ApprovalRequired {
         #[serde(rename = "sessionId")]
         session_id: String,
@@ -764,6 +769,27 @@ enum ChatEvent {
         recoverable: bool,
         message: String,
     },
+}
+
+#[derive(Serialize, Clone)]
+struct ChatQuestionOption {
+    label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct ChatQuestion {
+    id: String,
+    question: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    header: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<Vec<ChatQuestionOption>>,
+    #[serde(rename = "multiSelect", skip_serializing_if = "Option::is_none")]
+    multi_select: Option<bool>,
 }
 
 /// The Bridge runs in a separate local process, so its SSE payloads must be
@@ -796,6 +822,11 @@ enum BridgeEvent {
         model: String,
         effort: Option<String>,
     },
+    QuestionRequired {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        questions: Vec<BridgeQuestion>,
+    },
     ApprovalRequired {
         #[serde(rename = "sessionId")]
         session_id: String,
@@ -811,10 +842,31 @@ enum BridgeEvent {
     },
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BridgeQuestionOption {
+    label: String,
+    description: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BridgeQuestion {
+    id: String,
+    question: String,
+    detail: Option<String>,
+    header: Option<String>,
+    options: Option<Vec<BridgeQuestionOption>>,
+    #[serde(rename = "multiSelect")]
+    multi_select: Option<bool>,
+}
+
 const MAX_HARNESS_EVENT_TEXT_BYTES: usize = MAX_HARNESS_MESSAGE_BYTES;
 const MAX_HARNESS_EVENT_IDENTIFIER_BYTES: usize = 200;
 const MAX_HARNESS_EVENT_PROVIDER_BYTES: usize = 200;
 const MAX_HARNESS_EVENT_SUMMARY_BYTES: usize = 500;
+const MAX_HARNESS_EVENT_QUESTION_COUNT: usize = 8;
+const MAX_HARNESS_EVENT_OPTION_COUNT: usize = 12;
 const MAX_HARNESS_EVENT_TOKEN_COUNT: u64 = 1_000_000_000_000;
 const MAX_HARNESS_EVENT_COST: f64 = 1_000_000.0;
 
@@ -898,6 +950,67 @@ fn parse_bridge_event(line: &str, expected_session_id: &str) -> Option<ChatEvent
                 effort,
             })
         }
+        BridgeEvent::QuestionRequired {
+            session_id,
+            questions,
+        } if session_id == expected_session_id
+            && !questions.is_empty()
+            && questions.len() <= MAX_HARNESS_EVENT_QUESTION_COUNT =>
+        {
+            let mut safe_questions = Vec::with_capacity(questions.len());
+            for question in questions {
+                let id = bounded_bridge_text(question.id, MAX_HARNESS_EVENT_IDENTIFIER_BYTES)?;
+                let text = bounded_bridge_text(question.question, MAX_HARNESS_EVENT_SUMMARY_BYTES)?;
+                let detail = match question.detail {
+                    Some(value) => {
+                        Some(bounded_bridge_text(value, MAX_HARNESS_EVENT_SUMMARY_BYTES)?)
+                    }
+                    None => None,
+                };
+                let header = match question.header {
+                    Some(value) => Some(bounded_bridge_text(
+                        value,
+                        MAX_HARNESS_EVENT_IDENTIFIER_BYTES,
+                    )?),
+                    None => None,
+                };
+                let options = match question.options {
+                    Some(options) if options.len() <= MAX_HARNESS_EVENT_OPTION_COUNT => {
+                        let mut safe_options = Vec::with_capacity(options.len());
+                        for option in options {
+                            safe_options.push(ChatQuestionOption {
+                                label: bounded_bridge_text(
+                                    option.label,
+                                    MAX_HARNESS_EVENT_SUMMARY_BYTES,
+                                )?,
+                                description: match option.description {
+                                    Some(value) => Some(bounded_bridge_text(
+                                        value,
+                                        MAX_HARNESS_EVENT_SUMMARY_BYTES,
+                                    )?),
+                                    None => None,
+                                },
+                            });
+                        }
+                        Some(safe_options)
+                    }
+                    Some(_) => return None,
+                    None => None,
+                };
+                safe_questions.push(ChatQuestion {
+                    id,
+                    question: text,
+                    detail,
+                    header,
+                    options,
+                    multi_select: question.multi_select,
+                });
+            }
+            Some(ChatEvent::QuestionRequired {
+                session_id: expected_session_id.into(),
+                questions: safe_questions,
+            })
+        }
         BridgeEvent::ApprovalRequired {
             session_id,
             summary,
@@ -934,13 +1047,34 @@ fn parse_bridge_event(line: &str, expected_session_id: &str) -> Option<ChatEvent
 /// assistant message or `status: done`. Treat that EOF as a clean completion;
 /// only a stream that ends before either terminal marker is a disconnect.
 fn harness_records_have_terminal_event(records: &[String], session_id: &str) -> bool {
-    records.iter().filter_map(|record| {
-        sse_record_payload(record).and_then(|line| parse_bridge_event(&line, session_id))
-    }).any(|event| match event {
-        ChatEvent::Message { role, .. } => role == "assistant",
-        ChatEvent::Status { activity } => activity == "done",
-        _ => false,
-    })
+    records
+        .iter()
+        .filter_map(|record| {
+            sse_record_payload(record).and_then(|line| parse_bridge_event(&line, session_id))
+        })
+        .any(|event| match event {
+            ChatEvent::Message { role, .. } => role == "assistant",
+            ChatEvent::Status { activity } => activity == "done",
+            _ => false,
+        })
+}
+
+/// The Bridge SSE endpoint is expected to stay open, but some DSH/WebServer
+/// combinations close a response after a completed turn.  A clean idle
+/// snapshot is also not an error.  Keep these cases distinguishable from a
+/// stream that drops while a turn is still running so the native reader can
+/// reconnect without leaving the composer stuck in `thinking`.
+fn harness_records_have_turn_activity(records: &[String], session_id: &str) -> bool {
+    records
+        .iter()
+        .filter_map(|record| {
+            sse_record_payload(record).and_then(|line| parse_bridge_event(&line, session_id))
+        })
+        .any(|event| match event {
+            ChatEvent::Status { activity } => !matches!(activity.as_str(), "idle" | "done"),
+            ChatEvent::Delta { .. } | ChatEvent::Message { .. } => true,
+            _ => false,
+        })
 }
 
 #[derive(Deserialize)]
@@ -2019,7 +2153,10 @@ pub async fn harness_connect(
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .map(str::to_owned);
-    if model.as_ref().is_some_and(|model| !valid_bridge_status(model)) {
+    if model
+        .as_ref()
+        .is_some_and(|model| !valid_bridge_status(model))
+    {
         return Err("Harness 模型标识无效".into());
     }
     let create_session = |resume_session_id: Option<&str>| {
@@ -2027,7 +2164,10 @@ pub async fn harness_connect(
             client.post("http://127.0.0.1:3080/api/wallpaper/v1/sessions"),
             &token,
         )
-        .json(&HarnessSessionRequest { resume_session_id, model: model.as_deref() })
+        .json(&HarnessSessionRequest {
+            resume_session_id,
+            model: model.as_deref(),
+        })
         .send()
     };
     let mut response = create_session(resume_session_id.as_deref())
@@ -2116,7 +2256,7 @@ async fn connect_harness_events(
     // `send()` resolves after response headers arrive. The bridge registers the
     // client before it flushes those headers, so this await is the readiness
     // barrier that prevents the first POST/followup from being missed.
-    let response = match auth(client.get(url), &token).send().await {
+    let response = match auth(client.get(&url), &token).send().await {
         Ok(response) if response.status().is_success() => response,
         Ok(response) => {
             finish_harness_stream(&state, stream_id, &session_id);
@@ -2155,69 +2295,129 @@ async fn connect_harness_events(
                 );
             }
         };
-        let mut stream = response.bytes_stream();
-        let mut decoder = Utf8StreamDecoder::default();
-        let mut buffer = String::new();
-        let mut turn_completed = false;
-        loop {
-            tokio::select! {
-                _ = &mut cancel_rx => break,
-                chunk = stream.next() => {
-                    let Some(chunk) = chunk else {
-                        let tail = match decoder.finish() {
-                            Ok(tail) => tail,
-                            Err(_) => {
-                                emit_stream_error("HARNESS_SSE_ENCODING", generic_harness_error("事件流编码"));
-                                break;
-                            }
-                        };
-                        let records = match drain_bounded_harness_sse_records(&mut buffer, &tail) {
-                            Ok(records) => records,
-                            Err(()) => {
-                                emit_stream_error("HARNESS_SSE_LIMIT", "DSH bridge 返回的流式事件过大，已安全停止接收。".into());
-                                break;
-                            }
-                        };
-                        turn_completed |= harness_records_have_terminal_event(&records, &session_id);
-                        forward_harness_sse_records(&app, &state, stream_id, &session_id, &connection_id, records);
-                        let records = match finish_bounded_harness_sse_records(&mut buffer) {
-                            Ok(records) => records,
-                            Err(()) => {
-                                emit_stream_error("HARNESS_SSE_LIMIT", "DSH bridge 返回的流式事件过大，已安全停止接收。".into());
-                                break;
-                            }
-                        };
-                        turn_completed |= harness_records_have_terminal_event(&records, &session_id);
-                        forward_harness_sse_records(&app, &state, stream_id, &session_id, &connection_id, records);
-                        if !turn_completed {
-                            emit_stream_error("HARNESS_DISCONNECTED", "DSH bridge 事件流已断开".into());
-                        }
-                        break;
-                    };
-                    match chunk {
-                        Ok(bytes) => {
-                            if bytes.len() > MAX_HARNESS_SSE_CHUNK_BYTES {
-                                emit_stream_error("HARNESS_SSE_LIMIT", "DSH bridge 返回的流式事件过大，已安全停止接收。".into());
-                                break;
-                            }
-                            let decoded = match decoder.push(&bytes) {
-                                Ok(decoded) => decoded,
-                                Err(_) => { emit_stream_error("HARNESS_SSE_ENCODING", generic_harness_error("事件流编码")); break; }
+
+        // Keep one cancellation slot for the lifetime of the adapter.  A
+        // completed SSE response must not tear down that slot: reconnecting
+        // here is what lets a second turn reach the same desktop composer.
+        let mut response = response;
+        'reconnect: loop {
+            let mut stream = response.bytes_stream();
+            let mut decoder = Utf8StreamDecoder::default();
+            let mut buffer = String::new();
+            let mut turn_completed = false;
+            let mut turn_started = false;
+            let clean_eof: bool;
+
+            loop {
+                tokio::select! {
+                    _ = &mut cancel_rx => break 'reconnect,
+                    chunk = stream.next() => {
+                        let Some(chunk) = chunk else {
+                            let tail = match decoder.finish() {
+                                Ok(tail) => tail,
+                                Err(_) => {
+                                    emit_stream_error("HARNESS_SSE_ENCODING", generic_harness_error("事件流编码"));
+                                    break 'reconnect;
+                                }
                             };
-                            let records = match drain_bounded_harness_sse_records(&mut buffer, &decoded) {
+                            let records = match drain_bounded_harness_sse_records(&mut buffer, &tail) {
                                 Ok(records) => records,
                                 Err(()) => {
                                     emit_stream_error("HARNESS_SSE_LIMIT", "DSH bridge 返回的流式事件过大，已安全停止接收。".into());
-                                    break;
+                                    break 'reconnect;
                                 }
                             };
+                            turn_started |= harness_records_have_turn_activity(&records, &session_id);
                             turn_completed |= harness_records_have_terminal_event(&records, &session_id);
                             forward_harness_sse_records(&app, &state, stream_id, &session_id, &connection_id, records);
+                            let records = match finish_bounded_harness_sse_records(&mut buffer) {
+                                Ok(records) => records,
+                                Err(()) => {
+                                    emit_stream_error("HARNESS_SSE_LIMIT", "DSH bridge 返回的流式事件过大，已安全停止接收。".into());
+                                    break 'reconnect;
+                                }
+                            };
+                            turn_started |= harness_records_have_turn_activity(&records, &session_id);
+                            turn_completed |= harness_records_have_terminal_event(&records, &session_id);
+                            forward_harness_sse_records(&app, &state, stream_id, &session_id, &connection_id, records);
+                            clean_eof = !turn_started || turn_completed;
+                            break;
+                        };
+                        match chunk {
+                            Ok(bytes) => {
+                                if bytes.len() > MAX_HARNESS_SSE_CHUNK_BYTES {
+                                    emit_stream_error("HARNESS_SSE_LIMIT", "DSH bridge 返回的流式事件过大，已安全停止接收。".into());
+                                    break 'reconnect;
+                                }
+                                let decoded = match decoder.push(&bytes) {
+                                    Ok(decoded) => decoded,
+                                    Err(_) => { emit_stream_error("HARNESS_SSE_ENCODING", generic_harness_error("事件流编码")); break 'reconnect; }
+                                };
+                                let records = match drain_bounded_harness_sse_records(&mut buffer, &decoded) {
+                                    Ok(records) => records,
+                                    Err(()) => {
+                                        emit_stream_error("HARNESS_SSE_LIMIT", "DSH bridge 返回的流式事件过大，已安全停止接收。".into());
+                                        break 'reconnect;
+                                    }
+                                };
+                                turn_started |= harness_records_have_turn_activity(&records, &session_id);
+                                turn_completed |= harness_records_have_terminal_event(&records, &session_id);
+                                forward_harness_sse_records(&app, &state, stream_id, &session_id, &connection_id, records);
+                            }
+                            Err(_) if turn_completed || !turn_started => {
+                                clean_eof = true;
+                                break;
+                            }
+                            Err(_) => {
+                                // A transport read error can happen after the
+                                // peer has already committed the assistant
+                                // message. Treat it like a reconnectable EOF;
+                                // the history reconciler will fill any missed
+                                // terminal event without flashing a false
+                                // "bridge offline" error in the UI.
+                                clean_eof = true;
+                                break;
+                            }
                         }
-                        Err(_) => { emit_stream_error("HARNESS_SSE_READ", generic_harness_error("事件流读取")); break; }
                     }
                 }
             }
+
+            if !clean_eof {
+                emit_stream_error("HARNESS_DISCONNECTED", "DSH bridge 事件流已断开".into());
+                break;
+            }
+
+            // Do not spin if the host closes an idle response.  The short
+            // delay also gives DSH time to re-register the next subscriber.
+            tokio::select! {
+                _ = &mut cancel_rx => break,
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+            }
+            let next = match auth(client.get(&url), &token).send().await {
+                Ok(next)
+                    if next.status().is_success()
+                        && next
+                            .headers()
+                            .get("x-dsh-wallpaper-sse-ready")
+                            .and_then(|value| value.to_str().ok())
+                            == Some("1") =>
+                {
+                    next
+                }
+                Ok(next) => {
+                    emit_stream_error(
+                        "HARNESS_DISCONNECTED",
+                        generic_bridge_http_error(next.status()),
+                    );
+                    break;
+                }
+                Err(_) => {
+                    emit_stream_error("HARNESS_DISCONNECTED", generic_harness_error("事件流重连"));
+                    break;
+                }
+            };
+            response = next;
         }
         finish_harness_stream(&state, stream_id, &session_id);
     });
@@ -2287,40 +2487,114 @@ pub async fn harness_history(state: tauri::State<'_, ChatState>) -> Result<Value
 pub async fn harness_presets() -> Result<Value, String> {
     let token = read_bridge_token()?;
     let client = bridge_request_client()?;
-    let response = auth(client.get("http://127.0.0.1:3080/api/wallpaper/v1/control/presets"), &token)
-        .send().await.map_err(|_| generic_harness_error("模式目录读取"))?;
-    if !response.status().is_success() { return Err(generic_bridge_http_error(response.status())); }
-    bounded_bridge_json::<Value>(response, MAX_HARNESS_SESSION_RESPONSE_BYTES, "DSH bridge 返回了无法识别的模式目录。" ).await
+    let response = auth(
+        client.get("http://127.0.0.1:3080/api/wallpaper/v1/control/presets"),
+        &token,
+    )
+    .send()
+    .await
+    .map_err(|_| generic_harness_error("模式目录读取"))?;
+    if !response.status().is_success() {
+        return Err(generic_bridge_http_error(response.status()));
+    }
+    bounded_bridge_json::<Value>(
+        response,
+        MAX_HARNESS_SESSION_RESPONSE_BYTES,
+        "DSH bridge 返回了无法识别的模式目录。",
+    )
+    .await
 }
 
-pub async fn harness_set_preset(state: tauri::State<'_, ChatState>, preset: String) -> Result<Value, String> {
-    let session_id = state.harness_session.lock().map_err(|_| "Harness session state poisoned")?.clone().ok_or("Harness 会话尚未建立")?;
+pub async fn harness_set_preset(
+    state: tauri::State<'_, ChatState>,
+    preset: String,
+) -> Result<Value, String> {
+    let session_id = state
+        .harness_session
+        .lock()
+        .map_err(|_| "Harness session state poisoned")?
+        .clone()
+        .ok_or("Harness 会话尚未建立")?;
     let token = read_bridge_token()?;
     let client = bridge_request_client()?;
-    let url = format!("http://127.0.0.1:3080/api/wallpaper/v1/control/sessions/{}/preset", urlencoding::encode(&session_id));
-    let response = auth(client.post(url), &token).json(&serde_json::json!({ "agentPreset": preset })).send().await.map_err(|_| generic_harness_error("模式切换"))?;
-    if !response.status().is_success() { return Err(generic_bridge_http_error(response.status())); }
-    bounded_bridge_json::<Value>(response, MAX_HARNESS_SESSION_RESPONSE_BYTES, "DSH bridge 返回了无法识别的模式响应。" ).await
+    let url = format!(
+        "http://127.0.0.1:3080/api/wallpaper/v1/control/sessions/{}/preset",
+        urlencoding::encode(&session_id)
+    );
+    let response = auth(client.post(url), &token)
+        .json(&serde_json::json!({ "agentPreset": preset }))
+        .send()
+        .await
+        .map_err(|_| generic_harness_error("模式切换"))?;
+    if !response.status().is_success() {
+        return Err(generic_bridge_http_error(response.status()));
+    }
+    bounded_bridge_json::<Value>(
+        response,
+        MAX_HARNESS_SESSION_RESPONSE_BYTES,
+        "DSH bridge 返回了无法识别的模式响应。",
+    )
+    .await
 }
 
 pub async fn harness_controls(state: tauri::State<'_, ChatState>) -> Result<Value, String> {
-    let session_id = state.harness_session.lock().map_err(|_| "Harness session state poisoned")?.clone().ok_or("Harness 会话尚未建立")?;
+    let session_id = state
+        .harness_session
+        .lock()
+        .map_err(|_| "Harness session state poisoned")?
+        .clone()
+        .ok_or("Harness 会话尚未建立")?;
     let token = read_bridge_token()?;
     let client = bridge_request_client()?;
-    let url = format!("http://127.0.0.1:3080/api/wallpaper/v1/control/sessions/{}", urlencoding::encode(&session_id));
-    let response = auth(client.get(url), &token).send().await.map_err(|_| generic_harness_error("控制目录读取"))?;
-    if !response.status().is_success() { return Err(generic_bridge_http_error(response.status())); }
-    bounded_bridge_json::<Value>(response, MAX_HARNESS_SESSION_RESPONSE_BYTES, "DSH bridge 返回了无法识别的控制目录。" ).await
+    let url = format!(
+        "http://127.0.0.1:3080/api/wallpaper/v1/control/sessions/{}",
+        urlencoding::encode(&session_id)
+    );
+    let response = auth(client.get(url), &token)
+        .send()
+        .await
+        .map_err(|_| generic_harness_error("控制目录读取"))?;
+    if !response.status().is_success() {
+        return Err(generic_bridge_http_error(response.status()));
+    }
+    bounded_bridge_json::<Value>(
+        response,
+        MAX_HARNESS_SESSION_RESPONSE_BYTES,
+        "DSH bridge 返回了无法识别的控制目录。",
+    )
+    .await
 }
 
-pub async fn harness_set_permission(state: tauri::State<'_, ChatState>, permission: String) -> Result<Value, String> {
-    let session_id = state.harness_session.lock().map_err(|_| "Harness session state poisoned")?.clone().ok_or("Harness 会话尚未建立")?;
+pub async fn harness_set_permission(
+    state: tauri::State<'_, ChatState>,
+    permission: String,
+) -> Result<Value, String> {
+    let session_id = state
+        .harness_session
+        .lock()
+        .map_err(|_| "Harness session state poisoned")?
+        .clone()
+        .ok_or("Harness 会话尚未建立")?;
     let token = read_bridge_token()?;
     let client = bridge_request_client()?;
-    let url = format!("http://127.0.0.1:3080/api/wallpaper/v1/control/sessions/{}/permission", urlencoding::encode(&session_id));
-    let response = auth(client.post(url), &token).json(&serde_json::json!({ "permission": permission })).send().await.map_err(|_| generic_harness_error("权限切换"))?;
-    if !response.status().is_success() { return Err(generic_bridge_http_error(response.status())); }
-    bounded_bridge_json::<Value>(response, MAX_HARNESS_SESSION_RESPONSE_BYTES, "DSH bridge 返回了无法识别的权限响应。" ).await
+    let url = format!(
+        "http://127.0.0.1:3080/api/wallpaper/v1/control/sessions/{}/permission",
+        urlencoding::encode(&session_id)
+    );
+    let response = auth(client.post(url), &token)
+        .json(&serde_json::json!({ "permission": permission }))
+        .send()
+        .await
+        .map_err(|_| generic_harness_error("权限切换"))?;
+    if !response.status().is_success() {
+        return Err(generic_bridge_http_error(response.status()));
+    }
+    bounded_bridge_json::<Value>(
+        response,
+        MAX_HARNESS_SESSION_RESPONSE_BYTES,
+        "DSH bridge 返回了无法识别的权限响应。",
+    )
+    .await
 }
 
 pub async fn harness_cancel(state: tauri::State<'_, ChatState>) -> Result<(), String> {
@@ -2362,7 +2636,7 @@ mod tests {
         api_completion_url, api_request_messages, bridge_token_acl_is_private,
         drain_bounded_harness_sse_records, drain_sse_records, finish_api_request,
         finish_bounded_harness_sse_records, finish_harness_stream, finish_sse_records,
-        harness_records_have_terminal_event,
+        harness_records_have_terminal_event, harness_records_have_turn_activity,
         is_current_api_request, is_current_harness_stream, owns_api_request, parse_bridge_event,
         parse_harness_connection, parse_harness_history, sse_record_payload, ApiMessage,
         ApiPricing, ApiUsage, ChatEvent, ChatState, HarnessConnection, HarnessHistoryMessage,
@@ -2438,6 +2712,13 @@ mod tests {
         assert!(matches!(
             parse_bridge_event(r#"{"type":"delta","text":"鲸鱼"}"#, session_id),
             Some(ChatEvent::Delta { text }) if text == "鲸鱼"
+        ));
+        assert!(matches!(
+            parse_bridge_event(
+                r#"{"type":"question-required","sessionId":"wallpaper-session","questions":[{"id":"choice","question":"继续吗？","options":[{"label":"继续"}]}]}"#,
+                session_id,
+            ),
+            Some(ChatEvent::QuestionRequired { questions, .. }) if questions.len() == 1 && questions[0].question == "继续吗？"
         ));
         assert!(matches!(
             parse_bridge_event(
@@ -2560,7 +2841,8 @@ mod tests {
         let session = "wallpaper-session";
         assert!(harness_records_have_terminal_event(
             &[
-                "data: {\"type\":\"message\",\"role\":\"assistant\",\"content\":\"完成\"}\n\n".into(),
+                "data: {\"type\":\"message\",\"role\":\"assistant\",\"content\":\"完成\"}\n\n"
+                    .into(),
             ],
             session,
         ));
@@ -2569,6 +2851,19 @@ mod tests {
             session,
         ));
         assert!(!harness_records_have_terminal_event(
+            &["data: {\"type\":\"status\",\"activity\":\"streaming\"}\n\n".into()],
+            session,
+        ));
+    }
+
+    #[test]
+    fn idle_sse_snapshot_is_reconnectable_but_active_turn_is_not_clean_eof() {
+        let session = "wallpaper-session";
+        assert!(!harness_records_have_turn_activity(
+            &["data: {\"type\":\"status\",\"activity\":\"idle\"}\n\n".into()],
+            session,
+        ));
+        assert!(harness_records_have_turn_activity(
             &["data: {\"type\":\"status\",\"activity\":\"streaming\"}\n\n".into()],
             session,
         ));

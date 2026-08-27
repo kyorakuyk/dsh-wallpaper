@@ -26,6 +26,7 @@ describe('native chat boundary', () => {
     'allow-connect-harness',
     'allow-harness-history',
     'allow-api-history',
+    'allow-deepseek-web-history',
   ]
 
   it('creates explicit application-command ACL entries at build time', async () => {
@@ -71,6 +72,50 @@ describe('native chat boundary', () => {
     ]))
   })
 
+  it('declares an MSIX StartupTask while retaining the native autostart fallback', async () => {
+    const [manifest, lib] = await Promise.all([
+      readFile(resolve(wallpaperRoot, '..', 'packaging/msix/AppxManifest.xml'), 'utf8'),
+      readNative('src/lib.rs'),
+    ])
+    expect(manifest).toContain('windows.startupTask')
+    expect(manifest).toContain('DshWallpaperStartup')
+    expect(lib).toContain('windows_integration::set_startup_task')
+    expect(lib).toContain('HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run')
+  })
+
+  it('keeps the DeepSeek web transport in a dedicated persistent WebView', async () => {
+    const [lib, web, background] = await Promise.all([
+      readNative('src/lib.rs'),
+      readNative('src/deepseek_web.rs'),
+      readCapability('background'),
+    ])
+    expect(lib).toContain('mod deepseek_web;')
+    expect(lib).toContain('deepseek_web::DeepSeekWebState::default()')
+    expect(web).toContain('deepseek-webview2')
+    expect(web).toContain('WebviewUrl::External')
+    expect(web).toContain('deepseek-chat-dom-v1')
+    expect(web).toContain('MutationObserver')
+    expect(web).toContain('does not read cookies')
+    expect(web).toContain('DEEPSEEK_WEB_UNSUPPORTED')
+    expect(permissions(background)).toEqual(expect.arrayContaining([
+      'allow-deepseek-web-ensure',
+      'allow-deepseek-web-status',
+      'allow-deepseek-web-history',
+    ]))
+  })
+
+  it('keeps autostart changes off the settings renderer thread and migrates old installs', async () => {
+    const [lib, settings] = await Promise.all([
+      readNative('src/lib.rs'),
+      readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8'),
+    ])
+    expect(lib).toMatch(/async\s+fn\s+set_autostart[\s\S]*?spawn_blocking\(move \|\| set_autostart_blocking\(enabled\)\)/)
+    expect(lib).toContain('migrate_legacy_autostart')
+    expect(settings).toContain("nativeRuntime.autostartStatus()")
+    expect(settings).toContain('autostartOperationRef')
+    expect(settings).toContain('autostartBusy')
+  })
+
   it('uses Rust as the only settings-to-background event router', async () => {
     const [settings, lib] = await Promise.all([
       readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8'),
@@ -99,7 +144,7 @@ describe('native chat boundary', () => {
     const lib = await readNative('src/lib.rs')
 
     for (const command of [
-      'set_lock_screen_enabled', 'get_lock_screen_diagnostics', 'set_autostart',
+      'set_lock_screen_enabled', 'get_lock_screen_diagnostics', 'set_autostart', 'autostart_status',
       'translucent_tb_status', 'launch_translucent_tb', 'open_translucent_tb_install',
       'start_settings_drag', 'hide_settings_window',
     ]) {

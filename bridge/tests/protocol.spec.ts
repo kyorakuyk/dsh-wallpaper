@@ -52,6 +52,21 @@ describe('wallpaper bridge protocol', () => {
     ])
   })
 
+  it('maps ask_user_question tool calls into a desktop question prompt', () => {
+    const session = Session.create(SessionId('question-session'))
+    const event = session.append('tool/call', {
+      turn: 1,
+      step: 1,
+      callId: 'call-question' as never,
+      name: 'ask_user_question',
+      arguments: JSON.stringify({ questions: [{ id: 'choice', question: '继续吗？', options: [{ label: '继续' }] }] }),
+    })
+    expect(mapSessionEvent(event, 'question-session')).toEqual([
+      { type: 'status', activity: 'tool' },
+      { type: 'question-required', sessionId: 'question-session', questions: [{ id: 'choice', question: '继续吗？', options: [{ label: '继续' }] }] },
+    ])
+  })
+
   it('never exposes plugin-injected runtime context as a user chat message', () => {
     const session = Session.create(SessionId('bridge-context-filter'))
     const injected = createUserMessage({

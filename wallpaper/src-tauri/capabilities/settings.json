@@ -13,6 +13,7 @@
     "allow-clear-stale-lock-screen-backup",
     "allow-get-lock-screen-diagnostics",
     "allow-set-autostart",
+    "allow-autostart-status",
     "allow-scan-dsh-paths",
     "allow-launch-dsh",
     "allow-managed-dsh-status",

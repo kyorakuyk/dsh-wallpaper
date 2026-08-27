@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { API_PREFIX } from '../src/protocol.ts'
-import { apply, tokenFileForRoot, windowsTokenAclCommands, windowsTokenDirectoryAclCommands } from '../src/index.ts'
+import { apply, desktopEntryPrompt, tokenFileForRoot, windowsTokenAclCommands, windowsTokenDirectoryAclCommands } from '../src/index.ts'
 
 interface CapturedResponse {
   status: number
@@ -200,6 +200,14 @@ async function call(
 }
 
 describe('wallpaper bridge HTTP routes', () => {
+  it('describes the desktop entry and its default capability boundary to DSH', () => {
+    const prompt = desktopEntryPrompt('C:\\workspace\\dsh-wallpaper-desktop', '桌面会话', 'workspace-write')
+    expect(prompt).toContain('dsh-wallpaper desktop interaction entry')
+    expect(prompt).toContain('桌面会话')
+    expect(prompt).toContain('workspace-write')
+    expect(prompt).toContain('not the full Harness Web UI')
+  })
+
   it('declares both agent lifecycle and web-server dependencies for HTTP routes', async () => {
     const harness = await createHarness()
     expect(harness.injectedDependencies).toEqual(['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry', 'permissionPresets', 'commands'])
@@ -252,7 +260,7 @@ describe('wallpaper bridge HTTP routes', () => {
     const status = await call(statusRoute, request('GET', `${API_PREFIX}/status`))
     expect(status.status).toBe(200)
     expect(JSON.parse(status.body)).toMatchObject({
-      bridgeVersion: '1.0.0',
+      bridgeVersion: '1.1.0',
       protocolVersion: 1,
       dsh: 'online',
       authentication: 'ready',

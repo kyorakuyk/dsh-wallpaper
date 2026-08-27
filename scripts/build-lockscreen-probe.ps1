@@ -23,7 +23,7 @@ $signTool = SdkTool 'SignTool.exe'
 if (-not $makeAppx -or -not $signTool) { throw '需要安装 Windows SDK（MakeAppx.exe 与 SignTool.exe）。' }
 
 Push-Location $tauriRoot
-try { cargo build --release --locked --bin lockscreen_probe; if ($LASTEXITCODE) { throw '诊断程序编译失败。' } }
+try { cargo build --release --locked --features lockscreen-probe --bin lockscreen_probe; if ($LASTEXITCODE) { throw '诊断程序编译失败。' } }
 finally { Pop-Location }
 
 New-Item -ItemType Directory -Path (Join-Path $layout 'Assets') -Force | Out-Null

@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest'
-import { acceptsScopedChatEvent, isCurrentAdapter } from '../src/chat/nativeAdapter.ts'
+import { describe, expect, it, vi } from 'vitest'
+import { acceptsScopedChatEvent, isCurrentAdapter, NativeChatAdapter } from '../src/chat/nativeAdapter.ts'
 import type { ScopedChatEvent } from '../src/domain/types.ts'
+import { nativeRuntime } from '../src/native/runtime.ts'
 
 const apiEvent: ScopedChatEvent = {
   type: 'delta',
@@ -40,5 +41,44 @@ describe('native chat event isolation', () => {
     expect(isCurrentAdapter(current, current, false)).toBe(true)
     expect(isCurrentAdapter(current, previous, false)).toBe(false)
     expect(isCurrentAdapter(current, current, true)).toBe(false)
+  })
+
+  it('reconciles a durable second turn when its live SSE events were missed', async () => {
+    vi.useFakeTimers()
+    const originalSendChat = nativeRuntime.sendChat
+    const originalHistory = nativeRuntime.harnessHistory
+    const initial = [
+      { id: 'u1', role: 'user' as const, content: '第一轮', createdAt: 1 },
+      { id: 'a1', role: 'assistant' as const, content: '第一轮答复', createdAt: 2 },
+    ]
+    const completed = [
+      ...initial,
+      { id: 'u2', role: 'user' as const, content: '第二轮', createdAt: 3 },
+      { id: 'a2', role: 'assistant' as const, content: '第二轮答复', createdAt: 4 },
+    ]
+    const history = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValue(completed)
+    nativeRuntime.sendChat = vi.fn(async () => 'harness-session')
+    nativeRuntime.harnessHistory = history
+    try {
+      const adapter = new NativeChatAdapter('harness')
+      const events: Array<{ type: string; role?: string; content?: string; activity?: string }> = []
+      adapter.subscribe((event) => events.push(event as typeof events[number]))
+      await adapter.history()
+      await adapter.send('第二轮')
+      await vi.advanceTimersByTimeAsync(750)
+      expect(history).toHaveBeenCalledTimes(2)
+      expect(events).toEqual(expect.arrayContaining([
+        { type: 'message', role: 'user', content: '第二轮' },
+        { type: 'message', role: 'assistant', content: '第二轮答复' },
+        { type: 'status', activity: 'done' },
+      ]))
+      adapter.disconnect()
+    } finally {
+      nativeRuntime.sendChat = originalSendChat
+      nativeRuntime.harnessHistory = originalHistory
+      vi.useRealTimers()
+    }
   })
 })

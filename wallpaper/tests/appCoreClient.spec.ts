@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { PREVIEW_APP_SNAPSHOT } from '../src/runtime/appSnapshot.ts'
+import { PREVIEW_APP_SNAPSHOT, shouldApplyAppSnapshot } from '../src/runtime/appSnapshot.ts'
 
 describe('app snapshot contract', () => {
   it('keeps transient visibility separate from the user preference', () => {
@@ -25,5 +25,10 @@ describe('app snapshot contract', () => {
     expect(locked.privacyScreen).toBe(true)
     expect(locked.activity).toBe('idle')
   })
-})
 
+  it('drops late native snapshots so done cannot regress to sending', () => {
+    expect(shouldApplyAppSnapshot(8, 7)).toBe(false)
+    expect(shouldApplyAppSnapshot(8, 8)).toBe(true)
+    expect(shouldApplyAppSnapshot(8, 9)).toBe(true)
+  })
+})

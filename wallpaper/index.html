@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>鲸鱼娘交互壁纸</title>
+    <link rel="preload" as="image" href="/personas/wake-frames/variant-anima/sleep.png" fetchpriority="high" />
     <style>
       html, body, #root {
         margin: 0;
@@ -15,10 +16,26 @@
         font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
         user-select: none;
       }
+      #root { position: relative; z-index: 1; }
+      /* Native WorkerW may reveal the WebView before React commits. Keep the
+         exact lock-screen sleep artwork underneath it so unlock never exposes
+         the original Explorer desktop for a blank frame. */
+      #boot-surface {
+        position: fixed;
+        z-index: 0;
+        inset: 0;
+        background: #07132f url('/personas/wake-frames/variant-anima/sleep.png') center / cover no-repeat;
+        opacity: 1;
+        pointer-events: none;
+        transition: opacity 120ms ease;
+      }
+      #root:not(:empty) + #boot-surface { opacity: 0; }
+      html[data-surface='settings'] #boot-surface { display: none; }
     </style>
   </head>
   <body>
     <div id="root"></div>
+    <div id="boot-surface" aria-hidden="true"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -167,7 +167,7 @@ cargo test --manifest-path wallpaper/src-tauri/Cargo.toml
 
 - [x] M1-M5：骨架 / 状态机 / 待机气泡 / API 与 Harness 后端 / 设置面板
 - [x] M6：Tauri 壳（统一 WorkerW 宿主、设置窗口、托盘、自启）
-- [ ] DeepSeek 网页 DOM 消息桥接（当前实验入口只会用默认浏览器打开官方页面；本应用不读取 Cookie，不能使用或保存该页面的登录状态）
+- [🧪] DeepSeek 网页 DOM 消息桥接首版（应用内持久 WebView2；仅 DOM 交互，不读取或复制 Cookie；页面改版时安全降级；Win11 真机通讯验收待做）
 - [ ] 锁屏接管真机验收（已安装 MSIX + `Win+L`；现有实现不会在未封装开发版中接管系统锁屏）
 - [x] 苏醒帧动画序列（variant-anima，人设修正：有腿+尾巴装饰）
 - [x] 深海室内背景切换

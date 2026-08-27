@@ -24,6 +24,11 @@ export class NativeChatAdapter extends EventChatAdapter {
   private sessionId: string | undefined
   private requestId: string | undefined
   private readonly nativeOptions: NativeSendOptions
+  private readonly deliveredMessageCounts = new Map<string, number>()
+  private reconcileTimer: ReturnType<typeof setTimeout> | undefined
+  private reconcileInFlight = false
+  private reconcileAttempts = 0
+  private disposed = false
 
   constructor(mode: BackendMode, nativeOptions: NativeSendOptions = {}, resumeSessionId?: string) {
     super()
@@ -33,6 +38,7 @@ export class NativeChatAdapter extends EventChatAdapter {
   }
 
   async connect(): Promise<void> {
+    this.disposed = false
     const harnessConnectionId = this.mode === 'harness' ? crypto.randomUUID() : undefined
     if (harnessConnectionId) this.requestId = harnessConnectionId
     this.nativeUnsubscribe = await nativeRuntime.listenChat((event) => this.receiveNativeEvent(event))
@@ -40,9 +46,87 @@ export class NativeChatAdapter extends EventChatAdapter {
   }
 
   disconnect(): void {
+    this.disposed = true
+    this.stopHistoryReconciliation()
     this.nativeUnsubscribe?.()
     this.nativeUnsubscribe = undefined
     this.requestId = undefined
+  }
+
+  private messageKey(message: Pick<ChatMessage, 'role' | 'content'>): string {
+    return `${message.role}\u0000${message.content}`
+  }
+
+  private rememberMessage(message: Pick<ChatMessage, 'role' | 'content'>): void {
+    const key = this.messageKey(message)
+    this.deliveredMessageCounts.set(key, (this.deliveredMessageCounts.get(key) ?? 0) + 1)
+  }
+
+  private replaceKnownMessages(messages: ChatMessage[]): void {
+    this.deliveredMessageCounts.clear()
+    for (const message of messages) this.rememberMessage(message)
+  }
+
+  private stopHistoryReconciliation(): void {
+    if (this.reconcileTimer !== undefined) clearTimeout(this.reconcileTimer)
+    this.reconcileTimer = undefined
+    this.reconcileAttempts = 0
+  }
+
+  private scheduleHistoryReconciliation(): void {
+    if (this.disposed || this.mode !== 'harness' || this.reconcileTimer !== undefined) return
+    this.reconcileAttempts = 0
+    this.reconcileTimer = setTimeout(() => {
+      this.reconcileTimer = undefined
+      void this.reconcileHistory()
+    }, 700)
+  }
+
+  /**
+   * A DSH turn is durable before it is necessarily delivered to every SSE
+   * subscriber. Polling the bounded history endpoint for a short window gives
+   * the desktop a lossless fallback when a host closes/replaces its SSE socket
+   * between two turns. Normal live events are counted first, so this cannot
+   * duplicate messages that already reached the composer.
+   */
+  private async reconcileHistory(): Promise<void> {
+    if (this.disposed || this.mode !== 'harness' || this.reconcileInFlight || this.reconcileAttempts >= 30) return
+    this.reconcileInFlight = true
+    this.reconcileAttempts += 1
+    try {
+      const history = await nativeRuntime.harnessHistory()
+      if (this.disposed) return
+      const available = new Map<string, number>()
+      const missing: ChatMessage[] = []
+      for (const message of history) {
+        const key = this.messageKey(message)
+        const seen = available.get(key) ?? 0
+        available.set(key, seen + 1)
+        if (seen >= (this.deliveredMessageCounts.get(key) ?? 0)) missing.push(message)
+      }
+      for (const message of missing) {
+        this.rememberMessage(message)
+        this.emit({ type: 'message', role: message.role, content: message.content })
+      }
+      if (missing.some((message) => message.role === 'assistant')) {
+        this.emit({ type: 'status', activity: 'done' })
+        this.stopHistoryReconciliation()
+      } else if (this.reconcileAttempts < 30) {
+        this.reconcileTimer = setTimeout(() => {
+          this.reconcileTimer = undefined
+          void this.reconcileHistory()
+        }, 1000)
+      }
+    } catch {
+      if (this.reconcileAttempts < 30) {
+        this.reconcileTimer = setTimeout(() => {
+          this.reconcileTimer = undefined
+          void this.reconcileHistory()
+        }, 1000)
+      }
+    } finally {
+      this.reconcileInFlight = false
+    }
   }
 
   private receiveNativeEvent(event: ScopedChatEvent): void {
@@ -56,7 +140,18 @@ export class NativeChatAdapter extends EventChatAdapter {
     if (this.mode === 'harness' && !this.sessionId) this.sessionId = event.conversationId
     if (!acceptsScopedChatEvent(this.mode, this.sessionId, this.requestId, event)) return
     const { backend: _backend, conversationId: _conversationId, requestId: _requestId, ...chatEvent } = event
+    if (chatEvent.type === 'message') {
+      this.rememberMessage(chatEvent)
+      if (chatEvent.role === 'assistant') this.stopHistoryReconciliation()
+    }
+    if (chatEvent.type === 'error') this.stopHistoryReconciliation()
     this.emit(chatEvent)
+    // `assistant/message` is the durable terminal record. Some hosts omit the
+    // later `turn/end` event from a replaced SSE connection; make the desktop
+    // idle as soon as the final message itself arrives.
+    if (this.mode === 'harness' && chatEvent.type === 'message' && chatEvent.role === 'assistant') {
+      this.emit({ type: 'status', activity: 'done' })
+    }
   }
 
   async send(text: string, options?: SendOptions): Promise<void> {
@@ -67,6 +162,7 @@ export class NativeChatAdapter extends EventChatAdapter {
     if (this.mode !== 'harness') this.emit({ type: 'message', role: 'user', content: text })
     this.emit({ type: 'status', activity: 'sending' })
     try {
+      if (this.mode === 'harness') this.scheduleHistoryReconciliation()
       const returnedConversationId = await nativeRuntime.sendChat(this.mode, text, {
         ...this.nativeOptions,
         conversationId: requestedConversationId,
@@ -75,6 +171,7 @@ export class NativeChatAdapter extends EventChatAdapter {
       })
       if (returnedConversationId) this.sessionId = returnedConversationId
     } catch (error) {
+      this.stopHistoryReconciliation()
       this.emit({ type: 'error', code: 'NATIVE_SEND_FAILED', recoverable: true, message: String(error) })
       throw error
     }
@@ -83,9 +180,13 @@ export class NativeChatAdapter extends EventChatAdapter {
   async stop(): Promise<void> { await nativeRuntime.cancelChat(this.mode) }
 
   async history(): Promise<ChatMessage[]> {
-    if (this.mode === 'harness') return nativeRuntime.harnessHistory()
-    if (this.mode === 'deepseek-api' && this.sessionId) return nativeRuntime.apiHistory(this.sessionId)
-    return []
+    const messages = this.mode === 'harness'
+      ? await nativeRuntime.harnessHistory()
+      : this.mode === 'deepseek-api' && this.sessionId
+        ? await nativeRuntime.apiHistory(this.sessionId)
+        : []
+    this.replaceKnownMessages(messages)
+    return messages
   }
 
   conversationId(): string | undefined { return this.sessionId }

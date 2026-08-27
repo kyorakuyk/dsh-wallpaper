@@ -3,6 +3,7 @@
   "productName": "dsh-wallpaper",
   "version": "0.2.0",
   "identifier": "com.dsh.wallpaper",
+  "mainBinaryName": "dsh-wallpaper",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://127.0.0.1:5187",

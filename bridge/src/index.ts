@@ -12,7 +12,7 @@ import { promisify } from 'node:util'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { API_PREFIX, BRIDGE_VERSION, bearerAuthorized, contentText, errorReference, isSafeSessionId, isVisibleWallpaperMessage, mapSessionEvent, parseSessionRoute, type BridgeEvent } from './protocol.ts'
+import { API_PREFIX, BRIDGE_VERSION, bearerAuthorized, contentText, errorReference, isSafeSessionId, isVisibleWallpaperMessage, mapSessionEvent, parseSessionRoute, type BridgeEvent, type BridgeQuestion, type BridgeQuestionOption } from './protocol.ts'
 
 export const name = 'wallpaper-bridge'
 export const inject = ['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry', 'permissionPresets', 'commands']
@@ -35,6 +35,8 @@ export interface Config {
   workspacePath?: string
   /** Durable DSH workspace display title for wallpaper sessions. */
   workspaceTitle?: string
+  /** Permission preset for newly created desktop sessions. */
+  desktopPermission?: string
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -42,6 +44,7 @@ export const Config: Schema<Config> = Schema.object({
   cwd: Schema.string(),
   workspacePath: Schema.string(),
   workspaceTitle: Schema.string(),
+  desktopPermission: Schema.string(),
 }) as Schema<Config>
 
 interface LiveSession {
@@ -98,12 +101,16 @@ const MAX_REQUEST_BODY_BYTES = 1_048_576
 const MAX_SSE_EVENT_BYTES = 4 * 1024 * 1024
 const MAX_SSE_IDENTIFIER_BYTES = 200
 const MAX_SSE_SUMMARY_BYTES = 500
+const MAX_SSE_QUESTION_COUNT = 8
+const MAX_SSE_QUESTION_OPTIONS = 12
 const MAX_SSE_TOKEN_COUNT = 1_000_000_000_000
 const MAX_SSE_COST = 1_000_000
 const MIN_TOKEN_LENGTH = 32
 const execFileAsync = promisify(execFile)
 const TOKEN_DIRECTORY_NAME = 'wallpaper'
 const TOKEN_FILE_NAME = 'bridge-token'
+const DEFAULT_DESKTOP_PERMISSION_PRESET = 'workspace-write'
+const DESKTOP_ENTRY_CONTEXT_NAME = 'wallpaper:desktop-entry'
 
 class RequestBodyError extends Error {
   constructor(readonly status: 400 | 413, readonly code: 'invalid-request' | 'request-too-large') {
@@ -139,6 +146,37 @@ function desktopWorkspacePath(config: Config): string {
   return resolve(config.workspacePath?.trim() || join(configuredTokenRoot(config), 'workspace', 'dsh-wallpaper-desktop'))
 }
 
+export function desktopEntryPrompt(cwd: string, workspaceTitle: string, permission: string): string {
+  return [
+    'This session is being accessed through the dsh-wallpaper desktop interaction entry, not the full Harness Web UI.',
+    `Desktop workspace: ${workspaceTitle}.`,
+    `Workspace root: ${cwd}. Treat this directory as the default and intended file boundary.`,
+    `Active permission preset: ${permission}. The native DSH permission service remains authoritative; do not imply access beyond it.`,
+    'For desktop replies, be concise and action-oriented. If a task needs a tool approval or a richer Harness control surface, ask the user to open Harness rather than pretending the wallpaper can approve it.',
+  ].join('\n')
+}
+
+function desktopPermission(config: Config): string {
+  return config.desktopPermission?.trim() || DEFAULT_DESKTOP_PERMISSION_PRESET
+}
+
+function desktopAgentSetup(
+  host: { agentPresets: AgentPresets },
+  preset: string,
+  cwd: string,
+  workspaceTitle: string,
+  permission: string,
+): (agentContext: Context) => Promise<void> {
+  return async (agentContext) => {
+    await host.agentPresets.mount(agentContext, preset)
+    agentContext.systemPrompt.context({
+      name: DESKTOP_ENTRY_CONTEXT_NAME,
+      order: -90,
+      text: desktopEntryPrompt(cwd, workspaceTitle, permission),
+    })
+  }
+}
+
 function localDailyWallpaperSessionId(now: Date = new Date()): string {
   const date = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-')
   return `wallpaper-${date}`
@@ -146,11 +184,6 @@ function localDailyWallpaperSessionId(now: Date = new Date()): string {
 
 function recoveredDailyWallpaperSessionId(sessionId: string): string {
   return `${sessionId}-recovered`
-}
-
-function isCorruptSessionResumeError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-  return /corrupt session log|seq gap|committed region/i.test(message)
 }
 
 async function ensureDesktopWorkspace(registry: WorkspaceRegistry, config: Config): Promise<DesktopWorkspace> {
@@ -456,6 +489,34 @@ function serializeSseEvent(event: BridgeEvent): string | undefined {
       }
       break
     }
+    case 'question-required': {
+      const sessionId = safeSseSessionId(event.sessionId)
+      if (sessionId === undefined || event.questions.length === 0 || event.questions.length > MAX_SSE_QUESTION_COUNT) return undefined
+      const questions: BridgeQuestion[] = []
+      for (const question of event.questions) {
+        const id = boundedSseText(question.id, MAX_SSE_IDENTIFIER_BYTES)
+        const text = boundedSseText(question.question, MAX_SSE_SUMMARY_BYTES)
+        if (id === undefined || text === undefined) return undefined
+        const options = question.options === undefined ? undefined : question.options.slice(0, MAX_SSE_QUESTION_OPTIONS).flatMap((option): BridgeQuestionOption[] => {
+          const label = boundedSseText(option.label, MAX_SSE_SUMMARY_BYTES)
+          if (label === undefined) return []
+          const description = option.description === undefined ? undefined : boundedSseText(option.description, MAX_SSE_SUMMARY_BYTES)
+          return [{ label, ...(description === undefined ? {} : { description }) }]
+        })
+        const detail = question.detail === undefined ? undefined : boundedSseText(question.detail, MAX_SSE_SUMMARY_BYTES)
+        const header = question.header === undefined ? undefined : boundedSseText(question.header, MAX_SSE_IDENTIFIER_BYTES)
+        questions.push({
+          id,
+          question: text,
+          ...(detail === undefined ? {} : { detail }),
+          ...(header === undefined ? {} : { header }),
+          ...(options?.length ? { options } : {}),
+          ...(question.multiSelect === undefined ? {} : { multiSelect: question.multiSelect }),
+        })
+      }
+      safe = { type: 'question-required', sessionId, questions }
+      break
+    }
     case 'approval-required': {
       const sessionId = safeSseSessionId(event.sessionId)
       const summary = boundedSseText(event.summary, MAX_SSE_SUMMARY_BYTES)
@@ -608,7 +669,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     // create a session with the same ID. Never relay its events to this
     // bridge's subscriber merely because the string happens to match.
     if (!entry || entry.handle.agent.session !== session) return
-    for (const mapped of mapSessionEvent(event)) publish(id, mapped)
+    for (const mapped of mapSessionEvent(event, id)) publish(id, mapped)
   })
 
   ctx.on('agent/error', ({ agent, error }) => {
@@ -799,9 +860,11 @@ export function apply(ctx: Context, config: Config = {}): void {
         const url = new URL(req.url ?? '/', 'http://127.0.0.1')
         const route = parseSessionRoute(url.pathname)
         if (!route) return json(res, 404, { error: 'not-found' })
+        let stage = 'route'
         try {
           if (route.kind === 'collection') {
             if (req.method !== 'POST') return json(res, 405, { error: 'method-not-allowed' })
+            stage = 'request'
             const body = await readJson(req)
             const requested = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
             const requestedResume = typeof body.resumeSessionId === 'string' ? body.resumeSessionId.trim() : ''
@@ -812,6 +875,7 @@ export function apply(ctx: Context, config: Config = {}): void {
                 config,
               )
               : undefined
+            stage = 'session-identity'
             const dailyId = localDailyWallpaperSessionId()
             const recoveredDailyId = recoveredDailyWallpaperSessionId(dailyId)
             const recoveredDailyExists = automaticDailySession
@@ -832,7 +896,11 @@ export function apply(ctx: Context, config: Config = {}): void {
             // a session start and only fail later when `{{model}}` is rendered
             // in the deployment persona. Read the host-owned selection here;
             // request values remain an explicit override for future clients.
-            const host = wctx as unknown as { agentDefaultModel: DefaultModelSelection; agentPresets: AgentPresets }
+            const host = wctx as unknown as {
+              agentDefaultModel: DefaultModelSelection
+              agentPresets: AgentPresets
+              permissionPresets: PermissionPresets
+            }
             const defaults = host
               .agentDefaultModel.currentSelection()
             const preset = typeof body.agentPreset === 'string' && body.agentPreset.trim()
@@ -842,6 +910,10 @@ export function apply(ctx: Context, config: Config = {}): void {
             const selectedPreset = availablePresets.find((candidate) => candidate.id === preset)
             if (!selectedPreset) return json(res, 400, { error: 'unknown-agent-preset' })
             if (selectedPreset.broken) return json(res, 409, { error: 'agent-preset-unavailable' })
+            const permission = desktopPermission(config)
+            if (!host.permissionPresets.names.includes(permission)) {
+              return json(res, 409, { error: 'desktop-permission-unavailable', permission })
+            }
             const agentOptions = {
               provider: provider ?? defaults.provider,
               model: model ?? defaults.model,
@@ -855,6 +927,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             // when the operator did not configure a narrower bridge cwd.
             // `process.cwd()` is the DSH launch directory, never HTTP input.
             const cwd = workspace?.path || config.cwd?.trim() || process.cwd()
+            const workspaceTitle = workspace?.title || desktopWorkspaceTitle(config)
             let pending = creating.get(id)
             const createdByThisRequest = pending === undefined
             if (!pending) {
@@ -864,32 +937,51 @@ export function apply(ctx: Context, config: Config = {}): void {
                 let handle
                 if (resume) {
                   try {
+                    stage = 'resume'
                     handle = await wctx.agents.resume({
                       resumeSessionId: SessionId(id),
                       agentOptions,
-                      setup: (agentContext) => host.agentPresets.mount(agentContext, preset).then(() => undefined),
+                      setup: desktopAgentSetup(host, preset, cwd, workspaceTitle, permission),
                     })
                   } catch (error) {
-                    if (!automaticDailySession || !isCorruptSessionResumeError(error)) throw error
-                    // Preserve the corrupt log for diagnosis. Remove only its
-                    // workspace pointer and create a deterministic replacement
-                    // so the next request on the same day resumes cleanly.
+                    if (!automaticDailySession) throw error
+                    // The daily wallpaper session is a disposable recovery
+                    // boundary. DSH can wrap persistence, projection, or
+                    // composition failures so the corruption marker is only
+                    // present in a nested cause (and older builds may omit it
+                    // altogether). Preserve the old log for diagnosis, remove
+                    // only its workspace pointer, and create a deterministic
+                    // replacement so the desktop entry remains usable.
+                    void error
                     await workspace?.detachSession(SessionId(id))
                     effectiveId = recoveredDailyWallpaperSessionId(dailyId)
                     handle = await wctx.agents.create({
                       sessionId: SessionId(effectiveId),
                       meta: { cwd, agentPreset: preset },
                       agentOptions,
-                      setup: (agentContext) => host.agentPresets.mount(agentContext, preset).then(() => undefined),
+                      setup: desktopAgentSetup(host, preset, cwd, workspaceTitle, permission),
                     })
                   }
                 } else {
+                  stage = 'create'
                   handle = await wctx.agents.create({
                     sessionId: SessionId(effectiveId),
                     meta: { cwd, agentPreset: preset },
                     agentOptions,
-                    setup: (agentContext) => host.agentPresets.mount(agentContext, preset).then(() => undefined),
+                    setup: desktopAgentSetup(host, preset, cwd, workspaceTitle, permission),
                   })
+                }
+                // New desktop sessions start with the narrow workspace-write
+                // boundary. Resumed sessions keep the user's explicit DSH
+                // permission choice instead of silently overriding it.
+                if (!resume || effectiveId !== id) {
+                  stage = 'permission'
+                  try {
+                    host.permissionPresets.set(handle.agent.session, permission)
+                  } catch (error) {
+                    await handle.dispose().catch(() => undefined)
+                    throw error
+                  }
                 }
                 // Plugin teardown may have started while DSH created the
                 // agent. Dispose it rather than leaving a live handle that no
@@ -990,7 +1082,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           if (error instanceof SyntaxError || error instanceof RangeError) return malformed(res, error, wctx.logger)
           const reference = errorReference(error)
           wctx.logger.warn(`wallpaper bridge request failed (${reference})`)
-          return json(res, 500, { error: 'bridge-error', reference })
+          return json(res, 500, { error: 'bridge-error', reference, stage })
         }
       },
     })

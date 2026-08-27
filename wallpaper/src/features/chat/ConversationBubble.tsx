@@ -4,6 +4,9 @@ import { Button, Glass, Icon } from '../../ui/primitives/index.ts'
 import { BACKEND_PRESENTATION, composerPlaceholder, formatCost, isBusyActivity, sessionCostSummary, turnUsageSummary } from './conversationViewModel.ts'
 import './ConversationBubble.css'
 
+/** Optional speaker labels for themes that want explicit attribution. */
+export type ConversationSpeakerLabels = Partial<Record<ChatMessage['role'], string>>
+
 export interface ConversationBubbleProps {
   backend: BackendMode
   activity: Activity
@@ -11,6 +14,8 @@ export interface ConversationBubbleProps {
   messages: ChatMessage[]
   streamingText: string
   historyExpanded: boolean
+  /** Hidden by default; callers may opt into custom role names. */
+  speakerLabels?: ConversationSpeakerLabels
   usage?: TokenUsage
   disabled?: boolean
   collapsed?: boolean
@@ -44,6 +49,15 @@ export interface ConversationBubbleProps {
   onClose: () => void
 }
 
+export function insertNewlineAtSelection(value: string, start: number, end: number): { value: string; caret: number } {
+  const safeStart = Math.max(0, Math.min(start, value.length))
+  const safeEnd = Math.max(safeStart, Math.min(end, value.length))
+  return {
+    value: `${value.slice(0, safeStart)}\n${value.slice(safeEnd)}`,
+    caret: safeStart + 1,
+  }
+}
+
 function UsageLine({ usage }: { usage?: TokenUsage }) {
   if (!usage) return null
   return <small className="dsh-chat__message-usage">
@@ -59,6 +73,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const [focused, setFocused] = useState(false)
   const [commandMenuOpen, setCommandMenuOpen] = useState(false)
   const historyRef = useRef<HTMLDivElement>(null)
+  const historyAutoScrollRef = useRef(true)
   const busy = isBusyActivity(props.activity)
   const backend = BACKEND_PRESENTATION[props.backend]
   const totalCost = sessionCostSummary(props.messages)
@@ -81,9 +96,34 @@ export function ConversationBubble(props: ConversationBubbleProps) {
     setDraft('')
   }
 
+  const insertNewline = (textarea: HTMLTextAreaElement) => {
+    const { value: nextDraft, caret } = insertNewlineAtSelection(
+      draft,
+      textarea.selectionStart ?? draft.length,
+      textarea.selectionEnd ?? textarea.selectionStart ?? draft.length,
+    )
+    setDraft(nextDraft)
+    // React updates the controlled textarea on the next commit. Restore the
+    // caret after that commit so Ctrl+Enter behaves like a normal newline even
+    // on hosts that reserve the browser's default shortcut for submit.
+    requestAnimationFrame(() => {
+      textarea.selectionStart = caret
+      textarea.selectionEnd = caret
+    })
+  }
+
   useEffect(() => {
-    if (!props.historyExpanded) return
-    historyRef.current?.scrollTo({ top: historyRef.current.scrollHeight, behavior: 'smooth' })
+    if (!props.historyExpanded) {
+      historyAutoScrollRef.current = true
+      return
+    }
+    if (historyAutoScrollRef.current) {
+      // Streaming deltas arrive frequently. Smooth-scrolling on every delta
+      // keeps the browser's scroll animation perpetually in flight and makes
+      // wheel input appear ignored. Follow the bottom directly only while the
+      // user has not deliberately moved away from it.
+      historyRef.current?.scrollTo({ top: historyRef.current.scrollHeight, behavior: 'auto' })
+    }
   }, [props.historyExpanded, props.messages.length, props.streamingText])
 
   if (props.collapsed) return <button
@@ -107,14 +147,26 @@ export function ConversationBubble(props: ConversationBubbleProps) {
     aria-label="AI 对话"
   >
     {showHistory && <div className="dsh-chat__history-wrap">
-      <div className="dsh-chat__history" ref={historyRef} data-interaction-region="chat-history" aria-label="当前会话记录" aria-live="polite" onWheel={(event) => event.stopPropagation()}>
+      <div
+        className="dsh-chat__history"
+        ref={historyRef}
+        data-interaction-region="chat-history"
+        aria-label="当前会话记录"
+        aria-live="polite"
+        onScroll={() => {
+          const element = historyRef.current
+          if (!element) return
+          historyAutoScrollRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 28
+        }}
+        onWheel={(event) => event.stopPropagation()}
+      >
         {props.messages.map((message, index) => <article key={message.id} className={`dsh-chat__message dsh-chat__message--${message.role}`} style={{ ['--message-index' as string]: String(Math.max(0, props.messages.length - index - 1)) }}>
-          <span className="dsh-chat__message-label">{message.role === 'user' ? '你' : '大肥鱼'}</span>
+          {props.speakerLabels?.[message.role]?.trim() && <span className="dsh-chat__message-label">{props.speakerLabels[message.role]}</span>}
           <p className="dsh-chat__message-body">{message.content}</p>
           <UsageLine usage={message.usage} />
         </article>)}
         {props.streamingText && <article className="dsh-chat__message dsh-chat__message--assistant">
-          <span className="dsh-chat__message-label">大肥鱼</span>
+          {props.speakerLabels?.assistant?.trim() && <span className="dsh-chat__message-label">{props.speakerLabels.assistant}</span>}
           <p className="dsh-chat__message-body">{props.streamingText}<span className="dsh-chat__caret" aria-hidden="true" /></p>
         </article>}
       </div>
@@ -188,8 +240,17 @@ export function ConversationBubble(props: ConversationBubbleProps) {
         <textarea
           className="dsh-chat__textarea"
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            const nextDraft = event.target.value
+            if (nextDraft && !draft && !props.historyExpanded) props.onToggleHistory()
+            setDraft(nextDraft)
+          }}
           onKeyDown={(event) => {
+            if (event.key === 'Enter' && event.ctrlKey && !event.altKey && !event.metaKey && !event.nativeEvent.isComposing) {
+              event.preventDefault()
+              insertNewline(event.currentTarget)
+              return
+            }
             if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey && !event.nativeEvent.isComposing) {
               event.preventDefault()
               submit()

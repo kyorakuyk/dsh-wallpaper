@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-deepseek-web-history"
+description = "Enables the deepseek_web_history command without any pre-configured scope."
+commands.allow = ["deepseek_web_history"]
+
+[[permission]]
+identifier = "deny-deepseek-web-history"
+description = "Denies the deepseek_web_history command without any pre-configured scope."
+commands.deny = ["deepseek_web_history"]

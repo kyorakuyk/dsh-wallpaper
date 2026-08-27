@@ -2,6 +2,7 @@ mod api_persistence;
 mod app_core;
 mod appearance;
 mod chat;
+mod deepseek_web;
 mod lock_screen_backup;
 mod windows_integration;
 
@@ -14,7 +15,10 @@ use tauri::{Emitter, EventTarget, Manager};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DshPathCandidate { root_path: String, source: String }
+struct DshPathCandidate {
+    root_path: String,
+    source: String,
+}
 
 /// A DSH process is only "managed" when this instance spawned it and still
 /// owns its `Child` handle. Port 3080 alone never proves ownership.
@@ -54,29 +58,70 @@ fn scan_dsh_paths(caller: tauri::WebviewWindow) -> Result<Vec<DshPathCandidate>,
     let mut candidates = Vec::new();
     let mut push = |path: std::path::PathBuf, source: &str| {
         if path.join("package.json").is_file() && path.join("apps").join("cli").is_dir() {
-            candidates.push(DshPathCandidate { root_path: path.to_string_lossy().into_owned(), source: source.into() });
+            candidates.push(DshPathCandidate {
+                root_path: path.to_string_lossy().into_owned(),
+                source: source.into(),
+            });
         }
     };
-    if let Ok(current) = std::env::current_dir() { push(current, "当前目录"); }
-    if let Ok(home) = std::env::var("USERPROFILE") { push(std::path::PathBuf::from(home).join("source").join("deepseek-harness"), "常见项目目录"); }
-    push(std::path::PathBuf::from(r"C:\DeepSeekHarness\deepseek-harness"), "常见项目目录");
+    if let Ok(current) = std::env::current_dir() {
+        push(current, "当前目录");
+    }
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        push(
+            std::path::PathBuf::from(home)
+                .join("source")
+                .join("deepseek-harness"),
+            "常见项目目录",
+        );
+    }
+    push(
+        std::path::PathBuf::from(r"C:\DeepSeekHarness\deepseek-harness"),
+        "常见项目目录",
+    );
     Ok(candidates)
 }
 
 #[tauri::command]
-fn launch_dsh(caller: tauri::WebviewWindow, state: tauri::State<'_, ManagedDshState>, root_path: String, profile: String, command: Option<String>) -> Result<u32, String> {
+fn launch_dsh(
+    caller: tauri::WebviewWindow,
+    state: tauri::State<'_, ManagedDshState>,
+    root_path: String,
+    profile: String,
+    command: Option<String>,
+) -> Result<u32, String> {
     // The settings center configures this launch target, while the visible
     // route switch in the WorkerW wallpaper is the user-facing "start DSH"
     // action. Both declared surfaces may request a launch; process ownership
     // and all executable/profile validation remain native below.
     require_wallpaper_surface(&caller)?;
-    let root = std::fs::canonicalize(root_path.trim()).map_err(|_| "DSH 根目录不存在或不可访问".to_string())?;
-    if !root.join("package.json").is_file() || !root.join("apps").join("cli").is_dir() { return Err("选择的目录不是可识别的 DSH 项目根目录".into()); }
+    let root = std::fs::canonicalize(root_path.trim())
+        .map_err(|_| "DSH 根目录不存在或不可访问".to_string())?;
+    if !root.join("package.json").is_file() || !root.join("apps").join("cli").is_dir() {
+        return Err("选择的目录不是可识别的 DSH 项目根目录".into());
+    }
     let profile = profile.trim();
-    if profile.is_empty() || !profile.chars().all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_')) { return Err("DSH profile 只能包含字母、数字、连字符或下划线".into()); }
-    let launcher = command.as_deref().map(str::trim).filter(|value| !value.is_empty()).unwrap_or("pnpm.cmd");
-    if (launcher.contains('/') || launcher.contains('\\')) && !std::path::Path::new(launcher).is_file() { return Err("自定义 DSH 启动器不存在".into()); }
-    let mut managed = state.0.lock().map_err(|_| "DSH 进程状态不可用".to_string())?;
+    if profile.is_empty()
+        || !profile
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_'))
+    {
+        return Err("DSH profile 只能包含字母、数字、连字符或下划线".into());
+    }
+    let launcher = command
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("pnpm.cmd");
+    if (launcher.contains('/') || launcher.contains('\\'))
+        && !std::path::Path::new(launcher).is_file()
+    {
+        return Err("自定义 DSH 启动器不存在".into());
+    }
+    let mut managed = state
+        .0
+        .lock()
+        .map_err(|_| "DSH 进程状态不可用".to_string())?;
     if let Some(existing) = managed.as_mut() {
         match existing.child.try_wait() {
             Ok(None) => return Ok(existing.child.id()),
@@ -84,7 +129,9 @@ fn launch_dsh(caller: tauri::WebviewWindow, state: tauri::State<'_, ManagedDshSt
         }
     }
     let mut launch = std::process::Command::new(launcher);
-    launch.args(["dsh", "--profile", profile]).current_dir(&root);
+    launch
+        .args(["dsh", "--profile", profile])
+        .current_dir(&root);
     // DSH is a resident background service. `pnpm.cmd` otherwise inherits a
     // new visible console from the desktop process, leaving a stray CMD
     // window beside the wallpaper. Keep the child hidden while preserving its
@@ -104,11 +151,23 @@ fn launch_dsh(caller: tauri::WebviewWindow, state: tauri::State<'_, ManagedDshSt
 }
 
 #[tauri::command]
-fn managed_dsh_status(caller: tauri::WebviewWindow, state: tauri::State<'_, ManagedDshState>) -> Result<ManagedDshStatus, String> {
+fn managed_dsh_status(
+    caller: tauri::WebviewWindow,
+    state: tauri::State<'_, ManagedDshState>,
+) -> Result<ManagedDshStatus, String> {
     require_wallpaper_surface(&caller)?;
-    let mut managed = state.0.lock().map_err(|_| "DSH 进程状态不可用".to_string())?;
+    let mut managed = state
+        .0
+        .lock()
+        .map_err(|_| "DSH 进程状态不可用".to_string())?;
     let Some(process) = managed.as_mut() else {
-        return Ok(ManagedDshStatus { managed: false, running: false, pid: None, root_path: None, profile: None });
+        return Ok(ManagedDshStatus {
+            managed: false,
+            running: false,
+            pid: None,
+            root_path: None,
+            profile: None,
+        });
     };
     match process.child.try_wait() {
         Ok(None) => Ok(ManagedDshStatus {
@@ -120,16 +179,30 @@ fn managed_dsh_status(caller: tauri::WebviewWindow, state: tauri::State<'_, Mana
         }),
         Ok(Some(_)) | Err(_) => {
             *managed = None;
-            Ok(ManagedDshStatus { managed: false, running: false, pid: None, root_path: None, profile: None })
+            Ok(ManagedDshStatus {
+                managed: false,
+                running: false,
+                pid: None,
+                root_path: None,
+                profile: None,
+            })
         }
     }
 }
 
 #[tauri::command]
-fn stop_managed_dsh(caller: tauri::WebviewWindow, state: tauri::State<'_, ManagedDshState>) -> Result<(), String> {
+fn stop_managed_dsh(
+    caller: tauri::WebviewWindow,
+    state: tauri::State<'_, ManagedDshState>,
+) -> Result<(), String> {
     require_settings(&caller)?;
-    let mut managed = state.0.lock().map_err(|_| "DSH 进程状态不可用".to_string())?;
-    let Some(mut process) = managed.take() else { return Ok(()); };
+    let mut managed = state
+        .0
+        .lock()
+        .map_err(|_| "DSH 进程状态不可用".to_string())?;
+    let Some(mut process) = managed.take() else {
+        return Ok(());
+    };
     // Scope termination to the exact process spawned by this application;
     // never infer a target by probing a port or executable name.
     #[cfg(windows)]
@@ -139,7 +212,9 @@ fn stop_managed_dsh(caller: tauri::WebviewWindow, state: tauri::State<'_, Manage
             .output();
     }
     #[cfg(not(windows))]
-    { let _ = process.child.kill(); }
+    {
+        let _ = process.child.kill();
+    }
     let _ = process.child.wait();
     Ok(())
 }
@@ -166,10 +241,10 @@ fn require_settings(caller: &tauri::WebviewWindow) -> Result<(), String> {
     }
 }
 
-/// These two commands expose no conversation body or system-setting write:
+/// These commands expose no conversation body or system-setting write:
 /// the settings center needs a current runtime snapshot, and the wallpaper's
-/// experimental DeepSeek entry needs to launch one fixed public URL.  Keep
-/// even that small shared surface restricted to the two declared WebViews.
+/// DeepSeek entry needs to create/show one fixed, domain-restricted WebView.
+/// Keep the shared surface restricted to the two declared WebViews.
 fn require_wallpaper_surface(caller: &tauri::WebviewWindow) -> Result<(), String> {
     match caller.label() {
         BACKGROUND_WINDOW_LABEL | SETTINGS_WINDOW_LABEL => Ok(()),
@@ -416,17 +491,25 @@ fn get_lock_screen_diagnostics(
     windows_integration::lock_screen_diagnostics(&app)
 }
 
-#[tauri::command]
-fn set_autostart(caller: tauri::WebviewWindow, enabled: bool) -> Result<(), String> {
-    require_settings(&caller)?;
+fn set_autostart_blocking(enabled: bool) -> Result<windows_integration::AutostartStatus, String> {
     #[cfg(windows)]
     {
         use std::process::Command;
+        if windows_integration::set_startup_task(enabled)?.is_some() {
+            // A package StartupTask is the authoritative autostart path. Drop
+            // any legacy Run value left by an older build so the single-instance
+            // guard does not needlessly process a second launch attempt.
+            let _ = windows_integration::remove_legacy_run_entry();
+            return windows_integration::autostart_status();
+        }
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         // 注册表 Run 键：开机自启 dsh-wallpaper
         //  add:    reg add HKCU\...\Run /V dsh-wallpaper /D "<exe>" /F
         //  delete: reg delete HKCU\...\Run /V dsh-wallpaper /F
         let mut cmd = Command::new("reg");
+        // `reg.exe` is only a compatibility fallback. Keep it out of the
+        // user's desktop even when the host is a GUI-subsystem process.
+        std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x08000000);
         if enabled {
             cmd.args([
                 "add",
@@ -447,11 +530,32 @@ fn set_autostart(caller: tauri::WebviewWindow, enabled: bool) -> Result<(), Stri
             ]);
         }
         let status = cmd.status().map_err(|e| e.to_string())?;
-        if !status.success() {
+        if !status.success() && (enabled || windows_integration::legacy_run_entry_present()?) {
             return Err("更新当前用户开机自启失败".into());
         }
     }
-    Ok(())
+    windows_integration::autostart_status()
+}
+
+#[tauri::command]
+async fn set_autostart(
+    caller: tauri::WebviewWindow,
+    enabled: bool,
+) -> Result<windows_integration::AutostartStatus, String> {
+    require_settings(&caller)?;
+    tauri::async_runtime::spawn_blocking(move || set_autostart_blocking(enabled))
+        .await
+        .map_err(|error| format!("开机自启操作未完成：{error}"))?
+}
+
+#[tauri::command]
+async fn autostart_status(
+    caller: tauri::WebviewWindow,
+) -> Result<windows_integration::AutostartStatus, String> {
+    require_settings(&caller)?;
+    tauri::async_runtime::spawn_blocking(windows_integration::autostart_status)
+        .await
+        .map_err(|error| format!("读取开机自启状态未完成：{error}"))?
 }
 
 #[derive(serde::Serialize)]
@@ -725,18 +829,43 @@ mod api_credential_tests {
 }
 
 #[tauri::command]
-fn show_deepseek_login(caller: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
+async fn show_deepseek_login(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     require_wallpaper_surface(&caller)?;
-    // A remote WebView2 created inside the wallpaper process can block the Tao
-    // event loop while Chromium initializes or the page hangs. Keep third-party
-    // login isolated from the wallpaper host until the bridge owns a dedicated
-    // helper process.
-    let _ = app;
-    std::process::Command::new("explorer.exe")
-        .arg("https://chat.deepseek.com")
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    tauri::async_runtime::spawn_blocking(move || deepseek_web::show_login(&app))
+        .await
+        .map_err(|error| format!("DeepSeek 应用内页面启动未完成：{error}"))?
+}
+
+#[tauri::command]
+async fn deepseek_web_ensure(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    require_background(&caller)?;
+    tauri::async_runtime::spawn_blocking(move || deepseek_web::ensure(&app))
+        .await
+        .map_err(|error| format!("DeepSeek 网页预热未完成：{error}"))?
+}
+
+#[tauri::command]
+async fn deepseek_web_status(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<deepseek_web::WebStatus, String> {
+    require_background(&caller)?;
+    deepseek_web::status(&app).await
+}
+
+#[tauri::command]
+async fn deepseek_web_history(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<deepseek_web::WebHistory, String> {
+    require_background(&caller)?;
+    deepseek_web::history(&app).await
 }
 
 #[tauri::command]
@@ -776,7 +905,9 @@ fn update_interaction_regions(
 }
 
 #[tauri::command]
-fn desktop_layout_metrics(caller: tauri::WebviewWindow) -> Result<windows_integration::DesktopLayoutMetrics, String> {
+fn desktop_layout_metrics(
+    caller: tauri::WebviewWindow,
+) -> Result<windows_integration::DesktopLayoutMetrics, String> {
     require_background(&caller)?;
     Ok(windows_integration::desktop_layout_metrics(&caller))
 }
@@ -786,6 +917,7 @@ async fn send_chat(
     caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
     state: tauri::State<'_, chat::ChatState>,
+    web_state: tauri::State<'_, deepseek_web::DeepSeekWebState>,
     mode: String,
     text: String,
     conversation_id: Option<String>,
@@ -797,6 +929,11 @@ async fn send_chat(
 ) -> Result<Option<String>, String> {
     require_background(&caller)?;
     match mode.as_str() {
+        "deepseek-web" => {
+            deepseek_web::send(app, web_state.inner(), text, conversation_id, request_id)
+                .await
+                .map(Some)
+        }
         "deepseek-api" => chat::send_api(
             app,
             state,
@@ -828,11 +965,15 @@ fn api_history(
 #[tauri::command]
 async fn cancel_chat(
     caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
     state: tauri::State<'_, chat::ChatState>,
+    web_state: tauri::State<'_, deepseek_web::DeepSeekWebState>,
     mode: String,
 ) -> Result<(), String> {
     require_background(&caller)?;
-    if mode == "harness" {
+    if mode == "deepseek-web" {
+        deepseek_web::cancel(&app, web_state.inner()).await
+    } else if mode == "harness" {
         chat::harness_cancel(state).await
     } else {
         chat::cancel_api(&state);
@@ -869,19 +1010,30 @@ async fn harness_presets(caller: tauri::WebviewWindow) -> Result<serde_json::Val
 }
 
 #[tauri::command]
-async fn harness_set_preset(caller: tauri::WebviewWindow, state: tauri::State<'_, chat::ChatState>, preset: String) -> Result<serde_json::Value, String> {
+async fn harness_set_preset(
+    caller: tauri::WebviewWindow,
+    state: tauri::State<'_, chat::ChatState>,
+    preset: String,
+) -> Result<serde_json::Value, String> {
     require_background(&caller)?;
     chat::harness_set_preset(state, preset).await
 }
 
 #[tauri::command]
-async fn harness_controls(caller: tauri::WebviewWindow, state: tauri::State<'_, chat::ChatState>) -> Result<serde_json::Value, String> {
+async fn harness_controls(
+    caller: tauri::WebviewWindow,
+    state: tauri::State<'_, chat::ChatState>,
+) -> Result<serde_json::Value, String> {
     require_background(&caller)?;
     chat::harness_controls(state).await
 }
 
 #[tauri::command]
-async fn harness_set_permission(caller: tauri::WebviewWindow, state: tauri::State<'_, chat::ChatState>, permission: String) -> Result<serde_json::Value, String> {
+async fn harness_set_permission(
+    caller: tauri::WebviewWindow,
+    state: tauri::State<'_, chat::ChatState>,
+    permission: String,
+) -> Result<serde_json::Value, String> {
     require_background(&caller)?;
     chat::harness_set_permission(state, permission).await
 }
@@ -1238,6 +1390,7 @@ pub fn run() {
             appearance_paths,
         ))
         .manage(chat::ChatState::default())
+        .manage(deepseek_web::DeepSeekWebState::default())
         .manage(ManagedDshState::default())
         .invoke_handler(tauri::generate_handler![
             get_app_snapshot,
@@ -1250,6 +1403,7 @@ pub fn run() {
             clear_stale_lock_screen_backup,
             get_lock_screen_diagnostics,
             set_autostart,
+            autostart_status,
             scan_dsh_paths,
             launch_dsh,
             managed_dsh_status,
@@ -1260,6 +1414,9 @@ pub fn run() {
             open_windows_lock_screen_settings,
             prompt_for_api_key,
             show_deepseek_login,
+            deepseek_web_ensure,
+            deepseek_web_status,
+            deepseek_web_history,
             open_settings_window,
             start_settings_drag,
             hide_settings_window,
@@ -1303,6 +1460,21 @@ pub fn run() {
             windows_integration::start_foreground_monitor(app.handle().clone());
             windows_integration::start_desktop_workspace_monitor(app.handle().clone());
             start_harness_monitor(app.handle().clone());
+            // Keep an enabled pre-StartupTask installation running across a
+            // package update. The migration is best-effort and leaves the
+            // legacy Run entry intact if Windows asks for user approval or
+            // denies the new task.
+            tauri::async_runtime::spawn_blocking(|| {
+                match windows_integration::migrate_legacy_autostart() {
+                    Ok(Some(status)) => log::info!(
+                        "autostart migration check complete: source={}, enabled={}",
+                        status.source,
+                        status.enabled
+                    ),
+                    Ok(None) => {}
+                    Err(error) => log::warn!("autostart migration deferred: {error}"),
+                }
+            });
             let menu = MenuBuilder::new(app)
                 .text("show", "显示中央会话窗")
                 .text("hide", "隐藏中央会话窗")

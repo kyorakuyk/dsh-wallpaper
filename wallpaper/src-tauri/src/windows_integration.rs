@@ -10,11 +10,11 @@ use crate::app_core::{AppAction, AppCore, WallpaperHostMode, WallpaperHostStatus
 
 #[cfg(windows)]
 use crate::lock_screen_backup::{
-    discard_backup_after_failed_takeover, discard_stale_backup, ensure_backup_for_takeover, has_stale_backup,
-    inspect_backup, managed_image_is_active, managed_image_path, managed_image_path_from_file,
-    next_managed_image_file, remove_backup_after_verified_restore, restore_snapshot_path,
-    same_local_file_uri, LockScreenBackupLease, LockScreenBackupManifest, LockScreenBackupState,
-    LEGACY_MANAGED_IMAGE_FILE,
+    discard_backup_after_failed_takeover, discard_stale_backup, ensure_backup_for_takeover,
+    has_stale_backup, inspect_backup, managed_image_is_active, managed_image_path,
+    managed_image_path_from_file, next_managed_image_file, remove_backup_after_verified_restore,
+    restore_snapshot_path, same_local_file_uri, LockScreenBackupLease, LockScreenBackupManifest,
+    LockScreenBackupState, LEGACY_MANAGED_IMAGE_FILE,
 };
 
 #[cfg(windows)]
@@ -43,12 +43,14 @@ fn emit_to_background<S: serde::Serialize + Clone>(
 #[cfg(windows)]
 use windows::{
     core::{w, BOOL, HSTRING, PCWSTR, PWSTR},
+    ApplicationModel::{StartupTask, StartupTaskState},
     Storage::StorageFile,
     System::UserProfile::{LockScreen, UserProfilePersonalizationSettings},
     Win32::{
         Foundation::{
-            APPMODEL_ERROR_NO_PACKAGE, ERROR_INSUFFICIENT_BUFFER, HWND, LPARAM, LRESULT, POINT,
-            RECT, WAIT_ABANDONED, WAIT_OBJECT_0, WPARAM,
+            APPMODEL_ERROR_NO_PACKAGE, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER,
+            ERROR_MORE_DATA, ERROR_SUCCESS, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_ABANDONED,
+            WAIT_OBJECT_0, WPARAM,
         },
         Graphics::{
             Dwm::{
@@ -60,6 +62,10 @@ use windows::{
         Storage::Packaging::Appx::{GetCurrentPackageFullName, GetCurrentPackagePath},
         System::{
             Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED},
+            Registry::{
+                RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER,
+                KEY_READ, KEY_SET_VALUE,
+            },
             RemoteDesktop::{
                 WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
                 NOTIFY_FOR_THIS_SESSION,
@@ -70,14 +76,13 @@ use windows::{
             EnumWindows, FindWindowExW, FindWindowW, GetClassNameW, GetClientRect, GetCursorPos,
             GetDesktopWindow, GetForegroundWindow, GetParent, GetWindowLongPtrW, GetWindowRect,
             IsWindow, IsWindowVisible, SendMessageTimeoutW, SetParent, SetWindowLongPtrW,
-            SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, HTTRANSPARENT,
+            SetWindowPos, ShowWindow, WindowFromPoint, GWL_EXSTYLE, GWL_STYLE, HTTRANSPARENT,
             PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SEND_MESSAGE_TIMEOUT_FLAGS, SMTO_NORMAL,
             SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
             SW_HIDE, SW_SHOWNA, WM_ACTIVATE, WM_NCACTIVATE, WM_NCDESTROY, WM_NCHITTEST,
             WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WS_BORDER, WS_CAPTION, WS_CHILD, WS_DLGFRAME,
             WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE, WS_EX_TOOLWINDOW,
             WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
-            WindowFromPoint,
             WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
         },
         UI::{
@@ -205,30 +210,51 @@ pub struct DesktopLayoutMetrics {
 pub fn desktop_layout_metrics(window: &WebviewWindow) -> DesktopLayoutMetrics {
     #[cfg(windows)]
     {
-        let scale = window.scale_factor().unwrap_or(1.0).clamp(MIN_SCALE_FACTOR, MAX_SCALE_FACTOR);
+        let scale = window
+            .scale_factor()
+            .unwrap_or(1.0)
+            .clamp(MIN_SCALE_FACTOR, MAX_SCALE_FACTOR);
         let fallback = 48.0;
-        let Ok(raw) = window.hwnd() else { return DesktopLayoutMetrics { expanded_bottom_inset: fallback, taskbar_visible: false } };
+        let Ok(raw) = window.hwnd() else {
+            return DesktopLayoutMetrics {
+                expanded_bottom_inset: fallback,
+                taskbar_visible: false,
+            };
+        };
         let background = HWND(raw.0);
         let mut background_rect = RECT::default();
         let mut taskbar_rect = RECT::default();
-        let taskbar = unsafe { FindWindowW(windows::core::w!("Shell_TrayWnd"), PCWSTR::null()) }.ok();
+        let taskbar =
+            unsafe { FindWindowW(windows::core::w!("Shell_TrayWnd"), PCWSTR::null()) }.ok();
         let visible = taskbar.is_some_and(|taskbar| unsafe { IsWindowVisible(taskbar).as_bool() })
             && unsafe { GetWindowRect(background, &mut background_rect).is_ok() }
-            && taskbar.is_some_and(|taskbar| unsafe { GetWindowRect(taskbar, &mut taskbar_rect).is_ok() });
+            && taskbar.is_some_and(|taskbar| unsafe {
+                GetWindowRect(taskbar, &mut taskbar_rect).is_ok()
+            });
         if visible {
             let physical_height = (taskbar_rect.bottom - taskbar_rect.top).max(0);
-            let at_bottom = taskbar_rect.top >= background_rect.bottom.saturating_sub(physical_height + 2);
+            let at_bottom =
+                taskbar_rect.top >= background_rect.bottom.saturating_sub(physical_height + 2);
             let logical_height = physical_height as f64 / scale;
             if at_bottom && logical_height >= 12.0 {
-                return DesktopLayoutMetrics { expanded_bottom_inset: logical_height * 2.0, taskbar_visible: true };
+                return DesktopLayoutMetrics {
+                    expanded_bottom_inset: logical_height * 2.0,
+                    taskbar_visible: true,
+                };
             }
         }
-        DesktopLayoutMetrics { expanded_bottom_inset: fallback, taskbar_visible: false }
+        DesktopLayoutMetrics {
+            expanded_bottom_inset: fallback,
+            taskbar_visible: false,
+        }
     }
     #[cfg(not(windows))]
     {
         let _ = window;
-        DesktopLayoutMetrics { expanded_bottom_inset: 48.0, taskbar_visible: false }
+        DesktopLayoutMetrics {
+            expanded_bottom_inset: 48.0,
+            taskbar_visible: false,
+        }
     }
 }
 
@@ -1632,17 +1658,19 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
         // package-owned sleep asset.
         let path_string = HSTRING::from(bundled_sleep_image.to_string_lossy().as_ref());
         let file = match StorageFile::GetFileFromPathAsync(&path_string)
-            .map_err(|error| format!(
-                "Windows 无法读取准备好的锁屏图片（路径：{}；WinRT：{error}）。",
-                bundled_sleep_image.display()
-            ))
+            .map_err(|error| {
+                format!(
+                    "Windows 无法读取准备好的锁屏图片（路径：{}；WinRT：{error}）。",
+                    bundled_sleep_image.display()
+                )
+            })
             .and_then(|operation| {
-                operation
-                    .get()
-                    .map_err(|error| format!(
+                operation.get().map_err(|error| {
+                    format!(
                         "Windows 无法打开准备好的锁屏图片（路径：{}；WinRT：{error}）。",
                         bundled_sleep_image.display()
-                    ))
+                    )
+                })
             }) {
             Ok(file) => file,
             Err(error) => {
@@ -1694,22 +1722,22 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
         }
         let managed_path = managed_image_path_for_state(&config_dir, &backup_state)?;
         let packaged_sleep_image = bundled_sleep_image_path(app)?;
-        let managed_image_active = managed_image_is_active(current_image_uri.as_deref(), &managed_path)
-            || managed_image_is_active(current_image_uri.as_deref(), &packaged_sleep_image);
+        let managed_image_active =
+            managed_image_is_active(current_image_uri.as_deref(), &managed_path)
+                || managed_image_is_active(current_image_uri.as_deref(), &packaged_sleep_image);
         if has_stale_backup(&backup_state, managed_image_active) {
             return Ok("已停止本应用的锁屏接管状态。检测到当前锁屏已由用户或其他程序更改，因此未覆盖它；原备份已保留。".into());
         }
         if let LockScreenBackupState::Valid(manifest) = backup_state {
             if let Ok(path) = restore_snapshot_path(&config_dir, &manifest) {
                 let manifest_managed_path = managed_image_path(&config_dir, &manifest)?;
-                let expected_current_image = if managed_image_is_active(
-                    current_image_uri.as_deref(),
-                    &packaged_sleep_image,
-                ) {
-                    &packaged_sleep_image
-                } else {
-                    &manifest_managed_path
-                };
+                let expected_current_image =
+                    if managed_image_is_active(current_image_uri.as_deref(), &packaged_sleep_image)
+                    {
+                        &packaged_sleep_image
+                    } else {
+                        &manifest_managed_path
+                    };
                 let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(
                     path.to_string_lossy().as_ref(),
                 ))
@@ -1758,7 +1786,10 @@ pub async fn clear_stale_lock_screen_backup(app: &tauri::AppHandle) -> Result<St
     if !has_package_identity()? {
         return Err("当前进程没有 MSIX 包身份，拒绝清理锁屏恢复点。".into());
     }
-    let config_dir = app.path().app_config_dir().map_err(|error| error.to_string())?;
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())?;
     let current = LockScreen::OriginalImageFile()
         .map_err(|_| "无法读取当前锁屏图片；旧恢复点已保留。".to_string())?
         .AbsoluteUri()
@@ -1879,6 +1910,220 @@ fn has_package_identity() -> Result<bool, String> {
     ))
 }
 
+/// Prefer the package-owned StartupTask when the app is running from an MSIX.
+/// Older packages and unpackaged development/NSIS builds do not carry the
+/// extension, so callers may fall back to the legacy per-user Run entry.
+#[cfg(windows)]
+pub(crate) fn set_startup_task(enabled: bool) -> Result<Option<bool>, String> {
+    if !has_package_identity()? {
+        return Ok(None);
+    }
+    let task_id = HSTRING::from("DshWallpaperStartup");
+    let task = match StartupTask::GetAsync(&task_id).and_then(|operation| operation.get()) {
+        Ok(task) => task,
+        // A package built before the StartupTask manifest extension is still
+        // supported through the Run-key compatibility path.
+        Err(_) => return Ok(None),
+    };
+    if !enabled {
+        task.Disable()
+            .map_err(|error| format!("无法关闭 DSH Wallpaper 启动任务：{error}"))?;
+        return Ok(Some(false));
+    }
+    let state = task
+        .RequestEnableAsync()
+        .and_then(|operation| operation.get())
+        .map_err(|error| format!("无法启用 DSH Wallpaper 启动任务：{error}"))?;
+    if state == StartupTaskState::Enabled {
+        Ok(Some(true))
+    } else if state == StartupTaskState::DisabledByUser {
+        Err("Windows 已禁用 DSH Wallpaper 启动任务；请在系统设置中允许开机启动。".into())
+    } else if state == StartupTaskState::DisabledByPolicy {
+        Err("Windows 策略禁止 DSH Wallpaper 开机启动。".into())
+    } else {
+        Err(format!(
+            "DSH Wallpaper 启动任务未启用（状态码 {}）。",
+            state.0
+        ))
+    }
+}
+
+/// The setting center must display the state Windows actually registered,
+/// rather than a stale renderer preference.  `source` is deliberately a
+/// small diagnostic value so the UI can explain why an update is needed
+/// without exposing registry contents or package internals.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AutostartStatus {
+    pub(crate) enabled: bool,
+    pub(crate) source: String,
+}
+
+#[cfg(windows)]
+pub(crate) fn legacy_run_entry_present() -> Result<bool, String> {
+    let mut key = windows::Win32::System::Registry::HKEY::default();
+    let open_status = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
+            None,
+            KEY_READ,
+            &mut key,
+        )
+    };
+    if open_status == ERROR_FILE_NOT_FOUND {
+        return Ok(false);
+    }
+    if open_status != ERROR_SUCCESS {
+        return Err(format!(
+            "无法读取当前用户开机启动项（错误码 {}）。",
+            open_status.0
+        ));
+    }
+
+    let mut value_size = 0u32;
+    let query_status = unsafe {
+        RegQueryValueExW(
+            key,
+            w!("dsh-wallpaper"),
+            None,
+            None,
+            None,
+            Some(&mut value_size),
+        )
+    };
+    let _ = unsafe { RegCloseKey(key) };
+    if query_status == ERROR_SUCCESS || query_status == ERROR_MORE_DATA {
+        Ok(true)
+    } else if query_status == ERROR_FILE_NOT_FOUND {
+        Ok(false)
+    } else {
+        Err(format!(
+            "无法读取 DSH Wallpaper 开机启动项（错误码 {}）。",
+            query_status.0
+        ))
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn remove_legacy_run_entry() -> Result<(), String> {
+    let mut key = windows::Win32::System::Registry::HKEY::default();
+    let open_status = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
+            None,
+            KEY_SET_VALUE,
+            &mut key,
+        )
+    };
+    if open_status == ERROR_FILE_NOT_FOUND {
+        return Ok(());
+    }
+    if open_status != ERROR_SUCCESS {
+        return Err(format!(
+            "无法更新当前用户开机启动项（错误码 {}）。",
+            open_status.0
+        ));
+    }
+    let delete_status = unsafe { RegDeleteValueW(key, w!("dsh-wallpaper")) };
+    let _ = unsafe { RegCloseKey(key) };
+    if delete_status == ERROR_SUCCESS || delete_status == ERROR_FILE_NOT_FOUND {
+        Ok(())
+    } else {
+        Err(format!(
+            "无法移除旧版 DSH Wallpaper 开机启动项（错误码 {}）。",
+            delete_status.0
+        ))
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn legacy_run_entry_present() -> Result<bool, String> {
+    Ok(false)
+}
+
+#[cfg(windows)]
+pub(crate) fn autostart_status() -> Result<AutostartStatus, String> {
+    if has_package_identity()? {
+        let task_id = HSTRING::from("DshWallpaperStartup");
+        if let Ok(task) = StartupTask::GetAsync(&task_id).and_then(|operation| operation.get()) {
+            let state = task
+                .State()
+                .map_err(|error| format!("无法读取 DSH Wallpaper 启动任务状态：{error}"))?;
+            let (enabled, source) = match state {
+                StartupTaskState::Enabled | StartupTaskState::EnabledByPolicy => {
+                    (true, "startup-task")
+                }
+                StartupTaskState::DisabledByUser => (false, "disabled-by-user"),
+                StartupTaskState::DisabledByPolicy => (false, "disabled-by-policy"),
+                // A package update can add StartupTask to an app that was
+                // previously using the HKCU Run compatibility path. Keep the
+                // effective preference enabled until the user explicitly
+                // changes it; otherwise the new package would appear to have
+                // silently turned autostart off during an update.
+                StartupTaskState::Disabled => {
+                    if legacy_run_entry_present()? {
+                        (true, "run")
+                    } else {
+                        (false, "startup-task")
+                    }
+                }
+                _ => (false, "startup-task"),
+            };
+            return Ok(AutostartStatus {
+                enabled,
+                source: source.into(),
+            });
+        }
+        // A package installed before the StartupTask extension was added is
+        // still readable through the compatibility Run entry.
+    }
+
+    let enabled = legacy_run_entry_present()?;
+    Ok(AutostartStatus {
+        enabled,
+        source: if enabled { "run" } else { "none" }.into(),
+    })
+}
+
+/// Convert an enabled legacy Run entry to the package StartupTask after an
+/// update. If Windows declines the request, the old entry is intentionally
+/// left untouched, so an update can never create an autostart gap.
+#[cfg(windows)]
+pub(crate) fn migrate_legacy_autostart() -> Result<Option<AutostartStatus>, String> {
+    if !has_package_identity()? {
+        return Ok(None);
+    }
+    let status = autostart_status()?;
+    if status.source != "run" {
+        return Ok(Some(status));
+    }
+    if set_startup_task(true)? == Some(true) {
+        remove_legacy_run_entry()?;
+        return Ok(Some(autostart_status()?));
+    }
+    Ok(Some(status))
+}
+
+#[cfg(not(windows))]
+pub(crate) fn migrate_legacy_autostart() -> Result<Option<AutostartStatus>, String> {
+    Ok(None)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn autostart_status() -> Result<AutostartStatus, String> {
+    Ok(AutostartStatus {
+        enabled: false,
+        source: "unsupported".into(),
+    })
+}
+
+#[cfg(not(windows))]
+pub(crate) fn set_startup_task(_: bool) -> Result<Option<bool>, String> {
+    Ok(None)
+}
+
 #[cfg(windows)]
 fn can_attempt_lock_screen_takeover(has_package_identity: bool) -> bool {
     has_package_identity
@@ -1968,35 +2213,49 @@ fn bundled_sleep_image_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf
         });
 
     resolver_asset
-        .or_else(|| current_package_install_root()
-        .or_else(|| std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf)))
-        .and_then(|root| {
-            std::iter::once(root.join("Assets").join("LockScreenSleep.png"))
-                .chain(bundled_sleep_resource_candidates()
+        .or_else(|| {
+            current_package_install_root()
+                .or_else(|| {
+                    std::env::current_exe()
+                        .ok()
+                        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+                })
+                .and_then(|root| {
+                    std::iter::once(root.join("Assets").join("LockScreenSleep.png"))
+                        .chain(
+                            bundled_sleep_resource_candidates()
+                                .into_iter()
+                                .map(|resource| root.join(resource)),
+                        )
+                        .find(|path| path.is_file())
+                })
+        })
+        .or_else(|| {
+            bundled_sleep_resource_candidates()
                 .into_iter()
-                .map(|resource| root.join(resource)))
-                .find(|path| path.is_file())
-        }))
-        .or_else(|| bundled_sleep_resource_candidates()
-        .into_iter()
-        .find_map(|resource| {
-            app.path()
-                .resolve(resource, tauri::path::BaseDirectory::Resource)
-                .ok()
-                .filter(|path| path.is_file())
-        }))
+                .find_map(|resource| {
+                    app.path()
+                        .resolve(resource, tauri::path::BaseDirectory::Resource)
+                        .ok()
+                        .filter(|path| path.is_file())
+                })
+        })
         .or_else(|| {
             std::env::current_dir()
                 .ok()
-                .map(|cwd| cwd.join("public").join("personas/wake-frames/variant-anima/sleep.png"))
+                .map(|cwd| {
+                    cwd.join("public")
+                        .join("personas/wake-frames/variant-anima/sleep.png")
+                })
                 .filter(|path| path.is_file())
         })
         .or_else(|| {
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .parent()
-                .map(|root| root.join("public").join("personas/wake-frames/variant-anima/sleep.png"))
+                .map(|root| {
+                    root.join("public")
+                        .join("personas/wake-frames/variant-anima/sleep.png")
+                })
                 .filter(|path| path.is_file())
         })
         .ok_or_else(|| "未找到内置的锁屏睡眠图片。请重新安装 dsh-wallpaper。".to_string())

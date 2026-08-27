@@ -249,6 +249,12 @@
           "markdownDescription": "Enables the appearance_set_override command without any pre-configured scope."
         },
         {
+          "description": "Enables the autostart_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-autostart-status",
+          "markdownDescription": "Enables the autostart_status command without any pre-configured scope."
+        },
+        {
           "description": "Enables the begin_interaction_region_session command without any pre-configured scope.",
           "type": "string",
           "const": "allow-begin-interaction-region-session",
@@ -271,6 +277,24 @@
           "type": "string",
           "const": "allow-connect-harness",
           "markdownDescription": "Enables the connect_harness command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the deepseek_web_ensure command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-deepseek-web-ensure",
+          "markdownDescription": "Enables the deepseek_web_ensure command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the deepseek_web_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-deepseek-web-history",
+          "markdownDescription": "Enables the deepseek_web_history command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the deepseek_web_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-deepseek-web-status",
+          "markdownDescription": "Enables the deepseek_web_status command without any pre-configured scope."
         },
         {
           "description": "Enables the desktop_layout_metrics command without any pre-configured scope.",
@@ -531,6 +555,12 @@
           "markdownDescription": "Denies the appearance_set_override command without any pre-configured scope."
         },
         {
+          "description": "Denies the autostart_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-autostart-status",
+          "markdownDescription": "Denies the autostart_status command without any pre-configured scope."
+        },
+        {
           "description": "Denies the begin_interaction_region_session command without any pre-configured scope.",
           "type": "string",
           "const": "deny-begin-interaction-region-session",
@@ -553,6 +583,24 @@
           "type": "string",
           "const": "deny-connect-harness",
           "markdownDescription": "Denies the connect_harness command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the deepseek_web_ensure command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-deepseek-web-ensure",
+          "markdownDescription": "Denies the deepseek_web_ensure command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the deepseek_web_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-deepseek-web-history",
+          "markdownDescription": "Denies the deepseek_web_history command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the deepseek_web_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-deepseek-web-status",
+          "markdownDescription": "Denies the deepseek_web_status command without any pre-configured scope."
         },
         {
           "description": "Denies the desktop_layout_metrics command without any pre-configured scope.",

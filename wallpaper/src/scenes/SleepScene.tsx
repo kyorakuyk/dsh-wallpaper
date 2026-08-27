@@ -1,8 +1,9 @@
 /** 睡眠场景：静态画面，鲸鱼娘在床上呼呼大睡（全屏铺满） */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { PersonaManifest } from '../persona/types.ts'
 import { placeholderPortrait } from '../ui/whale.ts'
+import { wakeFrameSources } from './WakeScene.tsx'
 
 export interface SleepSceneProps {
   persona: PersonaManifest
@@ -16,6 +17,18 @@ export function SleepScene({ persona, mode }: SleepSceneProps) {
     persona.assets.sleep ?? placeholderPortrait(persona.kind, 'sleep'),
   )
   const hasAsset = Boolean(persona.assets.sleep)
+
+  // Decode the formal wake sequence while the desktop is still showing the
+  // sleep frame. The first wake frame is the same sleep artwork, so the
+  // unlock transition can paint immediately instead of waiting for four
+  // network/decode tasks to start after the password is accepted.
+  useEffect(() => {
+    for (const source of wakeFrameSources(persona)) {
+      const image = new Image()
+      image.decoding = 'async'
+      image.src = source
+    }
+  }, [persona])
 
   return (
     <div
