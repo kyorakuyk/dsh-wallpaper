@@ -10,5 +10,6 @@ fn main() {
         };
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
     }
+    dsh_wallpaper_lib::prepare_native_bootstrap();
     dsh_wallpaper_lib::run()
 }

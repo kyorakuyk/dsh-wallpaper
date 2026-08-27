@@ -26,6 +26,7 @@ fn main() {
             "open_windows_lock_screen_settings",
             "prompt_for_api_key",
             "show_deepseek_login",
+            "release_native_bootstrap",
             "deepseek_web_ensure",
             "deepseek_web_status",
             "deepseek_web_history",

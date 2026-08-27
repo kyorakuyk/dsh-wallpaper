@@ -10,6 +10,7 @@
     "allow-select-backend",
     "allow-dispatch-app-action",
     "allow-show-deepseek-login",
+    "allow-release-native-bootstrap",
     "allow-deepseek-web-ensure",
     "allow-deepseek-web-status",
     "allow-deepseek-web-history",

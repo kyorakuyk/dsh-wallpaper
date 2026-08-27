@@ -357,6 +357,24 @@ export function App({ surface = 'combined' }: AppProps) {
     }
   }
 
+  // The native bootstrap owns the first visible frame while WebView2 is
+  // starting. Release it only after two browser frames have elapsed so the
+  // background surface has actually painted before the hand-off.
+  useEffect(() => {
+    if (!nativeRuntime.isNative) return
+    let firstFrame = 0
+    let secondFrame = 0
+    firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        void nativeRuntime.releaseNativeBootstrap().catch((error) => patchRuntime({ error: String(error) }))
+      })
+    })
+    return () => {
+      cancelAnimationFrame(firstFrame)
+      cancelAnimationFrame(secondFrame)
+    }
+  }, [])
+
   useEffect(() => {
     if (!appCoreClient.native) {
       const timer = setTimeout(() => baseDispatch({ type: 'BOOT_READY', playWake: settings.animationsEnabled && !settings.skipWakeAnimation }), 120)

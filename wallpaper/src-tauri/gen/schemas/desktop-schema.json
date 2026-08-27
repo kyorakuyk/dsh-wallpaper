@@ -417,6 +417,12 @@
           "markdownDescription": "Enables the publish_settings command without any pre-configured scope."
         },
         {
+          "description": "Enables the release_native_bootstrap command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-release-native-bootstrap",
+          "markdownDescription": "Enables the release_native_bootstrap command without any pre-configured scope."
+        },
+        {
           "description": "Enables the scan_dsh_paths command without any pre-configured scope.",
           "type": "string",
           "const": "allow-scan-dsh-paths",
@@ -721,6 +727,12 @@
           "type": "string",
           "const": "deny-publish-settings",
           "markdownDescription": "Denies the publish_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the release_native_bootstrap command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-release-native-bootstrap",
+          "markdownDescription": "Denies the release_native_bootstrap command without any pre-configured scope."
         },
         {
           "description": "Denies the scan_dsh_paths command without any pre-configured scope.",

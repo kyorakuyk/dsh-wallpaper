@@ -4,6 +4,7 @@ mod appearance;
 mod chat;
 mod deepseek_web;
 mod lock_screen_backup;
+mod native_bootstrap;
 mod windows_integration;
 
 use app_core::{Activity, AppAction, AppCore, AppSnapshot, BackendMode, HarnessAvailability};
@@ -12,6 +13,13 @@ use std::sync::{Mutex, OnceLock, RwLock};
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, EventTarget, Manager};
+
+/// Paint the immutable first frame before Tauri/WebView2 starts. This is a
+/// best-effort user-mode guard; it deliberately does nothing on unsupported
+/// platforms or when Explorer has not exposed a WorkerW yet.
+pub fn prepare_native_bootstrap() {
+    native_bootstrap::prepare();
+}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -341,6 +349,12 @@ fn open_settings_window(caller: tauri::WebviewWindow, app: tauri::AppHandle) -> 
         emit_app_snapshot(&app, &snapshot);
     }
     show_settings_window(&app)
+}
+
+#[tauri::command]
+fn release_native_bootstrap(caller: tauri::WebviewWindow) -> Result<(), String> {
+    require_background(&caller)?;
+    native_bootstrap::release()
 }
 
 #[tauri::command]
@@ -1414,6 +1428,7 @@ pub fn run() {
             open_windows_lock_screen_settings,
             prompt_for_api_key,
             show_deepseek_login,
+            release_native_bootstrap,
             deepseek_web_ensure,
             deepseek_web_status,
             deepseek_web_history,
@@ -1446,6 +1461,7 @@ pub fn run() {
             appearance::commands::appearance_resolve_library_asset
         ])
         .setup(|app| {
+            native_bootstrap::report_ready();
             if let Err(error) = windows_integration::start_wallpaper_host(app.handle().clone()) {
                 log::error!("WorkerW wallpaper host failed: {error}");
             }

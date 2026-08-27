@@ -688,7 +688,7 @@ fn locate_wallpaper_worker() -> Result<HWND, String> {
 /// Explorer layer is restored when returning to the front workspace or when
 /// the application exits.
 #[cfg(windows)]
-fn desktop_icon_layer() -> Option<HWND> {
+pub(crate) fn desktop_icon_layer() -> Option<HWND> {
     enumerate_desktop_windows()
         .ok()?
         .into_iter()
@@ -751,7 +751,7 @@ pub fn restore_desktop_icons() {
 }
 
 #[cfg(windows)]
-fn request_wallpaper_worker() -> Result<HWND, String> {
+pub(crate) fn request_wallpaper_worker() -> Result<HWND, String> {
     let progman = unsafe { FindWindowW(windows::core::w!("Progman"), PCWSTR::null()) }
         .map_err(|error| format!("无法找到 Explorer Progman 窗口：{error}"))?;
 

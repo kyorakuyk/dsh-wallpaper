@@ -37,6 +37,7 @@ export interface NativeRuntime {
    */
   promptForApiKeyCredential(): Promise<boolean>
   requestDeepSeekLogin(): Promise<void>
+  releaseNativeBootstrap(): Promise<void>
   ensureDeepSeekWeb(): Promise<void>
   deepseekWebStatus(): Promise<DeepSeekWebStatus>
   deepseekWebHistory(): Promise<DeepSeekWebHistory>
@@ -121,6 +122,11 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) return
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('show_deepseek_login')
+  },
+  async releaseNativeBootstrap() {
+    if (!await tauriAvailable()) return
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('release_native_bootstrap')
   },
   async ensureDeepSeekWeb() {
     if (!await tauriAvailable()) return
