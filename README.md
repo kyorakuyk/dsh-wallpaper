@@ -4,6 +4,17 @@ DeepSeek Harness 生态的**交互式桌面壁纸框架**：以鲸鱼娘为拟�
 
 > 独立 Tauri 桌面应用，不修改 DSH 官方 Web UI；同时保留浏览器预览模式。
 
+## 首发产品：DSH Wallpaper Lite
+
+Lite 与完整版共用本仓库和 Windows 原生壁纸核心，但采用独立的前端入口、Rust feature、Tauri 配置和 MSIX 身份。首发包只提供 Windows 锁屏图片接管、正式四帧苏醒动画、静态壁纸、立绘、开机自启以及 TranslucentTB 兼容入口；不包含聊天、DeepSeek/DSH 连接、会话、表里桌面或插件。
+
+```powershell
+pnpm build:lite
+pnpm desktop:build:lite
+```
+
+锁屏接管的正式验收和 MSIX 安装请在另一台 Windows 11 测试机执行；完整范围与发布命令见 [`docs/lite-release.md`](<C:/DeepSeekHarness/plugins/dsh-wallpaper/docs/lite-release.md>)。
+
 ## 功能总览
 
 | 模块 | 状态 | 说明 |
@@ -64,7 +75,7 @@ pnpm desktop:build   # 构建安装包
 ## GitHub Actions
 
 - `.github/workflows/ci.yml`：在 `master`、`codex/**` 的推送和面向 `master` 的 PR 上运行 Windows x64 类型检查、前端/Bridge 测试、Rust 全目标测试与前端构建。
-- `.github/workflows/package.yml`：支持手动运行或推送 `v*` 标签时构建 NSIS 安装器和未签名锁屏测试 MSIX；两者作为 Actions 工件保留 14 天，只有 NSIS 安装器会附加到 GitHub Release。
+- `.github/workflows/package.yml`：支持手动运行或推送 `v*` 标签时以 `full/lite` 矩阵构建 NSIS 安装器和未签名锁屏测试 MSIX；两者作为 Actions 工件保留 14 天，NSIS 安装器会附加到 GitHub Release。
 - 测试 MSIX 不会自动签名、安装或修改锁屏。正式 MSIX 签名应在后续配置发布证书和独立正式清单后接入，证书不得提交到仓库。
 
 ## 形态系统（persona）

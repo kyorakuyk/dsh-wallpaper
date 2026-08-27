@@ -7,9 +7,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:lite": "tsc -b && vite build --mode lite",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:build:lite": "tauri build --config src-tauri/tauri.lite.conf.json"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",

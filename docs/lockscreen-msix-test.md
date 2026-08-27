@@ -25,7 +25,15 @@
 .\scripts\build-msix-test.ps1
 ```
 
-产物位于 `artifacts\msix-test\dsh-wallpaper-lockscreen-test.msix`。未签名 MSIX 不可安装，这是预期行为。
+首发 Lite 包使用同一脚本的 `-Edition lite` 参数：
+
+```powershell
+.\scripts\build-msix-test.ps1 -Edition lite -Release
+```
+
+它会选择 `dsh-wallpaper-lite.exe`、`dist-lite`、`AppxManifest-Lite.xml` 和独立的 Lite MSIX 身份；默认仍不安装。
+
+完整版产物位于 `artifacts\msix-test\dsh-wallpaper-lockscreen-test.msix`，Lite 产物位于 `artifacts\msix-test\dsh-wallpaper-lite-lockscreen-test.msix`。未签名 MSIX 不可安装，这是预期行为。
 
 Rust 二进制会以锁定依赖固定构建为 `x86_64-pc-windows-msvc`，并显式启用 Tauri `custom-protocol`（避免程序误访问已停止的 Vite `devUrl`），输出到独立的 `artifacts\msix-test\cargo-target\x86_64-pc-windows-msvc\`；脚本会在打包前读取 PE Machine 字段，拒绝任何非 x64 EXE 或 `WebView2Loader.dll`，不会写入或占用开发实例使用的 `wallpaper\src-tauri\target\`。
 

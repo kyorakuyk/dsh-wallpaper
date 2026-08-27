@@ -1,0 +1,23 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "lite-settings",
+  "description": "Lite lock-screen, wallpaper, animation, startup and TranslucentTB controls",
+  "windows": ["settings"],
+  "permissions": [
+    "dialog:allow-open",
+    "allow-lite-settings-get",
+    "allow-lite-settings-save",
+    "allow-lite-image-import",
+    "allow-set-lock-screen-enabled",
+    "allow-clear-stale-lock-screen-backup",
+    "allow-get-lock-screen-diagnostics",
+    "allow-set-autostart",
+    "allow-autostart-status",
+    "allow-translucent-tb-status",
+    "allow-launch-translucent-tb",
+    "allow-open-translucent-tb-install",
+    "allow-open-windows-lock-screen-settings",
+    "allow-start-settings-drag",
+    "allow-hide-settings-window"
+  ]
+}

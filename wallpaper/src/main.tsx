@@ -1,4 +1,4 @@
-/** 壁纸前端入口 */
+/** 完整版壁纸前端入口 */
 import { createRoot } from 'react-dom/client'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { App } from './App.tsx'

@@ -15,9 +15,13 @@ concurrency:
 
 jobs:
   package:
-    name: Build Windows packages
+    name: Build Windows packages (${{ matrix.edition }})
     runs-on: windows-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        edition: [full, lite]
 
     steps:
       - name: Check out repository
@@ -59,24 +63,35 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build NSIS installer
-        run: pnpm desktop:build
+        shell: pwsh
+        run: |
+          if ('${{ matrix.edition }}' -eq 'lite') {
+            pnpm desktop:build:lite
+          } else {
+            pnpm desktop:build
+          }
 
       - name: Build unsigned MSIX lock-screen test package
         shell: pwsh
-        run: .\scripts\build-msix-test.ps1 -Release
+        run: .\scripts\build-msix-test.ps1 -Edition '${{ matrix.edition }}' -Release
 
       - name: Collect package artifacts
         shell: pwsh
         run: |
+          $edition = '${{ matrix.edition }}'
           New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE\ci-artifacts\nsis" -Force | Out-Null
-          Copy-Item -LiteralPath "$env:GITHUB_WORKSPACE\wallpaper\src-tauri\target\release\bundle\nsis\dsh-wallpaper_0.2.0_x64-setup.exe" -Destination "$env:GITHUB_WORKSPACE\ci-artifacts\nsis\" -Force
+          $installer = Get-ChildItem -LiteralPath "$env:GITHUB_WORKSPACE\wallpaper\src-tauri\target\release\bundle\nsis" -Filter 'dsh-wallpaper*_x64-setup.exe' -File | Select-Object -First 1
+          if (-not $installer) { throw "未找到 $edition NSIS 安装器。" }
+          Copy-Item -LiteralPath $installer.FullName -Destination "$env:GITHUB_WORKSPACE\ci-artifacts\nsis\" -Force
           New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test" -Force | Out-Null
-          Copy-Item -LiteralPath "$env:GITHUB_WORKSPACE\artifacts\msix-test\dsh-wallpaper-lockscreen-test.msix" -Destination "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test\" -Force
+          $msix = Get-ChildItem -LiteralPath "$env:GITHUB_WORKSPACE\artifacts\msix-test" -Filter '*-lockscreen-test.msix' -File | Select-Object -First 1
+          if (-not $msix) { throw "未找到 $edition MSIX 测试包。" }
+          Copy-Item -LiteralPath $msix.FullName -Destination "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test\" -Force
 
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v4
         with:
-          name: dsh-wallpaper-nsis
+          name: dsh-wallpaper-${{ matrix.edition }}-nsis
           path: ci-artifacts/nsis/*.exe
           if-no-files-found: error
           retention-days: 14
@@ -84,7 +99,7 @@ jobs:
       - name: Upload unsigned MSIX test package
         uses: actions/upload-artifact@v4
         with:
-          name: dsh-wallpaper-msix-test-unsigned
+          name: dsh-wallpaper-${{ matrix.edition }}-msix-test-unsigned
           path: ci-artifacts/msix-test/*.msix
           if-no-files-found: error
           retention-days: 14
@@ -101,11 +116,11 @@ jobs:
       - name: Download NSIS installer
         uses: actions/download-artifact@v4
         with:
-          name: dsh-wallpaper-nsis
+          pattern: dsh-wallpaper-*-nsis
           path: release-assets
+          merge-multiple: true
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "${{ github.ref_name }}" release-assets/*.exe --verify-tag --generate-notes
-

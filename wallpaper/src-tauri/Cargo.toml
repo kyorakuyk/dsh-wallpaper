@@ -6,8 +6,19 @@ edition = "2021"
 rust-version = "1.77.2"
 
 [features]
-default = []
-lockscreen-probe = []
+default = ["full"]
+full = [
+  "dep:base64",
+  "dep:futures-util",
+  "dep:keyring",
+  "dep:reqwest",
+  "dep:rusqlite",
+  "dep:sha2",
+  "dep:urlencoding",
+  "dep:zip",
+]
+lite = ["dep:base64", "dep:urlencoding"]
+lockscreen-probe = ["dep:urlencoding"]
 
 [[bin]]
 name = "lockscreen_probe"
@@ -30,15 +41,15 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
 dirs = "6"
-keyring = { version = "3", features = ["windows-native"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+keyring = { version = "3", features = ["windows-native"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"], optional = true }
 tokio = { version = "1", features = ["macros", "sync", "time"] }
-futures-util = "0.3"
-urlencoding = "2"
-rusqlite = { version = "0.32", features = ["bundled"] }
-base64 = "0.22"
-sha2 = "0.10"
-zip = "2.2"
+futures-util = { version = "0.3", optional = true }
+urlencoding = { version = "2", optional = true }
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+base64 = { version = "0.22", optional = true }
+sha2 = { version = "0.10", optional = true }
+zip = { version = "2.2", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

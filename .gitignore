@@ -4,6 +4,7 @@ node_modules/
 
 # Build outputs
 wallpaper/dist/
+wallpaper/dist-lite/
 wallpaper/src-tauri/target/
 .tmp-lockscreen-target/
 .tmp-audit-r6/

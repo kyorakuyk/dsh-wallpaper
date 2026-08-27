@@ -7,12 +7,15 @@
   "scripts": {
     "dev": "pnpm -C wallpaper dev",
     "build": "pnpm -C wallpaper build",
+    "build:lite": "pnpm -C wallpaper build:lite",
     "preview": "pnpm -C wallpaper preview",
     "typecheck": "pnpm -C wallpaper typecheck && pnpm -C bridge typecheck",
     "test": "pnpm -C wallpaper exec vitest run && pnpm -C bridge test",
     "tauri": "pnpm -C wallpaper tauri",
     "desktop:dev": "pnpm -C wallpaper tauri dev",
-    "desktop:build": "pnpm -C wallpaper tauri build"
+    "desktop:dev:lite": "pnpm -C wallpaper tauri dev --config src-tauri/tauri.lite.conf.json",
+    "desktop:build": "pnpm -C wallpaper tauri build",
+    "desktop:build:lite": "pnpm -C wallpaper tauri:build:lite"
   },
   "license": "MIT",
   "devDependencies": {

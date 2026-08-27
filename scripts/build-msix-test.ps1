@@ -19,6 +19,8 @@ Windows runtime prerequisites before it signs anything.
 [CmdletBinding(SupportsShouldProcess)]
 param(
   [switch]$Release,
+  [ValidateSet('full', 'lite')]
+  [string]$Edition = 'full',
   [switch]$CreateTestCertificate,
   [string]$CertificatePath,
   [securestring]$CertificatePassword,
@@ -254,12 +256,19 @@ $tauriRoot = Join-Path $projectRoot 'wallpaper\src-tauri'
 $artifactRoot = Join-Path $projectRoot 'artifacts\msix-test'
 $cargoTargetRoot = Join-Path $artifactRoot 'cargo-target'
 $packageRoot = Join-Path $artifactRoot 'package-root'
-$manifestTemplate = Join-Path $projectRoot 'packaging\msix\AppxManifest.xml'
+$isLite = $Edition -eq 'lite'
+$binaryName = if ($isLite) { 'dsh-wallpaper-lite' } else { 'dsh-wallpaper' }
+$frontendDistName = if ($isLite) { 'dist-lite' } else { 'dist' }
+$manifestName = if ($isLite) { 'AppxManifest-Lite.xml' } else { 'AppxManifest.xml' }
+$manifestTemplate = Join-Path $projectRoot "packaging\msix\$manifestName"
+$tauriConfigName = if ($isLite) { 'tauri.lite.conf.json' } else { 'tauri.conf.json' }
+$tauriConfigPath = Join-Path $tauriRoot $tauriConfigName
 $rustTarget = 'x86_64-pc-windows-msvc'
 $makeAppx = Get-WindowsSdkTool 'makeappx.exe'
 $signTool = Get-WindowsSdkTool 'signtool.exe'
 
 Require-Path $manifestTemplate '缺少 MSIX 清单模板。'
+Require-Path $tauriConfigPath '缺少对应版本的 Tauri 配置。'
 Require-Path (Join-Path $tauriRoot 'icons\icon.png') '缺少应用图标。'
 Require-Path (Join-Path $projectRoot 'wallpaper\public\personas\wake-frames\variant-anima\sleep.png') '缺少锁屏睡眠图。'
 $manifest = Get-MsixManifestMetadata $manifestTemplate
@@ -287,14 +296,20 @@ if (($CreateTestCertificate -or $CertificatePath) -and -not $CertificatePassword
 if (-not $SkipBuild) {
   Push-Location $projectRoot
   try {
-    Invoke-Checked 'pnpm' @('-C', 'wallpaper', 'build') '前端构建失败。'
+    $frontendBuild = if ($isLite) { 'build:lite' } else { 'build' }
+    Invoke-Checked 'pnpm' @('-C', 'wallpaper', $frontendBuild) '前端构建失败。'
     Push-Location $tauriRoot
     try {
       # `cargo build` alone selects Tauri's development URL (`devUrl`), which
       # produces a package that tries to load the stopped Vite server at
       # 127.0.0.1:5187.  The Tauri CLI enables this dependency feature for
       # release bundles; this standalone MSIX path must do the same.
-      $cargoArgs = @('build', '--locked', '--target', $rustTarget, '--features', 'tauri/custom-protocol')
+      $cargoArgs = @('build', '--locked', '--target', $rustTarget, '--bin', $binaryName)
+      if ($isLite) {
+        $cargoArgs += @('--no-default-features', '--features', 'lite,tauri/custom-protocol')
+      } else {
+        $cargoArgs += @('--features', 'tauri/custom-protocol')
+      }
       if ($Release) { $cargoArgs += '--release' }
       # Keep this test build independent of wallpaper/src-tauri/target. A
       # running development instance can hold files in the default target
@@ -302,7 +317,21 @@ if (-not $SkipBuild) {
       $previousCargoTargetDir = [Environment]::GetEnvironmentVariable('CARGO_TARGET_DIR', 'Process')
       try {
         $env:CARGO_TARGET_DIR = $cargoTargetRoot
-        Invoke-Checked 'cargo' $cargoArgs 'Rust 构建失败。'
+        # Cargo builds the Tauri context at compile time. Feed it the exact
+        # edition override used by the release config; otherwise a Lite
+        # binary could accidentally embed the full product's window/identity
+        # metadata even though its source feature is correct.
+        $previousTauriConfig = [Environment]::GetEnvironmentVariable('TAURI_CONFIG', 'Process')
+        try {
+          $env:TAURI_CONFIG = Get-Content -LiteralPath $tauriConfigPath -Raw
+          Invoke-Checked 'cargo' $cargoArgs 'Rust 构建失败。'
+        } finally {
+          if ($null -eq $previousTauriConfig) {
+            Remove-Item Env:TAURI_CONFIG -ErrorAction SilentlyContinue -WhatIf:$false
+          } else {
+            $env:TAURI_CONFIG = $previousTauriConfig
+          }
+        }
       } finally {
         if ($null -eq $previousCargoTargetDir) {
           Remove-Item Env:CARGO_TARGET_DIR -ErrorAction SilentlyContinue -WhatIf:$false
@@ -316,11 +345,11 @@ if (-not $SkipBuild) {
 
 $profile = if ($Release) { 'release' } else { 'debug' }
 $binaryRoot = Join-Path (Join-Path $cargoTargetRoot $rustTarget) $profile
-$exe = Join-Path $binaryRoot 'dsh-wallpaper.exe'
-$frontendDist = Join-Path $projectRoot 'wallpaper\dist'
-Require-Path $exe "未找到隔离 x64 MSIX 构建的 dsh-wallpaper.exe；请移除 -SkipBuild，以 cargo --locked --target $rustTarget 构建 artifacts/msix-test/cargo-target 中相应 profile 的程序。"
+$exe = Join-Path $binaryRoot "$binaryName.exe"
+$frontendDist = Join-Path $projectRoot "wallpaper\$frontendDistName"
+Require-Path $exe "未找到隔离 x64 MSIX 构建的 $binaryName.exe；请移除 -SkipBuild，以 cargo --locked --target $rustTarget 构建 artifacts/msix-test/cargo-target 中相应 profile 的程序。"
 Require-Path (Join-Path $frontendDist 'index.html') '未找到前端 dist/index.html；请移除 -SkipBuild 或先完成前端构建。'
-Assert-X64Pe $exe 'dsh-wallpaper.exe'
+Assert-X64Pe $exe "$binaryName.exe"
 
 # MakeAppx expects a clean directory. The only recursive deletion is a fully
 # resolved, literal child under this repository's artifacts root.
@@ -333,7 +362,7 @@ New-Item -ItemType Directory -Path $packageRoot -Force -WhatIf:$false | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $packageRoot 'Assets') -Force -WhatIf:$false | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $packageRoot '_up_\public\personas\wake-frames\variant-anima') -Force -WhatIf:$false | Out-Null
 
-Copy-Item -LiteralPath $exe -Destination (Join-Path $packageRoot 'dsh-wallpaper.exe') -Force -WhatIf:$false
+Copy-Item -LiteralPath $exe -Destination (Join-Path $packageRoot "$binaryName.exe") -Force -WhatIf:$false
 Copy-Item -LiteralPath $manifestTemplate -Destination (Join-Path $packageRoot 'AppxManifest.xml') -Force -WhatIf:$false
 Copy-Item -LiteralPath (Join-Path $tauriRoot 'icons\icon.png') -Destination (Join-Path $packageRoot 'Assets\StoreLogo.png') -Force -WhatIf:$false
 Copy-Item -LiteralPath (Join-Path $tauriRoot 'icons\icon.png') -Destination (Join-Path $packageRoot 'Assets\Square150x150Logo.png') -Force -WhatIf:$false
@@ -353,7 +382,7 @@ $webView2Loader = Get-WebView2LoaderPath $tauriRoot
 Copy-Item -LiteralPath $webView2Loader -Destination (Join-Path $packageRoot 'WebView2Loader.dll') -Force -WhatIf:$false
 
 $requiredPackageFiles = @(
-  'AppxManifest.xml', 'dsh-wallpaper.exe', 'WebView2Loader.dll', 'dist\index.html',
+  'AppxManifest.xml', "$binaryName.exe", 'WebView2Loader.dll', 'dist\index.html',
   '_up_\public\personas\wake-frames\variant-anima\sleep.png',
   'Assets\StoreLogo.png', 'Assets\Square150x150Logo.png', 'Assets\Square44x44Logo.png', 'Assets\LockScreenSleep.png'
 )
@@ -371,7 +400,8 @@ if ($packagedLockScreenSleep.Hash -ne $sourceSleep.Hash) { throw 'MSIX Assets �
 if ($InstallPackage -and -not $WhatIfPreference) { Assert-PackagedRuntimeDependencies }
 
 New-Item -ItemType Directory -Path $artifactRoot -Force -WhatIf:$false | Out-Null
-$msix = Join-Path $artifactRoot 'dsh-wallpaper-lockscreen-test.msix'
+$msixFileName = if ($isLite) { 'dsh-wallpaper-lite-lockscreen-test.msix' } else { 'dsh-wallpaper-lockscreen-test.msix' }
+$msix = Join-Path $artifactRoot $msixFileName
 if (Test-Path -LiteralPath $msix) { Remove-Item -LiteralPath $msix -Force -WhatIf:$false }
 Invoke-Checked $makeAppx @('pack', '/o', '/h', 'SHA256', '/d', $packageRoot, '/p', $msix) 'MakeAppx 打包失败。'
 

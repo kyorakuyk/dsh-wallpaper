@@ -369,6 +369,30 @@
           "markdownDescription": "Enables the launch_translucent_tb command without any pre-configured scope."
         },
         {
+          "description": "Enables the lite_image_import command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-lite-image-import",
+          "markdownDescription": "Enables the lite_image_import command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the lite_image_resolve command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-lite-image-resolve",
+          "markdownDescription": "Enables the lite_image_resolve command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the lite_settings_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-lite-settings-get",
+          "markdownDescription": "Enables the lite_settings_get command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the lite_settings_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-lite-settings-save",
+          "markdownDescription": "Enables the lite_settings_save command without any pre-configured scope."
+        },
+        {
           "description": "Enables the managed_dsh_status command without any pre-configured scope.",
           "type": "string",
           "const": "allow-managed-dsh-status",
@@ -679,6 +703,30 @@
           "type": "string",
           "const": "deny-launch-translucent-tb",
           "markdownDescription": "Denies the launch_translucent_tb command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the lite_image_import command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-lite-image-import",
+          "markdownDescription": "Denies the lite_image_import command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the lite_image_resolve command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-lite-image-resolve",
+          "markdownDescription": "Denies the lite_image_resolve command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the lite_settings_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-lite-settings-get",
+          "markdownDescription": "Denies the lite_settings_get command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the lite_settings_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-lite-settings-save",
+          "markdownDescription": "Denies the lite_settings_save command without any pre-configured scope."
         },
         {
           "description": "Denies the managed_dsh_status command without any pre-configured scope.",

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-lite-settings-save"
+description = "Enables the lite_settings_save command without any pre-configured scope."
+commands.allow = ["lite_settings_save"]
+
+[[permission]]
+identifier = "deny-lite-settings-save"
+description = "Denies the lite_settings_save command without any pre-configured scope."
+commands.deny = ["lite_settings_save"]

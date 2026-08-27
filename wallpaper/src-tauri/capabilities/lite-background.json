@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "lite-background",
+  "description": "Lite WorkerW wallpaper host and lock/unlock scene surface",
+  "windows": ["background"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-get-app-snapshot",
+    "allow-dispatch-app-action",
+    "allow-release-native-bootstrap",
+    "allow-open-settings-window",
+    "allow-lite-settings-get",
+    "allow-lite-image-resolve"
+  ]
+}

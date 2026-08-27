@@ -1,18 +1,27 @@
+#[cfg(not(feature = "lite"))]
 mod api_persistence;
 mod app_core;
+#[cfg(not(feature = "lite"))]
 mod appearance;
+#[cfg(not(feature = "lite"))]
 mod chat;
+#[cfg(not(feature = "lite"))]
 mod deepseek_web;
 mod lock_screen_backup;
 mod native_bootstrap;
 mod windows_integration;
 
-use app_core::{Activity, AppAction, AppCore, AppSnapshot, BackendMode, HarnessAvailability};
+use app_core::{Activity, AppAction, AppCore, AppSnapshot, HarnessAvailability};
+#[cfg(not(feature = "lite"))]
+use app_core::BackendMode;
+#[cfg(not(feature = "lite"))]
 use std::process::Child;
-use std::sync::{Mutex, OnceLock, RwLock};
+use std::sync::OnceLock;
+#[cfg(not(feature = "lite"))]
+use std::sync::{Mutex, RwLock};
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, EventTarget, Manager};
+use tauri::{Emitter, EventTarget, Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// Paint the immutable first frame before Tauri/WebView2 starts. This is a
 /// best-effort user-mode guard; it deliberately does nothing on unsupported
@@ -23,6 +32,7 @@ pub fn prepare_native_bootstrap() {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(not(feature = "lite"))]
 struct DshPathCandidate {
     root_path: String,
     source: String,
@@ -30,6 +40,7 @@ struct DshPathCandidate {
 
 /// A DSH process is only "managed" when this instance spawned it and still
 /// owns its `Child` handle. Port 3080 alone never proves ownership.
+#[cfg(not(feature = "lite"))]
 struct ManagedDshProcess {
     child: Child,
     root_path: String,
@@ -37,10 +48,12 @@ struct ManagedDshProcess {
 }
 
 #[derive(Default)]
+#[cfg(not(feature = "lite"))]
 struct ManagedDshState(Mutex<Option<ManagedDshProcess>>);
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(not(feature = "lite"))]
 struct ManagedDshStatus {
     managed: bool,
     running: bool,
@@ -60,7 +73,17 @@ const SETTINGS_WINDOW_LABEL: &str = "settings";
 /// change or a newly added WebView.
 const BACKGROUND_WINDOW_LABEL: &str = "background";
 
+/// The binary entry point fixes the product edition before Tauri starts. Keep
+/// it in a process-local cell so native commands can fail closed if an old or
+/// compromised Lite renderer tries to invoke a full-edition action.
+static LITE_EDITION: OnceLock<bool> = OnceLock::new();
+
+fn is_lite_edition() -> bool {
+    *LITE_EDITION.get_or_init(|| false)
+}
+
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 fn scan_dsh_paths(caller: tauri::WebviewWindow) -> Result<Vec<DshPathCandidate>, String> {
     require_wallpaper_surface(&caller)?;
     let mut candidates = Vec::new();
@@ -91,6 +114,7 @@ fn scan_dsh_paths(caller: tauri::WebviewWindow) -> Result<Vec<DshPathCandidate>,
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 fn launch_dsh(
     caller: tauri::WebviewWindow,
     state: tauri::State<'_, ManagedDshState>,
@@ -159,6 +183,7 @@ fn launch_dsh(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 fn managed_dsh_status(
     caller: tauri::WebviewWindow,
     state: tauri::State<'_, ManagedDshState>,
@@ -199,6 +224,7 @@ fn managed_dsh_status(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 fn stop_managed_dsh(
     caller: tauri::WebviewWindow,
     state: tauri::State<'_, ManagedDshState>,
@@ -231,6 +257,7 @@ fn stop_managed_dsh(
 /// delivered to the wallpaper by Rust.  This prevents a renderer from
 /// selecting an arbitrary event target through `core:event:emit_to`.
 const SETTINGS_CHANGED_EVENT: &str = "settings-changed";
+#[cfg(not(feature = "lite"))]
 const APPEARANCE_CHANGED_EVENT: &str = "appearance-changed";
 
 fn require_background(caller: &tauri::WebviewWindow) -> Result<(), String> {
@@ -264,7 +291,7 @@ fn require_wallpaper_surface(caller: &tauri::WebviewWindow) -> Result<(), String
 /// as a UTF-16 little-endian byte blob. CredUI returns UTF-16 code units, so
 /// encode them explicitly rather than relying on the host representation when
 /// passing a raw `CredentialBlob` to `CredWriteW`.
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "lite")))]
 fn credential_blob_from_prompt_password(password: &[u16]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(password.len().saturating_mul(std::mem::size_of::<u16>()));
     for code_unit in password {
@@ -277,7 +304,7 @@ fn credential_blob_from_prompt_password(password: &[u16]) -> Vec<u8> {
 /// permitted to remove a write whose result is never read. Volatile writes
 /// make the cleanup observable to the machine, without adding a plaintext
 /// dependency or copying the key through the WebView.
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "lite")))]
 fn secure_zero_u16(secret: &mut [u16]) {
     for value in secret {
         unsafe { std::ptr::write_volatile(value, 0) };
@@ -285,7 +312,7 @@ fn secure_zero_u16(secret: &mut [u16]) {
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "lite")))]
 fn secure_zero_bytes(secret: &mut [u8]) {
     for value in secret {
         unsafe { std::ptr::write_volatile(value, 0) };
@@ -329,9 +356,33 @@ fn dispatch_tray_ui_action(app: &tauri::AppHandle, action: AppAction) {
 }
 
 fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
-    let window = app
-        .get_webview_window("settings")
-        .ok_or("settings window missing")?;
+    let window = if let Some(window) = app.get_webview_window(SETTINGS_WINDOW_LABEL) {
+        window
+    } else {
+        // Lite does not declare a settings WebView at startup. Create it only
+        // when the tray command is used, and `hide_settings_window` destroys
+        // it again so the resident wallpaper keeps one browser surface.
+        let title = if is_lite_edition() {
+            "DSH Wallpaper Lite Settings"
+        } else {
+            "DSH Wallpaper Settings"
+        };
+        WebviewWindowBuilder::new(
+            app,
+            SETTINGS_WINDOW_LABEL,
+            WebviewUrl::App("index.html?surface=settings".into()),
+        )
+        .title(title)
+        .inner_size(920.0, 680.0)
+        .min_inner_size(760.0, 560.0)
+        .decorations(false)
+        .resizable(true)
+        .transparent(true)
+        .skip_taskbar(false)
+        .visible(false)
+        .build()
+        .map_err(|error| format!("无法创建设置中心：{error}"))?
+    };
     window.show().map_err(|error| error.to_string())?;
     window.unminimize().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())?;
@@ -342,6 +393,7 @@ fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 fn open_settings_window(caller: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
     require_background(&caller)?;
     if let Some(core) = app.try_state::<AppCore>() {
@@ -367,6 +419,7 @@ fn get_app_snapshot(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 fn set_interaction_enabled(
     caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -380,6 +433,7 @@ fn set_interaction_enabled(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 fn select_backend(
     caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -387,6 +441,9 @@ fn select_backend(
     backend: String,
 ) -> Result<AppSnapshot, String> {
     require_background(&caller)?;
+    if is_lite_edition() {
+        return Err("Lite 版不提供后端或模型切换。".into());
+    }
     let backend = match backend.as_str() {
         "deepseek-web" => BackendMode::DeepseekWeb,
         "deepseek-api" => BackendMode::DeepseekApi,
@@ -408,6 +465,14 @@ fn dispatch_app_action(
     value: Option<String>,
 ) -> Result<AppSnapshot, String> {
     require_background(&caller)?;
+    if is_lite_edition()
+        && !matches!(
+            action.as_str(),
+            "boot-ready" | "lock" | "unlock" | "wake-done" | "recover"
+        )
+    {
+        return Err("Lite 版不提供会话或桌面交互动作。".into());
+    }
     let action = match action.as_str() {
         "boot-ready" => AppAction::BootReady {
             play_wake: play_wake.unwrap_or(true),
@@ -449,6 +514,7 @@ fn dispatch_app_action(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 fn publish_settings(
     caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -463,7 +529,237 @@ fn publish_settings(
     Ok(())
 }
 
+/// Lite keeps its small, non-sensitive settings in a native file shared by
+/// the background and settings WebViews.  Tauri gives each WebView an
+/// isolated browser storage partition, so using localStorage here would make
+/// a setting appear to reset whenever the wallpaper surface restarts.
+#[cfg(feature = "lite")]
+fn lite_settings_file(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let directory = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("无法定位 Lite 设置目录：{error}"))?;
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("无法创建 Lite 设置目录：{error}"))?;
+    Ok(directory.join("lite-settings.json"))
+}
+
 #[tauri::command]
+#[cfg(feature = "lite")]
+fn lite_settings_get(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    require_wallpaper_surface(&caller)?;
+    let path = lite_settings_file(&app)?;
+    let Ok(bytes) = std::fs::read(path) else {
+        return Ok(serde_json::json!({}));
+    };
+    if bytes.len() > 128 * 1024 {
+        return Ok(serde_json::json!({}));
+    }
+    let value = serde_json::from_slice::<serde_json::Value>(&bytes).unwrap_or_else(|_| {
+        log::warn!("Lite 设置文件无法解析，将在前端恢复默认值");
+        serde_json::json!({})
+    });
+    Ok(if value.is_object() {
+        value
+    } else {
+        serde_json::json!({})
+    })
+}
+
+#[tauri::command]
+#[cfg(feature = "lite")]
+fn lite_settings_save(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    settings: serde_json::Value,
+) -> Result<(), String> {
+    require_settings(&caller)?;
+    if !settings.is_object() {
+        return Err("Lite 设置必须是 JSON 对象。".into());
+    }
+    // Whitelist the release surface at the native boundary as well. This
+    // prevents a stale/full renderer or a malformed caller from persisting
+    // connection, conversation, or credential fields into Lite storage.
+    let allowed = [
+        "version",
+        "background",
+        "portrait",
+        "animationsEnabled",
+        "animationSpeed",
+        "playWakeOnEveryUnlock",
+        "skipWakeAnimation",
+        "lockScreenEnabled",
+        "autostart",
+    ];
+    let object = settings.as_object().expect("object checked above");
+    let sanitized = object
+        .iter()
+        .filter(|(key, _)| allowed.contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<serde_json::Map<_, _>>();
+    let settings = serde_json::Value::Object(sanitized);
+    let bytes = serde_json::to_vec(&settings).map_err(|error| error.to_string())?;
+    if bytes.len() > 128 * 1024 {
+        return Err("Lite 设置内容过大。".into());
+    }
+    let path = lite_settings_file(&app)?;
+    std::fs::write(&path, bytes).map_err(|error| format!("无法保存 Lite 设置：{error}"))?;
+    let _ = app.emit_to(
+        EventTarget::webview_window(BACKGROUND_WINDOW_LABEL),
+        SETTINGS_CHANGED_EVENT,
+        settings,
+    );
+    Ok(())
+}
+
+#[cfg(feature = "lite")]
+fn lite_image_directory(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let directory = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("无法定位 Lite 素材目录：{error}"))?
+        .join("assets");
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("无法创建 Lite 素材目录：{error}"))?;
+    Ok(directory)
+}
+
+#[cfg(feature = "lite")]
+fn lite_image_extension(path: &std::path::Path) -> Result<&'static str, String> {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .ok_or_else(|| "自定义素材必须是 PNG、JPEG 或 WebP 图片。".to_string())?;
+    match extension.as_str() {
+        "png" => Ok("png"),
+        "jpg" | "jpeg" => Ok("jpg"),
+        "webp" => Ok("webp"),
+        _ => Err("自定义素材必须是 PNG、JPEG 或 WebP 图片。".into()),
+    }
+}
+
+#[cfg(feature = "lite")]
+fn lite_image_slot_name(slot: &str) -> Result<&'static str, String> {
+    match slot {
+        "background" => Ok("background"),
+        "portrait" => Ok("portrait"),
+        _ => Err("Lite 素材位置无效。".into()),
+    }
+}
+
+#[tauri::command]
+#[cfg(feature = "lite")]
+fn lite_image_import(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    slot: String,
+    path: String,
+) -> Result<(), String> {
+    require_settings(&caller)?;
+    let slot = lite_image_slot_name(slot.trim())?;
+    let source = std::fs::canonicalize(path.trim())
+        .map_err(|error| format!("无法读取所选图片：{error}"))?;
+    if !source.is_file() {
+        return Err("所选路径不是图片文件。".into());
+    }
+    let metadata = std::fs::metadata(&source)
+        .map_err(|error| format!("无法读取图片大小：{error}"))?;
+    if metadata.len() > 32 * 1024 * 1024 {
+        return Err("图片不能超过 32 MB。".into());
+    }
+    let extension = lite_image_extension(&source)?;
+    let directory = lite_image_directory(&app)?;
+    let temporary = directory.join(format!(".{slot}-{}.tmp", std::process::id()));
+    let destination = directory.join(format!("{slot}.{extension}"));
+    let backup = directory.join(format!(".{slot}-{}.bak", std::process::id()));
+    let _ = std::fs::remove_file(&temporary);
+    let _ = std::fs::remove_file(&backup);
+    std::fs::copy(&source, &temporary)
+        .map_err(|error| format!("无法导入图片：{error}"))?;
+    // Remove only the old, known slot files after the new copy has completed;
+    // a failed copy therefore leaves the previous valid asset untouched.
+    for old_extension in ["png", "jpg", "webp"] {
+        let old = directory.join(format!("{slot}.{old_extension}"));
+        if old != destination {
+            let _ = std::fs::remove_file(old);
+        }
+    }
+    let had_previous = if destination.is_file() {
+        std::fs::rename(&destination, &backup).is_ok()
+    } else {
+        false
+    };
+    if let Err(error) = std::fs::rename(&temporary, &destination) {
+        let _ = std::fs::remove_file(&temporary);
+        if had_previous {
+            let _ = std::fs::rename(&backup, &destination);
+        }
+        return Err(format!("无法保存 Lite 图片：{error}"));
+    }
+    let _ = std::fs::remove_file(&backup);
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(feature = "lite")]
+fn lite_image_resolve(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    slot: String,
+) -> Result<Option<serde_json::Value>, String> {
+    require_wallpaper_surface(&caller)?;
+    let slot = lite_image_slot_name(slot.trim())?;
+    let directory = lite_image_directory(&app)?;
+    let candidate = ["png", "jpg", "webp"]
+        .into_iter()
+        .map(|extension| directory.join(format!("{slot}.{extension}")))
+        .find(|path| path.is_file());
+    let Some(path) = candidate else {
+        return Ok(None);
+    };
+    let bytes = std::fs::read(&path).map_err(|error| format!("无法读取 Lite 图片：{error}"))?;
+    if bytes.len() > 32 * 1024 * 1024 {
+        return Err("Lite 图片超过 32 MB。".into());
+    }
+    use base64::Engine;
+    let extension = lite_image_extension(&path)?;
+    let mime_type = match extension {
+        "png" => "image/png",
+        "jpg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => unreachable!(),
+    };
+    Ok(Some(serde_json::json!({
+        "mimeType": mime_type,
+        "bytesBase64": base64::engine::general_purpose::STANDARD.encode(bytes),
+    })))
+}
+
+#[cfg(all(test, feature = "lite"))]
+mod lite_asset_tests {
+    use super::{lite_image_extension, lite_image_slot_name};
+
+    #[test]
+    fn accepts_only_supported_lite_image_extensions() {
+        assert_eq!(lite_image_extension(std::path::Path::new("wallpaper.PNG")), Ok("png"));
+        assert_eq!(lite_image_extension(std::path::Path::new("portrait.jpeg")), Ok("jpg"));
+        assert!(lite_image_extension(std::path::Path::new("payload.exe")).is_err());
+    }
+
+    #[test]
+    fn image_slots_are_closed_to_the_two_public_components() {
+        assert_eq!(lite_image_slot_name("background"), Ok("background"));
+        assert_eq!(lite_image_slot_name("portrait"), Ok("portrait"));
+        assert!(lite_image_slot_name("sleep").is_err());
+    }
+}
+
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
 fn notify_appearance_changed(
     caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -699,6 +995,7 @@ fn open_windows_lock_screen_settings(caller: tauri::WebviewWindow) -> Result<(),
 /// CredUI target deliberately matches the `keyring` crate's default Windows
 /// target naming, so the existing API client reads the same credential.
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 fn prompt_for_api_key(caller: tauri::WebviewWindow) -> Result<bool, String> {
     if caller.label() != SETTINGS_WINDOW_LABEL {
         return Err("仅设置中心可以更新 API Key。".into());
@@ -830,6 +1127,7 @@ fn prompt_for_api_key(caller: tauri::WebviewWindow) -> Result<bool, String> {
 }
 
 #[cfg(all(test, windows))]
+#[cfg(not(feature = "lite"))]
 mod api_credential_tests {
     use super::credential_blob_from_prompt_password;
 
@@ -843,6 +1141,7 @@ mod api_credential_tests {
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 async fn show_deepseek_login(
     caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -854,6 +1153,7 @@ async fn show_deepseek_login(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 async fn deepseek_web_ensure(
     caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -865,6 +1165,7 @@ async fn deepseek_web_ensure(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 async fn deepseek_web_status(
     caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -874,6 +1175,7 @@ async fn deepseek_web_status(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 async fn deepseek_web_history(
     caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -894,19 +1196,27 @@ fn start_settings_drag(caller: tauri::WebviewWindow, app: tauri::AppHandle) -> R
 #[tauri::command]
 fn hide_settings_window(caller: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
     require_settings(&caller)?;
-    app.get_webview_window("settings")
-        .ok_or_else(|| "settings window missing".to_string())?
-        .hide()
-        .map_err(|error| error.to_string())
+    let window = app
+        .get_webview_window(SETTINGS_WINDOW_LABEL)
+        .ok_or_else(|| "settings window missing".to_string())?;
+    if is_lite_edition() {
+        window
+            .destroy()
+            .map_err(|error| error.to_string())
+    } else {
+        window.hide().map_err(|error| error.to_string())
+    }
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 fn begin_interaction_region_session(caller: tauri::WebviewWindow) -> Result<u64, String> {
     require_background(&caller)?;
     windows_integration::begin_interaction_region_session()
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 fn update_interaction_regions(
     caller: tauri::WebviewWindow,
     regions: Vec<windows_integration::InteractionRegionInput>,
@@ -919,6 +1229,7 @@ fn update_interaction_regions(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 fn desktop_layout_metrics(
     caller: tauri::WebviewWindow,
 ) -> Result<windows_integration::DesktopLayoutMetrics, String> {
@@ -927,6 +1238,7 @@ fn desktop_layout_metrics(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 async fn send_chat(
     caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -967,6 +1279,7 @@ async fn send_chat(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 fn api_history(
     caller: tauri::WebviewWindow,
     state: tauri::State<'_, chat::ChatState>,
@@ -977,6 +1290,7 @@ fn api_history(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 async fn cancel_chat(
     caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -996,6 +1310,7 @@ async fn cancel_chat(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 async fn connect_harness(
     caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -1009,6 +1324,7 @@ async fn connect_harness(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 async fn harness_history(
     caller: tauri::WebviewWindow,
     state: tauri::State<'_, chat::ChatState>,
@@ -1018,12 +1334,14 @@ async fn harness_history(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 async fn harness_presets(caller: tauri::WebviewWindow) -> Result<serde_json::Value, String> {
     require_background(&caller)?;
     chat::harness_presets().await
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 async fn harness_set_preset(
     caller: tauri::WebviewWindow,
     state: tauri::State<'_, chat::ChatState>,
@@ -1034,6 +1352,7 @@ async fn harness_set_preset(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 async fn harness_controls(
     caller: tauri::WebviewWindow,
     state: tauri::State<'_, chat::ChatState>,
@@ -1043,6 +1362,7 @@ async fn harness_controls(
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 async fn harness_set_permission(
     caller: tauri::WebviewWindow,
     state: tauri::State<'_, chat::ChatState>,
@@ -1052,16 +1372,20 @@ async fn harness_set_permission(
     chat::harness_set_permission(state, permission).await
 }
 
+#[cfg(not(feature = "lite"))]
 static HARNESS_STATUS_CACHE: OnceLock<RwLock<serde_json::Value>> = OnceLock::new();
 
 /// The wallpaper bridge exposes a small, versioned protocol of its own.  A
 /// listening service on port 3080 is not sufficient proof that it is our
 /// bridge: it may be DSH's regular web UI, an older bridge, or another local
 /// service altogether.
+#[cfg(not(feature = "lite"))]
 const HARNESS_BRIDGE_PROTOCOL_VERSION: u64 = 1;
+#[cfg(not(feature = "lite"))]
 const REQUIRED_HARNESS_BRIDGE_CAPABILITIES: &[&str] =
     &["sessions", "history", "sse", "cancel", "approval-handoff"];
 
+#[cfg(not(feature = "lite"))]
 fn harness_status_cache() -> &'static RwLock<serde_json::Value> {
     HARNESS_STATUS_CACHE
         .get_or_init(|| RwLock::new(serde_json::json!({ "availability": "offline" })))
@@ -1071,6 +1395,7 @@ fn harness_status_cache() -> &'static RwLock<serde_json::Value> {
 /// the WebView.  This is intentionally fail-closed: only a bridge that speaks
 /// the fresh-session protocol we need can enable Harness mode. `resume` is an
 /// optional DSH persistence feature and cannot be required for a new session.
+#[cfg(not(feature = "lite"))]
 fn compatible_harness_bridge_status(data: &serde_json::Value) -> Option<serde_json::Value> {
     let protocol_version = data
         .get("protocolVersion")
@@ -1124,6 +1449,7 @@ fn compatible_harness_bridge_status(data: &serde_json::Value) -> Option<serde_js
     Some(serde_json::Value::Object(status))
 }
 
+#[cfg(not(feature = "lite"))]
 async fn fetch_harness_status() -> serde_json::Value {
     let client = match reqwest::Client::builder()
         // Status probing decides whether the UI exposes Harness mode. It must
@@ -1172,6 +1498,7 @@ async fn fetch_harness_status() -> serde_json::Value {
 /// the compatible Bridge validation above: any non-2xx response (including a
 /// gateway, auth challenge, or unrelated service error) must be treated as
 /// offline rather than an apparently usable local DSH instance.
+#[cfg(not(feature = "lite"))]
 fn root_probe_availability(status: Option<reqwest::StatusCode>) -> HarnessAvailability {
     match status {
         Some(status) if status.is_success() => HarnessAvailability::WebOnly,
@@ -1180,6 +1507,7 @@ fn root_probe_availability(status: Option<reqwest::StatusCode>) -> HarnessAvaila
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "lite"))]
 mod harness_status_tests {
     use super::{compatible_harness_bridge_status, root_probe_availability};
     use crate::app_core::HarnessAvailability;
@@ -1313,6 +1641,7 @@ mod harness_status_tests {
 }
 
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 fn probe_harness(caller: tauri::WebviewWindow) -> Result<serde_json::Value, String> {
     require_background(&caller)?;
     Ok(harness_status_cache()
@@ -1321,6 +1650,7 @@ fn probe_harness(caller: tauri::WebviewWindow) -> Result<serde_json::Value, Stri
         .unwrap_or_else(|_| serde_json::json!({ "availability": "offline" })))
 }
 
+#[cfg(not(feature = "lite"))]
 fn start_harness_monitor(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut consecutive_successes = 0u8;
@@ -1375,38 +1705,49 @@ fn start_harness_monitor(app: tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // DPI 感知已在 main.rs 进程入口设置（Per-Monitor DPI Aware）。
-    let appearance_paths =
-        appearance::AppearancePaths::from_local_app_data().expect("local app data unavailable");
-    appearance_paths
-        .create()
-        .expect("failed to create appearance directories");
-    let appearance_repository = appearance::AppearanceRepository::open(&appearance_paths.catalog)
-        .expect("failed to open appearance catalog");
-    let appearance_importer = appearance::AppearanceImporter::new(appearance_paths.clone())
-        .expect("failed to initialize appearance importer");
-    let appearance_exporter = appearance::AppearanceExporter::new(appearance_paths.clone())
-        .expect("failed to initialize appearance exporter");
-    tauri::Builder::default()
-        // This must be registered before plugins that start resident services
-        // or create native windows. A second launch then exits before it can
-        // create another WorkerW host or duplicate tray icon.
-        .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {
-            log::info!("second dsh-wallpaper launch redirected to existing instance");
-        }))
-        .plugin(tauri_plugin_log::Builder::new().build())
-        .plugin(tauri_plugin_dialog::init())
-        .manage(AppCore::default())
-        .manage(appearance::AppearanceState::with_runtime_io(
-            appearance_repository,
-            appearance_importer,
-            appearance_exporter,
-            appearance_paths,
-        ))
-        .manage(chat::ChatState::default())
-        .manage(deepseek_web::DeepSeekWebState::default())
-        .manage(ManagedDshState::default())
-        .invoke_handler(tauri::generate_handler![
+    let _ = LITE_EDITION.set(false);
+    run_with_edition(false);
+}
+
+/// Entry point used by the first public Lite package. The two editions share
+/// the audited Windows host and lock-screen implementation, but Lite does
+/// not start chat, DeepSeek WebView, Harness probing, or desktop-workspace
+/// monitors.
+pub fn run_lite() {
+    let _ = LITE_EDITION.set(true);
+    run_with_edition(true);
+}
+
+#[cfg(feature = "lite")]
+macro_rules! register_edition_commands {
+    ($builder:expr) => {
+        $builder.invoke_handler(tauri::generate_handler![
+            get_app_snapshot,
+            dispatch_app_action,
+            lite_settings_get,
+            lite_settings_save,
+            lite_image_import,
+            lite_image_resolve,
+            set_lock_screen_enabled,
+            clear_stale_lock_screen_backup,
+            get_lock_screen_diagnostics,
+            set_autostart,
+            autostart_status,
+            translucent_tb_status,
+            launch_translucent_tb,
+            open_translucent_tb_install,
+            open_windows_lock_screen_settings,
+            release_native_bootstrap,
+            start_settings_drag,
+            hide_settings_window
+        ])
+    };
+}
+
+#[cfg(not(feature = "lite"))]
+macro_rules! register_edition_commands {
+    ($builder:expr) => {
+        $builder.invoke_handler(tauri::generate_handler![
             get_app_snapshot,
             set_interaction_enabled,
             select_backend,
@@ -1460,7 +1801,58 @@ pub fn run() {
             appearance::commands::appearance_resolve_asset,
             appearance::commands::appearance_resolve_library_asset
         ])
-        .setup(|app| {
+    };
+}
+
+fn run_with_edition(lite: bool) {
+    // DPI 感知已在 main.rs 进程入口设置（Per-Monitor DPI Aware）。
+    if !windows_integration::acquire_shared_wallpaper_host() {
+        return;
+    }
+    let mut builder = tauri::Builder::default()
+        // This must be registered before plugins that start resident services
+        // or create native windows. A second launch then exits before it can
+        // create another WorkerW host or duplicate tray icon.
+        .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {
+            log::info!("second dsh-wallpaper launch redirected to existing instance");
+        }))
+        .plugin(tauri_plugin_log::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .manage(AppCore::default());
+
+    // The Lite process has no chat or theme-library surface. Avoid opening
+    // SQLite, allocating the encrypted API store, or creating a managed DSH
+    // child state at startup; those services are registered only by the full
+    // edition. Commands remain compiled for the full build, but the Lite
+    // capability files do not grant them to either Lite WebView.
+    #[cfg(not(feature = "lite"))]
+    {
+        let appearance_paths = appearance::AppearancePaths::from_local_app_data()
+            .expect("local app data unavailable");
+        appearance_paths
+            .create()
+            .expect("failed to create appearance directories");
+        let appearance_repository =
+            appearance::AppearanceRepository::open(&appearance_paths.catalog)
+                .expect("failed to open appearance catalog");
+        let appearance_importer = appearance::AppearanceImporter::new(appearance_paths.clone())
+            .expect("failed to initialize appearance importer");
+        let appearance_exporter = appearance::AppearanceExporter::new(appearance_paths.clone())
+            .expect("failed to initialize appearance exporter");
+        builder = builder
+            .manage(appearance::AppearanceState::with_runtime_io(
+                appearance_repository,
+                appearance_importer,
+                appearance_exporter,
+                appearance_paths,
+            ))
+            .manage(chat::ChatState::default())
+            .manage(deepseek_web::DeepSeekWebState::default())
+            .manage(ManagedDshState::default());
+    }
+
+    register_edition_commands!(builder)
+        .setup(move |app| {
             native_bootstrap::report_ready();
             if let Err(error) = windows_integration::start_wallpaper_host(app.handle().clone()) {
                 log::error!("WorkerW wallpaper host failed: {error}");
@@ -1473,9 +1865,12 @@ pub fn run() {
             if let Err(error) = windows_integration::register_session_events(app.handle()) {
                 log::warn!("session notification failed: {error}");
             }
-            windows_integration::start_foreground_monitor(app.handle().clone());
-            windows_integration::start_desktop_workspace_monitor(app.handle().clone());
-            start_harness_monitor(app.handle().clone());
+            #[cfg(not(feature = "lite"))]
+            {
+                windows_integration::start_foreground_monitor(app.handle().clone());
+                windows_integration::start_desktop_workspace_monitor(app.handle().clone());
+                start_harness_monitor(app.handle().clone());
+            }
             // Keep an enabled pre-StartupTask installation running across a
             // package update. The migration is best-effort and leaves the
             // legacy Run entry intact if Windows asks for user approval or
@@ -1491,22 +1886,32 @@ pub fn run() {
                     Err(error) => log::warn!("autostart migration deferred: {error}"),
                 }
             });
-            let menu = MenuBuilder::new(app)
-                .text("show", "显示中央会话窗")
-                .text("hide", "隐藏中央会话窗")
-                .separator()
-                .text("deepseek-web", "DeepSeek 网页模式")
-                .text("deepseek-api", "DeepSeek API 模式")
-                .text("harness", "Harness 模式")
-                .separator()
-                .text("lock", "锁定 Windows")
-                .text("settings", "设置")
-                .separator()
-                .text("quit", "退出")
-                .build()?;
+            let menu = if lite {
+                MenuBuilder::new(app)
+                    .text("settings", "设置")
+                    .separator()
+                    .text("lock", "锁定 Windows")
+                    .separator()
+                    .text("quit", "退出")
+                    .build()?
+            } else {
+                MenuBuilder::new(app)
+                    .text("show", "显示中央会话窗")
+                    .text("hide", "隐藏中央会话窗")
+                    .separator()
+                    .text("deepseek-web", "DeepSeek 网页模式")
+                    .text("deepseek-api", "DeepSeek API 模式")
+                    .text("harness", "Harness 模式")
+                    .separator()
+                    .text("lock", "锁定 Windows")
+                    .text("settings", "设置")
+                    .separator()
+                    .text("quit", "退出")
+                    .build()?
+            };
             let mut tray = TrayIconBuilder::with_id("dsh-wallpaper")
                 .menu(&menu)
-                .tooltip("DSH Wallpaper")
+                .tooltip(if lite { "DSH Wallpaper Lite" } else { "DSH Wallpaper" })
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => {

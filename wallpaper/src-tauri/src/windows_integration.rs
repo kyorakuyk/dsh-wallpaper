@@ -49,8 +49,8 @@ use windows::{
     Win32::{
         Foundation::{
             APPMODEL_ERROR_NO_PACKAGE, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER,
-            ERROR_MORE_DATA, ERROR_SUCCESS, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_ABANDONED,
-            WAIT_OBJECT_0, WPARAM,
+            ERROR_MORE_DATA, ERROR_SUCCESS, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM,
+            LRESULT, POINT, RECT, WAIT_ABANDONED, WAIT_OBJECT_0, WPARAM,
         },
         Graphics::{
             Dwm::{
@@ -95,6 +95,40 @@ use windows::{
 
 #[cfg(windows)]
 const PROGMAN_SPAWN_WORKERW: u32 = 0x052C;
+
+/// Full and Lite are separate packages, but they must never both own the
+/// Explorer wallpaper host. A shared user-session mutex closes that gap while
+/// still allowing the normal per-package single-instance plugin to handle
+/// duplicate launches within one edition.
+#[cfg(windows)]
+const WALLPAPER_HOST_MUTEX_NAME: windows::core::PCWSTR =
+    w!("Local\\DSHWallpaper.DesktopHost.v1");
+
+#[cfg(windows)]
+// Store only the raw value in the static: the windows crate's HANDLE wraps a
+// raw pointer and intentionally is not Send/Sync, while this process-local
+// guard must be visible from the startup path without a mutex of its own.
+static WALLPAPER_HOST_MUTEX: OnceLock<isize> = OnceLock::new();
+
+#[cfg(windows)]
+pub fn acquire_shared_wallpaper_host() -> bool {
+    let handle = match unsafe { CreateMutexW(None, true, WALLPAPER_HOST_MUTEX_NAME) } {
+        Ok(handle) => handle,
+        Err(error) => {
+            log::error!("无法建立壁纸宿主互斥锁：{error}");
+            return false;
+        }
+    };
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(handle);
+        }
+        log::warn!("检测到另一个 DSH Wallpaper 版本正在运行；本实例不会接管桌面宿主");
+        return false;
+    }
+    let _ = WALLPAPER_HOST_MUTEX.set(handle.0 as isize);
+    true
+}
 
 #[cfg(windows)]
 static WALLPAPER_RECOVERY_QUEUED: AtomicBool = AtomicBool::new(false);
@@ -1514,6 +1548,26 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
     });
 }
 
+/// Lock-screen ownership is shared by the Lite and full packages. Their AppX
+/// identifiers intentionally differ, so `app_config_dir()` would otherwise
+/// strand the only recovery manifest in whichever edition performed the
+/// takeover first. Prefer one user-scoped directory and fall back to the
+/// legacy full-edition directory when it already contains a recovery point.
+#[cfg(windows)]
+fn lock_screen_config_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let legacy = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let shared = std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| legacy.clone())
+        .join("DSHWallpaper");
+    if legacy.join("lock-screen").exists() && !shared.join("lock-screen").exists() {
+        return Ok(legacy);
+    }
+    std::fs::create_dir_all(&shared)
+        .map_err(|error| format!("无法创建共享锁屏恢复目录：{error}"))?;
+    Ok(shared)
+}
+
 #[cfg(windows)]
 pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<String, String> {
     let _transaction = LOCK_SCREEN_TRANSACTION
@@ -1521,7 +1575,7 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
         .lock()
         .await;
     let _cross_process_transaction = CrossProcessLockScreenTransaction::acquire()?;
-    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let config_dir = lock_screen_config_dir(app)?;
     // Both takeover *and* restoration call the system setter.  Do not let an
     // unpackaged dev/NSIS process mutate the lock screen just because it finds
     // a recovery manifest left by an earlier run. The supported surface is an
@@ -1786,10 +1840,7 @@ pub async fn clear_stale_lock_screen_backup(app: &tauri::AppHandle) -> Result<St
     if !has_package_identity()? {
         return Err("当前进程没有 MSIX 包身份，拒绝清理锁屏恢复点。".into());
     }
-    let config_dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|error| error.to_string())?;
+    let config_dir = lock_screen_config_dir(app)?;
     let current = LockScreen::OriginalImageFile()
         .map_err(|_| "无法读取当前锁屏图片；旧恢复点已保留。".to_string())?
         .AbsoluteUri()
@@ -2359,7 +2410,7 @@ pub struct LockScreenDiagnostics {
 
 #[cfg(windows)]
 pub fn lock_screen_diagnostics(app: &tauri::AppHandle) -> Result<LockScreenDiagnostics, String> {
-    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let config_dir = lock_screen_config_dir(app)?;
     let original_image_uri = LockScreen::OriginalImageFile()
         .ok()
         .and_then(|uri| uri.AbsoluteUri().ok())
@@ -2423,6 +2474,10 @@ pub fn attach_to_workerw(_: &tauri::WebviewWindow) -> Result<(), String> {
 #[cfg(not(windows))]
 pub fn start_wallpaper_host(_: tauri::AppHandle) -> Result<(), String> {
     Ok(())
+}
+#[cfg(not(windows))]
+pub fn acquire_shared_wallpaper_host() -> bool {
+    true
 }
 #[cfg(not(windows))]
 pub fn register_session_events(_: &tauri::AppHandle) -> Result<(), String> {

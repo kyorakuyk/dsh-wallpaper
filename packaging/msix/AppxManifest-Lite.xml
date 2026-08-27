@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows/10/5"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap5 uap10 rescap">
+  <Identity Name="com.dsh.wallpaper.lite" Publisher="CN=DSH Wallpaper Test" Version="0.1.0.0" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>DSH Wallpaper Lite</DisplayName>
+    <PublisherDisplayName>DSH Wallpaper Test</PublisherDisplayName>
+    <Description>Lightweight Windows lock-screen and desktop wallpaper.</Description>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Resources><Resource Language="zh-cn" /></Resources>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26100.0" />
+    <PackageDependency Name="Microsoft.VCLibs.140.00.UWPDesktop" Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" MinVersion="14.0.0.0" />
+  </Dependencies>
+  <Capabilities><rescap:Capability Name="runFullTrust" /></Capabilities>
+  <Applications>
+    <Application Id="WallpaperLite" Executable="dsh-wallpaper-lite.exe" uap10:RuntimeBehavior="packagedClassicApp" uap10:TrustLevel="mediumIL">
+      <uap:VisualElements DisplayName="DSH Wallpaper Lite" Description="Lightweight lock-screen and desktop wallpaper" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png" BackgroundColor="transparent" />
+      <uap5:Extension Category="windows.startupTask" Executable="dsh-wallpaper-lite.exe" EntryPoint="Windows.FullTrustApplication">
+        <uap5:StartupTask TaskId="DshWallpaperStartup" Enabled="false" DisplayName="DSH Wallpaper Lite" />
+      </uap5:Extension>
+    </Application>
+  </Applications>
+</Package>
