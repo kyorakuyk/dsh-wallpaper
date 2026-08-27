@@ -38,7 +38,18 @@ export function LiteSettingsWindow() {
 
   const refreshDiagnostics = async () => {
     try {
-      setLockScreenDiagnostics(await liteNative.lockScreenDiagnostics())
+      const diagnostics = await liteNative.lockScreenDiagnostics()
+      setLockScreenDiagnostics(diagnostics)
+      // A user may install Lite while the full edition's shared lock-screen
+      // recovery point is still active. Mirror Windows' authoritative state
+      // instead of presenting a misleading unchecked toggle.
+      const current = settingsRef.current
+      if (current.lockScreenEnabled !== diagnostics.managedImageActive) {
+        const next = { ...current, lockScreenEnabled: diagnostics.managedImageActive }
+        settingsRef.current = next
+        setSettings(next)
+        void saveLiteSettings(next).catch((error) => setNotice(`设置同步失败：${String(error)}`))
+      }
     } catch (error) {
       setNotice(`锁屏检查失败：${String(error)}`)
     }
@@ -79,11 +90,11 @@ export function LiteSettingsWindow() {
     void loadLiteSettings().then((loaded) => {
       settingsRef.current = loaded
       setSettings(loaded)
+      void refreshDiagnostics()
+      void refreshAutostart()
+      void refreshTranslucentTb()
+      void refreshCustomImages()
     })
-    void refreshDiagnostics()
-    void refreshAutostart()
-    void refreshTranslucentTb()
-    void refreshCustomImages()
     if (!('__TAURI_INTERNALS__' in window)) return
     const current = getCurrentWindow()
     const closeListener = current.onCloseRequested((event) => {
