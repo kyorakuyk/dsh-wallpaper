@@ -152,6 +152,21 @@ export function LiteSettingsWindow() {
     }
   }
 
+  const clearStaleLockScreenBackup = async () => {
+    if (lockOperationRef.current) return
+    lockOperationRef.current = true
+    setLockScreenBusy(true)
+    try {
+      setNotice(await liteNative.clearStaleLockScreenBackup())
+      await refreshDiagnostics()
+    } catch (error) {
+      setNotice(`清理旧锁屏恢复点失败：${String(error)}`)
+    } finally {
+      lockOperationRef.current = false
+      setLockScreenBusy(false)
+    }
+  }
+
   const chooseCustomImage = async (slot: liteNative.LiteImageSlot) => {
     try {
       const path = await liteNative.chooseImage(slot)
@@ -191,7 +206,7 @@ export function LiteSettingsWindow() {
         <SettingRow title="接管 Windows 锁屏图片" detail={lockScreenBusy ? '正在应用系统设置，请稍候。' : '密码输入页仍由 Windows 原生处理。'}><Toggle label="接管 Windows 锁屏图片" checked={settings.lockScreenEnabled} disabled={lockScreenBusy} onChange={(value) => void setLockScreen(value)} /></SettingRow>
         <SettingRow title="登录后自动启动" detail={autostartBusy ? '正在更新启动任务。' : '使用当前用户的 Windows 启动任务。'}><Toggle label="登录后自动启动" checked={settings.autostart} disabled={autostartBusy} onChange={(value) => void setAutostart(value)} /></SettingRow>
         <div className="lite-actions"><button type="button" onClick={() => void openLockScreenSettings()}>打开 Windows 锁屏设置</button><button type="button" onClick={() => void refreshDiagnostics()}>刷新诊断</button></div>
-        {lockScreenDiagnostics && <div className="lite-diagnostics"><strong>{lockScreenDiagnostics.takeoverAvailable ? '锁屏接管可用' : '当前暂不可接管锁屏'}</strong>{lockScreenDiagnostics.warnings.slice(0, 2).map((warning) => <span key={warning}>{warning}</span>)}</div>}
+        {lockScreenDiagnostics && <div className="lite-diagnostics"><strong>{lockScreenDiagnostics.takeoverAvailable ? '锁屏接管可用' : '当前暂不可接管锁屏'}</strong>{lockScreenDiagnostics.warnings.slice(0, 2).map((warning) => <span key={warning}>{warning}</span>)}{lockScreenDiagnostics.staleBackup && <button type="button" className="lite-diagnostics-action" disabled={lockScreenBusy} onClick={() => void clearStaleLockScreenBackup()}>清理过期恢复点</button>}</div>}
       </section>
 
       <section className="lite-card">

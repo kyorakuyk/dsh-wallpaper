@@ -17,6 +17,10 @@ export async function setLockScreen(enabled: boolean): Promise<string> {
   return invokeNative<string>('set_lock_screen_enabled', { enabled })
 }
 
+export async function clearStaleLockScreenBackup(): Promise<string> {
+  return invokeNative<string>('clear_stale_lock_screen_backup')
+}
+
 export async function autostartStatus(): Promise<AutostartStatus> {
   return invokeNative<AutostartStatus>('autostart_status')
 }
