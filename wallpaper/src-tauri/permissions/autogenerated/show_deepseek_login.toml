@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-show-deepseek-login"
+description = "Enables the show_deepseek_login command without any pre-configured scope."
+commands.allow = ["show_deepseek_login"]
+
+[[permission]]
+identifier = "deny-show-deepseek-login"
+description = "Denies the show_deepseek_login command without any pre-configured scope."
+commands.deny = ["show_deepseek_login"]

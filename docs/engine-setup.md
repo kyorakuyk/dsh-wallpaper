@@ -30,19 +30,20 @@ pnpm build   # 产物在 wallpaper/dist/（index.html + assets/）
 
 > 长期运行建议：把静态服务器做成自启服务，或用 `python -m http.server` / `npx serve` 等常驻进程。
 
-## 方式 B：Tauri 壳（自研透明窗口，P2）
+## 方式 B：Tauri 壳（自研 WorkerW 宿主，P2）
 
 需要"真壁纸层 + 穿透控制 + 托盘 + 系统锁屏联动"时，用 Tauri 2 做壳：
 
-- 透明无边框全屏窗口，层级置于桌面图标之下（WorkerW 注入，参考本地 `dsh-desktop/src-tauri`）
+- 单一无边框 `background` WebView 注入 WorkerW，承载画面与桌面内热区；非热区由原生命中测试交还 Explorer
 - 通过 tauri 事件把 SessionSwitch（锁屏/解锁）转发给前端状态机
 - 提供托盘菜单（切换形态/设置/退出）
-- 注册表 Run 键实现开机自启（含可选的自启 DSH 后端）
+- MSIX 正式包使用固定 TaskId 的 Windows StartupTask 实现开机自启；旧版、开发版和不带该扩展的安装包回退到当前用户 Run 项。更新时会读取系统真实状态，并在可行时把旧项迁移到 StartupTask。
+- 进程入口会在 Tauri/WebView2 初始化前尝试加载一张只读 `sleep.png` 原生首帧并挂到 WorkerW 下方；背景 WebView 完成两帧绘制后释放。资源或 WorkerW 不可用时安全跳过，不接管安全桌面。
 
 架构上**只换外壳**：`wallpaper/` 前端不变，Tauri 壳负责窗口/系统事件/托盘。
 
 ## 注意事项
 
-- **登录态**：网页壁纸模式下 DSH 会话通过 `http://127.0.0.1:3080` 打开新窗口；deepseek.com 登录在用户浏览器完成
+- **登录态**：网页实验入口使用应用内持久 WebView2 打开 DeepSeek 官方页面；Cookie 仅由 WebView2 保存，本应用不读取、复制或记录。DOM 特征无法识别时会安全提示适配器需要更新。DSH 会话通过本地 bridge `http://127.0.0.1:3080` 连接。
 - **穿透**：网页壁纸引擎的鼠标穿透策略各异；需要精细控制时走 Tauri 壳
-- **3080 探测**：前端每 3s 探测 `http://127.0.0.1:3080`，连续 2 次一致才触发切换（防抖动）
+- **3080 探测**：只在 `/api/wallpaper/v1/status` 的版本、鉴权状态与新建会话所需能力集完整匹配时启用 Harness；端口可达本身不会启用。`resume` 仅在 DSH 安装会话持久化服务时出现，不影响新建会话。

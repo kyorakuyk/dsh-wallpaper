@@ -1,6 +1,6 @@
 {
   "name": "dsh-wallpaper-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Loopback DSH session bridge for the dsh-wallpaper desktop app.",
   "type": "module",
   "main": "lib/index.js",

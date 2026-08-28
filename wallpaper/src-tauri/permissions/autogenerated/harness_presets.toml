@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-harness-presets"
+description = "Enables the harness_presets command without any pre-configured scope."
+commands.allow = ["harness_presets"]
+
+[[permission]]
+identifier = "deny-harness-presets"
+description = "Denies the harness_presets command without any pre-configured scope."
+commands.deny = ["harness_presets"]

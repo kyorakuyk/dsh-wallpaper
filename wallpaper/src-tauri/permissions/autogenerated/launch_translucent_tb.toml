@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-launch-translucent-tb"
+description = "Enables the launch_translucent_tb command without any pre-configured scope."
+commands.allow = ["launch_translucent_tb"]
+
+[[permission]]
+identifier = "deny-launch-translucent-tb"
+description = "Denies the launch_translucent_tb command without any pre-configured scope."
+commands.deny = ["launch_translucent_tb"]

@@ -3,16 +3,18 @@
   "productName": "dsh-wallpaper",
   "version": "0.2.0",
   "identifier": "com.dsh.wallpaper",
+  "mainBinaryName": "dsh-wallpaper",
   "build": {
     "beforeDevCommand": "pnpm dev",
-    "devUrl": "http://127.0.0.1:5177",
+    "devUrl": "http://127.0.0.1:5187",
     "beforeBuildCommand": "pnpm build",
-    "frontendDist": "../dist"
+    "frontendDist": "../dist",
+    "features": ["full"]
   },
   "app": {
     "windows": [
-      { "label": "background", "title": "DSH Wallpaper", "url": "index.html?surface=background", "fullscreen": false, "width": 1280, "height": 720, "decorations": false, "resizable": false, "focus": false, "skipTaskbar": true, "transparent": false },
-      { "label": "interaction", "title": "DSH Wallpaper Chat", "width": 760, "height": 720, "decorations": false, "transparent": true, "alwaysOnTop": true, "skipTaskbar": true, "visible": false }
+      { "label": "background", "title": "DSH Wallpaper", "url": "index.html?surface=background", "fullscreen": false, "width": 1280, "height": 720, "decorations": false, "resizable": false, "focus": false, "skipTaskbar": true, "transparent": false, "visible": false },
+      { "label": "settings", "title": "DSH Wallpaper Settings", "url": "index.html?surface=settings", "width": 920, "height": 680, "minWidth": 760, "minHeight": 560, "center": true, "decorations": false, "resizable": true, "focus": true, "skipTaskbar": false, "transparent": true, "visible": false }
     ],
     "security": { "csp": null }
   },

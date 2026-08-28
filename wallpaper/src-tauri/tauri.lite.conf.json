@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "dsh-wallpaper-lite",
+  "version": "0.1.0",
+  "identifier": "com.dsh.wallpaper.lite",
+  "mainBinaryName": "dsh-wallpaper-lite",
+  "build": {
+    "beforeDevCommand": "pnpm dev -- --mode lite",
+    "devUrl": "http://127.0.0.1:5188",
+    "beforeBuildCommand": "pnpm build:lite",
+    "frontendDist": "../dist-lite",
+    "features": ["lite"]
+  },
+  "app": {
+    "security": { "csp": null, "capabilities": ["lite-background", "lite-settings"] },
+    "windows": [
+      { "label": "background", "title": "DSH Wallpaper Lite", "url": "index.html?surface=background", "fullscreen": false, "width": 1280, "height": 720, "decorations": false, "resizable": false, "focus": false, "skipTaskbar": true, "transparent": false, "visible": false }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "category": "Entertainment",
+    "shortDescription": "轻量 Windows 锁屏与桌面壁纸",
+    "icon": [],
+    "resources": ["../public/personas/wake-frames/variant-anima/sleep.png"],
+    "windows": { "nsis": { "installMode": "currentUser" } }
+  }
+}

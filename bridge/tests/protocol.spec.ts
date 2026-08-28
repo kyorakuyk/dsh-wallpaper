@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { SessionId, Session } from '@deepseek-ai/dsh-session'
-import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
-import { bearerAuthorized, mapSessionEvent, parseSessionRoute } from '../src/protocol.ts'
+import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { bearerAuthorized, errorReference, isSafeSessionId, isVisibleWallpaperMessage, mapSessionEvent, parseSessionRoute } from '../src/protocol.ts'
 
 describe('wallpaper bridge protocol', () => {
   it('parses only versioned session routes', () => {
@@ -9,12 +9,29 @@ describe('wallpaper bridge protocol', () => {
     expect(parseSessionRoute('/api/wallpaper/v1/sessions/a%20b/events')).toEqual({ kind: 'events', sessionId: 'a b' })
     expect(parseSessionRoute('/api/wallpaper/v2/sessions')).toBeNull()
     expect(parseSessionRoute('/api/wallpaper/v1/sessions/a/private')).toBeNull()
+    expect(parseSessionRoute('/api/wallpaper/v1/sessions/%E0%A4%A/events')).toBeNull()
+    expect(parseSessionRoute('/api/wallpaper/v1/sessions/a%2Fb/events')).toBeNull()
   })
 
   it('requires an exact bearer token', () => {
-    expect(bearerAuthorized('Bearer secret-token', 'secret-token')).toBe(true)
-    expect(bearerAuthorized('Bearer secret-token-x', 'secret-token')).toBe(false)
+    const token = 'a'.repeat(43)
+    expect(bearerAuthorized(`Bearer ${token}`, token)).toBe(true)
+    expect(bearerAuthorized(`Bearer ${token}x`, token)).toBe(false)
+    expect(bearerAuthorized('Bearer secret-token', 'secret-token')).toBe(false)
     expect(bearerAuthorized(undefined, 'secret-token')).toBe(false)
+  })
+
+  it('keeps session identifiers and public error references safe', () => {
+    expect(isSafeSessionId('wallpaper-123')).toBe(true)
+    expect(isSafeSessionId('../outside')).toBe(false)
+    expect(isSafeSessionId(`a${String.fromCharCode(0)}b`)).toBe(false)
+    expect(isSafeSessionId('a'.repeat(201))).toBe(false)
+
+    const secret = 'Bearer this-must-not-leak'
+    const reference = errorReference(new Error(secret))
+    expect(reference).toMatch(/^[a-f0-9]{12}$/)
+    expect(reference).not.toContain(secret)
+    expect(errorReference(new Error(secret))).toBe(reference)
   })
 
   it('maps text deltas and usage into stable wallpaper events', () => {
@@ -32,6 +49,42 @@ describe('wallpaper bridge protocol', () => {
     expect(mapSessionEvent(event)).toEqual([
       { type: 'message', role: 'assistant', content: 'done' },
       { type: 'usage', input: 12, output: 3, cacheRead: 4 },
+    ])
+  })
+
+  it('maps ask_user_question tool calls into a desktop question prompt', () => {
+    const session = Session.create(SessionId('question-session'))
+    const event = session.append('tool/call', {
+      turn: 1,
+      step: 1,
+      callId: 'call-question' as never,
+      name: 'ask_user_question',
+      arguments: JSON.stringify({ questions: [{ id: 'choice', question: '继续吗？', options: [{ label: '继续' }] }] }),
+    })
+    expect(mapSessionEvent(event, 'question-session')).toEqual([
+      { type: 'status', activity: 'tool' },
+      { type: 'question-required', sessionId: 'question-session', questions: [{ id: 'choice', question: '继续吗？', options: [{ label: '继续' }] }] },
+    ])
+  })
+
+  it('never exposes plugin-injected runtime context as a user chat message', () => {
+    const session = Session.create(SessionId('bridge-context-filter'))
+    const injected = createUserMessage({
+      content: [{ type: 'text', text: 'internal runtime context' }],
+      source: { kind: 'plugin', plugin: 'agent-instructions' },
+    })
+    const user = createUserMessage({
+      content: [{ type: 'text', text: 'visible user message' }],
+      source: { kind: 'user' },
+    })
+    const injectedEvent = session.append('user/message', injected, { surfaceOp: 'append' })
+    const userEvent = session.append('user/message', user, { surfaceOp: 'append' })
+
+    expect(isVisibleWallpaperMessage(injected)).toBe(false)
+    expect(isVisibleWallpaperMessage(user)).toBe(true)
+    expect(mapSessionEvent(injectedEvent)).toEqual([])
+    expect(mapSessionEvent(userEvent)).toEqual([
+      { type: 'message', role: 'user', content: 'visible user message' },
     ])
   })
 })

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-lock-screen-diagnostics"
+description = "Enables the get_lock_screen_diagnostics command without any pre-configured scope."
+commands.allow = ["get_lock_screen_diagnostics"]
+
+[[permission]]
+identifier = "deny-get-lock-screen-diagnostics"
+description = "Denies the get_lock_screen_diagnostics command without any pre-configured scope."
+commands.deny = ["get_lock_screen_diagnostics"]

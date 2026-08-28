@@ -3,7 +3,27 @@ name = "dsh-wallpaper"
 version = "0.2.0"
 description = "Interactive DeepSeek desktop wallpaper"
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.77.2"
+
+[features]
+default = ["full"]
+full = [
+  "dep:base64",
+  "dep:futures-util",
+  "dep:keyring",
+  "dep:reqwest",
+  "dep:rusqlite",
+  "dep:sha2",
+  "dep:urlencoding",
+  "dep:zip",
+]
+lite = ["dep:base64", "dep:urlencoding"]
+lockscreen-probe = ["dep:urlencoding"]
+
+[[bin]]
+name = "lockscreen_probe"
+path = "src/bin/lockscreen_probe.rs"
+required-features = ["lockscreen-probe"]
 
 [lib]
 name = "dsh_wallpaper_lib"
@@ -15,29 +35,61 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-log = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2.4.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
 dirs = "6"
-keyring = { version = "3", features = ["windows-native"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+keyring = { version = "3", features = ["windows-native"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"], optional = true }
 tokio = { version = "1", features = ["macros", "sync", "time"] }
-futures-util = "0.3"
-urlencoding = "2"
+futures-util = { version = "0.3", optional = true }
+urlencoding = { version = "2", optional = true }
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+base64 = { version = "0.22", optional = true }
+sha2 = { version = "0.10", optional = true }
+zip = { version = "2.2", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
+  "ApplicationModel",
   "Foundation",
   "Storage",
   "Storage_Streams",
   "System_UserProfile",
   "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_Graphics_GdiPlus",
+  "Win32_System_Com",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Security_Credentials",
+  "Win32_Security_Cryptography",
   "Win32_System_RemoteDesktop",
+  "Win32_System_Registry",
+  "Win32_System_IO",
+  "Win32_System_LibraryLoader",
+  "Win32_Storage_FileSystem",
   "Win32_System_Threading",
+  "Win32_Storage_Packaging_Appx",
+  "Win32_UI_Accessibility",
   "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging"
 ] }
 
 [profile.release]
 strip = true
+
+# Keep the Windows single-instance implementation auditable and pinned.  The
+# upstream 2.4.3 crate can let a concurrent second launch pass through during
+# the short interval between creating its mutex and hidden IPC window, which
+# is unacceptable for a resident WorkerW/tray application.
+[patch.crates-io]
+tauri-plugin-single-instance = { path = "vendor/tauri-plugin-single-instance" }

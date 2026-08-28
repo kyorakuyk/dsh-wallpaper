@@ -19,10 +19,18 @@
   background: transparent;
 }
 
-html[data-surface='interaction'], html[data-surface='interaction'] body, html[data-surface='interaction'] #root { background: transparent !important; }
-.surface-interaction { overflow: visible; }
-.surface-interaction .conversation-shell { bottom: 18px; width: calc(100% - 32px); }
-.surface-interaction .settings-panel { position: fixed; }
+/* Empty by default. Only host-approved widgets may create interaction regions. */
+.desktop-widget-host { position: absolute; inset: 0; pointer-events: none; }
+.desktop-widget-host__item { position: absolute; pointer-events: auto; }
+
+.wallpaper-root.workspace-entering-inner .conversation-shell { animation: workspace-focus-in 280ms cubic-bezier(.2,.8,.2,1) both; }
+.wallpaper-root.workspace-leaving-inner .conversation-shell { animation: workspace-focus-out 220ms ease both; }
+/* `conversation-shell` is centered by translateX(-50%). Animation transforms
+   replace, rather than compose with, that base transform, so every keyframe
+   must preserve it. Omitting it makes the first entering frame render with
+   its left edge at 50% of the desktop, then visibly jump back on completion. */
+@keyframes workspace-focus-in { from { opacity: 0; transform: translateX(-50%) scale(.94); filter: blur(14px); } to { opacity: 1; transform: translateX(-50%) scale(1); filter: blur(0); } }
+@keyframes workspace-focus-out { to { opacity: 0; transform: translateX(-50%) scale(.97); filter: blur(10px); } }
 
 .scene {
   position: absolute;
@@ -344,16 +352,24 @@ html[data-surface='interaction'], html[data-surface='interaction'] body, html[da
   height: 420px;
   cursor: pointer;
   transition: transform 0.25s ease;
+  isolation: isolate;
 }
 
 .portrait-slot:hover { transform: translateY(-6px) scale(1.02); }
+
+/* Lite intentionally has no desktop interaction surface; keep the portrait
+   in the same right-side composition without hover/click affordances. */
+.lite-portrait-slot { cursor: default; pointer-events: none; }
+.lite-portrait-slot:hover { transform: none; }
 
 .portrait {
   width: 100%;
   height: 100%;
   object-fit: contain;
   /* 降低亮度与饱和，柔和融入背景 */
-  filter: drop-shadow(0 12px 32px rgba(0, 0, 0, 0.45)) brightness(0.9) saturate(0.92);
+  position: relative;
+  z-index: 1;
+  filter: drop-shadow(0 14px 32px rgb(var(--portrait-environment-rgb) / calc(.24 + (1 - var(--portrait-environment-luma)) * .34))) brightness(calc(.93 + var(--portrait-environment-luma) * .08)) saturate(.94);
   pointer-events: none;
 }
 
@@ -366,24 +382,26 @@ html[data-surface='interaction'], html[data-surface='interaction'] body, html[da
   -webkit-mask-image: linear-gradient(180deg, #000 82%, transparent 100%);
 }
 
+.portrait-environment { position:absolute; inset:0; z-index:2; pointer-events:none; }
+.portrait-environment > i { -webkit-mask-image:var(--portrait-alpha-mask); mask-image:var(--portrait-alpha-mask); -webkit-mask-size:contain; mask-size:contain; -webkit-mask-position:center; mask-position:center; -webkit-mask-repeat:no-repeat; mask-repeat:no-repeat; }
 .portrait-glow {
   position: absolute;
-  inset: -14%;
-  background: radial-gradient(60% 50% at 50% 70%, var(--persona-glow), transparent 70%);
-  z-index: -1;
+  inset: 0;
+  /* Fixed lower-body integration layer: always fades from bottom to top. */
+  background:linear-gradient(180deg, transparent 34%, rgb(var(--portrait-environment-rgb) / .05) 56%, rgb(var(--portrait-environment-rgb) / calc(.26 + (1 - var(--portrait-environment-luma)) * .18)) 100%);
+  mix-blend-mode:multiply;
 }
 
-/* 立绘底部渐隐遮罩：让立绘底部融入背景，不生硬 */
+.portrait-rim { position:absolute; inset:0; background:linear-gradient(var(--portrait-light-angle), rgb(255 255 255 / calc(.025 + var(--portrait-light-contrast) * .28)) 0%, rgb(255 255 255 / calc(.012 + var(--portrait-light-contrast) * .12)) 32%, transparent 78%); mix-blend-mode:soft-light; }
+/* A long, shallow ambient gradient travels from the dark side to the bright side. */
 .portrait-fade {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 34%;
-  background: linear-gradient(180deg, transparent 0%, rgba(10, 14, 32, 0.55) 100%);
-  border-radius: 0 0 20px 20px;
-  pointer-events: none;
+  inset:0;
+  background:linear-gradient(var(--portrait-light-angle), rgb(var(--portrait-environment-rgb) / calc((.04 + var(--portrait-light-contrast) * .12) * var(--portrait-ambient-strength))) 0%, transparent var(--portrait-ambient-length));
+  mix-blend-mode:color;
+  opacity:var(--portrait-ambient-strength);
 }
+.portrait-contact { display:none; }
 
 /* ===== 气泡 ===== */
 .bubble {
@@ -392,28 +410,50 @@ html[data-surface='interaction'], html[data-surface='interaction'] body, html[da
   left: 50%;
   transform: translateX(-50%);
   max-width: min(520px, 60vw);
-  padding: 14px 22px;
-  border-radius: var(--radius);
-  background: rgba(255, 255, 255, 0.12);
-  border: 1px solid var(--persona-primary);
-  backdrop-filter: blur(12px);
-  box-shadow: 0 8px 24px var(--persona-glow);
-  font-size: 18px;
-  line-height: 1.6;
-  color: #fff;
+  padding: 12px 18px 13px 20px;
+  border: 1px solid color-mix(in srgb, var(--bubble-accent) 38%, rgba(255,255,255,.12));
+  border-radius: 19px 19px 19px 7px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--bubble-primary) 12%, transparent), rgba(6,18,36,.24) 72%),
+    rgba(8, 20, 39, .28);
+  backdrop-filter: blur(18px) saturate(132%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.18),
+    0 10px 28px rgba(0,0,0,.16),
+    0 0 26px color-mix(in srgb, var(--bubble-glow) 70%, transparent);
+  font-size: 16px;
+  line-height: 1.5;
+  letter-spacing: .01em;
+  color: rgba(246,251,255,.94);
   animation: bubbleIn 0.5s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+.bubble::before {
+  position: absolute;
+  top: 17px;
+  left: 9px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--bubble-accent);
+  box-shadow: 0 0 10px var(--bubble-accent);
+  content: '';
 }
 
 /* 气泡在立绘内：定位在立绘上方（大肥鱼头部附近） */
 .portrait-slot > .bubble {
-  top: -12%;
+  z-index:3;
+  top: -10%;
   left: 50%;
-  max-width: 320px;
-  font-size: 15px;
-  padding: 10px 16px;
+  max-width: min(320px, 28vw);
+  min-width: 180px;
+  font-size: 14px;
+  padding: 10px 15px 11px 18px;
   z-index: 2;
   animation: bubbleInTop 0.5s cubic-bezier(0.34, 1.4, 0.64, 1);
 }
+
+.portrait-slot > .bubble::before { top: 15px; left: 8px; width: 3px; height: 3px; }
 
 @keyframes bubbleInTop {
   from { opacity: 0; transform: translateX(-50%) translateY(8px) scale(0.94); }
@@ -427,61 +467,16 @@ html[data-surface='interaction'], html[data-surface='interaction'] body, html[da
 
 .bubble-tail {
   position: absolute;
-  bottom: -10px;
-  left: 24%;
-  width: 0;
-  height: 0;
-  border-left: 10px solid transparent;
-  border-right: 10px solid transparent;
-  border-top: 12px solid var(--persona-primary);
+  bottom: -6px;
+  left: 23%;
+  width: 11px;
+  height: 11px;
+  border-right: 1px solid color-mix(in srgb, var(--bubble-accent) 32%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--bubble-accent) 32%, transparent);
+  background: rgba(8,20,39,.25);
+  transform: rotate(45deg);
+  backdrop-filter: blur(12px);
 }
-
-/* DSH 上线询问 */
-.harness-prompt {
-  position: absolute;
-  bottom: 22%;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 16px;
-  border-radius: 12px;
-  background: rgba(20, 24, 44, 0.85);
-  border: 1px solid var(--persona-primary);
-  backdrop-filter: blur(10px);
-  font-size: 14px;
-  z-index: 5;
-}
-
-.harness-prompt button {
-  padding: 5px 12px;
-  border: none;
-  border-radius: 8px;
-  background: var(--persona-primary);
-  color: #fff;
-  cursor: pointer;
-  font-size: 13px;
-}
-
-.harness-prompt button + button {
-  background: rgba(255, 255, 255, 0.14);
-}
-
-/* 连接状态角标 */
-.conn-badge {
-  position: absolute;
-  top: 14px;
-  left: 14px;
-  padding: 5px 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  backdrop-filter: blur(8px);
-  background: rgba(0, 0, 0, 0.35);
-}
-
-.conn-badge.on { color: #6dffa8; }
-.conn-badge.off { color: #ffd0a0; }
 
 /* ===== 会话窗 ===== */
 .scene-chat {
@@ -546,140 +541,6 @@ html[data-surface='interaction'], html[data-surface='interaction'] body, html[da
 }
 
 .chat-actions button + button { background: rgba(255, 255, 255, 0.16); }
-
-/* ===== 托盘角标（网页预览用：右下角小圆点）===== */
-.tray-zone {
-  position: absolute;
-  right: 12px;
-  bottom: 12px;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.18);
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  cursor: pointer;
-  z-index: 50;
-  transition: background 0.2s;
-}
-
-.tray-zone:hover { background: rgba(255, 255, 255, 0.35); }
-
-/* ===== 设置面板 ===== */
-.settings-panel {
-  position: absolute;
-  right: 16px;
-  top: 16px;
-  width: 340px;
-  max-height: calc(100% - 32px);
-  overflow-y: auto;
-  background: rgba(16, 20, 38, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 14px;
-  backdrop-filter: blur(18px);
-  z-index: 100;
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
-  color: #eee;
-  font-size: 13px;
-}
-
-.settings-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-  font-weight: 600;
-}
-
-.settings-close {
-  border: none;
-  background: transparent;
-  color: #fff;
-  cursor: pointer;
-  font-size: 16px;
-}
-
-.settings-section { padding: 12px 16px; border-bottom: 1px solid rgba(255, 255, 255, 0.07); }
-
-.settings-section h4 { margin: 0 0 10px; font-size: 13px; color: var(--persona-accent); }
-
-.persona-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.persona-option {
-  padding: 8px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(255, 255, 255, 0.06);
-  color: #eee;
-  cursor: pointer;
-  font-size: 12px;
-  transition: border-color 0.2s, background 0.2s;
-}
-
-.persona-option.active {
-  border-color: var(--opt-color, var(--persona-primary));
-  background: color-mix(in srgb, var(--opt-color, var(--persona-primary)) 22%, transparent);
-}
-
-.setting-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 8px 0;
-  color: #ddd;
-}
-
-.setting-row select, .setting-row input[type='range'] { flex: 1; }
-
-.setting-row input[type='text'] {
-  flex: 1;
-  min-width: 0;
-  padding: 6px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(255, 255, 255, 0.08);
-  color: #eee;
-  font-size: 12px;
-  outline: none;
-}
-
-.setting-row input[type='text']:focus { border-color: var(--persona-primary); }
-
-.conn-state {
-  padding: 6px 10px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.06);
-  margin: 6px 0;
-}
-
-.conn-state.on { color: #6dffa8; }
-.conn-state.off { color: #ffd0a0; }
-
-.setting-btn {
-  width: 100%;
-  padding: 9px;
-  border: none;
-  border-radius: 10px;
-  background: var(--persona-primary);
-  color: #fff;
-  cursor: pointer;
-  font-size: 13px;
-  margin: 4px 0;
-}
-
-.settings-hint { color: #999; font-size: 11px; line-height: 1.5; margin-top: 8px; }
-
-.settings-footer {
-  padding: 10px 16px;
-  text-align: right;
-  color: #777;
-  font-size: 11px;
-}
 
 /* ===== 中央可交互会话气泡 ===== */
 .conversation-shell {

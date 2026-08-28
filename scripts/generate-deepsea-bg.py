@@ -1,7 +1,7 @@
 """生成「深海室内」主题背景壁纸（文生图，多候选）。
 
 设计要点：深蓝色主色调、墙上鱼群游动的阴影、窗外海底景象、深海体积光。
-输出：assets/personas/deepsea-bg/bg-cand1.png ~ bg-candN.png
+输出：assets/personas/deepsea-bg/deepsea-studio.png、deepsea-dome.png、deepsea-study.png
 """
 import argparse
 import base64
@@ -56,7 +56,7 @@ PROMPTS = [
     + STYLE,
 ]
 
-CAND_NAMES = ["bg-cand1.png", "bg-cand2.png", "bg-cand3.png"]
+BACKGROUND_NAMES = ["deepsea-studio.png", "deepsea-dome.png", "deepsea-study.png"]
 
 
 def main() -> None:
@@ -75,7 +75,7 @@ def main() -> None:
     wanted = {int(x) for x in args.which.split(",")}
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     saved = 0
-    for idx, (prompt, name) in enumerate(zip(PROMPTS, CAND_NAMES), start=1):
+    for idx, (prompt, name) in enumerate(zip(PROMPTS, BACKGROUND_NAMES), start=1):
         if idx not in wanted:
             continue
         payload = {

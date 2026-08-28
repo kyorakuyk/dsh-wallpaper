@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+         xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+         xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+         xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+         IgnorableNamespaces="uap uap10 rescap">
+  <Identity Name="com.dsh.wallpaper.lockscreenprobe" Publisher="CN=DSH Wallpaper Test" Version="0.1.0.2" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>DSH Wallpaper Lock Screen Probe</DisplayName>
+    <PublisherDisplayName>DSH Wallpaper Test</PublisherDisplayName>
+    <Description>Minimal WinRT lock-screen diagnostic probe.</Description>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Resources><Resource Language="zh-cn" /></Resources>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Capabilities><rescap:Capability Name="runFullTrust" /></Capabilities>
+  <Applications>
+    <Application Id="Probe" Executable="lockscreen_probe.exe" uap10:RuntimeBehavior="packagedClassicApp" uap10:TrustLevel="mediumIL">
+      <uap:VisualElements DisplayName="DSH Wallpaper Lock Screen Probe" Description="Minimal lock-screen API diagnostic" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png" BackgroundColor="transparent" />
+    </Application>
+  </Applications>
+</Package>

@@ -1,0 +1,7 @@
+html[data-surface='settings'], html[data-surface='settings'] body, html[data-surface='settings'] #root { width: 100%; height: 100%; margin: 0; background: transparent !important; overflow: hidden; }
+.settings-window { box-sizing: border-box; width: 100%; height: 100%; padding: 0; color: var(--dsh-text); font-family: var(--dsh-font-sans); background: #0d1625; }
+.settings-window__notice { position: fixed; z-index: 20; top: 18px; left: 50%; display: flex; align-items: flex-start; gap: 14px; width: min(70%, 760px); padding: 10px 12px 10px 14px; border: 1px solid rgba(115,211,176,.34); border-radius: 12px; background: rgba(15,43,39,.96); box-shadow: 0 16px 42px rgba(0,0,0,.32); transform: translateX(-50%); animation: settings-notice-in .18s ease-out; pointer-events: auto; }
+.settings-window__notice span { flex: 1; min-width: 0; line-height: 1.42; }
+.settings-window__notice button { flex: 0 0 auto; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px; background: rgba(255,255,255,.05); color: inherit; cursor: pointer; font-size: 20px; line-height: 1; }
+.settings-window__notice button:hover, .settings-window__notice button:focus-visible { background: rgba(255,255,255,.14); outline: none; }
+@keyframes settings-notice-in { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-layout-metrics"
+description = "Enables the desktop_layout_metrics command without any pre-configured scope."
+commands.allow = ["desktop_layout_metrics"]
+
+[[permission]]
+identifier = "deny-desktop-layout-metrics"
+description = "Denies the desktop_layout_metrics command without any pre-configured scope."
+commands.deny = ["desktop_layout_metrics"]

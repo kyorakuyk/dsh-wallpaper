@@ -28,15 +28,40 @@ export interface ChatMessage {
   usage?: TokenUsage
 }
 
+export interface ChatQuestionOption {
+  label: string
+  description?: string
+}
+
+export interface ChatQuestion {
+  id: string
+  question: string
+  detail?: string
+  header?: string
+  options?: ChatQuestionOption[]
+  multiSelect?: boolean
+}
+
 export type ChatEvent =
   | { type: 'status'; activity: Activity }
   | { type: 'delta'; text: string }
   | { type: 'message'; role: 'user' | 'assistant'; content: string; usage?: TokenUsage }
   | ({ type: 'usage' } & TokenUsage)
   | { type: 'model'; provider?: string; model: string; tier: ModelTier; effort?: string }
+  | { type: 'question-required'; sessionId: string; questions: ChatQuestion[] }
   | { type: 'approval-required'; sessionId: string; summary: string }
   | { type: 'auth-required' }
   | { type: 'error'; code: string; recoverable: boolean; message: string }
+
+/**
+ * Native chat traffic shares Tauri's app-wide event channel. Origin metadata
+ * lets a live adapter discard events from an old backend or transcript.
+ */
+export type ScopedChatEvent = ChatEvent & {
+  backend?: BackendMode
+  conversationId?: string
+  requestId?: string
+}
 
 export interface ModelTierRule {
   backend: BackendMode | '*'
@@ -63,4 +88,3 @@ export interface RuntimeState {
   harness: 'offline' | 'web-only' | 'bridge-ready'
   error?: string
 }
-

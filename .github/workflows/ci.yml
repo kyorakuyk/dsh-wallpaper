@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+      - 'codex/**'
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Windows verification
+    runs-on: windows-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+            wallpaper\src-tauri\target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('wallpaper/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm typecheck
+
+      - name: Run frontend and bridge tests
+        run: pnpm test
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path wallpaper/src-tauri/Cargo.toml --locked --all-targets
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Build Lite frontend
+        run: pnpm build:lite
+
+      - name: Check Lite native target
+        run: cargo check --manifest-path wallpaper/src-tauri/Cargo.toml --locked --no-default-features --features lite --bin dsh-wallpaper-lite
+
+      - name: Run Lite native tests
+        run: cargo test --manifest-path wallpaper/src-tauri/Cargo.toml --locked --no-default-features --features lite --lib
+
+      - name: Verify Lite bundle boundary
+        shell: pwsh
+        run: |
+          $forbidden = 'DeepSeek Harness', '会话生命周期', 'ConversationBubble', 'send_chat', 'harness_presets'
+          $files = Get-ChildItem -LiteralPath wallpaper\dist-lite -Recurse -File |
+            Where-Object { $_.Extension -in '.js', '.css', '.html' }
+          foreach ($needle in $forbidden) {
+            if ($files | Select-String -Pattern $needle -SimpleMatch) {
+              throw "Lite 产物包含禁止内容：$needle"
+            }
+          }
+          $required = @(
+            'wallpaper\dist-lite\index.html',
+            'wallpaper\dist-lite\personas\wake-frames\variant-anima\sleep.png',
+            'wallpaper\dist-lite\personas\wake-frames\variant-anima\frame-2-eyes.png',
+            'wallpaper\dist-lite\personas\wake-frames\variant-anima\frame-3-situp.png',
+            'wallpaper\dist-lite\personas\wake-frames\variant-anima\frame-4-yawn.png'
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Lite 产物缺少正式资源：$path" }
+          }

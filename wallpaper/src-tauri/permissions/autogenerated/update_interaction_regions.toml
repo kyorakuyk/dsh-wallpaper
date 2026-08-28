@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-update-interaction-regions"
+description = "Enables the update_interaction_regions command without any pre-configured scope."
+commands.allow = ["update_interaction_regions"]
+
+[[permission]]
+identifier = "deny-update-interaction-regions"
+description = "Denies the update_interaction_regions command without any pre-configured scope."
+commands.deny = ["update_interaction_regions"]

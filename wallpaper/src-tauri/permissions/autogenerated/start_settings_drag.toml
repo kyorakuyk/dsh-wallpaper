@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-settings-drag"
+description = "Enables the start_settings_drag command without any pre-configured scope."
+commands.allow = ["start_settings_drag"]
+
+[[permission]]
+identifier = "deny-start-settings-drag"
+description = "Denies the start_settings_drag command without any pre-configured scope."
+commands.deny = ["start_settings_drag"]
