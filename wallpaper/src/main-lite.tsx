@@ -3,7 +3,6 @@ import { createRoot } from 'react-dom/client'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { LiteApp } from './lite/LiteApp.tsx'
 import { LiteSettingsWindow } from './lite/LiteSettingsWindow.tsx'
-import './styles.css'
 import { currentSurface } from './surface.ts'
 
 const el = document.getElementById('root')

@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { appCoreClient } from '../runtime/appCoreClient.ts'
 import { SleepScene } from '../scenes/SleepScene.tsx'
 import { WakeScene } from '../scenes/WakeScene.tsx'
 import { releaseNativeBootstrap } from './native.ts'
+import { liteRuntime } from './runtime.ts'
 import { LiteIdleScene } from './LiteIdleScene.tsx'
 import { assetUrl, DEFAULT_LITE_SETTINGS, LITE_BACKGROUND_OPTIONS, LITE_PORTRAIT_OPTIONS, loadLiteSettings, normalizeLiteSettings } from './settings.ts'
 import type { LiteSettings } from './types.ts'
 import * as liteNative from './native.ts'
 import { litePersona } from './persona.ts'
-import '../styles.css'
+import './LiteScene.css'
 
 type LitePhase = 'booting' | 'locked' | 'waking' | 'idle'
 
@@ -46,16 +46,16 @@ export function LiteApp() {
     }
     let unsubscribe: () => void = () => undefined
     let disposed = false
-    const applySnapshot = (snapshot: Awaited<ReturnType<typeof appCoreClient.snapshot>>) => {
+    const applySnapshot = (snapshot: Awaited<ReturnType<typeof liteRuntime.snapshot>>) => {
       if (snapshot.phase === 'waking' && suppressNativeWakeRef.current) return
       if (!disposed) setPhase(phaseFromSnapshot(snapshot.phase))
     }
     void Promise.all([
-      appCoreClient.snapshot().then(applySnapshot),
-      appCoreClient.subscribe(applySnapshot).then((dispose) => { unsubscribe = dispose }),
+      liteRuntime.snapshot().then(applySnapshot),
+      liteRuntime.subscribe(applySnapshot).then((dispose) => { unsubscribe = dispose }),
     ])
     const timer = window.setTimeout(() => {
-      void appCoreClient.dispatch('boot-ready', { playWake: settingsRef.current.animationsEnabled && !settingsRef.current.skipWakeAnimation })
+      void liteRuntime.dispatch('boot-ready', settingsRef.current.animationsEnabled && !settingsRef.current.skipWakeAnimation)
     }, 120)
     return () => {
       disposed = true
@@ -114,7 +114,7 @@ export function LiteApp() {
 
   const wakeDone = () => {
     setPhase('idle')
-    if ('__TAURI_INTERNALS__' in window) void appCoreClient.dispatch('wake-done')
+    if ('__TAURI_INTERNALS__' in window) void liteRuntime.dispatch('wake-done')
   }
 
   const unlockPreview = (everyUnlock = true) => {
@@ -124,7 +124,7 @@ export function LiteApp() {
     setPhase(playWake ? 'waking' : 'idle')
     if ('__TAURI_INTERNALS__' in window) {
       suppressNativeWakeRef.current = !playWake
-      void appCoreClient.dispatch('unlock', { playWake }).then((snapshot) => {
+      void liteRuntime.dispatch('unlock', playWake).then((snapshot) => {
         suppressNativeWakeRef.current = false
         setPhase(phaseFromSnapshot(snapshot.phase))
       }).catch(() => {

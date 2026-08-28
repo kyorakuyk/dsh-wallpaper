@@ -2,6 +2,9 @@
 
 import type { BackendMode, ConversationPolicy, ModelTierRule } from '../domain/types.ts'
 import type { PersonaBubbles } from '../persona/types.ts'
+import { assetUrl } from '../runtime/assets.ts'
+
+export { assetUrl }
 
 export type InteractionLayout = 'floating' | 'taskbar-docked'
 
@@ -10,7 +13,6 @@ export const SETTINGS_VERSION = 7
  * beyond this ceiling is almost certainly a unit/configuration error and must
  * not be presented as a configured price when Rust deliberately ignores it. */
 export const MAX_PRICE_PER_MILLION = 1_000_000
-export const assetUrl = (path: string): string => `${import.meta.env.BASE_URL}${path.replace(/^\//, '')}`
 const CONVERSATION_KEY = 'dsh-wallpaper:conversations:v1'
 // Existing v1 Harness pointers were created before the bridge supplied the
 // required DSH model/cwd context. Do not resume those invalid sessions; API

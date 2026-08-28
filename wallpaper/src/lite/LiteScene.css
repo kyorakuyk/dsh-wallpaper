@@ -1,0 +1,179 @@
+/* Lite scene-only surface.  Keep the first-release bundle free of the full
+   conversation/settings CSS; the settings window has its own stylesheet. */
+:root {
+  --persona-primary: #4da6ff;
+  --persona-accent: #7fc4ff;
+  --persona-glow: rgba(77, 166, 255, 0.18);
+  --font: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.wallpaper-root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  color: #fff;
+  font-family: var(--font);
+  background: transparent;
+}
+
+.scene {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.scene-sleep {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: linear-gradient(180deg, #0b1026 0%, #131b3c 55%, #1c2a52 100%);
+}
+
+.sleep-art {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.scene-wake {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(180deg, #0b1026 0%, #1c2a52 45%, #2a3d6b 100%);
+}
+
+.wake-frame {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+
+.wake-frame.active {
+  z-index: 1;
+  opacity: 1;
+}
+
+.scene-idle {
+  background: linear-gradient(160deg, #0d1428, #131b3c 60%, #1a2244);
+}
+
+.idle-bg {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 90% at 15% 10%, var(--persona-glow), transparent 55%),
+    radial-gradient(100% 80% at 85% 85%, var(--persona-glow), transparent 50%),
+    linear-gradient(160deg, #10162e88, #1a224488);
+  backdrop-filter: blur(2px);
+}
+
+.idle-bg-image {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: brightness(0.92) saturate(1.05);
+}
+
+.idle-bg-image ~ * {
+  position: relative;
+  z-index: 1;
+}
+
+.portrait-slot {
+  position: absolute;
+  right: 6%;
+  bottom: 4%;
+  width: 300px;
+  height: 420px;
+  isolation: isolate;
+}
+
+.lite-portrait-slot {
+  pointer-events: none;
+}
+
+.portrait {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 14px 32px rgb(var(--portrait-environment-rgb) / calc(.24 + (1 - var(--portrait-environment-luma)) * .34))) brightness(calc(.93 + var(--portrait-environment-luma) * .08)) saturate(.94);
+  pointer-events: none;
+}
+
+.portrait-asset {
+  object-fit: cover;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 20px;
+  mask-image: linear-gradient(180deg, #000 82%, transparent 100%);
+  -webkit-mask-image: linear-gradient(180deg, #000 82%, transparent 100%);
+}
+
+.portrait-environment {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  pointer-events: none;
+}
+
+.portrait-environment > i {
+  -webkit-mask-image: var(--portrait-alpha-mask);
+  mask-image: var(--portrait-alpha-mask);
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+
+.portrait-glow {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 34%, rgb(var(--portrait-environment-rgb) / .05) 56%, rgb(var(--portrait-environment-rgb) / calc(.26 + (1 - var(--portrait-environment-luma)) * .18)) 100%);
+  mix-blend-mode: multiply;
+}
+
+.portrait-rim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(var(--portrait-light-angle), rgb(255 255 255 / calc(.025 + var(--portrait-light-contrast) * .28)) 0%, rgb(255 255 255 / calc(.012 + var(--portrait-light-contrast) * .12)) 32%, transparent 78%);
+  mix-blend-mode: soft-light;
+}
+
+.portrait-fade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(var(--portrait-light-angle), rgb(var(--portrait-environment-rgb) / calc(.04 + var(--portrait-light-contrast) * .12)) 0%, transparent 82%);
+  mix-blend-mode: color;
+  opacity: .72;
+}
+
+@media (max-width: 760px) {
+  .portrait-slot {
+    right: 2%;
+    width: min(42vw, 240px);
+    height: min(60vh, 340px);
+  }
+}

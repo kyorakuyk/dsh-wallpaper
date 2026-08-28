@@ -81,7 +81,7 @@ jobs:
       - name: Verify Lite bundle boundary
         shell: pwsh
         run: |
-          $forbidden = 'DeepSeek Harness', '会话生命周期', 'ConversationBubble', 'send_chat', 'harness_presets'
+          $forbidden = 'DeepSeek Harness', '会话生命周期', 'ConversationBubble', 'conversation-shell', 'send_chat', 'harness_presets', 'deepseek-web', 'dsh-wallpaper:conversations', 'chatOpen', 'harnessOnline'
           $files = Get-ChildItem -LiteralPath wallpaper\dist-lite -Recurse -File |
             Where-Object { $_.Extension -in '.js', '.css', '.html' }
           foreach ($needle in $forbidden) {

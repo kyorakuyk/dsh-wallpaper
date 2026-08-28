@@ -2,13 +2,10 @@ import type { LitePortraitId } from './types.ts'
 import { assetUrl, LITE_PORTRAIT_OPTIONS } from './settings.ts'
 import type { PersonaManifest } from '../persona/types.ts'
 
-const EMPTY_BUBBLES = {
-  morning: '',
-  done: '',
-  harnessOnline: '',
-  harnessOffline: '',
-  chatOpen: '',
-}
+// Lite never renders a bubble.  Keep only the two legacy fields needed to
+// satisfy the shared PersonaManifest shape; do not pull backend/chat labels
+// into the first-release bundle just to populate unused copy.
+const EMPTY_BUBBLES = { morning: '', done: '' } as PersonaManifest['bubbles']
 const PERSONA_META: Record<Exclude<LitePortraitId, 'custom'>, Pick<PersonaManifest, 'name' | 'age' | 'kind' | 'theme'>> = {
   'blue-adult': { name: '蓝色成年形态', age: 'adult', kind: 'blue', theme: { primary: '#4da6ff', accent: '#9ad0ff', glow: 'rgba(77,166,255,0.18)' } },
   'blue-child': { name: '蓝色幼年形态', age: 'child', kind: 'blue', theme: { primary: '#4da6ff', accent: '#7fc4ff', glow: 'rgba(77,166,255,0.18)' } },

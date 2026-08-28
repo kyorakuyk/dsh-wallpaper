@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PersonaManifest } from '../persona/types.ts'
 import { placeholderPortrait } from '../ui/whale.ts'
-import { assetUrl } from '../settings/store.ts'
+import { assetUrl } from '../runtime/assets.ts'
 
 export interface WakeSceneProps {
   persona: PersonaManifest
