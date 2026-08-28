@@ -75,8 +75,8 @@ pnpm desktop:build   # 构建安装包
 ## GitHub Actions
 
 - `.github/workflows/ci.yml`：在 `master`、`codex/**` 的推送和面向 `master` 的 PR 上运行 Windows x64 类型检查、前端/Bridge 测试、Rust 全目标测试与前端构建。
-- `.github/workflows/package.yml`：支持手动运行或推送 `v*` 标签时以 `full/lite` 矩阵构建 NSIS 安装器和未签名锁屏测试 MSIX；两者作为 Actions 工件保留 14 天，NSIS 安装器会附加到 GitHub Release。
-- 测试 MSIX 不会自动签名、安装或修改锁屏。正式 MSIX 签名应在后续配置发布证书和独立正式清单后接入，证书不得提交到仓库。
+- `.github/workflows/package.yml`：支持手动运行或推送 `v*` 标签时构建 Lite 首发 Windows 产物（NSIS 安装器、临时测试证书签名的锁屏 MSIX 与公开 `.cer`）；完整版仍可单独运行本地工程命令检查，不会混入首发 Release。所有 Actions 工件保留 14 天。
+- Lite CI 会在临时 Windows runner 上生成一次性测试证书并签名 MSIX，只上传公开 `.cer`，不上传私钥 `.pfx`，也不会自动安装或修改锁屏。正式 MSIX 签名仍应配置受信任发行证书和独立正式清单，证书不得提交到仓库。
 
 ## 形态系统（persona）
 

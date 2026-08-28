@@ -9,7 +9,6 @@
     "allow-get-app-snapshot",
     "allow-dispatch-app-action",
     "allow-release-native-bootstrap",
-    "allow-open-settings-window",
     "allow-lite-settings-get",
     "allow-lite-image-resolve"
   ]

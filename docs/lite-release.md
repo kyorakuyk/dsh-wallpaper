@@ -38,6 +38,10 @@ Lite 的普通设置保存在自己的应用目录；锁屏恢复点使用用户
 
 ## CI
 
-`.github/workflows/package.yml` 使用 `full/lite` 矩阵构建 NSIS 和未签名 MSIX 测试产物；`.github/workflows/ci.yml` 会分别检查 Lite 前端、Lite Rust feature 和禁止内容边界。
+`.github/workflows/package.yml` 的首发工作流只构建 Lite：NSIS 安装器、带临时测试证书签名的 MSIX 和公开 `.cer`。完整版仍可通过本地开发命令和 `scripts/build-msix-test.ps1 -Edition full` 做工程检查，但不会混入 Lite 首发 Release。`.github/workflows/ci.yml` 会分别检查 Lite 前端、Lite Rust feature、禁止内容边界和 Lite 权限清单。
+
+### 另一台电脑安装 Lite 测试包
+
+从 GitHub Actions 工件或 Release 下载 Lite 的 `.msix` 与同名 `.cer`。在测试机上先将 `.cer` 导入“当前用户 / 受信任的人”证书存储，再安装 MSIX；不要安装或传播 CI 中被删除的 `.pfx` 私钥。该证书只用于本次测试，正式发布必须替换为受信任发行证书并同步更新清单 Publisher。锁屏接管只在 MSIX 包内启用，NSIS 安装器用于检查普通壁纸、自启、动画、立绘和 TranslucentTB 兼容入口。
 
 GitHub 的手动 `workflow_dispatch` 入口要求工作流文件已经存在于默认分支。当前开发分支的 CI 已通过；合并到默认分支或由发布者推送版本标签后，Package workflow 才会生成远端安装包工件。

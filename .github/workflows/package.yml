@@ -15,13 +15,16 @@ concurrency:
 
 jobs:
   package:
-    name: Build Windows packages (${{ matrix.edition }})
+    name: Build Windows Lite packages
     runs-on: windows-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        edition: [full, lite]
+        # The first public package is intentionally Lite-only.  The full
+        # edition remains in the repository for later work, but must not be
+        # accidentally shipped with this release.
+        edition: [lite]
 
     steps:
       - name: Check out repository
@@ -64,29 +67,39 @@ jobs:
 
       - name: Build NSIS installer
         shell: pwsh
-        run: |
-          if ('${{ matrix.edition }}' -eq 'lite') {
-            pnpm desktop:build:lite
-          } else {
-            pnpm desktop:build
-          }
+        run: pnpm desktop:build:lite
 
-      - name: Build unsigned MSIX lock-screen test package
+      - name: Build MSIX lock-screen test package
         shell: pwsh
-        run: .\scripts\build-msix-test.ps1 -Edition '${{ matrix.edition }}' -Release
+        run: |
+          # The first release must be installable on a separate test PC so
+          # that its MSIX identity can exercise the Windows lock-screen API.
+          # Generate an ephemeral certificate on the runner, publish only
+          # its public .cer, and never upload the private .pfx.
+          $bytes = New-Object byte[] 32
+          $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+          try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+          $password = [Convert]::ToBase64String($bytes)
+          Write-Output "::add-mask::$password"
+          "MSIX_TEST_PASSWORD=$password" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+          .\scripts\build-msix-test.ps1 -Edition lite -Release -CreateTestCertificate -CertificatePassword $securePassword
 
       - name: Collect package artifacts
         shell: pwsh
         run: |
-          $edition = '${{ matrix.edition }}'
           New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE\ci-artifacts\nsis" -Force | Out-Null
           $installer = Get-ChildItem -LiteralPath "$env:GITHUB_WORKSPACE\wallpaper\src-tauri\target\release\bundle\nsis" -Filter 'dsh-wallpaper*_x64-setup.exe' -File | Select-Object -First 1
-          if (-not $installer) { throw "未找到 $edition NSIS 安装器。" }
+          if (-not $installer) { throw '未找到 Lite NSIS 安装器。' }
           Copy-Item -LiteralPath $installer.FullName -Destination "$env:GITHUB_WORKSPACE\ci-artifacts\nsis\" -Force
           New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test" -Force | Out-Null
           $msix = Get-ChildItem -LiteralPath "$env:GITHUB_WORKSPACE\artifacts\msix-test" -Filter '*-lockscreen-test.msix' -File | Select-Object -First 1
-          if (-not $msix) { throw "未找到 $edition MSIX 测试包。" }
+          if (-not $msix) { throw '未找到 Lite MSIX 测试包。' }
           Copy-Item -LiteralPath $msix.FullName -Destination "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test\" -Force
+          $certificate = Get-ChildItem -LiteralPath "$env:GITHUB_WORKSPACE\artifacts\msix-test" -Filter '*.cer' -File | Select-Object -First 1
+          if (-not $certificate) { throw 'Lite MSIX 测试包缺少公开签名证书 .cer。' }
+          Copy-Item -LiteralPath $certificate.FullName -Destination "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test\" -Force
+          Get-ChildItem -LiteralPath "$env:GITHUB_WORKSPACE\artifacts\msix-test" -Filter '*.pfx' -File | Remove-Item -Force
 
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v4
@@ -96,11 +109,19 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload unsigned MSIX test package
+      - name: Upload Lite signed MSIX test package
         uses: actions/upload-artifact@v4
         with:
-          name: dsh-wallpaper-${{ matrix.edition }}-msix-test-unsigned
-          path: ci-artifacts/msix-test/*.msix
+          name: dsh-wallpaper-lite-msix-test-signed
+          path: ci-artifacts/msix-test/*-lockscreen-test.msix
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Lite test publisher certificate
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-wallpaper-lite-msix-test-certificate
+          path: ci-artifacts/msix-test/*.cer
           if-no-files-found: error
           retention-days: 14
 
@@ -113,14 +134,14 @@ jobs:
       contents: write
 
     steps:
-      - name: Download NSIS installer
+      - name: Download Lite release artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: dsh-wallpaper-*-nsis
+          pattern: dsh-wallpaper-lite-*
           path: release-assets
           merge-multiple: true
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" release-assets/*.exe --verify-tag --generate-notes
+        run: gh release create "${{ github.ref_name }}" release-assets/* --verify-tag --generate-notes
