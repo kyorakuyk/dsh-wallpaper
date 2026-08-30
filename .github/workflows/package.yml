@@ -101,6 +101,17 @@ jobs:
           Copy-Item -LiteralPath $certificate.FullName -Destination "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test\" -Force
           Get-ChildItem -LiteralPath "$env:GITHUB_WORKSPACE\artifacts\msix-test" -Filter '*.pfx' -File | Remove-Item -Force
 
+      - name: Build Lite MSIX test bootstrapper
+        shell: pwsh
+        run: |
+          $msix = Get-ChildItem -LiteralPath "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test" -Filter '*-lockscreen-test.msix' -File | Select-Object -First 1
+          $certificate = Get-ChildItem -LiteralPath "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test" -Filter '*.cer' -File | Select-Object -First 1
+          if (-not $msix -or -not $certificate) { throw '构建引导安装器缺少 MSIX 或 CER。' }
+          .\scripts\build-msix-test-bootstrapper.ps1 `
+            -MsixPath $msix.FullName `
+            -CertificatePath $certificate.FullName `
+            -OutputPath "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test\dsh-wallpaper-lite-msix-test-setup.exe"
+
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v4
         with:
@@ -122,6 +133,14 @@ jobs:
         with:
           name: dsh-wallpaper-lite-msix-test-certificate
           path: ci-artifacts/msix-test/*.cer
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Lite MSIX test bootstrapper
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-wallpaper-lite-msix-test-setup
+          path: ci-artifacts/msix-test/*-test-setup.exe
           if-no-files-found: error
           retention-days: 14
 

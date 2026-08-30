@@ -1,5 +1,11 @@
 import type { AutostartStatus, LockScreenDiagnostics, TranslucentTbStatus } from '../native/runtime.ts'
 
+export interface DesktopWallpaperFallbackStatus {
+  managedActive: boolean
+  backupExists: boolean
+  warning?: string
+}
+
 async function invokeNative<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import('@tauri-apps/api/core')
   return invoke<T>(command, args)
@@ -15,6 +21,14 @@ export async function lockScreenDiagnostics(): Promise<LockScreenDiagnostics> {
 
 export async function setLockScreen(enabled: boolean): Promise<string> {
   return invokeNative<string>('set_lock_screen_enabled', { enabled })
+}
+
+export async function setDesktopWallpaperFallback(enabled: boolean): Promise<string> {
+  return invokeNative<string>('set_desktop_wallpaper_fallback', { enabled })
+}
+
+export async function desktopWallpaperFallbackStatus(): Promise<DesktopWallpaperFallbackStatus> {
+  return invokeNative<DesktopWallpaperFallbackStatus>('desktop_wallpaper_fallback_status')
 }
 
 export async function clearStaleLockScreenBackup(): Promise<string> {

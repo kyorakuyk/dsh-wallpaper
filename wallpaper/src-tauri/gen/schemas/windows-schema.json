@@ -303,6 +303,12 @@
           "markdownDescription": "Enables the desktop_layout_metrics command without any pre-configured scope."
         },
         {
+          "description": "Enables the desktop_wallpaper_fallback_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-desktop-wallpaper-fallback-status",
+          "markdownDescription": "Enables the desktop_wallpaper_fallback_status command without any pre-configured scope."
+        },
+        {
           "description": "Enables the dispatch_app_action command without any pre-configured scope.",
           "type": "string",
           "const": "allow-dispatch-app-action",
@@ -469,6 +475,12 @@
           "type": "string",
           "const": "allow-set-autostart",
           "markdownDescription": "Enables the set_autostart command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_desktop_wallpaper_fallback command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-desktop-wallpaper-fallback",
+          "markdownDescription": "Enables the set_desktop_wallpaper_fallback command without any pre-configured scope."
         },
         {
           "description": "Enables the set_interaction_enabled command without any pre-configured scope.",
@@ -639,6 +651,12 @@
           "markdownDescription": "Denies the desktop_layout_metrics command without any pre-configured scope."
         },
         {
+          "description": "Denies the desktop_wallpaper_fallback_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-desktop-wallpaper-fallback-status",
+          "markdownDescription": "Denies the desktop_wallpaper_fallback_status command without any pre-configured scope."
+        },
+        {
           "description": "Denies the dispatch_app_action command without any pre-configured scope.",
           "type": "string",
           "const": "deny-dispatch-app-action",
@@ -805,6 +823,12 @@
           "type": "string",
           "const": "deny-set-autostart",
           "markdownDescription": "Denies the set_autostart command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_desktop_wallpaper_fallback command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-desktop-wallpaper-fallback",
+          "markdownDescription": "Denies the set_desktop_wallpaper_fallback command without any pre-configured scope."
         },
         {
           "description": "Denies the set_interaction_enabled command without any pre-configured scope.",

@@ -6,7 +6,7 @@ DeepSeek Harness 生态的**交互式桌面壁纸框架**：以鲸鱼娘为拟�
 
 ## 首发产品：DSH Wallpaper Lite
 
-Lite 与完整版共用本仓库和 Windows 原生壁纸核心，但采用独立的前端入口、Rust feature、Tauri 配置和 MSIX 身份。首发包只提供 Windows 锁屏图片接管、正式四帧苏醒动画、静态壁纸、立绘、开机自启以及 TranslucentTB 兼容入口；不包含聊天、DeepSeek/DSH 连接、会话、表里桌面或插件。
+Lite 与完整版共用本仓库和 Windows 原生壁纸核心，但采用独立的前端入口、Rust feature、Tauri 配置和 MSIX 身份。首发包只提供 Windows 锁屏图片接管、正式四帧苏醒动画、静态壁纸、立绘、开机自启、可选登录过渡底图以及 TranslucentTB 兼容入口；不包含聊天、DeepSeek/DSH 连接、会话、表里桌面或插件。
 
 ```powershell
 pnpm build:lite
@@ -63,7 +63,7 @@ pnpm desktop:dev     # 壁纸可独立启动；Harness 模式需要兼容的 Wal
 pnpm desktop:build   # 构建安装包
 ```
 
-**Lite 首发安装包**：由 GitHub Actions 远程生成 `dsh-wallpaper-lite_0.1.0_x64-setup.exe`；开发机不执行打包或安装，下载入口见 [`docs/lite-release.md`](<C:/DeepSeekHarness/plugins/dsh-wallpaper/docs/lite-release.md>)。
+**Lite 首发安装包**：由 GitHub Actions 远程生成 `dsh-wallpaper-lite_0.1.1_x64-setup.exe`；开发机不执行打包或安装，下载入口见 [`docs/lite-release.md`](<C:/DeepSeekHarness/plugins/dsh-wallpaper/docs/lite-release.md>)。
 
 **交互**：
 - `Alt+W`：进入睡眠模式
@@ -75,7 +75,7 @@ pnpm desktop:build   # 构建安装包
 ## GitHub Actions
 
 - `.github/workflows/ci.yml`：在 `master`、`codex/**` 的推送和面向 `master` 的 PR 上运行 Windows x64 类型检查、前端/Bridge 测试、Rust 全目标测试与前端构建。
-- `.github/workflows/package.yml`：支持手动运行或推送 `v*` 标签时构建 Lite 首发 Windows 产物（NSIS 安装器、临时测试证书签名的锁屏 MSIX 与公开 `.cer`）；完整版仍可单独运行本地工程命令检查，不会混入首发 Release。所有 Actions 工件保留 14 天。
+- `.github/workflows/package.yml`：支持手动运行或推送 `v*` 标签时构建 Lite 首发 Windows 产物（NSIS 安装器、临时测试证书签名的锁屏 MSIX、公开 `.cer` 与自动导入证书的测试引导安装器）；完整版仍可单独运行本地工程命令检查，不会混入首发 Release。所有 Actions 工件保留 14 天。
 - Lite CI 会在临时 Windows runner 上生成一次性测试证书并签名 MSIX，只上传公开 `.cer`，不上传私钥 `.pfx`，也不会自动安装或修改锁屏。正式 MSIX 签名仍应配置受信任发行证书和独立正式清单，证书不得提交到仓库。
 
 ## 形态系统（persona）

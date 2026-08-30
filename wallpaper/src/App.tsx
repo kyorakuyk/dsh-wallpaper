@@ -357,11 +357,11 @@ export function App({ surface = 'combined' }: AppProps) {
     }
   }
 
-  // The native bootstrap owns the first visible frame while WebView2 is
-  // starting. Release it only after two browser frames have elapsed so the
-  // background surface has actually painted before the hand-off.
+  // Keep the native hand-off layer alive while the unlock animation is
+  // starting. It is hidden only after the renderer paints the matching first
+  // wake frame, or after a no-animation boot settles into idle.
   useEffect(() => {
-    if (!nativeRuntime.isNative) return
+    if (!nativeRuntime.isNative || runtime.phase !== 'idle') return
     let firstFrame = 0
     let secondFrame = 0
     firstFrame = requestAnimationFrame(() => {
@@ -373,7 +373,7 @@ export function App({ surface = 'combined' }: AppProps) {
       cancelAnimationFrame(firstFrame)
       cancelAnimationFrame(secondFrame)
     }
-  }, [])
+  }, [runtime.phase])
 
   useEffect(() => {
     if (!appCoreClient.native) {
@@ -730,7 +730,7 @@ export function App({ surface = 'combined' }: AppProps) {
   }
   const scene = useMemo(() => {
     if (runtime.phase === 'booting' || runtime.phase === 'locked') return <SleepScene persona={persona} mode="system" />
-    if (runtime.phase === 'waking') return <WakeScene persona={persona} enabled={settings.animationsEnabled && !settings.skipWakeAnimation} speed={settings.animationSpeed} onWakeDone={() => { baseDispatch({ type: 'WAKE_DONE' }); dispatchCore('wake-done') }} />
+    if (runtime.phase === 'waking') return <WakeScene persona={persona} startIndex={1} enabled={settings.animationsEnabled && !settings.skipWakeAnimation} speed={settings.animationSpeed} onFirstWakeFrame={() => { void nativeRuntime.releaseNativeBootstrap().catch((error) => patchRuntime({ error: String(error) })) }} onWakeDone={() => { baseDispatch({ type: 'WAKE_DONE' }); dispatchCore('wake-done') }} />
     const question = questionPrompt?.[0]
     const questionOptions = question?.options?.map((option) => option.label).join(' / ')
     const bubbleText = question

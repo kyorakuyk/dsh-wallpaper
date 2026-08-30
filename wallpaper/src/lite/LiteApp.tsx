@@ -26,6 +26,7 @@ export function LiteApp() {
   const [customBackground, setCustomBackground] = useState<string>()
   const [customPortrait, setCustomPortrait] = useState<string>()
   const settingsRef = useRef(settings)
+  const settingsLoadRef = useRef<Promise<LiteSettings>>()
   const phaseRef = useRef(phase)
   const suppressNativeWakeRef = useRef(false)
   settingsRef.current = settings
@@ -33,16 +34,21 @@ export function LiteApp() {
 
   useEffect(() => {
     let disposed = false
-    void loadLiteSettings().then((next) => {
+    const loading = settingsLoadRef.current ?? (settingsLoadRef.current = loadLiteSettings())
+    void loading.then((next) => {
       if (!disposed) setSettings(next)
     })
     return () => { disposed = true }
   }, [])
 
   useEffect(() => {
+    const loading = settingsLoadRef.current ?? (settingsLoadRef.current = loadLiteSettings())
     if (!('__TAURI_INTERNALS__' in window)) {
-      const timer = window.setTimeout(() => setPhase(settingsRef.current.animationsEnabled && !settingsRef.current.skipWakeAnimation ? 'waking' : 'idle'), 120)
-      return () => window.clearTimeout(timer)
+      let disposed = false
+      void loading.then((next) => {
+        if (!disposed) setPhase(next.animationsEnabled && !next.skipWakeAnimation ? 'waking' : 'idle')
+      })
+      return () => { disposed = true }
     }
     let unsubscribe: () => void = () => undefined
     let disposed = false
@@ -50,16 +56,19 @@ export function LiteApp() {
       if (snapshot.phase === 'waking' && suppressNativeWakeRef.current) return
       if (!disposed) setPhase(phaseFromSnapshot(snapshot.phase))
     }
-    void Promise.all([
-      liteRuntime.snapshot().then(applySnapshot),
-      liteRuntime.subscribe(applySnapshot).then((dispose) => { unsubscribe = dispose }),
-    ])
-    const timer = window.setTimeout(() => {
-      void liteRuntime.dispatch('boot-ready', settingsRef.current.animationsEnabled && !settingsRef.current.skipWakeAnimation)
-    }, 120)
+    void liteRuntime.subscribe(applySnapshot).then((dispose) => { unsubscribe = dispose })
+    void liteRuntime.snapshot().then(async (snapshot) => {
+      applySnapshot(snapshot)
+      const loaded = await loading
+      if (disposed || snapshot.phase !== 'booting') return
+      const next = await liteRuntime.dispatch(
+        'boot-ready',
+        loaded.animationsEnabled && !loaded.skipWakeAnimation,
+      )
+      applySnapshot(next)
+    })
     return () => {
       disposed = true
-      window.clearTimeout(timer)
       unsubscribe()
     }
   }, [])
@@ -94,7 +103,7 @@ export function LiteApp() {
   }, [settings.background, settings.portrait])
 
   useEffect(() => {
-    if (!('__TAURI_INTERNALS__' in window)) return
+    if (!('__TAURI_INTERNALS__' in window) || phase !== 'idle') return
     let first = 0
     let second = 0
     first = requestAnimationFrame(() => {
@@ -104,7 +113,7 @@ export function LiteApp() {
       cancelAnimationFrame(first)
       cancelAnimationFrame(second)
     }
-  }, [])
+  }, [phase])
 
   const background = LITE_BACKGROUND_OPTIONS.find((option) => option.id === settings.background) ?? LITE_BACKGROUND_OPTIONS[0]
   const portrait = LITE_PORTRAIT_OPTIONS.find((option) => option.id === settings.portrait) ?? LITE_PORTRAIT_OPTIONS[0]
@@ -169,7 +178,7 @@ export function LiteApp() {
   if (phase === 'booting' || phase === 'locked') {
     scene = <SleepScene persona={persona} mode="system" quiet />
   } else if (phase === 'waking') {
-    scene = <WakeScene persona={persona} enabled={settings.animationsEnabled && !settings.skipWakeAnimation} speed={settings.animationSpeed} onWakeDone={wakeDone} />
+    scene = <WakeScene persona={persona} startIndex={1} enabled={settings.animationsEnabled && !settings.skipWakeAnimation} speed={settings.animationSpeed} onFirstWakeFrame={() => { void releaseNativeBootstrap() }} onWakeDone={wakeDone} />
   } else {
     scene = <LiteIdleScene persona={persona} backgroundUrl={backgroundUrl} />
   }

@@ -24,6 +24,7 @@ export const DEFAULT_LITE_SETTINGS: LiteSettings = {
   playWakeOnEveryUnlock: true,
   skipWakeAnimation: false,
   lockScreenEnabled: false,
+  desktopWallpaperFallback: false,
   autostart: false,
 }
 
@@ -56,6 +57,7 @@ export function normalizeLiteSettings(raw: unknown): LiteSettings {
     playWakeOnEveryUnlock: value.playWakeOnEveryUnlock !== false,
     skipWakeAnimation: value.skipWakeAnimation === true,
     lockScreenEnabled: value.lockScreenEnabled === true,
+    desktopWallpaperFallback: value.desktopWallpaperFallback === true,
     autostart: value.autostart === true,
   }
 }

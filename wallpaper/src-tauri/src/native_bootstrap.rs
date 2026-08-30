@@ -3,17 +3,17 @@
 //! Windows shows the Explorer desktop as soon as the secure lock screen is
 //! dismissed.  A Tauri/WebView2 surface needs a little longer to create its
 //! controller and paint its first frame.  This module fills only that short
-//! gap with the immutable `sleep.png` image, then destroys itself when the
-//! background WebView reports that it has painted.  It never accepts input,
-//! never replaces the shell, and fails closed when the asset or WorkerW is
-//! unavailable.
+//! gap with immutable packaged artwork.  It stays as a hidden, inputless
+//! hand-off surface after the first paint so a later session unlock can show a
+//! cached eye-open frame before WebView2 reacts. It never replaces the shell
+//! and fails closed when the asset or WorkerW is unavailable.
 
 #[cfg(windows)]
 use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::ptr::null_mut;
 #[cfg(windows)]
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 #[cfg(windows)]
 use std::sync::OnceLock;
 #[cfg(windows)]
@@ -25,7 +25,7 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 #[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateCompatibleDC, DeleteDC, DeleteObject, EndPaint, SelectObject,
+    BeginPaint, CreateCompatibleDC, DeleteDC, DeleteObject, EndPaint, InvalidateRect, SelectObject,
     SetStretchBltMode, StretchBlt, HALFTONE, HBITMAP, HGDIOBJ, PAINTSTRUCT, SRCCOPY,
 };
 #[cfg(windows)]
@@ -35,6 +35,10 @@ use windows::Win32::Graphics::GdiPlus::{
 };
 #[cfg(windows)]
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(windows)]
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, SetPriorityClass, ABOVE_NORMAL_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
+};
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetWindowLongPtrW, PostMessageW,
@@ -50,9 +54,17 @@ use crate::windows_integration::request_wallpaper_worker;
 #[cfg(windows)]
 const BOOTSTRAP_CLASS: PCWSTR = w!("DSHWallpaperNativeBootstrap");
 #[cfg(windows)]
-const RELEASE_MESSAGE: u32 = WM_APP + 0x5D;
+const HIDE_MESSAGE: u32 = WM_APP + 0x5D;
+#[cfg(windows)]
+const SHOW_WAKE_MESSAGE: u32 = WM_APP + 0x5E;
+#[cfg(windows)]
+const SHOW_SLEEP_MESSAGE: u32 = WM_APP + 0x5F;
+#[cfg(windows)]
+const DESTROY_MESSAGE: u32 = WM_APP + 0x60;
 #[cfg(windows)]
 static BOOTSTRAP_HWND: AtomicIsize = AtomicIsize::new(0);
+#[cfg(windows)]
+static STARTUP_PRIORITY_BOOSTED: AtomicBool = AtomicBool::new(false);
 #[cfg(windows)]
 static BOOTSTRAP_STARTED: OnceLock<Instant> = OnceLock::new();
 #[cfg(windows)]
@@ -63,10 +75,19 @@ static BOOTSTRAP_READY_REPORTED: std::sync::atomic::AtomicBool =
 
 #[cfg(windows)]
 struct BootstrapWindowState {
-    bitmap: HBITMAP,
-    width: i32,
-    height: i32,
+    sleep_bitmap: HBITMAP,
+    sleep_width: i32,
+    sleep_height: i32,
+    wake_bitmap: Option<HBITMAP>,
+    wake_width: i32,
+    wake_height: i32,
+    show_wake: bool,
 }
+
+#[cfg(windows)]
+const SLEEP_ASSET: &str = "personas/wake-frames/variant-anima/sleep.png";
+#[cfg(windows)]
+const WAKE_ASSET: &str = "personas/wake-frames/variant-anima/frame-2-eyes.png";
 
 #[cfg(windows)]
 fn elapsed_ms() -> u128 {
@@ -76,29 +97,59 @@ fn elapsed_ms() -> u128 {
         .unwrap_or_default()
 }
 
+/// Give only the short startup/handoff window a modest scheduling boost.  Do
+/// not use REALTIME_PRIORITY_CLASS: a wallpaper must never starve Explorer or
+/// user applications. The boost is returned to normal as soon as the native
+/// frame is handed to the WebView.
 #[cfg(windows)]
-fn asset_candidates() -> Vec<PathBuf> {
+pub fn boost_startup_priority() {
+    if STARTUP_PRIORITY_BOOSTED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    if let Err(error) = unsafe { SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS) }
+    {
+        STARTUP_PRIORITY_BOOSTED.store(false, Ordering::Release);
+        log::debug!("startup priority boost unavailable: {error}");
+    }
+}
+
+#[cfg(windows)]
+pub fn restore_startup_priority() {
+    if !STARTUP_PRIORITY_BOOSTED.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    if let Err(error) = unsafe { SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS) } {
+        log::debug!("startup priority restore failed: {error}");
+    }
+}
+
+#[cfg(windows)]
+fn asset_candidates(relative: &str, package_name: &str) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(executable) = std::env::current_exe() {
         if let Some(parent) = executable.parent() {
-            candidates.push(
-                parent
-                    .join("_up_")
-                    .join("public")
-                    .join("personas")
-                    .join("wake-frames")
-                    .join("variant-anima")
-                    .join("sleep.png"),
-            );
-            candidates.push(parent.join("Assets").join("LockScreenSleep.png"));
+            candidates.push(parent.join("_up_").join("public").join(relative));
+            // The isolated MSIX test layout places the Vite output directly
+            // under `dist`, while a normal Tauri resource bundle keeps it in
+            // `_up_/public`; support both without probing arbitrary paths.
+            candidates.push(parent.join("dist").join(relative));
+            candidates.push(parent.join("Assets").join(package_name));
         }
+    }
+    // Development/NSIS builds keep the canonical public tree beside the
+    // Tauri crate. This is a best-effort fallback only; lock-screen writes
+    // remain MSIX-gated in the owning integration module.
+    if let Some(root) = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent() {
+        candidates.push(root.join("public").join(relative));
     }
     candidates
 }
 
 #[cfg(windows)]
-fn find_asset() -> Option<PathBuf> {
-    asset_candidates().into_iter().find(|path| path.is_file())
+fn find_asset(relative: &str, package_name: &str) -> Option<PathBuf> {
+    asset_candidates(relative, package_name)
+        .into_iter()
+        .find(|path| path.is_file())
 }
 
 #[cfg(windows)]
@@ -172,6 +223,14 @@ unsafe extern "system" fn bootstrap_window_proc(
             let hdc = BeginPaint(hwnd, &mut paint);
             if !state_ptr.is_null() && !hdc.0.is_null() {
                 let state = &*state_ptr;
+                let (bitmap, source_width, source_height) = if state.show_wake {
+                    state
+                        .wake_bitmap
+                        .map(|bitmap| (bitmap, state.wake_width, state.wake_height))
+                        .unwrap_or((state.sleep_bitmap, state.sleep_width, state.sleep_height))
+                } else {
+                    (state.sleep_bitmap, state.sleep_width, state.sleep_height)
+                };
                 let mut client = RECT::default();
                 if GetClientRect(hwnd, &mut client).is_ok() {
                     let width = client.right - client.left;
@@ -179,7 +238,7 @@ unsafe extern "system" fn bootstrap_window_proc(
                     if width > 0 && height > 0 {
                         let memory = CreateCompatibleDC(Some(hdc));
                         if !memory.0.is_null() {
-                            let previous = SelectObject(memory, HGDIOBJ(state.bitmap.0));
+                            let previous = SelectObject(memory, HGDIOBJ(bitmap.0));
                             let _ = SetStretchBltMode(hdc, HALFTONE);
                             let _ = StretchBlt(
                                 hdc,
@@ -190,8 +249,8 @@ unsafe extern "system" fn bootstrap_window_proc(
                                 Some(memory),
                                 0,
                                 0,
-                                state.width,
-                                state.height,
+                                source_width,
+                                source_height,
                                 SRCCOPY,
                             );
                             let _ = SelectObject(memory, previous);
@@ -204,18 +263,52 @@ unsafe extern "system" fn bootstrap_window_proc(
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
-        RELEASE_MESSAGE => {
-            log::info!("native bootstrap released after {} ms", elapsed_ms());
+        SHOW_WAKE_MESSAGE => {
+            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut BootstrapWindowState;
+            if !state_ptr.is_null() {
+                (*state_ptr).show_wake = (*state_ptr).wake_bitmap.is_some();
+            }
+            let _ = ShowWindow(hwnd, SW_SHOWNA);
+            let _ = InvalidateRect(Some(hwnd), None, false);
+            LRESULT(0)
+        }
+        SHOW_SLEEP_MESSAGE => {
+            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut BootstrapWindowState;
+            if !state_ptr.is_null() {
+                (*state_ptr).show_wake = false;
+            }
+            let _ = ShowWindow(hwnd, SW_SHOWNA);
+            let _ = InvalidateRect(Some(hwnd), None, false);
+            LRESULT(0)
+        }
+        HIDE_MESSAGE => {
+            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut BootstrapWindowState;
+            if !state_ptr.is_null() {
+                (*state_ptr).show_wake = false;
+            }
+            let _ = ShowWindow(hwnd, SW_HIDE);
+            restore_startup_priority();
+            log::info!("native bootstrap hidden after {} ms", elapsed_ms());
+            LRESULT(0)
+        }
+        DESTROY_MESSAGE => {
+            log::info!("native bootstrap destroyed after {} ms", elapsed_ms());
             let _ = ShowWindow(hwnd, SW_HIDE);
             let _ = DestroyWindow(hwnd);
+            restore_startup_priority();
             LRESULT(0)
         }
         WM_NCDESTROY => {
             let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut BootstrapWindowState;
             if !state_ptr.is_null() {
                 let state = Box::from_raw(state_ptr);
-                if !state.bitmap.0.is_null() {
-                    let _ = DeleteObject(HGDIOBJ(state.bitmap.0));
+                if !state.sleep_bitmap.0.is_null() {
+                    let _ = DeleteObject(HGDIOBJ(state.sleep_bitmap.0));
+                }
+                if let Some(bitmap) = state.wake_bitmap {
+                    if !bitmap.0.is_null() {
+                        let _ = DeleteObject(HGDIOBJ(bitmap.0));
+                    }
                 }
             }
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
@@ -258,13 +351,15 @@ pub fn prepare() {
         return;
     }
     let _ = BOOTSTRAP_STARTED.set(Instant::now());
-    let Some(path) = find_asset() else {
+    let Some(path) = find_asset(SLEEP_ASSET, "LockScreenSleep.png") else {
         log::warn!("native bootstrap skipped: packaged sleep image not found");
         return;
     };
+    boost_startup_priority();
     let worker = match request_wallpaper_worker() {
         Ok(worker) => worker,
         Err(error) => {
+            restore_startup_priority();
             log::warn!("native bootstrap skipped: {error}");
             return;
         }
@@ -272,21 +367,42 @@ pub fn prepare() {
     let (bitmap, width, height) = match load_bitmap(&path) {
         Ok(bitmap) => bitmap,
         Err(error) => {
+            restore_startup_priority();
             log::warn!("native bootstrap skipped: {error}");
             return;
         }
     };
+    let wake_bitmap = find_asset(WAKE_ASSET, "WakeFrame2Eyes.png").and_then(|wake_path| {
+        match load_bitmap(&wake_path) {
+            Ok(bitmap) => Some(bitmap),
+            Err(error) => {
+                log::debug!("native wake frame preload skipped: {error}");
+                None
+            }
+        }
+    });
     if let Err(error) = register_class() {
         unsafe {
             let _ = DeleteObject(HGDIOBJ(bitmap.0));
+            if let Some((wake_bitmap, _, _)) = wake_bitmap.as_ref() {
+                let _ = DeleteObject(HGDIOBJ(wake_bitmap.0));
+            }
         }
+        restore_startup_priority();
         log::warn!("native bootstrap skipped: {error}");
         return;
     }
+    let (wake_handle, wake_width, wake_height) = wake_bitmap
+        .map(|(bitmap, width, height)| (Some(bitmap), width, height))
+        .unwrap_or((None, width, height));
     let state = Box::into_raw(Box::new(BootstrapWindowState {
-        bitmap,
-        width,
-        height,
+        sleep_bitmap: bitmap,
+        sleep_width: width,
+        sleep_height: height,
+        wake_bitmap: wake_handle,
+        wake_width,
+        wake_height,
+        show_wake: false,
     }));
     let exstyle = WINDOW_EX_STYLE(WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0 | WS_EX_TRANSPARENT.0);
     let style = WINDOW_STYLE(WS_CHILD.0);
@@ -311,8 +427,12 @@ pub fn prepare() {
         Err(error) => {
             unsafe {
                 let state = Box::from_raw(state);
-                let _ = DeleteObject(HGDIOBJ(state.bitmap.0));
+                let _ = DeleteObject(HGDIOBJ(state.sleep_bitmap.0));
+                if let Some(bitmap) = state.wake_bitmap {
+                    let _ = DeleteObject(HGDIOBJ(bitmap.0));
+                }
             }
+            restore_startup_priority();
             log::warn!("native bootstrap skipped: 无法创建首帧窗口（{error}）");
             return;
         }
@@ -342,8 +462,9 @@ pub fn prepare() {
     BOOTSTRAP_HWND.store(hwnd.0 as isize, Ordering::Release);
     BOOTSTRAP_READY_MS.store(elapsed_ms().min(u64::MAX as u128) as u64, Ordering::Release);
     log::info!(
-        "native bootstrap frame ready: asset={}, elapsed_ms={}, size={}x{}",
+        "native bootstrap frame ready: asset={}, wake_frame_cached={}, elapsed_ms={}, size={}x{}",
         path.display(),
+        wake_handle.is_some(),
         elapsed_ms(),
         width,
         height
@@ -365,17 +486,57 @@ pub fn report_ready() {
 pub fn release() -> Result<(), String> {
     let raw = BOOTSTRAP_HWND.load(Ordering::Acquire);
     if raw == 0 {
+        restore_startup_priority();
         return Ok(());
     }
     unsafe {
         PostMessageW(
             Some(HWND(raw as *mut _)),
-            RELEASE_MESSAGE,
+            HIDE_MESSAGE,
             WPARAM(0),
             LPARAM(0),
         )
     }
     .map_err(|error| format!("无法释放原生首帧层：{error}"))
+}
+
+/// Display the cached eye-open frame without waiting for WebView2. The
+/// background renderer hides the surface again after painting its matching
+/// frame. Keeping the HWND alive makes this useful for every subsequent
+/// lock/unlock cycle, not only the first process launch.
+#[cfg(windows)]
+pub fn start_wake() -> Result<(), String> {
+    let raw = BOOTSTRAP_HWND.load(Ordering::Acquire);
+    if raw == 0 {
+        return Ok(());
+    }
+    unsafe {
+        PostMessageW(
+            Some(HWND(raw as *mut _)),
+            SHOW_WAKE_MESSAGE,
+            WPARAM(0),
+            LPARAM(0),
+        )
+    }
+    .map_err(|error| format!("无法显示原生苏醒首帧：{error}"))
+}
+
+/// Reset the hand-off layer to the sleep frame for lock/suspend transitions.
+#[cfg(windows)]
+pub fn show_sleep() -> Result<(), String> {
+    let raw = BOOTSTRAP_HWND.load(Ordering::Acquire);
+    if raw == 0 {
+        return Ok(());
+    }
+    unsafe {
+        PostMessageW(
+            Some(HWND(raw as *mut _)),
+            SHOW_SLEEP_MESSAGE,
+            WPARAM(0),
+            LPARAM(0),
+        )
+    }
+    .map_err(|error| format!("无法恢复原生睡眠首帧：{error}"))
 }
 
 #[cfg(not(windows))]
@@ -385,6 +546,22 @@ pub fn prepare() {}
 pub fn report_ready() {}
 
 #[cfg(not(windows))]
+pub fn boost_startup_priority() {}
+
+#[cfg(not(windows))]
+pub fn restore_startup_priority() {}
+
+#[cfg(not(windows))]
 pub fn release() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn start_wake() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn show_sleep() -> Result<(), String> {
     Ok(())
 }

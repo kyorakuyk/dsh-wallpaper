@@ -20,11 +20,13 @@ export function LiteSettingsWindow() {
   const settingsRef = useRef(settings)
   const [notice, setNotice] = useState<string>()
   const [lockScreenDiagnostics, setLockScreenDiagnostics] = useState<LockScreenDiagnostics>()
+  const [desktopFallbackStatus, setDesktopFallbackStatus] = useState<liteNative.DesktopWallpaperFallbackStatus>()
   const [translucentTb, setTranslucentTb] = useState<TranslucentTbStatus>({ installed: false, running: false })
   const [customBackground, setCustomBackground] = useState<string>()
   const [customPortrait, setCustomPortrait] = useState<string>()
   const [autostartBusy, setAutostartBusy] = useState(false)
   const [lockScreenBusy, setLockScreenBusy] = useState(false)
+  const [desktopFallbackBusy, setDesktopFallbackBusy] = useState(false)
   const lockOperationRef = useRef(false)
   const autostartOperationRef = useRef(false)
 
@@ -65,6 +67,24 @@ export function LiteSettingsWindow() {
     }
   }
 
+  const refreshDesktopFallback = async () => {
+    try {
+      const status = await liteNative.desktopWallpaperFallbackStatus()
+      setDesktopFallbackStatus(status)
+      const current = settingsRef.current
+      // A successful native takeover is authoritative. If the settings file
+      // says enabled but no recovery point exists, fail closed and clear the
+      // stale preference instead of silently changing the desktop wallpaper.
+      if (status.managedActive && !current.desktopWallpaperFallback) {
+        commit({ ...current, desktopWallpaperFallback: true })
+      } else if (!status.backupExists && current.desktopWallpaperFallback) {
+        commit({ ...current, desktopWallpaperFallback: false })
+      }
+    } catch (error) {
+      setNotice(`读取登录过渡底图状态失败：${String(error)}`)
+    }
+  }
+
   const refreshTranslucentTb = async () => {
     try {
       setTranslucentTb(await liteNative.translucentTbStatus())
@@ -92,6 +112,7 @@ export function LiteSettingsWindow() {
       setSettings(loaded)
       void refreshDiagnostics()
       void refreshAutostart()
+      void refreshDesktopFallback()
       void refreshTranslucentTb()
       void refreshCustomImages()
     })
@@ -140,6 +161,21 @@ export function LiteSettingsWindow() {
     } finally {
       lockOperationRef.current = false
       setLockScreenBusy(false)
+    }
+  }
+
+  const setDesktopFallback = async (enabled: boolean) => {
+    if (desktopFallbackBusy) return
+    setDesktopFallbackBusy(true)
+    try {
+      const confirmation = await liteNative.setDesktopWallpaperFallback(enabled)
+      commit({ ...settingsRef.current, desktopWallpaperFallback: enabled })
+      setNotice(confirmation)
+      await refreshDesktopFallback()
+    } catch (error) {
+      setNotice(`${enabled ? '启用登录过渡底图' : '关闭登录过渡底图'}失败：${String(error)}`)
+    } finally {
+      setDesktopFallbackBusy(false)
     }
   }
 
@@ -204,9 +240,10 @@ export function LiteSettingsWindow() {
       <section className="lite-card">
         <div className="lite-card-heading"><div><span className="lite-kicker">01 · SYSTEM</span><h2>锁屏与启动</h2></div><span className={`lite-status-dot ${lockScreenDiagnostics?.managedImageActive ? 'is-active' : ''}`} /></div>
         <SettingRow title="接管 Windows 锁屏图片" detail={lockScreenBusy ? '正在应用系统设置，请稍候。' : '密码输入页仍由 Windows 原生处理。'}><Toggle label="接管 Windows 锁屏图片" checked={settings.lockScreenEnabled} disabled={lockScreenBusy} onChange={(value) => void setLockScreen(value)} /></SettingRow>
+        <SettingRow title="登录过渡底图" detail={desktopFallbackBusy ? '正在更新 Explorer 桌面底图。' : desktopFallbackStatus?.warning ?? '让 Explorer 在应用启动前先显示睡眠画面，减少解锁后的原壁纸空档。'}><Toggle label="登录过渡底图" checked={settings.desktopWallpaperFallback} disabled={desktopFallbackBusy} onChange={(value) => void setDesktopFallback(value)} /></SettingRow>
         <SettingRow title="登录后自动启动" detail={autostartBusy ? '正在更新启动任务。' : '使用当前用户的 Windows 启动任务。'}><Toggle label="登录后自动启动" checked={settings.autostart} disabled={autostartBusy} onChange={(value) => void setAutostart(value)} /></SettingRow>
         <div className="lite-actions"><button type="button" onClick={() => void openLockScreenSettings()}>打开 Windows 锁屏设置</button><button type="button" onClick={() => void refreshDiagnostics()}>刷新诊断</button></div>
-        {lockScreenDiagnostics && <div className="lite-diagnostics"><strong>{lockScreenDiagnostics.takeoverAvailable ? '锁屏接管可用' : '当前暂不可接管锁屏'}</strong>{lockScreenDiagnostics.warnings.slice(0, 2).map((warning) => <span key={warning}>{warning}</span>)}{lockScreenDiagnostics.staleBackup && <button type="button" className="lite-diagnostics-action" disabled={lockScreenBusy} onClick={() => void clearStaleLockScreenBackup()}>清理过期恢复点</button>}</div>}
+        {lockScreenDiagnostics && <div className="lite-diagnostics"><strong>{lockScreenDiagnostics.takeoverAvailable ? '锁屏接管可用' : '当前暂不可接管锁屏'}</strong>{lockScreenDiagnostics.warnings.slice(0, 2).map((warning) => <span key={warning}>{warning}</span>)}{desktopFallbackStatus?.backupExists && desktopFallbackStatus.warning && <span>{desktopFallbackStatus.warning}</span>}{lockScreenDiagnostics.staleBackup && <button type="button" className="lite-diagnostics-action" disabled={lockScreenBusy} onClick={() => void clearStaleLockScreenBackup()}>清理过期恢复点</button>}</div>}
       </section>
 
       <section className="lite-card">

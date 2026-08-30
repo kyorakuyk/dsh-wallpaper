@@ -1,6 +1,7 @@
 #[cfg(not(feature = "lite"))]
 mod api_persistence;
 mod app_core;
+mod desktop_fallback;
 #[cfg(not(feature = "lite"))]
 mod appearance;
 #[cfg(not(feature = "lite"))]
@@ -508,6 +509,19 @@ fn dispatch_app_action(
         }),
         _ => return Err(format!("unknown app action: {action}")),
     };
+    // Let the native hand-off layer get ahead of the renderer on both a cold
+    // start and a later session unlock.  The call is idempotent when the WTS
+    // callback already displayed the frame, and the WebView hides it only
+    // after painting its matching wake frame.
+    match &action {
+        AppAction::BootReady { play_wake: true } | AppAction::Unlock { play_wake: true } => {
+            let _ = native_bootstrap::start_wake();
+        }
+        AppAction::Lock => {
+            let _ = native_bootstrap::show_sleep();
+        }
+        _ => {}
+    }
     let snapshot = state.dispatch(action);
     emit_app_snapshot(&app, &snapshot);
     Ok(snapshot)
@@ -592,6 +606,7 @@ fn lite_settings_save(
         "playWakeOnEveryUnlock",
         "skipWakeAnimation",
         "lockScreenEnabled",
+        "desktopWallpaperFallback",
         "autostart",
     ];
     let object = settings.as_object().expect("object checked above");
@@ -737,6 +752,34 @@ fn lite_image_resolve(
         "mimeType": mime_type,
         "bytesBase64": base64::engine::general_purpose::STANDARD.encode(bytes),
     })))
+}
+
+/// The Lite release can optionally align Explorer's ordinary desktop
+/// wallpaper with the packaged sleep artwork. This masks the short interval
+/// before WorkerW/WebView2 paints after login. The source is resolved inside
+/// Rust and the renderer can only choose the boolean setting.
+#[tauri::command]
+#[cfg(feature = "lite")]
+fn set_desktop_wallpaper_fallback(
+    caller: tauri::WebviewWindow,
+    enabled: bool,
+) -> Result<String, String> {
+    require_settings(&caller)?;
+    if enabled {
+        let source = desktop_fallback::bundled_sleep_source()?;
+        desktop_fallback::set_fallback(Some(&source), true)
+    } else {
+        desktop_fallback::set_fallback(None, false)
+    }
+}
+
+#[tauri::command]
+#[cfg(feature = "lite")]
+fn desktop_wallpaper_fallback_status(
+    caller: tauri::WebviewWindow,
+) -> Result<desktop_fallback::DesktopWallpaperFallbackStatus, String> {
+    require_settings(&caller)?;
+    Ok(desktop_fallback::status())
 }
 
 #[cfg(all(test, feature = "lite"))]
@@ -1728,6 +1771,8 @@ macro_rules! register_edition_commands {
             lite_settings_save,
             lite_image_import,
             lite_image_resolve,
+            set_desktop_wallpaper_fallback,
+            desktop_wallpaper_fallback_status,
             set_lock_screen_enabled,
             clear_stale_lock_screen_backup,
             get_lock_screen_diagnostics,

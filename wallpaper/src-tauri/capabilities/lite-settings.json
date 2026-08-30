@@ -8,6 +8,8 @@
     "allow-lite-settings-get",
     "allow-lite-settings-save",
     "allow-lite-image-import",
+    "allow-set-desktop-wallpaper-fallback",
+    "allow-desktop-wallpaper-fallback-status",
     "allow-set-lock-screen-enabled",
     "allow-clear-stale-lock-screen-backup",
     "allow-get-lock-screen-diagnostics",

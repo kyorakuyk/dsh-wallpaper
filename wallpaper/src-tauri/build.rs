@@ -14,6 +14,8 @@ fn main() {
             "lite_settings_save",
             "lite_image_import",
             "lite_image_resolve",
+            "set_desktop_wallpaper_fallback",
+            "desktop_wallpaper_fallback_status",
             "notify_appearance_changed",
             "set_lock_screen_enabled",
             "clear_stale_lock_screen_backup",

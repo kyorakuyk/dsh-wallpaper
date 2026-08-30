@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(windows)]
 use crate::app_core::{AppAction, AppCore, WallpaperHostMode, WallpaperHostStatus};
+#[cfg(windows)]
+use crate::native_bootstrap;
 
 #[cfg(windows)]
 use crate::lock_screen_backup::{
@@ -1236,10 +1238,12 @@ unsafe extern "system" fn session_subclass_proc(
     match message {
         WM_WTSSESSION_CHANGE => match wparam.0 as u32 {
             WTS_SESSION_LOCK => {
+                let _ = native_bootstrap::show_sleep();
                 dispatch_system_action(app, AppAction::Lock);
                 emit_to_background(app, "system-session", "locked");
             }
             WTS_SESSION_UNLOCK => {
+                let _ = native_bootstrap::start_wake();
                 dispatch_system_action(app, AppAction::Unlock { play_wake: true });
                 emit_to_background(app, "system-session", "unlocked");
             }
@@ -1247,10 +1251,12 @@ unsafe extern "system" fn session_subclass_proc(
         },
         WM_POWERBROADCAST => match wparam.0 as u32 {
             PBT_APMSUSPEND => {
+                let _ = native_bootstrap::show_sleep();
                 dispatch_system_action(app, AppAction::Lock);
                 emit_to_background(app, "system-session", "suspend");
             }
             PBT_APMRESUMEAUTOMATIC => {
+                let _ = native_bootstrap::start_wake();
                 dispatch_system_action(app, AppAction::Unlock { play_wake: true });
                 emit_to_background(app, "system-session", "resume");
             }

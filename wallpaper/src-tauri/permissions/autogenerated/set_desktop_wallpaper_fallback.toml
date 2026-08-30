@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-desktop-wallpaper-fallback"
+description = "Enables the set_desktop_wallpaper_fallback command without any pre-configured scope."
+commands.allow = ["set_desktop_wallpaper_fallback"]
+
+[[permission]]
+identifier = "deny-set-desktop-wallpaper-fallback"
+description = "Denies the set_desktop_wallpaper_fallback command without any pre-configured scope."
+commands.deny = ["set_desktop_wallpaper_fallback"]
