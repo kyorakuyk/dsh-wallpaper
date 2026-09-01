@@ -8,16 +8,33 @@
 //! overwrite a wallpaper changed by the user or another application.
 
 #[cfg(windows)]
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 #[cfg(windows)]
 use serde::{Deserialize, Serialize};
 
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    SystemParametersInfoW, SPI_GETDESKWALLPAPER, SPI_SETDESKWALLPAPER, SPIF_SENDCHANGE,
-    SPIF_UPDATEINIFILE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    SystemParametersInfoW, SPIF_SENDCHANGE, SPIF_UPDATEINIFILE, SPI_GETDESKWALLPAPER,
+    SPI_SETDESKWALLPAPER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
 };
+
+#[cfg(windows)]
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
+    COINIT_APARTMENTTHREADED,
+};
+
+#[cfg(windows)]
+use windows::Win32::UI::Shell::{DesktopWallpaper, IDesktopWallpaper};
+
+#[cfg(windows)]
+use windows::core::PCWSTR;
+#[cfg(windows)]
+use windows::Win32::Foundation::{RPC_E_CHANGED_MODE, S_FALSE};
 
 #[cfg(windows)]
 const STATE_VERSION: u32 = 1;
@@ -31,6 +48,10 @@ const FALLBACK_FILE: &str = "sleep.png";
 const SLEEP_ASSET: &str = "personas/wake-frames/variant-anima/sleep.png";
 #[cfg(windows)]
 const SLEEP_PACKAGE_ASSET: &str = "LockScreenSleep.png";
+#[cfg(windows)]
+const WALLPAPER_VERIFY_ATTEMPTS: usize = 8;
+#[cfg(windows)]
+const WALLPAPER_VERIFY_DELAY_MS: u64 = 75;
 
 #[cfg(windows)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -79,8 +100,8 @@ fn read_backup(root: &Path) -> Result<Option<DesktopWallpaperBackup>, String> {
         return Ok(None);
     }
     let bytes = fs::read(&path).map_err(|error| format!("无法读取桌面底图恢复点：{error}"))?;
-    let backup: DesktopWallpaperBackup = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("桌面底图恢复点损坏：{error}"))?;
+    let backup: DesktopWallpaperBackup =
+        serde_json::from_slice(&bytes).map_err(|error| format!("桌面底图恢复点损坏：{error}"))?;
     if backup.version != STATE_VERSION
         || backup.original_path.trim().is_empty()
         || backup.managed_path.trim().is_empty()
@@ -93,7 +114,9 @@ fn read_backup(root: &Path) -> Result<Option<DesktopWallpaperBackup>, String> {
     // corrupted manifest must not be able to make a later disable operation
     // treat an arbitrary user path as our own wallpaper.
     if !same_path(&backup.managed_path, &managed_path(root)) {
-        return Err("桌面底图恢复点未指向应用自己的托管文件；为避免覆盖用户壁纸，操作已停止。".into());
+        return Err(
+            "桌面底图恢复点未指向应用自己的托管文件；为避免覆盖用户壁纸，操作已停止。".into(),
+        );
     }
     // Restoring to a path that no longer exists cannot succeed safely. Treat
     // it as invalid rather than allowing a partial recovery transaction.
@@ -119,7 +142,7 @@ fn write_backup(root: &Path, backup: &DesktopWallpaperBackup) -> Result<(), Stri
 }
 
 #[cfg(windows)]
-fn current_wallpaper_path() -> Result<Option<String>, String> {
+fn current_wallpaper_path_legacy() -> Result<Option<String>, String> {
     // SPI_GETDESKWALLPAPER accepts a caller-provided buffer.  A long buffer
     // also handles extended paths without truncating the user's original.
     const BUFFER_LEN: usize = 32_768;
@@ -137,11 +160,140 @@ fn current_wallpaper_path() -> Result<Option<String>, String> {
         .iter()
         .position(|value| *value == 0)
         .unwrap_or(buffer.len());
-    let value = String::from_utf16_lossy(&buffer[..length]).trim().to_string();
+    let value = String::from_utf16_lossy(&buffer[..length])
+        .trim()
+        .to_string();
     if value.is_empty() {
         Ok(None)
     } else {
         Ok(Some(value))
+    }
+}
+
+#[cfg(windows)]
+struct ComApartment {
+    should_uninitialize: bool,
+}
+
+#[cfg(windows)]
+impl ComApartment {
+    fn initialize() -> Result<Self, String> {
+        let result = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        if result.is_ok() {
+            Ok(Self {
+                should_uninitialize: true,
+            })
+        } else if result == RPC_E_CHANGED_MODE {
+            // The Tauri/Windows thread may already be initialized as MTA. COM
+            // is still usable in that case; only the matching uninitialize is
+            // omitted because this call did not initialize the apartment.
+            Ok(Self {
+                should_uninitialize: false,
+            })
+        } else {
+            Err(format!(
+                "COM 初始化失败（错误码 0x{:08X}）",
+                result.0 as u32
+            ))
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ComApartment {
+    fn drop(&mut self) {
+        if self.should_uninitialize {
+            unsafe { CoUninitialize() };
+        }
+    }
+}
+
+#[cfg(windows)]
+fn desktop_wallpaper_object() -> Result<(ComApartment, IDesktopWallpaper), String> {
+    let apartment = ComApartment::initialize()?;
+    let wallpaper = unsafe { CoCreateInstance(&DesktopWallpaper, None, CLSCTX_ALL) }
+        .map_err(|error| format!("无法创建 Windows 桌面壁纸对象：{error}"))?;
+    Ok((apartment, wallpaper))
+}
+
+#[cfg(windows)]
+fn wallpaper_path_from_desktop_object(
+    wallpaper: &IDesktopWallpaper,
+) -> Result<Option<String>, String> {
+    let value = unsafe { wallpaper.GetWallpaper(PCWSTR::null()) };
+    let value = match value {
+        Ok(value) => value,
+        // S_FALSE means the monitors do not share one static image (for
+        // example a slideshow or different per-monitor wallpapers). Do not
+        // fall back to SPI in that case, because it could misidentify a
+        // dynamic source as a safely restorable file.
+        Err(error) if error.code() == S_FALSE => return Ok(None),
+        Err(error) => return Err(format!("无法读取 Windows 桌面壁纸：{error}")),
+    };
+    if value.0.is_null() {
+        return Ok(None);
+    }
+    let path =
+        unsafe { value.to_string() }.map_err(|error| format!("Windows 桌面壁纸路径无效：{error}"));
+    unsafe { CoTaskMemFree(Some(value.0.cast())) };
+    let path = path?;
+    Ok((!path.trim().is_empty()).then_some(path))
+}
+
+#[cfg(windows)]
+fn desktop_wallpaper_matches(
+    wallpaper: &IDesktopWallpaper,
+    expected: &Path,
+) -> Result<bool, String> {
+    for attempt in 0..WALLPAPER_VERIFY_ATTEMPTS {
+        let readback = wallpaper_path_from_desktop_object(wallpaper)?;
+        if readback
+            .as_deref()
+            .is_some_and(|value| same_path(value, expected))
+        {
+            return Ok(true);
+        }
+        // Explorer commits the wallpaper and refreshes each monitor
+        // asynchronously. A short bounded retry avoids reporting a false
+        // failure while still keeping the command responsive and deterministic.
+        if attempt + 1 < WALLPAPER_VERIFY_ATTEMPTS {
+            std::thread::sleep(std::time::Duration::from_millis(WALLPAPER_VERIFY_DELAY_MS));
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(windows)]
+fn wallpaper_matches(expected: &Path) -> Result<bool, String> {
+    for attempt in 0..WALLPAPER_VERIFY_ATTEMPTS {
+        if current_wallpaper_path()?
+            .as_deref()
+            .is_some_and(|value| same_path(value, expected))
+        {
+            return Ok(true);
+        }
+        if attempt + 1 < WALLPAPER_VERIFY_ATTEMPTS {
+            std::thread::sleep(std::time::Duration::from_millis(WALLPAPER_VERIFY_DELAY_MS));
+        }
+    }
+    Ok(false)
+}
+
+/// Read the wallpaper through the modern per-monitor API. Only when COM or
+/// the interface is unavailable do we use the legacy SPI query.
+#[cfg(windows)]
+fn current_wallpaper_path() -> Result<Option<String>, String> {
+    match desktop_wallpaper_object().and_then(|(apartment, wallpaper)| {
+        let result = wallpaper_path_from_desktop_object(&wallpaper);
+        drop(wallpaper);
+        drop(apartment);
+        result
+    }) {
+        Ok(path) => Ok(path),
+        Err(error) => {
+            log::debug!("IDesktopWallpaper read unavailable, using SPI fallback: {error}");
+            current_wallpaper_path_legacy()
+        }
     }
 }
 
@@ -199,7 +351,7 @@ pub fn bundled_sleep_source() -> Result<PathBuf, String> {
 }
 
 #[cfg(windows)]
-fn set_wallpaper(path: &Path) -> Result<(), String> {
+fn set_wallpaper_legacy(path: &Path) -> Result<(), String> {
     let wide = path
         .to_string_lossy()
         .encode_utf16()
@@ -217,13 +369,50 @@ fn set_wallpaper(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(windows)]
+fn set_wallpaper_desktop(path: &Path) -> Result<(), String> {
+    let (_apartment, wallpaper) = desktop_wallpaper_object()?;
+    let wide = path
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    unsafe { wallpaper.SetWallpaper(PCWSTR::null(), PCWSTR(wide.as_ptr())) }
+        .map_err(|error| format!("IDesktopWallpaper 设置失败：{error}"))?;
+
+    if !desktop_wallpaper_matches(&wallpaper, path)? {
+        return Err("Windows 未回读到刚设置的桌面壁纸；为避免登录时恢复错误，操作已停止。".into());
+    }
+    Ok(())
+}
+
+/// Set and verify the wallpaper with the modern API first. The SPI path is a
+/// compatibility fallback for older/partially initialized Explorer shells;
+/// it is still checked by reading the resulting path before reporting success.
+#[cfg(windows)]
+fn set_wallpaper(path: &Path) -> Result<(), String> {
+    match set_wallpaper_desktop(path) {
+        Ok(()) => Ok(()),
+        Err(modern_error) => {
+            log::warn!("{modern_error}；尝试兼容壁纸接口");
+            set_wallpaper_legacy(path)?;
+            if wallpaper_matches(path)? {
+                Ok(())
+            } else {
+                Err(format!(
+                    "现代和兼容壁纸接口均未确认设置成功：{modern_error}"
+                ))
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
 fn copy_fallback(source: &Path, root: &Path) -> Result<PathBuf, String> {
     if !source.is_file() {
         return Err("找不到内置睡眠底图，未修改系统桌面壁纸。".into());
     }
     let directory = root.join(FALLBACK_DIRECTORY);
-    fs::create_dir_all(&directory)
-        .map_err(|error| format!("无法创建登录过渡底图目录：{error}"))?;
+    fs::create_dir_all(&directory).map_err(|error| format!("无法创建登录过渡底图目录：{error}"))?;
     let destination = managed_path(root);
     let temporary = directory.join(format!(".sleep-{}.tmp", std::process::id()));
     let _ = fs::remove_file(&temporary);
@@ -251,13 +440,17 @@ pub fn set_fallback(source: Option<&Path>, enabled: bool) -> Result<String, Stri
         if let Some(backup) = &existing {
             let managed = Path::new(&backup.managed_path);
             if !same_path(&current, managed) {
-                return Err("检测到桌面壁纸已由用户或其他程序更改；为避免覆盖，未启用登录过渡底图。".into());
+                return Err(
+                    "检测到桌面壁纸已由用户或其他程序更改；为避免覆盖，未启用登录过渡底图。".into(),
+                );
             }
             if managed.is_file() {
                 return Ok("登录过渡底图已经启用。".into());
             }
         } else if !Path::new(&current).is_file() {
-            return Err("当前桌面壁纸文件不可读取，无法建立安全恢复点；未启用登录过渡底图。".into());
+            return Err(
+                "当前桌面壁纸文件不可读取，无法建立安全恢复点；未启用登录过渡底图。".into(),
+            );
         }
 
         let managed = copy_fallback(source, &root)?;
@@ -276,12 +469,13 @@ pub fn set_fallback(source: Option<&Path>, enabled: bool) -> Result<String, Stri
         let Some(backup) = existing else {
             return Ok("登录过渡底图当前未启用。".into());
         };
-        let current = current_wallpaper_path()?.ok_or_else(|| {
-            "无法确认当前桌面壁纸；为避免覆盖用户选择，未执行恢复。".to_string()
-        })?;
+        let current = current_wallpaper_path()?
+            .ok_or_else(|| "无法确认当前桌面壁纸；为避免覆盖用户选择，未执行恢复。".to_string())?;
         let managed = Path::new(&backup.managed_path);
         if !same_path(&current, managed) {
-            return Err("检测到桌面壁纸已由用户或其他程序更改；未覆盖当前壁纸，恢复点仍保留。".into());
+            return Err(
+                "检测到桌面壁纸已由用户或其他程序更改；未覆盖当前壁纸，恢复点仍保留。".into(),
+            );
         }
         let original = Path::new(&backup.original_path);
         if !original.is_file() {

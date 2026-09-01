@@ -63,7 +63,7 @@ pnpm desktop:dev     # 壁纸可独立启动；Harness 模式需要兼容的 Wal
 pnpm desktop:build   # 构建安装包
 ```
 
-**Lite 首发安装包**：由 GitHub Actions 远程生成 `dsh-wallpaper-lite_0.1.1_x64-setup.exe`；开发机不执行打包或安装，下载入口见 [`docs/lite-release.md`](<C:/DeepSeekHarness/plugins/dsh-wallpaper/docs/lite-release.md>)。
+**Lite 首发安装包**：由 GitHub Actions 远程生成 `dsh-wallpaper-lite_0.1.2_x64-setup.exe`；开发机不执行打包或安装，下载入口见 [`docs/lite-release.md`](<C:/DeepSeekHarness/plugins/dsh-wallpaper/docs/lite-release.md>)。
 
 **交互**：
 - `Alt+W`：进入睡眠模式
