@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import { appCoreClient } from '../runtime/appCoreClient.ts'
-import { nativeRuntime, type AutostartStatus, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
+import { nativeRuntime, type AutostartStatus, type DesktopDisplayInfo, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
 import { loadSettings, saveSettings, type WallpaperSettings } from './store.ts'
 import { SettingsPanel } from './SettingsPanel.tsx'
 import { chooseAppearanceImportPaths, nativeAppearance } from '../native/appearance.ts'
@@ -19,6 +19,7 @@ export function SettingsWindow() {
   const [dshCandidates, setDshCandidates] = useState<Array<{ rootPath: string; source: string }>>([])
   const [managedDsh, setManagedDsh] = useState<ManagedDshStatus>({ managed: false, running: false })
   const [lockScreenDiagnostics, setLockScreenDiagnostics] = useState<LockScreenDiagnostics>()
+  const [desktopDisplays, setDesktopDisplays] = useState<DesktopDisplayInfo[]>([])
   const [lockScreenBusy, setLockScreenBusy] = useState(false)
   const [autostartBusy, setAutostartBusy] = useState(false)
   const [notice, setNotice] = useState<string>()
@@ -71,6 +72,13 @@ export function SettingsWindow() {
       if (request === lockScreenDiagnosticsRequestRef.current) setLockScreenDiagnostics(diagnostics)
     } catch (error) {
       if (request === lockScreenDiagnosticsRequestRef.current) setNotice(`锁屏检查失败：${String(error)}`)
+    }
+  }
+  const refreshDesktopDisplays = async () => {
+    try {
+      setDesktopDisplays(await nativeRuntime.desktopDisplays())
+    } catch (error) {
+      setNotice(`显示器列表读取失败：${String(error)}`)
     }
   }
   const refreshAutostartStatus = async () => {
@@ -143,13 +151,22 @@ export function SettingsWindow() {
     refreshManagedDsh()
     void refreshAutostartStatus()
     refreshLockScreenDiagnostics()
+    void refreshDesktopDisplays()
     refreshAppearance()
     const current = getCurrentWindow()
     const unlisten = current.onCloseRequested((event) => {
       event.preventDefault()
       void invoke('hide_settings_window')
     })
-    return () => { void unlisten.then((dispose) => dispose()) }
+    // The background surface receives the native display-change event. The
+    // settings window intentionally does not subscribe to renderer events;
+    // while it is open, a light polling refresh keeps its monitor list current
+    // without widening the settings-to-background event boundary.
+    const displayTimer = window.setInterval(() => { void refreshDesktopDisplays() }, 5000)
+    return () => {
+      void unlisten.then((dispose) => dispose())
+      window.clearInterval(displayTimer)
+    }
   }, [])
 
   const change = (next: WallpaperSettings) => {
@@ -235,6 +252,8 @@ export function SettingsWindow() {
       onSetLockScreenEnabled={(enabled) => { void setLockScreenEnabled(enabled) }}
       lockScreenBusy={lockScreenBusy}
       autostartBusy={autostartBusy}
+      desktopDisplays={desktopDisplays}
+      onRefreshDesktopDisplays={refreshDesktopDisplays}
       onRequestDeepSeekLogin={() => void nativeRuntime.requestDeepSeekLogin().catch((error) => setNotice(`无法打开 DeepSeek 应用内页面：${String(error)}`))}
       onConfigureApiKey={() => void nativeRuntime.promptForApiKeyCredential()
         .then((saved) => { if (saved) setNotice('DeepSeek API Key 已更新到 Windows 凭据管理器。') })

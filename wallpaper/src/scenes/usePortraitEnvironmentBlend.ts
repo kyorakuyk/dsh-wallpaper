@@ -11,6 +11,11 @@ export interface PortraitEnvironment {
   contrast: number
 }
 
+export interface PortraitSampleSize {
+  width: number
+  height: number
+}
+
 const FALLBACK: PortraitEnvironment = { rgb: '11 30 52', luminance: 0.1, lightAngle: '90deg', contrast: 0.08 }
 
 function srgbLuminance(red: number, green: number, blue: number): number {
@@ -26,9 +31,9 @@ function srgbLuminance(red: number, green: number, blue: number): number {
  * right-side portrait rests. The values deliberately live in CSS variables so
  * any later drag/position setting only needs to supply a new anchor.
  */
-export function usePortraitEnvironmentBlend(backgroundUrl: string, anchor = { x: 0.79, y: 0.78 }): PortraitEnvironment {
+export function usePortraitEnvironmentBlend(backgroundUrl: string, anchor = { x: 0.79, y: 0.78 }, sampleSize?: PortraitSampleSize): PortraitEnvironment {
   const [environment, setEnvironment] = useState<PortraitEnvironment>(FALLBACK)
-  const [viewport, setViewport] = useState(() => `${window.innerWidth}x${window.innerHeight}`)
+  const [viewport, setViewport] = useState(() => `${sampleSize?.width ?? window.innerWidth}x${sampleSize?.height ?? window.innerHeight}`)
 
   useEffect(() => {
     if (!backgroundUrl) {
@@ -40,8 +45,8 @@ export function usePortraitEnvironmentBlend(backgroundUrl: string, anchor = { x:
     image.decoding = 'async'
     image.onload = () => {
       try {
-        const viewportWidth = Math.max(window.innerWidth, 1)
-        const viewportHeight = Math.max(window.innerHeight, 1)
+        const viewportWidth = Math.max(sampleSize?.width ?? window.innerWidth, 1)
+        const viewportHeight = Math.max(sampleSize?.height ?? window.innerHeight, 1)
         const scale = Math.max(viewportWidth / image.naturalWidth, viewportHeight / image.naturalHeight)
         const renderedWidth = image.naturalWidth * scale
         const renderedHeight = image.naturalHeight * scale
@@ -85,9 +90,10 @@ export function usePortraitEnvironmentBlend(backgroundUrl: string, anchor = { x:
     image.onerror = () => { if (!cancelled) setEnvironment(FALLBACK) }
     image.src = backgroundUrl
     return () => { cancelled = true }
-  }, [anchor.x, anchor.y, backgroundUrl, viewport])
+  }, [anchor.x, anchor.y, backgroundUrl, sampleSize?.height, sampleSize?.width, viewport])
 
   useEffect(() => {
+    if (sampleSize) return
     const refresh = () => setViewport(`${window.innerWidth}x${window.innerHeight}`)
     window.addEventListener('resize', refresh)
     return () => window.removeEventListener('resize', refresh)

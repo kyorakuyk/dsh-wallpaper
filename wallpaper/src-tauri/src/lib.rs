@@ -419,6 +419,18 @@ fn get_app_snapshot(
     Ok(state.snapshot())
 }
 
+/// Enumerate the current physical monitor topology for the full desktop
+/// edition. Settings and the background surface share this read-only command;
+/// no display or wallpaper setting is changed here.
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+fn desktop_displays(
+    caller: tauri::WebviewWindow,
+) -> Result<Vec<windows_integration::DesktopDisplayInfo>, String> {
+    require_wallpaper_surface(&caller)?;
+    windows_integration::desktop_displays()
+}
+
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
 fn set_interaction_enabled(
@@ -1275,9 +1287,10 @@ fn update_interaction_regions(
 #[cfg(not(feature = "lite"))]
 fn desktop_layout_metrics(
     caller: tauri::WebviewWindow,
+    display_id: Option<String>,
 ) -> Result<windows_integration::DesktopLayoutMetrics, String> {
     require_background(&caller)?;
-    Ok(windows_integration::desktop_layout_metrics(&caller))
+    Ok(windows_integration::desktop_layout_metrics(&caller, display_id.as_deref()))
 }
 
 #[tauri::command]
@@ -1794,6 +1807,7 @@ macro_rules! register_edition_commands {
     ($builder:expr) => {
         $builder.invoke_handler(tauri::generate_handler![
             get_app_snapshot,
+            desktop_displays,
             set_interaction_enabled,
             select_backend,
             dispatch_app_action,

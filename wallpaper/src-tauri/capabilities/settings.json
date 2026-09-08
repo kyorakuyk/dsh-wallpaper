@@ -8,6 +8,7 @@
     "core:event:allow-unlisten",
     "dialog:allow-open",
     "allow-get-app-snapshot",
+    "allow-desktop-displays",
     "allow-set-interaction-enabled",
     "allow-set-lock-screen-enabled",
     "allow-clear-stale-lock-screen-backup",

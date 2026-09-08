@@ -26,6 +26,7 @@ pnpm desktop:build:lite
 | 💬 **聊天后端** | ✅ | DeepSeek API（流式）+ Harness（bridge 会话）；DeepSeek 网页入口仍为实验能力 |
 | 🔌 **DSH 会话桥** | ✅ | `bridge/` 独立插件：loopback REST/SSE + bearer token 鉴权 |
 | 🖥️ **Tauri 壳** | ✅ | 统一 WorkerW 背景宿主（画面与桌面内交互热区）+ 独立设置窗口、托盘、开机自启 |
+| 🖥️ **完整版多屏** | 🧪 | 显示器枚举、逐屏背景、会话窗/立绘目标屏幕选择；Lite 首发仍为单主屏 |
 | 🔐 **锁屏接管** | 🧪 | 安全备份/恢复与无副作用 MSIX 打包验证已完成；已安装 MSIX 的 `Win+L` 人工验收待做 |
 | 🔒 **凭据安全** | ✅ | DeepSeek API Key 只存 Windows 凭据管理器（keyring） |
 
@@ -189,6 +190,7 @@ cargo test --manifest-path wallpaper/src-tauri/Cargo.toml
 - [x] 苏醒帧动画序列（variant-anima，人设修正：有腿+尾巴装饰）
 - [x] 深海室内背景切换
 - [x] DSH 会话桥（bridge/）+ 聊天双通道
+- [🧪] 完整版多屏分层（逐屏背景与交互目标屏幕；Windows 11 真机验收待做）
 - [ ] 真机安装联调（bridge 挂载 + 会话打通）
 - [ ] 素材导入 UI + 用户形态扫描
 

@@ -8,7 +8,7 @@ export { assetUrl }
 
 export type InteractionLayout = 'floating' | 'taskbar-docked'
 
-export const SETTINGS_VERSION = 7
+export const SETTINGS_VERSION = 8
 /** Keep renderer validation aligned with the native request boundary. A value
  * beyond this ceiling is almost certainly a unit/configuration error and must
  * not be presented as a configured price when Rust deliberately ignores it. */
@@ -28,6 +28,15 @@ export const BACKGROUND_OPTIONS = [
 ] as const
 
 export type BackgroundId = (typeof BACKGROUND_OPTIONS)[number]['id']
+
+export interface MultiScreenSettings {
+  /** Keep the original single-screen composition until the user opts in. */
+  enabled: boolean
+  /** Missing entries follow the global `background` choice. */
+  backgrounds: Partial<Record<string, BackgroundId>>
+  conversationDisplayId?: string
+  portraitDisplayId?: string
+}
 
 export interface ApiSettings {
   baseUrl: string
@@ -73,6 +82,7 @@ export interface WallpaperSettings {
   conversationOpacity: number
   /** 中央会话窗背景模糊半径（px）。 */
   conversationBlur: number
+  multiScreen: MultiScreenSettings
   deepseekApi: ApiSettings
   dshLaunch: DshLaunchSettings
 }
@@ -100,11 +110,40 @@ export const DEFAULT_SETTINGS: WallpaperSettings = {
   portraitAmbientStrength: 0.72,
   conversationOpacity: 0.74,
   conversationBlur: 19,
+  multiScreen: { enabled: false, backgrounds: {} },
   deepseekApi: { baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
   dshLaunch: { profile: 'desktop' },
 }
 
-const KEY = 'dsh-wallpaper:settings:v6'
+const KEY = 'dsh-wallpaper:settings:v8'
+
+function validDisplayId(value: string): boolean {
+  return value.length > 0 && value.length <= 128 && !/[\u0000-\u001f\u007f]/.test(value)
+}
+
+function normalizeMultiScreenSettings(raw: unknown): MultiScreenSettings {
+  if (raw === null || typeof raw !== 'object') return structuredClone(DEFAULT_SETTINGS.multiScreen)
+  const value = raw as Partial<MultiScreenSettings> & { backgrounds?: unknown }
+  const backgrounds: Partial<Record<string, BackgroundId>> = {}
+  if (value.backgrounds && typeof value.backgrounds === 'object') {
+    for (const [displayId, background] of Object.entries(value.backgrounds)) {
+      if (validDisplayId(displayId) && BACKGROUND_OPTIONS.some((option) => option.id === background)) {
+        backgrounds[displayId] = background as BackgroundId
+      }
+    }
+  }
+  const displayId = (candidate: unknown) => {
+    if (typeof candidate !== 'string') return undefined
+    const trimmed = candidate.trim()
+    return validDisplayId(trimmed) ? trimmed : undefined
+  }
+  return {
+    enabled: value.enabled === true,
+    backgrounds,
+    conversationDisplayId: displayId(value.conversationDisplayId),
+    portraitDisplayId: displayId(value.portraitDisplayId),
+  }
+}
 
 function migrate(raw: unknown): WallpaperSettings {
   if (raw === null || typeof raw !== 'object') return structuredClone(DEFAULT_SETTINGS)
@@ -121,6 +160,7 @@ function migrate(raw: unknown): WallpaperSettings {
     portraitAmbientStrength: typeof value.portraitAmbientStrength === 'number' ? Math.min(1, Math.max(0, value.portraitAmbientStrength)) : DEFAULT_SETTINGS.portraitAmbientStrength,
     conversationOpacity: typeof value.conversationOpacity === 'number' ? Math.min(.96, Math.max(.2, value.conversationOpacity)) : DEFAULT_SETTINGS.conversationOpacity,
     conversationBlur: typeof value.conversationBlur === 'number' ? Math.min(40, Math.max(0, value.conversationBlur)) : DEFAULT_SETTINGS.conversationBlur,
+    multiScreen: normalizeMultiScreenSettings(value.multiScreen),
     deepseekApi: normalizeApiSettings(value.deepseekApi),
     dshLaunch: { profile: value.dshLaunch?.profile?.trim() || 'desktop', rootPath: value.dshLaunch?.rootPath?.trim() || undefined, command: value.dshLaunch?.command?.trim() || undefined },
   }
@@ -151,7 +191,7 @@ function normalizeApiSettings(value: Partial<ApiSettings> | undefined): ApiSetti
 
 export function loadSettings(): WallpaperSettings {
   try {
-  const raw = localStorage.getItem(KEY) ?? localStorage.getItem('dsh-wallpaper:settings:v6') ?? localStorage.getItem('dsh-wallpaper:settings:v5') ?? localStorage.getItem('dsh-wallpaper:settings:v4') ?? localStorage.getItem('dsh-wallpaper:settings:v3') ?? localStorage.getItem('dsh-wallpaper:settings:v2') ?? localStorage.getItem('dsh-wallpaper:settings')
+    const raw = localStorage.getItem(KEY) ?? localStorage.getItem('dsh-wallpaper:settings:v7') ?? localStorage.getItem('dsh-wallpaper:settings:v6') ?? localStorage.getItem('dsh-wallpaper:settings:v5') ?? localStorage.getItem('dsh-wallpaper:settings:v4') ?? localStorage.getItem('dsh-wallpaper:settings:v3') ?? localStorage.getItem('dsh-wallpaper:settings:v2') ?? localStorage.getItem('dsh-wallpaper:settings')
     if (raw) return migrate(JSON.parse(raw))
   } catch {
     /* 忽略损坏的配置 */

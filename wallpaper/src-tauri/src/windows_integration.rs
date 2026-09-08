@@ -59,7 +59,9 @@ use windows::{
                 DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_COLOR_NONE,
                 DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
             },
-            Gdi::ClientToScreen,
+            Gdi::{
+                ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
+            },
         },
         Storage::Packaging::Appx::{GetCurrentPackageFullName, GetCurrentPackagePath},
         System::{
@@ -82,13 +84,15 @@ use windows::{
             PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SEND_MESSAGE_TIMEOUT_FLAGS, SMTO_NORMAL,
             SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
             SW_HIDE, SW_SHOWNA, WM_ACTIVATE, WM_NCACTIVATE, WM_NCDESTROY, WM_NCHITTEST,
-            WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WS_BORDER, WS_CAPTION, WS_CHILD, WS_DLGFRAME,
+            MONITORINFOF_PRIMARY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_POWERBROADCAST,
+            WM_WTSSESSION_CHANGE, WS_BORDER, WS_CAPTION, WS_CHILD, WS_DLGFRAME,
             WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE, WS_EX_TOOLWINDOW,
             WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
             WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
         },
         UI::{
             Accessibility::{CUIAutomation, IUIAutomation, UIA_ListItemControlTypeId},
+            HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
             Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON},
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         },
@@ -243,7 +247,151 @@ pub struct DesktopLayoutMetrics {
     pub taskbar_visible: bool,
 }
 
-pub fn desktop_layout_metrics(window: &WebviewWindow) -> DesktopLayoutMetrics {
+
+/// A monitor rectangle is expressed in the virtual desktop's physical pixel
+/// coordinate space. The frontend normalizes these rectangles against the
+/// virtual bounds, so a left/top monitor with negative coordinates remains
+/// stable and does not force the WebView to use a second origin.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopDisplayInfo {
+    /// Stable Windows device name, usually `\\.\\DISPLAY1`.
+    pub id: String,
+    pub name: String,
+    pub bounds: DesktopRect,
+    pub work_area: DesktopRect,
+    pub scale_factor: f64,
+    pub primary: bool,
+}
+
+#[cfg(windows)]
+fn desktop_rect(rect: RECT) -> DesktopRect {
+    DesktopRect {
+        x: rect.left,
+        y: rect.top,
+        width: rect.right.saturating_sub(rect.left),
+        height: rect.bottom.saturating_sub(rect.top),
+    }
+}
+
+#[cfg(windows)]
+fn monitor_name(buffer: &[u16]) -> String {
+    let length = buffer
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(buffer.len());
+    String::from_utf16_lossy(&buffer[..length])
+        .trim()
+        .to_string()
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn enumerate_desktop_display(
+    monitor: HMONITOR,
+    _dc: HDC,
+    _monitor_rect: *mut RECT,
+    data: LPARAM,
+) -> BOOL {
+    let displays = &mut *(data.0 as *mut Vec<DesktopDisplayInfo>);
+    let mut info = MONITORINFOEXW::default();
+    info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+    if !GetMonitorInfoW(monitor, &mut info.monitorInfo).as_bool() {
+        return BOOL(1);
+    }
+
+    let id = monitor_name(&info.szDevice);
+    if id.is_empty() {
+        return BOOL(1);
+    }
+    let mut dpi_x = 96u32;
+    let mut dpi_y = 96u32;
+    let scale_factor = if GetDpiForMonitor(
+        monitor,
+        MDT_EFFECTIVE_DPI,
+        &mut dpi_x,
+        &mut dpi_y,
+    )
+    .is_ok()
+    {
+        ((dpi_x.max(1) as f64) / 96.0).clamp(0.5, 8.0)
+    } else {
+        1.0
+    };
+    let bounds = desktop_rect(info.monitorInfo.rcMonitor);
+    let work_area = desktop_rect(info.monitorInfo.rcWork);
+    if bounds.width <= 0 || bounds.height <= 0 {
+        return BOOL(1);
+    }
+    displays.push(DesktopDisplayInfo {
+        id: id.clone(),
+        name: id,
+        bounds,
+        work_area,
+        scale_factor,
+        primary: info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
+    });
+    BOOL(1)
+}
+
+#[cfg(windows)]
+pub fn desktop_displays() -> Result<Vec<DesktopDisplayInfo>, String> {
+    let mut displays = Vec::<DesktopDisplayInfo>::new();
+    let result = unsafe {
+        EnumDisplayMonitors(
+            None,
+            None,
+            Some(enumerate_desktop_display),
+            LPARAM((&mut displays as *mut Vec<DesktopDisplayInfo>) as isize),
+        )
+    };
+    if !result.as_bool() {
+        return Err("Windows 无法枚举当前显示器。".into());
+    }
+    displays.sort_by(|left, right| {
+        left.bounds
+            .x
+            .cmp(&right.bounds.x)
+            .then(left.bounds.y.cmp(&right.bounds.y))
+            .then(left.id.cmp(&right.id))
+    });
+    if displays.is_empty() {
+        return Err("Windows 未返回可用显示器。".into());
+    }
+    Ok(displays)
+}
+
+#[cfg(not(windows))]
+pub fn desktop_displays() -> Result<Vec<DesktopDisplayInfo>, String> {
+    Ok(vec![DesktopDisplayInfo {
+        id: "preview".into(),
+        name: "预览屏幕".into(),
+        bounds: DesktopRect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        },
+        work_area: DesktopRect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        },
+        scale_factor: 1.0,
+        primary: true,
+    }])
+}
+
+pub fn desktop_layout_metrics(window: &WebviewWindow, display_id: Option<&str>) -> DesktopLayoutMetrics {
     #[cfg(windows)]
     {
         let scale = window
@@ -251,6 +399,28 @@ pub fn desktop_layout_metrics(window: &WebviewWindow) -> DesktopLayoutMetrics {
             .unwrap_or(1.0)
             .clamp(MIN_SCALE_FACTOR, MAX_SCALE_FACTOR);
         let fallback = 48.0;
+        if let Ok(displays) = desktop_displays() {
+            let display = display_id
+                .and_then(|id| displays.iter().find(|display| display.id == id))
+                .or_else(|| displays.iter().find(|display| display.primary))
+                .or_else(|| displays.first());
+            if let Some(display) = display {
+                let bottom = display.bounds.y.saturating_add(display.bounds.height);
+                let work_bottom = display.work_area.y.saturating_add(display.work_area.height);
+                let top_gap = display.work_area.y.saturating_sub(display.bounds.y);
+                let bottom_gap = bottom.saturating_sub(work_bottom);
+                if bottom_gap > 0 && top_gap == 0 {
+                    let logical_height = bottom_gap as f64
+                        / display.scale_factor.clamp(MIN_SCALE_FACTOR, MAX_SCALE_FACTOR);
+                    if logical_height >= 12.0 {
+                        return DesktopLayoutMetrics {
+                            expanded_bottom_inset: logical_height * 2.0,
+                            taskbar_visible: true,
+                        };
+                    }
+                }
+            }
+        }
         let Ok(raw) = window.hwnd() else {
             return DesktopLayoutMetrics {
                 expanded_bottom_inset: fallback,
@@ -287,6 +457,7 @@ pub fn desktop_layout_metrics(window: &WebviewWindow) -> DesktopLayoutMetrics {
     #[cfg(not(windows))]
     {
         let _ = window;
+        let _ = display_id;
         DesktopLayoutMetrics {
             expanded_bottom_inset: 48.0,
             taskbar_visible: false,
@@ -1262,6 +1433,13 @@ unsafe extern "system" fn session_subclass_proc(
             }
             _ => {}
         },
+        WM_DISPLAYCHANGE | WM_DPICHANGED => {
+            // Display topology and DPI changes can arrive before Explorer has
+            // finished updating every monitor rectangle. The frontend
+            // debounces this notification and re-queries the authoritative
+            // snapshot instead of trusting message payload coordinates.
+            emit_to_background(app, "display-changed", ());
+        }
         WM_NCDESTROY => {
             let _ = WTSUnRegisterSessionNotification(hwnd);
             let _ = RemoveWindowSubclass(hwnd, Some(session_subclass_proc), subclass_id);

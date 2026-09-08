@@ -9,11 +9,12 @@ import { personaIdFor, resolveModelTier } from './domain/modelTier.ts'
 import { isHarnessReady, monitorHarness } from './connect/harness.ts'
 import { PersonaRegistry } from './persona/registry.ts'
 import { IdleScene } from './scenes/IdleScene.tsx'
+import { MultiScreenIdleScene } from './scenes/MultiScreenIdleScene.tsx'
 import { SleepScene } from './scenes/SleepScene.tsx'
 import { WakeScene } from './scenes/WakeScene.tsx'
 import { INITIAL_RUNTIME_STATE, reduceRuntime } from './scenes/stateMachine.ts'
 import { BACKGROUND_OPTIONS, applyBubbleOverrides, assetUrl, loadSettings, localCalendarDay, resumeConversationId, saveConversationPointer, type WallpaperSettings } from './settings/store.ts'
-import { nativeRuntime, type NativeSendOptions } from './native/runtime.ts'
+import { nativeRuntime, type DesktopDisplayInfo, type NativeSendOptions } from './native/runtime.ts'
 import { listen } from '@tauri-apps/api/event'
 import type { AppSurface } from './surface.ts'
 import { beginInteractionRegionSession, collectInteractionRegions, publishInteractionRegions } from './runtime/interactionRegions.ts'
@@ -23,6 +24,7 @@ import { appCoreClient } from './runtime/appCoreClient.ts'
 import { shouldApplyAppSnapshot } from './runtime/appSnapshot.ts'
 import type { DesktopWorkspace } from './runtime/desktopWorkspace.ts'
 import { WidgetHost } from './widgets/WidgetHost.tsx'
+import { displayCssRect, displayTopologySignature, preferredDisplayId, virtualDesktopBounds } from './runtime/displayLayout.ts'
 
 const registry = new PersonaRegistry()
 
@@ -232,6 +234,7 @@ export function App({ surface = 'combined' }: AppProps) {
   const [workspace, setWorkspace] = useState<DesktopWorkspace>('front')
   const [innerHistoryExpanded, setInnerHistoryExpanded] = useState(false)
   const [expandedBottomInset, setExpandedBottomInset] = useState(48)
+  const [desktopDisplays, setDesktopDisplays] = useState<DesktopDisplayInfo[]>([])
   const [presetOptions, setPresetOptions] = useState<Array<{ id: string; name?: string; broken?: string; isDefault: boolean }>>([])
   const [selectedPreset, setSelectedPreset] = useState<string>()
   const [harnessControls, setHarnessControls] = useState<{ permission: { current: string; options: string[] }; commands: Array<{ name: string; description: string; input?: { hint: string } }> }>()
@@ -258,6 +261,7 @@ export function App({ surface = 'combined' }: AppProps) {
   const runtimeRef = useRef(runtime)
   runtimeRef.current = runtime
   const appSnapshotRevisionRef = useRef(-1)
+  const desktopDisplaysSignatureRef = useRef('')
   // Resolving library data URLs can finish out of order.  Each refresh gets a
   // monotonic epoch, so a slower pre-change resolve can never repaint the
   // previous background/persona after a user has selected a new one.
@@ -278,6 +282,20 @@ export function App({ surface = 'combined' }: AppProps) {
   const resolvedPersona = resolvedAssets[personaSlot]
   const resolvedBackground = resolvedAssets['desktop.background']
   const modelLabel = runtime.model ?? (tier === 'pro' ? 'Pro · 成年形态' : 'Flash · 幼年形态')
+  const multiScreenActive = settings.multiScreen.enabled && desktopDisplays.length > 1
+  const displayVirtualBounds = useMemo(() => virtualDesktopBounds(desktopDisplays), [desktopDisplays])
+  const conversationDisplayId = preferredDisplayId(desktopDisplays, settings.multiScreen.conversationDisplayId)
+  const portraitDisplayId = preferredDisplayId(desktopDisplays, settings.multiScreen.portraitDisplayId)
+  const screenBackgroundUrls = useMemo(() => Object.fromEntries(desktopDisplays.map((display) => {
+    const selected = settings.multiScreen.backgrounds[display.id] ?? settings.background
+    const option = BACKGROUND_OPTIONS.find((item) => item.id === selected)
+    const url = selected === settings.background && resolvedBackground
+      ? resolvedBackground
+      : option?.path
+        ? assetUrl(option.path)
+        : undefined
+    return [display.id, url] as const
+  })), [desktopDisplays, resolvedBackground, settings.background, settings.multiScreen.backgrounds])
   const modelOptions = useMemo(() => {
     const unique = (models: Array<string | undefined>) => [...new Set(models.filter((model): model is string => Boolean(model?.trim())))]
     if (runtime.backend === 'deepseek-api') return unique([apiModelChoice, settings.deepseekApi.model, 'deepseek-chat', 'deepseek-reasoner'])
@@ -429,6 +447,43 @@ export function App({ surface = 'combined' }: AppProps) {
   }, [])
 
   useEffect(() => {
+    if (!nativeRuntime.isNative) return
+    let disposed = false
+    let scheduledRefresh: number | undefined
+    const refresh = async () => {
+      try {
+        const next = await nativeRuntime.desktopDisplays()
+        if (disposed) return
+        const signature = displayTopologySignature(next)
+        if (signature === desktopDisplaysSignatureRef.current) return
+        desktopDisplaysSignatureRef.current = signature
+        setDesktopDisplays(next)
+      } catch (error) {
+        if (!disposed) patchRuntime({ error: `读取显示器布局失败：${String(error)}` })
+      }
+    }
+    const delayedRefresh = () => {
+      if (scheduledRefresh !== undefined) return
+      scheduledRefresh = window.setTimeout(() => {
+        scheduledRefresh = undefined
+        void refresh()
+      }, 120)
+    }
+    void refresh()
+    const disposePromise = listen('display-changed', delayedRefresh)
+      .then((unlisten) => () => unlisten())
+    window.addEventListener('resize', delayedRefresh)
+    const timer = window.setInterval(() => { void refresh() }, 5000)
+    return () => {
+      disposed = true
+      window.removeEventListener('resize', delayedRefresh)
+      window.clearInterval(timer)
+      if (scheduledRefresh !== undefined) window.clearTimeout(scheduledRefresh)
+      void disposePromise.then((dispose) => dispose())
+    }
+  }, [])
+
+  useEffect(() => {
     if (!nativeRuntime.isNative || runtime.harness !== 'bridge-ready') return
     void nativeRuntime.harnessPresets().then((presets) => {
       setPresetOptions(presets)
@@ -491,12 +546,12 @@ export function App({ surface = 'combined' }: AppProps) {
   useEffect(() => {
     if (!nativeRuntime.isNative) return
     let disposed = false
-    const refresh = () => { void nativeRuntime.desktopLayoutMetrics().then((metrics) => { if (!disposed) setExpandedBottomInset(metrics.expandedBottomInset) }) }
+    const refresh = () => { void nativeRuntime.desktopLayoutMetrics(conversationDisplayId).then((metrics) => { if (!disposed) setExpandedBottomInset(metrics.expandedBottomInset) }) }
     refresh()
     window.addEventListener('resize', refresh)
     const timer = window.setInterval(refresh, 1000)
     return () => { disposed = true; window.removeEventListener('resize', refresh); window.clearInterval(timer) }
-  }, [])
+  }, [conversationDisplayId])
 
   useEffect(() => {
     const adapterBackend = runtime.backend
@@ -736,27 +791,97 @@ export function App({ surface = 'combined' }: AppProps) {
     const bubbleText = question
       ? `想听听你的意见：${question.question}${questionOptions ? `（${questionOptions}）` : ''}`
       : runtime.activity === 'thinking' ? '正在认真思考…' : bubbles.morning
-    return <IdleScene persona={{ ...persona, bubbles, assets: { ...persona.assets, portrait: resolvedPersona ?? persona.assets.portrait } }} bubbleText={bubbleText} backgroundUrl={resolvedBackground ?? (background?.path ? assetUrl(background.path) : undefined)} portraitAmbientLength={settings.portraitAmbientLength} portraitAmbientStrength={settings.portraitAmbientStrength} hideBubble={workspace !== 'front'} onOpenChat={enterInnerWorkspace} />
-  }, [background?.path, bubbles, persona, questionPrompt, resolvedBackground, resolvedPersona, runtime, settings, workspace])
+    const scenePersona = { ...persona, bubbles, assets: { ...persona.assets, portrait: resolvedPersona ?? persona.assets.portrait } }
+    if (multiScreenActive) {
+      return <MultiScreenIdleScene displays={desktopDisplays} backgroundUrls={screenBackgroundUrls} portraitDisplayId={portraitDisplayId} persona={scenePersona} bubbleText={workspace === 'front' ? bubbleText : ''} portraitAmbientLength={settings.portraitAmbientLength} portraitAmbientStrength={settings.portraitAmbientStrength} onOpenChat={enterInnerWorkspace} />
+    }
+    return <IdleScene persona={scenePersona} bubbleText={bubbleText} backgroundUrl={resolvedBackground ?? (background?.path ? assetUrl(background.path) : undefined)} portraitAmbientLength={settings.portraitAmbientLength} portraitAmbientStrength={settings.portraitAmbientStrength} hideBubble={workspace !== 'front'} onOpenChat={enterInnerWorkspace} />
+  }, [background?.path, bubbles, desktopDisplays, multiScreenActive, persona, portraitDisplayId, questionPrompt, resolvedBackground, resolvedPersona, runtime, screenBackgroundUrls, settings, workspace])
 
-  return <div className={`wallpaper-root surface-${surface} effort-${runtime.reasoningEffort ?? 'normal'} workspace-${workspace}`} data-workspace={workspace}>
-    {scene}
-    <>
-      <WidgetHost workspace={workspace} widgets={[]} />
-      {interactionEnabled && runtime.phase !== 'booting' && runtime.phase !== 'locked' && (settings.interactionLayout === 'taskbar-docked' || workspace !== 'front') && <ConversationBubble backend={runtime.backend} activity={runtime.activity} modelLabel={modelLabel} messages={messages} streamingText={streamingText} historyExpanded={workspace === 'front' ? runtime.historyExpanded : innerHistoryExpanded} usage={usage} collapsed={settings.interactionLayout === 'taskbar-docked' && interactionState === 'collapsed'} layout={settings.interactionLayout} expandDirection={interactionDirection} persistent={settings.interactionLayout === 'floating'} acrylicOpacity={settings.conversationOpacity} acrylicBlur={settings.conversationBlur} expandedBottomInset={expandedBottomInset} apiPricingConfigured={settings.deepseekApi.priceInputPerMillion !== undefined && settings.deepseekApi.priceOutputPerMillion !== undefined} harnessAvailability={runtime.harness} harnessStarting={harnessStarting} onStartHarness={async () => { setHarnessStarting(true); try { const rootPath = settings.dshLaunch.rootPath ?? (await nativeRuntime.scanDshPaths())[0]?.rootPath; if (!rootPath) { await nativeRuntime.openSettingsWindow(); return } await nativeRuntime.launchDsh(rootPath, settings.dshLaunch.profile, settings.dshLaunch.command) } catch (error) { patchRuntime({ error: String(error) }) } finally { window.setTimeout(() => setHarnessStarting(false), 8000) } }} onConfigureHarness={() => { void nativeRuntime.openSettingsWindow().catch((error) => patchRuntime({ error: String(error) })) }} onSelectBackend={changeBackend} presetOptions={presetOptions} selectedPreset={selectedPreset} onSelectPreset={messages.length === 0 ? (preset) => { void nativeRuntime.setHarnessPreset(preset).then(() => setSelectedPreset(preset)).catch((error) => patchRuntime({ error: String(error) })) } : undefined} permission={runtime.backend === 'harness' ? harnessControls?.permission : undefined} commands={runtime.backend === 'harness' ? harnessControls?.commands : undefined} onSelectPermission={(permission) => { void nativeRuntime.setHarnessPermission(permission).then(() => setHarnessControls((value) => value ? { ...value, permission: { ...value.permission, current: permission } } : value)).catch((error) => patchRuntime({ error: String(error) })) }} modelOptions={modelOptions} selectedModel={selectedModel} onSelectModel={runtime.backend === 'deepseek-web' ? undefined : (model) => { if (runtime.backend === 'deepseek-api') { setApiModelChoice(model); apiAdapterOptionsRef.current.model = model; patchRuntime({ model }); } else { setHarnessModelChoice(model); setConversationGeneration((value) => value + 1); patchRuntime({ model, provider: 'deepseek-official', activity: 'idle' }); } }} onExpand={() => { setInteractionState('expanded'); if (workspace === 'front') enterInnerWorkspace(); else { baseDispatch({ type: 'OPEN_CHAT' }); dispatchCore('open-chat') } }} disabled={runtime.backend === 'harness' && runtime.harness !== 'bridge-ready'} onToggleHistory={() => { if (workspace !== 'front') setInnerHistoryExpanded((value) => !value); else { baseDispatch({ type: 'TOGGLE_HISTORY' }); dispatchCore('toggle-history') } }} onSend={(text) => {
+  const conversationBubble = interactionEnabled
+    && runtime.phase !== 'booting'
+    && runtime.phase !== 'locked'
+    && (settings.interactionLayout === 'taskbar-docked' || workspace !== 'front')
+    ? <ConversationBubble
+      backend={runtime.backend}
+      activity={runtime.activity}
+      modelLabel={modelLabel}
+      messages={messages}
+      streamingText={streamingText}
+      historyExpanded={workspace === 'front' ? runtime.historyExpanded : innerHistoryExpanded}
+      usage={usage}
+      collapsed={settings.interactionLayout === 'taskbar-docked' && interactionState === 'collapsed'}
+      layout={settings.interactionLayout}
+      expandDirection={interactionDirection}
+      persistent={settings.interactionLayout === 'floating'}
+      acrylicOpacity={settings.conversationOpacity}
+      acrylicBlur={settings.conversationBlur}
+      expandedBottomInset={expandedBottomInset}
+      apiPricingConfigured={settings.deepseekApi.priceInputPerMillion !== undefined && settings.deepseekApi.priceOutputPerMillion !== undefined}
+      harnessAvailability={runtime.harness}
+      harnessStarting={harnessStarting}
+      onStartHarness={async () => {
+        setHarnessStarting(true)
+        try {
+          const rootPath = settings.dshLaunch.rootPath ?? (await nativeRuntime.scanDshPaths())[0]?.rootPath
+          if (!rootPath) {
+            await nativeRuntime.openSettingsWindow()
+            return
+          }
+          await nativeRuntime.launchDsh(rootPath, settings.dshLaunch.profile, settings.dshLaunch.command)
+        } catch (error) {
+          patchRuntime({ error: String(error) })
+        } finally {
+          window.setTimeout(() => setHarnessStarting(false), 8000)
+        }
+      }}
+      onConfigureHarness={() => { void nativeRuntime.openSettingsWindow().catch((error) => patchRuntime({ error: String(error) })) }}
+      onSelectBackend={changeBackend}
+      presetOptions={presetOptions}
+      selectedPreset={selectedPreset}
+      onSelectPreset={messages.length === 0 ? (preset) => { void nativeRuntime.setHarnessPreset(preset).then(() => setSelectedPreset(preset)).catch((error) => patchRuntime({ error: String(error) })) } : undefined}
+      permission={runtime.backend === 'harness' ? harnessControls?.permission : undefined}
+      commands={runtime.backend === 'harness' ? harnessControls?.commands : undefined}
+      onSelectPermission={(permission) => { void nativeRuntime.setHarnessPermission(permission).then(() => setHarnessControls((value) => value ? { ...value, permission: { ...value.permission, current: permission } } : value)).catch((error) => patchRuntime({ error: String(error) })) }}
+      modelOptions={modelOptions}
+      selectedModel={selectedModel}
+      onSelectModel={runtime.backend === 'deepseek-web' ? undefined : (model) => {
+        if (runtime.backend === 'deepseek-api') {
+          setApiModelChoice(model)
+          apiAdapterOptionsRef.current.model = model
+          patchRuntime({ model })
+        } else {
+          setHarnessModelChoice(model)
+          setConversationGeneration((value) => value + 1)
+          patchRuntime({ model, provider: 'deepseek-official', activity: 'idle' })
+        }
+      }}
+      onExpand={() => {
+        setInteractionState('expanded')
+        if (workspace === 'front') {
+          enterInnerWorkspace()
+        } else {
+          baseDispatch({ type: 'OPEN_CHAT' })
+          dispatchCore('open-chat')
+        }
+      }}
+      disabled={runtime.backend === 'harness' && runtime.harness !== 'bridge-ready'}
+      onToggleHistory={() => {
+        if (workspace !== 'front') {
+          setInnerHistoryExpanded((value) => !value)
+        } else {
+          baseDispatch({ type: 'TOGGLE_HISTORY' })
+          dispatchCore('toggle-history')
+        }
+      }}
+      onSend={(text) => {
         const adapter = adapterRef.current
         const adapterBackend = adapter.mode
         const isCurrent = () => isCurrentChatOperation(adapterRef.current, activeBackendRef.current, adapter, adapterBackend, false)
         if (!isCurrent()) return
-        // The footer describes the turn being sent, never stale metrics from
-        // its predecessor. It changes to an explicit waiting/unavailable
-        // state until a provider supplies fresh usage.
         setUsage(undefined)
         setStreamingText('')
         const sending = adapter.send(text)
-        // NativeChatAdapter allocates an API conversation ID before its first
-        // await. Saving immediately survives a settings update or backend
-        // switch while the request is still pending.
         persistConversationPointerWhenAvailable(adapter, adapterBackend)
         void sending.then(() => {
           if (!isCurrent()) return
@@ -764,7 +889,8 @@ export function App({ surface = 'combined' }: AppProps) {
         }).catch((error) => {
           if (isCurrent()) patchRuntime({ activity: 'idle', error: String(error) })
         })
-      }} onStop={() => {
+      }}
+      onStop={() => {
         const adapter = adapterRef.current
         const adapterBackend = adapter.mode
         const isCurrent = () => isCurrentChatOperation(adapterRef.current, activeBackendRef.current, adapter, adapterBackend, false)
@@ -772,7 +898,32 @@ export function App({ surface = 'combined' }: AppProps) {
         void adapter.stop().catch((error) => {
           if (isCurrent()) patchRuntime({ activity: 'idle', error: String(error) })
         })
-      }} onClose={() => undefined} />}
+      }}
+      onClose={() => undefined}
+    />
+    : null
+
+  const conversationDisplay = desktopDisplays.find((display) => display.id === conversationDisplayId) ?? desktopDisplays[0]
+  const conversationSurface = multiScreenActive && conversationDisplayId && conversationBubble && conversationDisplay
+    ? <div
+      className={`display-interaction-layer ${settings.interactionLayout === 'taskbar-docked' && interactionState === 'collapsed' ? 'is-collapsed' : ''}`}
+      style={{
+        ...displayCssRect(conversationDisplay, displayVirtualBounds),
+        // Keep this in viewport-relative CSS units. A single WorkerW can span
+        // monitors with different DPI scales, so converting the target screen
+        // with its own scale factor would mix physical and logical spaces.
+        ['--dsh-display-height' as string]: `${conversationDisplay.bounds.height / Math.max(1, displayVirtualBounds.height) * 100}vh`,
+      }}
+    >
+      {conversationBubble}
+    </div>
+    : conversationBubble
+
+  return <div className={`wallpaper-root surface-${surface} effort-${runtime.reasoningEffort ?? 'normal'} workspace-${workspace}`} data-workspace={workspace}>
+    {scene}
+    <>
+      <WidgetHost workspace={workspace} widgets={[]} />
+      {conversationSurface}
       {runtime.error && runtime.phase !== 'error' && <div className="runtime-notice" role="status">{runtime.error}<button onClick={() => patchRuntime({ error: undefined })}>×</button></div>}
       {runtime.phase === 'auth-required' && <div className="auth-overlay" data-interaction-region="auth"><div className="auth-card"><h2>需要登录 DeepSeek 网页入口</h2><p>应用内官方页面已经打开，请在其中完成登录。登录状态只保存在独立 WebView2 配置目录，本应用不会读取或复制 Cookie；登录完成后回到桌面即可继续发送。</p><button onClick={() => { baseDispatch({ type: 'AUTH_READY' }); dispatchCore('auth-ready') }}>我已完成登录</button></div></div>}
     </>

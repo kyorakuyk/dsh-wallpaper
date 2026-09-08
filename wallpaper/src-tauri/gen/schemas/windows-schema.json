@@ -297,6 +297,12 @@
           "markdownDescription": "Enables the deepseek_web_status command without any pre-configured scope."
         },
         {
+          "description": "Enables the desktop_displays command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-desktop-displays",
+          "markdownDescription": "Enables the desktop_displays command without any pre-configured scope."
+        },
+        {
           "description": "Enables the desktop_layout_metrics command without any pre-configured scope.",
           "type": "string",
           "const": "allow-desktop-layout-metrics",
@@ -643,6 +649,12 @@
           "type": "string",
           "const": "deny-deepseek-web-status",
           "markdownDescription": "Denies the deepseek_web_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the desktop_displays command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-desktop-displays",
+          "markdownDescription": "Denies the desktop_displays command without any pre-configured scope."
         },
         {
           "description": "Denies the desktop_layout_metrics command without any pre-configured scope.",

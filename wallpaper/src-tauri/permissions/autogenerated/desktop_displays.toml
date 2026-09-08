@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-displays"
+description = "Enables the desktop_displays command without any pre-configured scope."
+commands.allow = ["desktop_displays"]
+
+[[permission]]
+identifier = "deny-desktop-displays"
+description = "Denies the desktop_displays command without any pre-configured scope."
+commands.deny = ["desktop_displays"]

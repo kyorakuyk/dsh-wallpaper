@@ -4,7 +4,8 @@ import type { BackendMode, ModelTierRule } from '../domain/types.ts'
 import { BACKGROUND_OPTIONS, MAX_PRICE_PER_MILLION, normalizedPrice, type WallpaperSettings } from './store.ts'
 import type { AppearanceAssetSummary } from '../features/appearance/appearanceViewModel.ts'
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
-import type { LockScreenDiagnostics, ManagedDshStatus } from '../native/runtime.ts'
+import type { DesktopDisplayInfo, LockScreenDiagnostics, ManagedDshStatus } from '../native/runtime.ts'
+import { preferredDisplayId } from '../runtime/displayLayout.ts'
 import { OfficialPersonaCards } from '../persona/OfficialPersonaCards.tsx'
 import './SettingsPanel.css'
 
@@ -44,6 +45,8 @@ export interface SettingsPanelProps {
   onSetLockScreenEnabled: (enabled: boolean) => void
   lockScreenBusy: boolean
   autostartBusy: boolean
+  desktopDisplays: DesktopDisplayInfo[]
+  onRefreshDesktopDisplays: () => void | Promise<void>
 }
 
 const componentSlots: Array<{ slot: AppearanceSlot; label: string; detail: string }> = [
@@ -89,6 +92,11 @@ function Choice({ value, options, onChange, label, disabled = false, emptyMessag
   </div>
 }
 
+function displayLabel(display: DesktopDisplayInfo, index: number): string {
+  const number = /DISPLAY(\d+)/i.exec(display.id)?.[1]
+  return number ? `显示器 ${number}` : display.name.trim() || `显示器 ${index + 1}`
+}
+
 export function PriceInput({
   label,
   value,
@@ -122,6 +130,13 @@ export function SettingsPanel(props: SettingsPanelProps) {
   const set = (patch: Partial<WallpaperSettings>) => onChange({ ...settings, ...patch })
   const updateRule = (index: number, patch: Partial<ModelTierRule>) => set({ modelTierRules: settings.modelTierRules.map((rule, i) => i === index ? { ...rule, ...patch } : rule) })
   const pageMeta = pages.find((item) => item.id === page)!
+  const displayOptions = props.desktopDisplays.map((display, index) => ({ value: display.id, label: displayLabel(display, index) }))
+  const setDisplayBackground = (displayId: string, value: string) => {
+    const backgrounds = { ...settings.multiScreen.backgrounds }
+    if (value) backgrounds[displayId] = value as WallpaperSettings['background']
+    else delete backgrounds[displayId]
+    set({ multiScreen: { ...settings.multiScreen, backgrounds } })
+  }
 
   return <div className="settings-app">
     <header className="settings-titlebar">
@@ -146,6 +161,15 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <Field title="气泡布局" detail="中央悬浮始终展开；任务栏停靠以胶囊按钮唤起。"><Choice label="气泡布局" value={settings.interactionLayout} onChange={(value) => set({ interactionLayout: value as WallpaperSettings['interactionLayout'] })} options={[{ value: 'floating', label: '中央玻璃悬浮' }, { value: 'taskbar-docked', label: '任务栏停靠胶囊' }]} /></Field>
           <Field title="历史抽屉默认展开" detail="启动或解锁后直接显示最近的对话。"><Toggle label="历史抽屉默认展开" checked={settings.historyStartsExpanded} onChange={(value) => set({ historyStartsExpanded: value })} /></Field>
         </Card>
+        {props.desktopDisplays.length > 1 && <Card title={`多屏桌面 · 已检测 ${props.desktopDisplays.length} 个屏幕`} description="每块屏幕独立铺满自己的背景；对话窗和立绘可以分别指定目标屏幕。未单独指定的屏幕跟随全局背景。">
+          <Field title="启用独立多屏背景" detail={settings.multiScreen.enabled ? '已按屏幕分别渲染；修改某一屏不会改变其他屏幕的背景选择。' : '关闭时保持现有跨虚拟桌面的单一场景；开启后才显示逐屏选择。'}><Toggle label="启用独立多屏背景" checked={settings.multiScreen.enabled} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, enabled: value } })} /></Field>
+          {settings.multiScreen.enabled && <>
+            {props.desktopDisplays.map((display, index) => <Field key={display.id} title={displayOptions[index]?.label ?? `显示器 ${index + 1}`} detail={`${display.bounds.width} × ${display.bounds.height} 像素 · 缩放 ${Math.round(display.scaleFactor * 100)}%${display.primary ? ' · 主显示器' : ''}`}><Choice label={`${displayOptions[index]?.label ?? display.id} 背景`} value={settings.multiScreen.backgrounds[display.id] ?? ''} onChange={(value) => setDisplayBackground(display.id, value)} options={[{ value: '', label: '跟随全局背景' }, ...BACKGROUND_OPTIONS.map((background) => ({ value: background.id, label: background.name }))]} /></Field>)}
+            <Field title="对话窗所在屏幕" detail="只移动会话层，不重新加载其他屏幕的背景。"><Choice label="对话窗所在屏幕" value={preferredDisplayId(props.desktopDisplays, settings.multiScreen.conversationDisplayId) ?? ''} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, conversationDisplayId: value || undefined } })} options={displayOptions} /></Field>
+            <Field title="立绘所在屏幕" detail="立绘和头顶气泡只挂载到选中的屏幕。"><Choice label="立绘所在屏幕" value={preferredDisplayId(props.desktopDisplays, settings.multiScreen.portraitDisplayId) ?? ''} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, portraitDisplayId: value || undefined } })} options={displayOptions} /></Field>
+          </>}
+          <div className="integration-actions"><button className="settings-action secondary" onClick={() => void props.onRefreshDesktopDisplays()}>刷新显示器检测</button></div>
+        </Card>}
         <Card title="会话生命周期"><Field title="新会话策略" detail="每个后端分别保留自己的最近会话。"><Choice label="新会话策略" value={settings.conversationPolicy} onChange={(value) => set({ conversationPolicy: value as WallpaperSettings['conversationPolicy'] })} options={[{ value: 'resume-last', label: '恢复最近会话' }, { value: 'new-on-unlock', label: '每次解锁新建' }, { value: 'daily', label: '每日新建' }]} /></Field></Card>
         <Card title="高级外观" description="环境渐变只作用于立绘；会话窗使用独立的亚克力透明度。">
           <Field title="环境渐变长度" detail={`从暗侧向亮侧延伸至 ${settings.portraitAmbientLength}%`}><input type="range" min="35" max="100" step="1" value={settings.portraitAmbientLength} onChange={(event) => set({ portraitAmbientLength: Number(event.target.value) })} /></Field>

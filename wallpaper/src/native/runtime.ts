@@ -18,6 +18,8 @@ export interface ManagedDshStatus { managed: boolean; running: boolean; pid?: nu
 export interface AutostartStatus { enabled: boolean; source: 'startup-task' | 'run' | 'none' | 'disabled-by-user' | 'disabled-by-policy' | 'unsupported' }
 export interface DeepSeekWebStatus { state: 'loading' | 'logged-out' | 'ready' | 'generating' | 'unsupported'; conversationId?: string; model?: string; signature: string }
 export interface DeepSeekWebHistory { messages: ChatMessage[]; conversationId?: string; model?: string; state: DeepSeekWebStatus['state'] | 'loading' }
+export interface DesktopRect { x: number; y: number; width: number; height: number }
+export interface DesktopDisplayInfo { id: string; name: string; bounds: DesktopRect; workArea: DesktopRect; scaleFactor: number; primary: boolean }
 
 export interface NativeRuntime {
   isNative: boolean
@@ -55,7 +57,8 @@ export interface NativeRuntime {
   apiHistory(conversationId: string): Promise<ChatMessage[]>
   listenTray(listener: (event: { type: 'backend'; backend: BackendMode }) => void): Promise<() => void>
   probeHarness(): Promise<HarnessStatus>
-  desktopLayoutMetrics(): Promise<{ expandedBottomInset: number; taskbarVisible: boolean }>
+  desktopDisplays(): Promise<DesktopDisplayInfo[]>
+  desktopLayoutMetrics(displayId?: string): Promise<{ expandedBottomInset: number; taskbarVisible: boolean }>
   scanDshPaths(): Promise<Array<{ rootPath: string; source: string }>>
   launchDsh(rootPath: string, profile: string, command?: string): Promise<number>
   managedDshStatus(): Promise<ManagedDshStatus>
@@ -234,10 +237,15 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<HarnessStatus>('probe_harness')
   },
-  async desktopLayoutMetrics() {
+  async desktopDisplays() {
+    if (!await tauriAvailable()) return [{ id: 'preview', name: '预览屏幕', bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1080 }, scaleFactor: 1, primary: true }]
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<DesktopDisplayInfo[]>('desktop_displays')
+  },
+  async desktopLayoutMetrics(displayId) {
     if (!await tauriAvailable()) return { expandedBottomInset: 48, taskbarVisible: false }
     const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<{ expandedBottomInset: number; taskbarVisible: boolean }>('desktop_layout_metrics')
+    return invoke<{ expandedBottomInset: number; taskbarVisible: boolean }>('desktop_layout_metrics', { displayId })
   },
   async scanDshPaths() {
     const { invoke } = await import('@tauri-apps/api/core')
