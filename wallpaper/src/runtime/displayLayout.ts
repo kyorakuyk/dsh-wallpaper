@@ -30,6 +30,18 @@ export function preferredDisplayId(displays: readonly DesktopDisplayInfo[], pref
   return displays.find((display) => display.primary)?.id ?? displays[0]?.id
 }
 
+/**
+ * The WorkerW is one HWND and therefore one CSS device-pixel ratio even when
+ * it spans monitors with different Windows scaling settings. Fixed CSS sizes
+ * in the conversation island would otherwise become physically larger on a
+ * high-DPI host. Keep the island's reference size in physical pixels while
+ * clamping pathological display values to a safe range.
+ */
+export function displayUiScale(devicePixelRatio: number): number {
+  const safeRatio = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1
+  return Math.max(0.5, Math.min(1, 1 / safeRatio))
+}
+
 export function displayTopologySignature(displays: readonly DesktopDisplayInfo[]): string {
   return displays
     .map((display) => `${display.id}:${display.bounds.x},${display.bounds.y},${display.bounds.width},${display.bounds.height};work=${display.workArea.x},${display.workArea.y},${display.workArea.width},${display.workArea.height};scale=${display.scaleFactor.toFixed(3)};primary=${display.primary ? '1' : '0'}`)

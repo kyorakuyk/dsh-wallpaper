@@ -24,7 +24,7 @@ import { appCoreClient } from './runtime/appCoreClient.ts'
 import { shouldApplyAppSnapshot } from './runtime/appSnapshot.ts'
 import type { DesktopWorkspace } from './runtime/desktopWorkspace.ts'
 import { WidgetHost } from './widgets/WidgetHost.tsx'
-import { displayCssRect, displayTopologySignature, preferredDisplayId, virtualDesktopBounds } from './runtime/displayLayout.ts'
+import { displayCssRect, displayTopologySignature, displayUiScale, preferredDisplayId, virtualDesktopBounds } from './runtime/displayLayout.ts'
 
 const registry = new PersonaRegistry()
 
@@ -904,6 +904,14 @@ export function App({ surface = 'combined' }: AppProps) {
     : null
 
   const conversationDisplay = desktopDisplays.find((display) => display.id === conversationDisplayId) ?? desktopDisplays[0]
+  const conversationUiScale = multiScreenActive && typeof window !== 'undefined' ? displayUiScale(window.devicePixelRatio || 1) : 1
+  const conversationTransformOrigin = settings.interactionLayout === 'taskbar-docked'
+    ? interactionState === 'collapsed'
+      ? 'calc(100% - clamp(22px, 5vh, 58px))'
+      : 'calc(100% - clamp(10px, 2.7vh, 34px))'
+    : (workspace === 'front' ? runtime.historyExpanded : innerHistoryExpanded)
+      ? `calc(100% - ${expandedBottomInset}px)`
+      : 'calc(100% - clamp(22vh, 29vh, 34vh))'
   const conversationSurface = multiScreenActive && conversationDisplayId && conversationBubble && conversationDisplay
     ? <div
       className={`display-interaction-layer ${settings.interactionLayout === 'taskbar-docked' && interactionState === 'collapsed' ? 'is-collapsed' : ''}`}
@@ -915,7 +923,12 @@ export function App({ surface = 'combined' }: AppProps) {
         ['--dsh-display-height' as string]: `${conversationDisplay.bounds.height / Math.max(1, displayVirtualBounds.height) * 100}vh`,
       }}
     >
-      {conversationBubble}
+      <div
+        className="display-interaction-content"
+        style={{ transform: `scale(${conversationUiScale})`, transformOrigin: conversationTransformOrigin }}
+      >
+        {conversationBubble}
+      </div>
     </div>
     : conversationBubble
 

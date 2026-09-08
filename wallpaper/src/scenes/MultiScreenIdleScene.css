@@ -62,7 +62,15 @@
   contain: layout style;
 }
 
-.display-interaction-layer > * {
+.display-interaction-content {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: auto;
+}
+
+.display-interaction-layer > *,
+.display-interaction-content > * {
   pointer-events: auto;
 }
 
@@ -91,7 +99,7 @@
   max-height: max(180px, calc(var(--dsh-display-height, 100vh) - 340px));
 }
 
-.display-interaction-layer.is-collapsed > .dsh-chat-collapsed {
+.display-interaction-layer.is-collapsed .dsh-chat-collapsed {
   top: auto;
   right: auto;
   bottom: clamp(22px, 5vh, 58px);
@@ -101,6 +109,6 @@
   transform: translateX(-50%);
 }
 
-.display-interaction-layer.is-collapsed > .dsh-chat-collapsed:hover {
+.display-interaction-layer.is-collapsed .dsh-chat-collapsed:hover {
   transform: translateX(-50%) translateY(-2px);
 }

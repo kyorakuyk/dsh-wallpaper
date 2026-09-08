@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { displayCssRect, displayTopologySignature, preferredDisplayId, virtualDesktopBounds } from '../src/runtime/displayLayout.ts'
+import { displayCssRect, displayTopologySignature, displayUiScale, preferredDisplayId, virtualDesktopBounds } from '../src/runtime/displayLayout.ts'
 import type { DesktopDisplayInfo } from '../src/native/runtime.ts'
 
 const display = (patch: Partial<DesktopDisplayInfo> = {}): DesktopDisplayInfo => ({
@@ -40,5 +40,12 @@ describe('display layout helpers', () => {
   it('keeps a display id stable when only work-area metadata changes', () => {
     const displays = [display({ workArea: { x: 0, y: 0, width: 1920, height: 1000 } })]
     expect(preferredDisplayId(displays, 'DISPLAY1')).toBe('DISPLAY1')
+  })
+
+  it('normalizes fixed island sizes to the host device-pixel ratio', () => {
+    expect(displayUiScale(1)).toBe(1)
+    expect(displayUiScale(1.5)).toBeCloseTo(2 / 3)
+    expect(displayUiScale(2)).toBe(.5)
+    expect(displayUiScale(0)).toBe(1)
   })
 })
