@@ -925,7 +925,10 @@ export function App({ surface = 'combined' }: AppProps) {
     >
       <div
         className="display-interaction-content"
-        style={{ transform: `scale(${conversationUiScale})`, transformOrigin: conversationTransformOrigin }}
+        // Keep the horizontal anchor at the selected display's center. A
+        // single-value transform-origin is interpreted as the X origin by
+        // CSS, which previously nudged the island sideways after scaling.
+        style={{ transform: `scale(${conversationUiScale})`, transformOrigin: `50% ${conversationTransformOrigin}` }}
       >
         {conversationBubble}
       </div>
