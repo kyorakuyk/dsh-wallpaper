@@ -107,6 +107,22 @@ describe('native chat boundary', () => {
     ]))
   })
 
+  it('keeps the native first-frame handoff bounded and recoverable', async () => {
+    const [bootstrap, integration, readme] = await Promise.all([
+      readNative('src/native_bootstrap.rs'),
+      readNative('src/windows_integration.rs'),
+      readFile(resolve(wallpaperRoot, '..', 'README.md'), 'utf8'),
+    ])
+
+    expect(integration).toContain('WORKERW_RETRY_WINDOW')
+    expect(integration).toContain('wait_for_visible_wallpaper_worker')
+    expect(integration).toContain('native_bootstrap::reattach_to_workerw()')
+    expect(bootstrap).toContain('startup-diagnostic.log')
+    expect(bootstrap).toContain('event=reattach parent=WorkerW')
+    expect(readme).toContain('startup-diagnostic.log')
+    expect(readme).toContain('DeepSeek 网页 DOM 桥接')
+  })
+
   it('keeps autostart changes off the settings renderer thread and migrates old installs', async () => {
     const [lib, settings] = await Promise.all([
       readNative('src/lib.rs'),

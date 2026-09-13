@@ -25,8 +25,8 @@ use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, EventTarget, Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// Paint the immutable first frame before Tauri/WebView2 starts. This is a
-/// best-effort user-mode guard; it deliberately does nothing on unsupported
-/// platforms or when Explorer has not exposed a WorkerW yet.
+/// best-effort user-mode guard; it uses a bounded WorkerW discovery window and
+/// keeps a valid Progman fallback until the Explorer host can be recovered.
 pub fn prepare_native_bootstrap() {
     native_bootstrap::prepare();
 }

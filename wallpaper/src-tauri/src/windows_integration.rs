@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(windows)]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use crate::app_core::{AppAction, AppCore, WallpaperHostMode, WallpaperHostStatus};
@@ -101,6 +103,10 @@ use windows::{
 
 #[cfg(windows)]
 const PROGMAN_SPAWN_WORKERW: u32 = 0x052C;
+#[cfg(windows)]
+const WORKERW_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+#[cfg(windows)]
+const WORKERW_RETRY_WINDOW: Duration = Duration::from_millis(1_500);
 
 /// Full and Lite are separate packages, but they must never both own the
 /// Explorer wallpaper host. A shared user-session mutex closes that gap while
@@ -884,6 +890,27 @@ fn locate_wallpaper_worker() -> Result<HWND, String> {
         .ok_or_else(|| "Explorer 未枚举独立 WorkerW 壁纸宿主".to_string())
 }
 
+#[cfg(windows)]
+pub(crate) fn visible_wallpaper_worker() -> Option<HWND> {
+    locate_wallpaper_worker().ok().filter(|worker| unsafe {
+        IsWindow(Some(*worker)).as_bool() && IsWindowVisible(*worker).as_bool()
+    })
+}
+
+#[cfg(windows)]
+fn wait_for_visible_wallpaper_worker() -> Option<HWND> {
+    let deadline = Instant::now() + WORKERW_RETRY_WINDOW;
+    loop {
+        if let Some(worker) = visible_wallpaper_worker() {
+            return Some(worker);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(WORKERW_RETRY_INTERVAL);
+    }
+}
+
 /// The desktop icon *layer* is owned by Explorer.  It contains both the
 /// visible list items and an otherwise transparent full-screen hit-test
 /// surface (`SHELLDLL_DefView`).  In the inner workspace we must hide the
@@ -979,9 +1006,6 @@ pub(crate) fn request_wallpaper_worker() -> Result<HWND, String> {
         if unsafe { IsWindowVisible(worker).as_bool() } {
             return Ok(worker);
         }
-        if unsafe { IsWindowVisible(progman).as_bool() } {
-            return Ok(progman);
-        }
     }
 
     // Windows 11 的新版 Explorer 使用 0xD 参数的两步协议。
@@ -999,13 +1023,8 @@ pub(crate) fn request_wallpaper_worker() -> Result<HWND, String> {
             );
         }
     }
-    if let Ok(worker) = locate_wallpaper_worker() {
-        if unsafe { IsWindowVisible(worker).as_bool() } {
-            return Ok(worker);
-        }
-        if unsafe { IsWindowVisible(progman).as_bool() } {
-            return Ok(progman);
-        }
+    if let Some(worker) = wait_for_visible_wallpaper_worker() {
+        return Ok(worker);
     }
 
     // 部分 Windows 11 Explorer 版本确实不创建独立 WorkerW。只有标准和
@@ -1345,6 +1364,9 @@ pub fn start_wallpaper_host(app: tauri::AppHandle) -> Result<(), String> {
     // desktop layer hidden on the next startup.
     restore_desktop_icons();
     recover_wallpaper_host(&app)?;
+    if let Err(error) = native_bootstrap::reattach_to_workerw() {
+        log::warn!("native bootstrap initial reattach failed: {error}");
+    }
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(2));
         if WALLPAPER_RECOVERY_QUEUED.swap(true, Ordering::AcqRel) {
@@ -1358,6 +1380,9 @@ pub fn start_wallpaper_host(app: tauri::AppHandle) -> Result<(), String> {
                 if let Err(error) = recover_wallpaper_host(&recovery_app) {
                     log::error!("wallpaper host recovery failed: {error}");
                 }
+            }
+            if let Err(error) = native_bootstrap::reattach_to_workerw() {
+                log::warn!("native bootstrap reattach failed: {error}");
             }
             WALLPAPER_RECOVERY_QUEUED.store(false, Ordering::Release);
         }) {

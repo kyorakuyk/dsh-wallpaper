@@ -38,7 +38,7 @@ pnpm build   # 产物在 wallpaper/dist/（index.html + assets/）
 - 通过 tauri 事件把 SessionSwitch（锁屏/解锁）转发给前端状态机
 - 提供托盘菜单（切换形态/设置/退出）
 - MSIX 正式包使用固定 TaskId 的 Windows StartupTask 实现开机自启；旧版、开发版和不带该扩展的安装包回退到当前用户 Run 项。更新时会读取系统真实状态，并在可行时把旧项迁移到 StartupTask。
-- 进程入口会在 Tauri/WebView2 初始化前尝试加载一张只读 `sleep.png` 原生首帧并挂到 WorkerW 下方；背景 WebView 完成两帧绘制后释放。资源或 WorkerW 不可用时安全跳过，不接管安全桌面。
+- 进程入口会在 Tauri/WebView2 初始化前尝试加载一张只读 `sleep.png` 原生首帧并挂到 WorkerW 下方；若 Explorer 尚未创建独立 WorkerW，会在限定窗口内重试并暂挂 Progman，随后由后台宿主恢复时重新挂载并同步尺寸。背景 WebView 完成两帧绘制后释放；资源和桌面宿主均不可用时仍安全跳过，不接管安全桌面。启动诊断写入进程的 `%LOCALAPPDATA%\DSHWallpaper\startup-diagnostic.log`，MSIX 的包容器重定向路径以 README 说明为准。
 
 架构上**只换外壳**：`wallpaper/` 前端不变，Tauri 壳负责窗口/系统事件/托盘。
 

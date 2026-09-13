@@ -13,7 +13,7 @@ pnpm build:lite
 pnpm desktop:build:lite
 ```
 
-锁屏接管的正式验收和 MSIX 安装请在另一台 Windows 11 测试机执行；完整范围与发布命令见 [`docs/lite-release.md`](<C:/DeepSeekHarness/plugins/dsh-wallpaper/docs/lite-release.md>)。
+锁屏接管的正式验收和 MSIX 安装请在 Windows 11 测试机执行；完整范围与发布命令见 [`docs/lite-release.md`](docs/lite-release.md)。完整版的本地 MSIX 测试包也可按 [`docs/lockscreen-msix-test.md`](docs/lockscreen-msix-test.md) 构建，但自签名证书仅用于本机测试。
 
 ## 功能总览
 
@@ -23,7 +23,7 @@ pnpm desktop:build:lite
 | 🌅 **苏醒帧动画** | ✅ | variant-anima 4 帧序列（睡脸→睁眼→坐起→慵懒打哈欠），1920×1024 |
 | 🎨 **形态系统** | ✅ | 蓝/黑 × 幼/成年 四形态，立绘即时切换（useMemo），气泡跟随立绘 |
 | 🌊 **深海背景** | ✅ | 3 款深海室内插画 + 默认渐变，设置面板切换，持久化 |
-| 💬 **聊天后端** | ✅ | DeepSeek API（流式）+ Harness（bridge 会话）；DeepSeek 网页入口仍为实验能力 |
+| 💬 **聊天后端** | ✅ | DeepSeek API（流式）+ Harness（Bridge 会话）+ DeepSeek 网页 DOM 桥接（实验能力） |
 | 🔌 **DSH 会话桥** | ✅ | `bridge/` 独立插件：loopback REST/SSE + bearer token 鉴权 |
 | 🖥️ **Tauri 壳** | ✅ | 统一 WorkerW 背景宿主（画面与桌面内交互热区）+ 独立设置窗口、托盘、开机自启 |
 | 🖥️ **完整版多屏** | 🧪 | 显示器枚举、逐屏背景、会话窗/立绘目标屏幕选择；Lite 首发仍为单主屏 |
@@ -42,7 +42,7 @@ pnpm desktop:build:lite
 ☀️ 待机    深海背景 + 右侧立绘 + 气泡「早上好！今天要做什么呢？」
    │ 单击立绘 / 快捷键
    ▼
-💬 会话    DeepSeek API 或 Harness 可在壁纸中对话；网页模式仅打开官方网页入口，不提供消息桥接
+💬 会话    DeepSeek API、Harness 或 DeepSeek 网页 DOM 桥接可在壁纸中对话；网页模式使用独立持久 WebView2
    ▼
 🖥️ Harness  兼容的 DSH Wallpaper Bridge 就绪后，立绘切换为黑红主题，并通过其会话接口通信（默认 loopback `http://127.0.0.1:3080`）
 ```
@@ -53,7 +53,7 @@ pnpm desktop:build:lite
 # 安装依赖
 pnpm install
 
-# 浏览器预览（http://127.0.0.1:5177）
+# 浏览器预览（http://127.0.0.1:5187）
 pnpm dev
 
 # 前端与 Bridge 自动化测试
@@ -64,7 +64,7 @@ pnpm desktop:dev     # 壁纸可独立启动；Harness 模式需要兼容的 Wal
 pnpm desktop:build   # 构建安装包
 ```
 
-**Lite 首发安装包**：由 GitHub Actions 远程生成 `dsh-wallpaper-lite_0.1.2_x64-setup.exe`；开发机不执行打包或安装，下载入口见 [`docs/lite-release.md`](<C:/DeepSeekHarness/plugins/dsh-wallpaper/docs/lite-release.md>)。
+**Lite 首发安装包**：由 GitHub Actions 远程生成；开发机默认不执行 Lite 发布包打包或安装，下载入口和测试机要求见 [`docs/lite-release.md`](docs/lite-release.md)。
 
 **交互**：
 - `Alt+W`：进入睡眠模式
@@ -159,7 +159,8 @@ dsh-wallpaper/
 - **状态机**：`scenes/stateMachine.ts` 纯函数转移表，可测试
 - **Harness 探测**：只将版本与能力兼容的 Wallpaper Bridge 判为可用；3080 根页面可访问但缺少 Bridge 时仅显示诊断状态
 - **形态联动**：`autoSwitchHarness` 开启时，兼容 Bridge 连续就绪后才切换黑红形态；失去兼容 Bridge 后可手动切回（可关闭）
-- **Tauri 壳**：单一 `background` WebView 注入 WorkerW（画面和桌面内交互热区共用宿主）；`settings` 是唯一独立应用窗口。非热区输入通过原生命中测试交还 Explorer；另有 WTS 锁定/解锁、托盘菜单、reg 自启和 keyring 凭据。
+- **Tauri 壳**：单一 `background` WebView 注入 WorkerW（画面和桌面内交互热区共用宿主）；`settings` 是唯一独立应用窗口。非热区输入通过原生命中测试交还 Explorer；另有 WTS 锁定/解锁、托盘菜单、MSIX StartupTask 优先且兼容 Run 键的自启和 keyring 凭据。
+- **启动首帧**：原生首帧先使用随包睡眠图；Explorer 尚未提供 WorkerW 时在限定时间内重试并暂挂 Progman，后台宿主恢复时同步把首帧层重新挂到 WorkerW。启动阶段只记录父窗口类型、尺寸、阶段和耗时；诊断文件位于进程的 `%LOCALAPPDATA%\DSHWallpaper\startup-diagnostic.log`。MSIX 运行时 Windows 通常会把 `%LOCALAPPDATA%` 重定向到包容器，实际路径形如 `%LOCALAPPDATA%\Packages\<package-family>\LocalCache\Local\DSHWallpaper\startup-diagnostic.log`，可用 `rg --files $env:LOCALAPPDATA -g startup-diagnostic.log` 定位。
 - **bridge 协议**：`/api/wallpaper/v1` 版本化 REST/SSE，status 公开、会话路由 bearer token 鉴权（token 存 `$DSH_HOME/wallpaper/bridge-token`，仅原生壳读取）
 
 ## 测试
@@ -185,7 +186,7 @@ cargo test --manifest-path wallpaper/src-tauri/Cargo.toml
 
 - [x] M1-M5：骨架 / 状态机 / 待机气泡 / API 与 Harness 后端 / 设置面板
 - [x] M6：Tauri 壳（统一 WorkerW 宿主、设置窗口、托盘、自启）
-- [🧪] DeepSeek 网页 DOM 消息桥接首版（应用内持久 WebView2；仅 DOM 交互，不读取或复制 Cookie；页面改版时安全降级；Win11 真机通讯验收待做）
+- [🧪] DeepSeek 网页 DOM 消息桥接首版（应用内持久 WebView2；仅 DOM 交互，不读取或复制 Cookie；页面改版时安全降级；回复解析、请求终态和旧事件隔离已有自动化覆盖；Win11 真实通讯验收待做）
 - [ ] 锁屏接管真机验收（已安装 MSIX + `Win+L`；现有实现不会在未封装开发版中接管系统锁屏）
 - [x] 苏醒帧动画序列（variant-anima，人设修正：有腿+尾巴装饰）
 - [x] 深海室内背景切换
