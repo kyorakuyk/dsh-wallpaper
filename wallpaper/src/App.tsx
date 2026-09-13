@@ -242,6 +242,11 @@ export function App({ surface = 'combined' }: AppProps) {
   const harnessLaunchPendingRef = useRef(false)
   const harnessLaunchStartedAtRef = useRef<number>()
   const adapterRef = useRef<ChatAdapter>(new PreviewAdapter(settings.defaultBackend))
+  const chatActivityRef = useRef<{ adapter: ChatAdapter; backend: BackendMode; activity: RuntimeState['activity'] }>()
+  // Chat activity actions are emitted from event callbacks without awaiting
+  // each IPC call. Serialize this queue so a late `streaming` dispatch cannot
+  // be processed after the terminal `done` dispatch.
+  const coreDispatchQueueRef = useRef<Promise<unknown>>(Promise.resolve())
   // Do not put mutable API request settings in the adapter lifecycle effect.
   // The adapter captures this object by reference and snapshots it only when
   // sending, so a settings edit changes the next request without disconnecting
@@ -269,7 +274,10 @@ export function App({ surface = 'combined' }: AppProps) {
   const patchRuntime = (patch: Partial<RuntimeState>) => baseDispatch({ type: 'PATCH', patch })
   const dispatchCore = (action: Parameters<typeof appCoreClient.dispatch>[0], options?: Parameters<typeof appCoreClient.dispatch>[1]) => {
     if (!appCoreClient.native) return
-    void appCoreClient.dispatch(action, options).catch((error) => patchRuntime({ error: String(error) }))
+    coreDispatchQueueRef.current = coreDispatchQueueRef.current
+      .catch(() => undefined)
+      .then(() => appCoreClient.dispatch(action, options))
+      .catch((error) => patchRuntime({ error: String(error) }))
   }
 
   const tier = resolveModelTier(runtime.backend, runtime.provider, runtime.model, settings.modelTierRules, runtime.modelTier)
@@ -407,10 +415,13 @@ export function App({ surface = 'combined' }: AppProps) {
       // synchronous identity first so an old async adapter cannot win during
       // React's next render/cleanup boundary.
       activeBackendRef.current = snapshot.backend
+      const liveChat = chatActivityRef.current
       patchRuntime({
         phase: snapshot.phase,
         backend: snapshot.backend,
-        activity: snapshot.activity,
+        activity: liveChat?.adapter === adapterRef.current && liveChat.backend === snapshot.backend
+          ? liveChat.activity
+          : snapshot.activity,
         harness: snapshot.harness,
         historyExpanded: snapshot.interaction.historyExpanded,
         error: snapshot.error,
@@ -576,7 +587,10 @@ export function App({ surface = 'combined' }: AppProps) {
                 : undefined,
           )
       : new PreviewAdapter(adapterBackend)
-    adapterRef.current.disconnect(); adapterRef.current = adapter; setMessages([]); setStreamingText(''); setUsage(undefined)
+    adapterRef.current.disconnect()
+    adapterRef.current = adapter
+    chatActivityRef.current = { adapter, backend: adapterBackend, activity: 'idle' }
+    setMessages([]); setStreamingText(''); setUsage(undefined)
     let disposed = false
     const isCurrent = () => isCurrentChatOperation(
       adapterRef.current,
@@ -587,8 +601,14 @@ export function App({ surface = 'combined' }: AppProps) {
     )
     const unsubscribe = adapter.subscribe((event) => {
       if (!isCurrent()) return
-      if (event.type === 'status') { patchRuntime({ activity: event.activity }); dispatchCore('set-activity', { value: event.activity }); if (event.activity === 'idle' || event.activity === 'done') setQuestionPrompt(undefined) }
-      if (event.type === 'delta') { patchRuntime({ activity: 'streaming' }); dispatchCore('set-activity', { value: 'streaming' }); setStreamingText((value) => value + event.text) }
+      if (event.type === 'status') {
+        if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current.activity = event.activity
+        patchRuntime({ activity: event.activity }); dispatchCore('set-activity', { value: event.activity }); if (event.activity === 'idle' || event.activity === 'done') setQuestionPrompt(undefined)
+      }
+      if (event.type === 'delta') {
+        if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current.activity = 'streaming'
+        patchRuntime({ activity: 'streaming' }); dispatchCore('set-activity', { value: 'streaming' }); setStreamingText((value) => value + event.text)
+      }
       if (event.type === 'message') {
         setMessages((items) => [...items, { id: crypto.randomUUID(), role: event.role, content: event.content, createdAt: Date.now(), usage: event.usage }])
         // Harness and future providers may attach final usage directly to the
@@ -598,10 +618,16 @@ export function App({ surface = 'combined' }: AppProps) {
       }
       if (event.type === 'usage') setUsage(event)
       if (event.type === 'model') patchRuntime({ model: event.model, provider: event.provider, modelTier: event.tier, reasoningEffort: event.effort })
-      if (event.type === 'auth-required') { baseDispatch({ type: 'AUTH_REQUIRED' }); dispatchCore('auth-required') }
+      if (event.type === 'auth-required') {
+        if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current.activity = 'idle'
+        baseDispatch({ type: 'AUTH_REQUIRED' }); dispatchCore('set-activity', { value: 'idle' }); dispatchCore('auth-required')
+      }
       if (event.type === 'approval-required') { patchRuntime({ activity: 'tool', error: `${event.summary}；请打开 Harness 处理。` }); dispatchCore('set-activity', { value: 'tool' }) }
       if (event.type === 'question-required') { setQuestionPrompt(event.questions); patchRuntime({ activity: 'tool', error: undefined }); dispatchCore('set-activity', { value: 'tool' }) }
-      if (event.type === 'error') { setStreamingText(''); patchRuntime({ activity: 'idle', error: event.message }) }
+      if (event.type === 'error') {
+        if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current.activity = 'idle'
+        setStreamingText(''); patchRuntime({ activity: 'idle', error: event.message }); dispatchCore('set-activity', { value: 'idle' })
+      }
     })
     void (async () => {
       try {
@@ -618,7 +644,11 @@ export function App({ surface = 'combined' }: AppProps) {
           setUsage(latestUsage)
         }
       } catch (error) {
-        if (isCurrent()) patchRuntime({ activity: 'idle', error: String(error) })
+        if (isCurrent()) {
+          if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current.activity = 'idle'
+          patchRuntime({ activity: 'idle', error: String(error) })
+          dispatchCore('set-activity', { value: 'idle' })
+        }
       }
     })()
     return () => {
@@ -626,6 +656,7 @@ export function App({ surface = 'combined' }: AppProps) {
       // Promise resolves. Persist it before disconnecting so a backend switch,
       // unlock reset, or React effect teardown cannot orphan that transcript.
       disposed = true
+      if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current = undefined
       disposeChatAdapter(adapter, adapterBackend, unsubscribe)
     }
   }, [
@@ -821,18 +852,25 @@ export function App({ surface = 'combined' }: AppProps) {
       harnessAvailability={runtime.harness}
       harnessStarting={harnessStarting}
       onStartHarness={async () => {
+        if (harnessLaunchPendingRef.current) return
         setHarnessStarting(true)
+        harnessLaunchPendingRef.current = true
+        harnessLaunchStartedAtRef.current = Date.now()
         try {
           const rootPath = settings.dshLaunch.rootPath ?? (await nativeRuntime.scanDshPaths())[0]?.rootPath
           if (!rootPath) {
+            harnessLaunchPendingRef.current = false
+            harnessLaunchStartedAtRef.current = undefined
+            setHarnessStarting(false)
             await nativeRuntime.openSettingsWindow()
             return
           }
           await nativeRuntime.launchDsh(rootPath, settings.dshLaunch.profile, settings.dshLaunch.command)
         } catch (error) {
+          harnessLaunchPendingRef.current = false
+          harnessLaunchStartedAtRef.current = undefined
+          setHarnessStarting(false)
           patchRuntime({ error: String(error) })
-        } finally {
-          window.setTimeout(() => setHarnessStarting(false), 8000)
         }
       }}
       onConfigureHarness={() => { void nativeRuntime.openSettingsWindow().catch((error) => patchRuntime({ error: String(error) })) }}
@@ -881,13 +919,20 @@ export function App({ surface = 'combined' }: AppProps) {
         if (!isCurrent()) return
         setUsage(undefined)
         setStreamingText('')
+        if (chatActivityRef.current?.adapter === adapter && chatActivityRef.current.backend === adapterBackend) chatActivityRef.current.activity = 'sending'
+        patchRuntime({ activity: 'sending', error: undefined })
+        dispatchCore('set-activity', { value: 'sending' })
         const sending = adapter.send(text)
         persistConversationPointerWhenAvailable(adapter, adapterBackend)
         void sending.then(() => {
           if (!isCurrent()) return
           persistConversationPointerWhenAvailable(adapter, adapterBackend)
         }).catch((error) => {
-          if (isCurrent()) patchRuntime({ activity: 'idle', error: String(error) })
+          if (isCurrent()) {
+            if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current.activity = 'idle'
+            patchRuntime({ activity: 'idle', error: String(error) })
+            dispatchCore('set-activity', { value: 'idle' })
+          }
         })
       }}
       onStop={() => {
@@ -895,6 +940,9 @@ export function App({ surface = 'combined' }: AppProps) {
         const adapterBackend = adapter.mode
         const isCurrent = () => isCurrentChatOperation(adapterRef.current, activeBackendRef.current, adapter, adapterBackend, false)
         if (!isCurrent()) return
+        if (chatActivityRef.current?.adapter === adapter && chatActivityRef.current.backend === adapterBackend) chatActivityRef.current.activity = 'idle'
+        patchRuntime({ activity: 'idle' })
+        dispatchCore('set-activity', { value: 'idle' })
         void adapter.stop().catch((error) => {
           if (isCurrent()) patchRuntime({ activity: 'idle', error: String(error) })
         })

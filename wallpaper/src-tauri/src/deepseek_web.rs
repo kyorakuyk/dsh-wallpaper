@@ -27,13 +27,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 const WINDOW_LABEL: &str = "deepseek-web";
-const DOM_SIGNATURE: &str = "deepseek-chat-dom-v1";
+const DOM_SIGNATURE: &str = "deepseek-chat-dom-v2";
 const MAX_CALLBACK_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MESSAGE_BYTES: usize = 100_000;
 const MAX_MESSAGES: usize = 256;
 const MAX_IDENTIFIER_BYTES: usize = 200;
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const TURN_TIMEOUT: Duration = Duration::from_secs(180);
+const PAGE_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const QUIET_COMPLETION_POLLS: u8 = 12;
 const DEEPSEEK_URL: &str = "https://chat.deepseek.com/";
 
@@ -89,6 +90,8 @@ struct WebSnapshot {
     #[serde(default)]
     latest_assistant: Option<String>,
     #[serde(default)]
+    latest_assistant_key: Option<String>,
+    #[serde(default)]
     composer_found: bool,
     #[serde(default)]
     busy: bool,
@@ -126,6 +129,20 @@ fn web_turn_completion_ready(
         && (stable_polls >= 2 || quiet_polls >= QUIET_COMPLETION_POLLS)
 }
 
+/// Only capture a body after it is known to belong to the current assistant
+/// turn.  The baseline assistant body must not be copied into `output` merely
+/// because the newly-sent user message increased the transcript count.
+fn should_capture_assistant(
+    assistant_node_is_new: bool,
+    assistant: &str,
+    baseline_assistant: &str,
+    output: &str,
+) -> bool {
+    !assistant.is_empty()
+        && (assistant_node_is_new || assistant != baseline_assistant)
+        && assistant != output
+}
+
 #[cfg(windows)]
 const INIT_SCRIPT: &str = r#"
 (() => {
@@ -151,7 +168,7 @@ const INIT_SCRIPT: &str = r#"
 #[cfg(windows)]
 const SNAPSHOT_SCRIPT: &str = r#"
 (() => {
-  const signature = 'deepseek-chat-dom-v1';
+  const signature = 'deepseek-chat-dom-v2';
   const textOf = (node) => {
     if (!node) return '';
     const rendered = typeof node.innerText === 'string' ? node.innerText : '';
@@ -172,19 +189,34 @@ const SNAPSHOT_SCRIPT: &str = r#"
       && Number(style.opacity || 1) > 0
       && (allowDisplayContents || rect.width > 0 && rect.height > 0 || node.getClientRects?.().length > 0);
   };
-  const labelOf = (node) => [node?.getAttribute?.('aria-label') || '', node?.getAttribute?.('title') || '', textOf(node)].join(' ').toLowerCase();
+  const disabled = (node) => Boolean(node?.disabled)
+    || node?.getAttribute?.('aria-disabled') === 'true'
+    || node?.getAttribute?.('data-disabled') === 'true'
+    || /(?:^|[\s_-])disabled(?:$|[\s_-])/i.test(typeof node?.className === 'string' ? node.className : '');
+  const labelOf = (node) => [node?.getAttribute?.('aria-label') || '', node?.getAttribute?.('title') || '', node?.getAttribute?.('data-testid') || '', textOf(node)].join(' ').toLowerCase();
   const buttons = [...document.querySelectorAll('button,[role="button"]')];
-  const composer = [...document.querySelectorAll('textarea,[contenteditable="true"]')].find((node) => visible(node, true) && !node.disabled && node.getAttribute('aria-disabled') !== 'true');
+  const composerCandidates = [...document.querySelectorAll('textarea,[contenteditable="true"]')]
+    .filter((node) => visible(node, true));
+  // DeepSeek's current composer uses a textarea named `search` and renders
+  // the send/stop control as an icon-only role=button. Keep the input
+  // selection semantic and allow the read-only generation state to be
+  // reported as `generating` instead of looking like an unsupported page.
+  const composer = composerCandidates.find((node) => !disabled(node));
+  const composerSurface = composerCandidates[0];
   const stopButton = buttons.find((node) => {
-    if (!visible(node) || node.disabled) return false;
+    if (!visible(node) || disabled(node)) return false;
     const label = labelOf(node);
-    return /停止生成|停止回答|stop(?:\s+(?:generat|response))?|cancel\s+(?:generation|response)/.test(label)
-      || /stop|cancel/i.test(node.getAttribute('data-testid') || '');
+    return /停止|stop|cancel|interrupt/.test(label);
   });
-  const loginHint = [...document.querySelectorAll('button,a,[role="button"],h1,h2,h3')].some((node) => visible(node) && /登录|登入|扫码|log\s*in|sign\s*in/.test(labelOf(node)));
+  const loadingButton = buttons.find((node) => visible(node) && !disabled(node)
+    && node.classList?.contains('ds-button--loading'));
+  const loginHint = [...document.querySelectorAll('button,a,[role="button"],h1,h2,h3,[class*="sign-in"],[class*="auth"]')].some((node) => visible(node) && /登录|登入|扫码|log\s*in|sign\s*in/.test(labelOf(node)));
+  const appShellHint = Boolean(document.querySelector('.ds-button,.ds-textarea,[class*="inputWrapper"],[data-virtual-list-item-key]'));
   const busy = Boolean(stopButton)
-    || Boolean(composer?.getAttribute('aria-busy') === 'true')
-    || Boolean(composer?.closest('[aria-busy="true"]'));
+    || Boolean(loadingButton)
+    || Boolean(composerSurface?.getAttribute('aria-busy') === 'true')
+    || Boolean(composerSurface?.closest('[aria-busy="true"]'))
+    || Boolean(composerSurface?.readOnly);
 
   const roleOf = (node) => {
     const raw = [
@@ -193,8 +225,8 @@ const SNAPSHOT_SCRIPT: &str = r#"
       node?.getAttribute?.('aria-label') || '',
       typeof node?.className === 'string' ? node.className : '',
     ].join(' ').toLowerCase();
-    if (/assistant|ai-message|bot-message|deepseek-assistant/.test(raw)) return 'assistant';
-    if (/user-message|human-message|^user$/.test(raw)) return 'user';
+    if (/(?:^|[\s_-])(?:assistant|ai-message|bot-message|deepseek-assistant)(?:$|[\s_-])/.test(raw)) return 'assistant';
+    if (/(?:^|[\s_-])(?:user|user-message|human-message)(?:$|[\s_-])/.test(raw)) return 'user';
     return null;
   };
   const assistantSelector = '.ds-assistant-message-main-content,[data-message-author-role="assistant"],[data-role="assistant"],[data-role="assistant_message"],[data-testid*="assistant-message"],[class*="assistant-message"]';
@@ -227,11 +259,17 @@ const SNAPSHOT_SCRIPT: &str = r#"
     // DeepSeek currently puts the rendered Markdown in this node, but the
     // node itself can be `display: contents`. Read the Markdown child first
     // and fall back to textContent so a zero-size wrapper never hides a reply.
-    const body = node.querySelector?.('.ds-markdown,[class*="markdown"],[data-testid*="markdown"]') || node;
+    const bodies = [...(node.querySelectorAll?.('.ds-markdown,[class*="markdown"],[data-testid*="markdown"]') || [])]
+      .filter((candidate) => visible(candidate, true));
+    const body = bodies.at(-1) || node;
     return textOf(body);
   };
+  const assistantKeyOf = (node) => node.closest?.('[data-virtual-list-item-key]')?.getAttribute('data-virtual-list-item-key')
+    || node.getAttribute?.('data-message-id')
+    || node.getAttribute?.('data-id')
+    || null;
   const assistantEntries = assistantNodes
-    .map((node) => ({ node, role: 'assistant', content: assistantContentOf(node) }))
+    .map((node) => ({ node, role: 'assistant', key: assistantKeyOf(node), content: assistantContentOf(node) }))
     .filter((entry) => entry.content && entry.content.length <= 100000);
   const directAssistantSet = new Set(assistantNodes);
   const explicit = [...document.querySelectorAll('[data-message-author-role],[data-role],[class*="user-message"]')]
@@ -296,7 +334,7 @@ const SNAPSHOT_SCRIPT: &str = r#"
   }
   const state = composer
     ? (busy ? 'generating' : 'ready')
-    : (loginHint ? 'logged-out' : (document.readyState !== 'complete' || !document.body?.innerText ? 'loading' : 'unsupported'));
+    : (loginHint ? 'logged-out' : (document.readyState !== 'complete' || !document.body?.innerText || appShellHint ? 'loading' : 'unsupported'));
   return {
     signature,
     state,
@@ -305,6 +343,7 @@ const SNAPSHOT_SCRIPT: &str = r#"
     revision: window.__DSHWallpaperDomObserver?.revision || 0,
     assistantCount: assistantEntries.length,
     latestAssistant: assistantEntries.at(-1)?.content || null,
+    latestAssistantKey: assistantEntries.at(-1)?.key || null,
     composerFound: Boolean(composer),
     busy,
     messages: normalizedMessages,
@@ -351,7 +390,15 @@ fn is_deepseek_url(url: &tauri::Url) -> bool {
 }
 
 #[cfg(windows)]
+fn open_external_url_allowed(url: &tauri::Url) -> bool {
+    matches!(url.scheme(), "http" | "https")
+}
+
+#[cfg(windows)]
 fn open_external(url: &tauri::Url) {
+    if !open_external_url_allowed(url) {
+        return;
+    }
     let mut command = std::process::Command::new("explorer.exe");
     std::os::windows::process::CommandExt::creation_flags(&mut command, 0x08000000);
     let _ = command.arg(url.as_str()).spawn();
@@ -494,6 +541,13 @@ fn validate_snapshot(mut snapshot: WebSnapshot) -> Result<WebSnapshot, String> {
     {
         snapshot.model = None;
     }
+    if snapshot
+        .latest_assistant_key
+        .as_ref()
+        .is_some_and(|value| value.as_bytes().len() > MAX_IDENTIFIER_BYTES)
+    {
+        snapshot.latest_assistant_key = None;
+    }
     Ok(snapshot)
 }
 
@@ -503,7 +557,27 @@ async fn snapshot(window: &WebviewWindow) -> Result<WebSnapshot, String> {
 }
 
 #[cfg(windows)]
-fn send_script(text: &str) -> Result<String, String> {
+async fn wait_for_page_snapshot(window: &WebviewWindow) -> Result<WebSnapshot, String> {
+    let deadline = Instant::now() + PAGE_READY_TIMEOUT;
+    let mut last_error: Option<String> = None;
+    loop {
+        match snapshot(window).await {
+            Ok(snapshot) if snapshot.state != "loading" => return Ok(snapshot),
+            Ok(_) => {}
+            Err(error) => last_error = Some(error),
+        }
+        if Instant::now() >= deadline {
+            return Err(match last_error {
+                Some(error) => format!("DeepSeek 网页加载超时；页面可能仍在加载（{error}）。"),
+                None => "DeepSeek 网页加载超时；页面可能仍在加载。".into(),
+            });
+        }
+        tokio::time::sleep(Duration::from_millis(350)).await;
+    }
+}
+
+#[cfg(windows)]
+fn prepare_send_script(text: &str) -> Result<String, String> {
     let encoded = serde_json::to_string(text).map_err(|error| error.to_string())?;
     Ok(format!(
         r#"
@@ -515,40 +589,99 @@ fn send_script(text: &str) -> Result<String, String> {
     const rect = node.getBoundingClientRect();
     return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
   }};
+  const disabled = (node) => Boolean(node?.disabled)
+    || node?.getAttribute?.('aria-disabled') === 'true'
+    || node?.getAttribute?.('data-disabled') === 'true';
   const inputs = [...document.querySelectorAll('textarea,[contenteditable="true"]')];
-  const input = inputs.find((node) => visible(node) && !node.disabled);
+  const input = inputs.find((node) => visible(node) && !disabled(node) && !node.readOnly);
   if (!input) return {{ ok: false, reason: 'composer-not-found' }};
   input.focus();
   if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) {{
-    const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value')?.set;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      || Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value')?.set;
     setter?.call(input, value);
   }} else {{
-    input.textContent = '';
+    input.replaceChildren(document.createTextNode(value));
     try {{ document.execCommand('insertText', false, value); }} catch (_) {{ input.textContent = value; }}
     if (input.textContent !== value) input.textContent = value;
   }}
-  input.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: value }}));
-  const buttons = [...document.querySelectorAll('button,[role="button"]')];
-  const send = buttons.find((node) => {{
-    const label = [node.getAttribute('aria-label') || '', node.getAttribute('title') || '', node.innerText || ''].join(' ').toLowerCase();
-    return visible(node) && !node.disabled && /发送|send|submit/.test(label);
-  }}) || [...document.querySelectorAll('[data-testid*="send"],[data-testid*="submit"]')].find((node) => visible(node) && !node.disabled);
-  if (send) {{ send.click(); return {{ ok: true, reason: 'sent' }}; }}
-  const form = input.closest('form');
-  if (form?.requestSubmit) {{ form.requestSubmit(); return {{ ok: true, reason: 'sent' }}; }}
-  input.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', bubbles: true }}));
-  return {{ ok: true, reason: 'sent' }};
+  try {{
+    input.dispatchEvent(new InputEvent('input', {{ bubbles: true, composed: true, inputType: 'insertText', data: value }}));
+  }} catch (_) {{
+    input.dispatchEvent(new Event('input', {{ bubbles: true, composed: true }}));
+  }}
+  return {{ ok: true, reason: 'prepared' }};
 }})()
 "#
     ))
 }
 
 #[cfg(windows)]
+const TRIGGER_SEND_SCRIPT: &str = r#"
+(() => {
+  const visible = (node) => {
+    if (!node) return false;
+    const style = getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  };
+  const disabled = (node) => Boolean(node?.disabled)
+    || node?.getAttribute?.('aria-disabled') === 'true'
+    || node?.getAttribute?.('data-disabled') === 'true'
+    || /(?:^|[\s_-])disabled(?:$|[\s_-])/i.test(typeof node?.className === 'string' ? node.className : '');
+  const labelOf = (node) => [node?.getAttribute?.('aria-label') || '', node?.getAttribute?.('title') || '', node?.getAttribute?.('data-testid') || '', node?.innerText || ''].join(' ').toLowerCase();
+  const input = [...document.querySelectorAll('textarea,[contenteditable="true"]')]
+    .find((node) => visible(node) && !disabled(node) && !node.readOnly);
+  if (!input) return { ok: false, reason: 'composer-not-found' };
+  const candidatesIn = (scope) => [...scope.querySelectorAll('button,[role="button"]')]
+    .filter((node) => visible(node));
+  let action;
+  const semantic = candidatesIn(document).filter((node) => !disabled(node)
+    && (/发送|send|submit|continue/.test(labelOf(node))
+      || /send|submit|continue/i.test(node.getAttribute('data-testid') || '')));
+  action = semantic.at(-1);
+  if (!action) {
+    // The current DeepSeek page renders the main control as an icon-only
+    // role=button, with search/thinking/file controls before it. Walk up from
+    // the textarea and use the last visible enabled control in the smallest
+    // composer scope that owns one.
+    let scope = input.parentElement;
+    for (let depth = 0; scope && depth < 10; depth += 1, scope = scope.parentElement) {
+      const controls = candidatesIn(scope);
+      if (controls.length) {
+        action = [...controls].reverse().find((node) => !disabled(node));
+        if (action) break;
+        return { ok: false, reason: 'send-control-not-ready' };
+      }
+    }
+  }
+  if (action && !disabled(action)) {
+    action.click();
+    return { ok: true, reason: 'clicked-primary-control' };
+  }
+  const buttons = [...document.querySelectorAll('button,[role="button"]')];
+  const send = buttons.find((node) => visible(node) && !disabled(node) && /发送|send|submit|continue/.test(labelOf(node)))
+    || [...document.querySelectorAll('[data-testid*="send"],[data-testid*="submit"]')].find((node) => visible(node) && !disabled(node));
+  if (send) { send.click(); return { ok: true, reason: 'sent' }; }
+  const form = input.closest('form');
+  if (form?.requestSubmit) { form.requestSubmit(); return { ok: true, reason: 'submitted-form' }; }
+  input.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+    bubbles: true, cancelable: true, composed: true,
+  }));
+  return { ok: true, reason: 'submitted-keyboard' };
+})()
+"#;
+
+#[cfg(windows)]
 const STOP_SCRIPT: &str = r#"
 (() => {
   const labelOf = (node) => [node?.getAttribute?.('aria-label') || '', node?.getAttribute?.('title') || '', node?.innerText || ''].join(' ').toLowerCase();
+  const disabled = (node) => Boolean(node?.disabled)
+    || node?.getAttribute?.('aria-disabled') === 'true'
+    || node?.getAttribute?.('data-disabled') === 'true';
   const buttons = [...document.querySelectorAll('button,[role="button"]')];
-  const stop = buttons.find((node) => !node.disabled && (/停止生成|停止回答|stop(?:\s+(?:generat|response))?|cancel\s+(?:generation|response)/.test(labelOf(node)) || /stop|cancel/i.test(node.getAttribute('data-testid') || '')));
+  const stop = buttons.find((node) => !disabled(node) && (/停止|stop|cancel|interrupt/.test(labelOf(node)) || /stop|cancel|interrupt/i.test(node.getAttribute('data-testid') || '')));
   if (!stop) return { ok: false, reason: 'stop-not-found' };
   stop.click();
   return { ok: true, reason: 'stopped' };
@@ -596,7 +729,11 @@ impl DeepSeekWebState {
             .and_then(|active| {
                 active
                     .as_ref()
-                    .map(|active| active.request_id == request_id && active.cancelled)
+                    // A request that observes a newer request must also stop
+                    // publishing. This lets cancel release the slot
+                    // immediately without allowing the old poll loop to race
+                    // the next turn.
+                    .map(|active| active.request_id != request_id || active.cancelled)
             })
             .unwrap_or(true)
     }
@@ -614,9 +751,8 @@ impl DeepSeekWebState {
 
     fn cancel(&self) -> Option<(String, String)> {
         let mut active = self.active.lock().ok()?;
-        let request = active.as_mut()?;
-        request.cancelled = true;
-        Some((request.request_id.clone(), request.conversation_id.clone()))
+        let request = active.take()?;
+        Some((request.request_id, request.conversation_id))
     }
 }
 
@@ -713,15 +849,16 @@ pub async fn history(app: &AppHandle) -> Result<WebHistory, String> {
         });
     };
     let _ = start_navigation(&window);
-    let snapshot = match snapshot(&window).await {
+    let snapshot = match wait_for_page_snapshot(&window).await {
         Ok(snapshot) => snapshot,
-        Err(_) => {
+        Err(error) => {
+            log::debug!("deepseek web history snapshot unavailable: {error}");
             return Ok(WebHistory {
                 messages: Vec::new(),
                 conversation_id: None,
                 model: None,
                 state: "loading".into(),
-            })
+            });
         }
     };
     let timestamp = now_millis();
@@ -764,19 +901,7 @@ pub async fn send(
     }
     let window = ensure_window(&app)?;
     start_navigation(&window)?;
-    let mut initial = snapshot(&window).await?;
-    if initial.state == "loading" {
-        // The SPA may report `document.readyState=complete` before its
-        // composer is mounted. Give it a short, bounded warm-up window before
-        // declaring the adapter unsupported.
-        for _ in 0..20 {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            initial = snapshot(&window).await?;
-            if initial.state != "loading" {
-                break;
-            }
-        }
-    }
+    let initial = wait_for_page_snapshot(&window).await?;
     let conversation_id = safe_identifier(
         initial.conversation_id.clone().or(conversation_id),
         format!("web-{}", now_millis()),
@@ -849,12 +974,30 @@ pub async fn send(
             Some(&request_id),
             json!({ "type": "status", "activity": "sending" }),
         );
-        let action: WebActionResult = eval_json(&window, &send_script(&text)?).await?;
+        let prepared: WebActionResult = eval_json(&window, &prepare_send_script(&text)?).await?;
+        if !prepared.ok {
+            return Err("DeepSeek 网页输入框尚未准备好，请稍候重试。".into());
+        }
+        // React owns the page input. The DOM value and the React value are
+        // not guaranteed to be committed in the same JavaScript turn, so
+        // trigger the icon-only send control only after a short render tick.
+        // This is the difference between a visible draft and an accepted
+        // message on the current DeepSeek composer.
+        let mut action = WebActionResult { ok: false, reason: String::new() };
+        for attempt in 0..6 {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(80)).await;
+            }
+            action = eval_json(&window, TRIGGER_SEND_SCRIPT).await?;
+            if action.ok {
+                break;
+            }
+        }
         if !action.ok {
             if action.reason == "composer-not-found" {
                 return Err("DeepSeek 网页输入框尚未准备好，请稍候重试。".into());
             }
-            return Err("DeepSeek 网页未接受这条消息。".into());
+            return Err("DeepSeek 网页发送控件尚未准备好，请稍候重试。".into());
         }
 
         let baseline_count = initial.messages.len();
@@ -871,8 +1014,11 @@ pub async fn send(
                     .map(|message| message.content.clone())
             })
             .unwrap_or_default();
+        let baseline_assistant_key = initial.latest_assistant_key.clone();
         let mut output = String::new();
         let mut response_started = false;
+        let mut assistant_node_seen = false;
+        let mut active_assistant_key: Option<String> = None;
         let mut stable_polls = 0u8;
         let mut quiet_polls = 0u8;
         let mut last_observation = initial.clone();
@@ -938,17 +1084,53 @@ pub async fn send(
                 );
                 reported_missing_body = true;
             }
+            let assistant_key_is_new = current
+                .latest_assistant_key
+                .as_ref()
+                .is_some_and(|key| {
+                    baseline_assistant_key.as_deref() != Some(key.as_str())
+                        && active_assistant_key.as_deref() != Some(key.as_str())
+                });
+            let assistant_node_is_new = if assistant_key_is_new {
+                active_assistant_key = current.latest_assistant_key.clone();
+                assistant_node_seen = true;
+                true
+            } else if current.latest_assistant_key.is_none()
+                && current.assistant_count > baseline_assistant_count
+                && !assistant_node_seen
+            {
+                assistant_node_seen = true;
+                true
+            } else {
+                false
+            };
             if current.messages.len() > baseline_count
-                || current.assistant_count > baseline_assistant_count
+                || assistant_node_is_new
                 || (!assistant.is_empty() && assistant != baseline_assistant)
             {
                 response_started = true;
             }
-            if !assistant.is_empty() && assistant != baseline_assistant {
-                let delta = if assistant.starts_with(&output) {
+            // A new assistant node can legitimately contain the exact same
+            // text as the previous answer. Once a new node or a changed body
+            // proves that this is the current turn, keep updating `output`
+            // even when it eventually equals the baseline text.
+            let capture_assistant = should_capture_assistant(
+                assistant_node_is_new,
+                assistant,
+                &baseline_assistant,
+                &output,
+            );
+            if capture_assistant {
+                let delta = if assistant_node_is_new || output.is_empty() {
+                    assistant
+                } else if assistant.starts_with(&output) {
                     &assistant[output.len()..]
                 } else {
-                    assistant
+                    // The page occasionally rewrites the already-rendered
+                    // Markdown instead of appending to it. Do not duplicate
+                    // the whole body as a delta; the final message event will
+                    // publish the replacement body when it becomes stable.
+                    ""
                 };
                 if !delta.is_empty() {
                     emit_event(
@@ -1061,15 +1243,20 @@ pub async fn cancel(_: &tauri::AppHandle, _: &DeepSeekWebState) -> Result<(), St
 
 #[cfg(test)]
 mod tests {
-    use super::web_turn_completion_ready;
+    use super::{should_capture_assistant, web_turn_completion_ready, DeepSeekWebState};
 
     #[cfg(windows)]
     #[test]
     fn snapshot_script_keeps_direct_assistant_body_and_safe_diagnostics() {
         assert!(super::SNAPSHOT_SCRIPT.contains(".ds-assistant-message-main-content"));
         assert!(super::SNAPSHOT_SCRIPT.contains("latestAssistant"));
+        assert!(super::SNAPSHOT_SCRIPT.contains("latestAssistantKey"));
         assert!(super::SNAPSHOT_SCRIPT.contains("assistantCount"));
         assert!(!super::SNAPSHOT_SCRIPT.contains("!dom_changed"));
+        assert!(
+            super::TRIGGER_SEND_SCRIPT.contains("functionRowRightColumn")
+                || super::TRIGGER_SEND_SCRIPT.contains("clicked-primary-control")
+        );
     }
 
     #[test]
@@ -1112,5 +1299,68 @@ mod tests {
             20,
             20
         ));
+    }
+
+    #[test]
+    fn assistant_capture_ignores_the_baseline_and_stable_body() {
+        assert!(!should_capture_assistant(
+            false,
+            "上一条回复",
+            "上一条回复",
+            ""
+        ));
+        assert!(should_capture_assistant(
+            true,
+            "与上一条相同",
+            "与上一条相同",
+            ""
+        ));
+        assert!(should_capture_assistant(
+            false,
+            "当前回复新增内容",
+            "上一条回复",
+            "当前回复"
+        ));
+        assert!(!should_capture_assistant(
+            false,
+            "当前回复",
+            "上一条回复",
+            "当前回复"
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn external_navigation_only_launches_http_urls() {
+        assert!(super::open_external_url_allowed(
+            &"https://example.com".parse().expect("https URL")
+        ));
+        assert!(super::open_external_url_allowed(
+            &"http://example.com".parse().expect("http URL")
+        ));
+        assert!(!super::open_external_url_allowed(
+            &"mailto:test@example.com".parse().expect("mailto URL")
+        ));
+        assert!(!super::open_external_url_allowed(
+            &"file:///C:/Windows/win.ini".parse().expect("file URL")
+        ));
+    }
+
+    #[test]
+    fn cancel_releases_the_slot_without_allowing_the_old_poll_loop_to_publish() {
+        let state = DeepSeekWebState::default();
+        state
+            .begin("old-request".into(), "conversation".into())
+            .expect("first request");
+        assert_eq!(
+            state.cancel(),
+            Some(("old-request".into(), "conversation".into()))
+        );
+        assert!(state.cancelled("old-request"));
+        state
+            .begin("new-request".into(), "conversation".into())
+            .expect("new request can start immediately");
+        assert!(state.cancelled("old-request"));
+        assert!(!state.cancelled("new-request"));
     }
 }

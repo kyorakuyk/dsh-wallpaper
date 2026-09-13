@@ -33,13 +33,13 @@ async function readRustSources(directory: string): Promise<RustSource[]> {
 }
 
 describe('legacy interaction window cleanup', () => {
-  it('keeps the Tauri window configuration limited to the background host and settings', async () => {
+  it('creates only the background host at startup and keeps settings lazy', async () => {
     const config = await readJson('src-tauri/tauri.conf.json') as {
       app?: { windows?: Array<{ label?: unknown }> }
     }
 
     const labels = config.app?.windows?.map((window) => window.label)
-    expect(labels).toStrictEqual(['background', 'settings'])
+    expect(labels).toStrictEqual(['background'])
     expect(labels).not.toContain('interaction')
   })
 

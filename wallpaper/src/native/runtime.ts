@@ -137,7 +137,7 @@ export const nativeRuntime: NativeRuntime = {
     await invoke('deepseek_web_ensure')
   },
   async deepseekWebStatus() {
-    if (!await tauriAvailable()) return { state: 'loading', signature: 'deepseek-chat-dom-v1' }
+    if (!await tauriAvailable()) return { state: 'loading', signature: 'deepseek-chat-dom-v2' }
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<DeepSeekWebStatus>('deepseek_web_status')
   },

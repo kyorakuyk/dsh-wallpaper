@@ -96,7 +96,7 @@ describe('native chat boundary', () => {
     expect(lib).toContain('deepseek_web::DeepSeekWebState::default()')
     expect(web).toContain('deepseek-webview2')
     expect(web).toContain('WebviewUrl::External')
-    expect(web).toContain('deepseek-chat-dom-v1')
+    expect(web).toContain('deepseek-chat-dom-v2')
     expect(web).toContain('MutationObserver')
     expect(web).toContain('does not read cookies')
     expect(web).toContain('DEEPSEEK_WEB_UNSUPPORTED')
@@ -117,6 +117,18 @@ describe('native chat boundary', () => {
     expect(settings).toContain("nativeRuntime.autostartStatus()")
     expect(settings).toContain('autostartOperationRef')
     expect(settings).toContain('autostartBusy')
+  })
+
+  it('uses the built DSH CLI for managed launches when it is available', async () => {
+    const lib = await readNative('src/lib.rs')
+
+    expect(lib).toContain('.join("apps")')
+    expect(lib).toContain('.join("cli")')
+    expect(lib).toContain('.join("lib")')
+    expect(lib).toContain('.join("bin.js")')
+    expect(lib).toContain('node.exe')
+    expect(lib).toContain('pnpm.cmd')
+    expect(lib).toContain('tsx/esm')
   })
 
   it('uses Rust as the only settings-to-background event router', async () => {
@@ -247,7 +259,7 @@ describe('native chat boundary', () => {
     expect(cargo).toMatch(/^rust-version\s*=\s*"1\.77\.2"/m)
     expect(cargo).toMatch(/^tauri-plugin-single-instance\s*=\s*"2\.4\.3"/m)
     const singleInstance = lib.indexOf('.plugin(tauri_plugin_single_instance::init')
-    const logPlugin = lib.indexOf('.plugin(tauri_plugin_log::Builder::new().build())')
+    const logPlugin = lib.indexOf('tauri_plugin_log::Builder::new()')
     const dialogPlugin = lib.indexOf('.plugin(tauri_plugin_dialog::init())')
     expect(singleInstance).toBeGreaterThan(-1)
     expect(singleInstance).toBeLessThan(logPlugin)
@@ -281,7 +293,7 @@ describe('native chat boundary', () => {
       readNative('src/chat.rs'),
     ])
 
-    const probe = lib.match(/async fn fetch_harness_status\(\)[\s\S]*?\n}\n/)
+    const probe = lib.match(/fn harness_probe_client\(\)[\s\S]*?\n}\n/)
     expect(probe?.[0]).toContain('.no_proxy()')
     expect(chat.match(/fn bridge_request_client\(\)[\s\S]*?\n}\n/)?.[0]).toContain('.no_proxy()')
     expect(chat.match(/fn bridge_stream_client\(\)[\s\S]*?\n}\n/)?.[0]).toContain('.no_proxy()')

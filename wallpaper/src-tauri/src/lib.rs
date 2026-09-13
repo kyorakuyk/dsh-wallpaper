@@ -141,11 +141,17 @@ fn launch_dsh(
     {
         return Err("DSH profile 只能包含字母、数字、连字符或下划线".into());
     }
-    let launcher = command
+    let configured_launcher = command
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("pnpm.cmd");
+        .filter(|value| !value.is_empty());
+    let bundled_cli = root.join("apps").join("cli").join("lib").join("bin.js");
+    let use_bundled_cli = configured_launcher.is_none() && bundled_cli.is_file();
+    let launcher = configured_launcher.unwrap_or(if use_bundled_cli {
+        "node.exe"
+    } else {
+        "pnpm.cmd"
+    });
     if (launcher.contains('/') || launcher.contains('\\'))
         && !std::path::Path::new(launcher).is_file()
     {
@@ -162,9 +168,17 @@ fn launch_dsh(
         }
     }
     let mut launch = std::process::Command::new(launcher);
-    launch
-        .args(["dsh", "--profile", profile])
-        .current_dir(&root);
+    if use_bundled_cli {
+        // `pnpm dsh` intentionally loads the TypeScript source through
+        // `tsx/esm`, which is convenient for development but needlessly adds
+        // a loader and project graph walk every time the desktop asks for a
+        // resident Harness. A built CLI is self-contained and remains
+        // compatible with the same profile directory.
+        launch.arg(bundled_cli).args(["--profile", profile]);
+    } else {
+        launch.args(["dsh", "--profile", profile]);
+    }
+    launch.current_dir(&root);
     // DSH is a resident background service. `pnpm.cmd` otherwise inherits a
     // new visible console from the desktop process, leaving a stray CMD
     // window beside the wallpaper. Keep the child hidden while preserving its
@@ -360,9 +374,9 @@ fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
     let window = if let Some(window) = app.get_webview_window(SETTINGS_WINDOW_LABEL) {
         window
     } else {
-        // Lite does not declare a settings WebView at startup. Create it only
-        // when the tray command is used, and `hide_settings_window` destroys
-        // it again so the resident wallpaper keeps one browser surface.
+        // Keep the resident wallpaper to one WebView at startup. Both the
+        // full and Lite editions create the settings surface only on demand;
+        // `hide_settings_window` destroys it for Lite and hides it for full.
         let title = if is_lite_edition() {
             "DSH Wallpaper Lite Settings"
         } else {
@@ -376,9 +390,11 @@ fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
         .title(title)
         .inner_size(920.0, 680.0)
         .min_inner_size(760.0, 560.0)
+        .center()
         .decorations(false)
         .resizable(true)
         .transparent(true)
+        .focusable(true)
         .skip_taskbar(false)
         .visible(false)
         .build()
@@ -1430,6 +1446,8 @@ async fn harness_set_permission(
 
 #[cfg(not(feature = "lite"))]
 static HARNESS_STATUS_CACHE: OnceLock<RwLock<serde_json::Value>> = OnceLock::new();
+#[cfg(not(feature = "lite"))]
+static HARNESS_PROBE_CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
 
 /// The wallpaper bridge exposes a small, versioned protocol of its own.  A
 /// listening service on port 3080 is not sufficient proof that it is our
@@ -1445,6 +1463,22 @@ const REQUIRED_HARNESS_BRIDGE_CAPABILITIES: &[&str] =
 fn harness_status_cache() -> &'static RwLock<serde_json::Value> {
     HARNESS_STATUS_CACHE
         .get_or_init(|| RwLock::new(serde_json::json!({ "availability": "offline" })))
+}
+
+#[cfg(not(feature = "lite"))]
+fn harness_probe_client() -> Option<&'static reqwest::Client> {
+    HARNESS_PROBE_CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                // Status probing decides whether the UI exposes Harness
+                // mode. Keep it on loopback even when the user has a system
+                // proxy configured for the DeepSeek web route.
+                .no_proxy()
+                .timeout(std::time::Duration::from_millis(1200))
+                .build()
+                .ok()
+        })
+        .as_ref()
 }
 
 /// Convert a bridge status document into the small status shape exposed to
@@ -1507,17 +1541,8 @@ fn compatible_harness_bridge_status(data: &serde_json::Value) -> Option<serde_js
 
 #[cfg(not(feature = "lite"))]
 async fn fetch_harness_status() -> serde_json::Value {
-    let client = match reqwest::Client::builder()
-        // Status probing decides whether the UI exposes Harness mode. It must
-        // be a direct loopback probe too: proxy configuration must not be able
-        // to spoof a ready Bridge or route a future authenticated probe away
-        // from the local DSH process.
-        .no_proxy()
-        .timeout(std::time::Duration::from_millis(1200))
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => return serde_json::json!({ "availability": "offline" }),
+    let Some(client) = harness_probe_client() else {
+        return serde_json::json!({ "availability": "offline" });
     };
     if let Ok(response) = client
         .get("http://127.0.0.1:3080/api/wallpaper/v1/status")
@@ -1753,7 +1778,10 @@ fn start_harness_monitor(app: tauri::AppHandle) {
                     }
                 }
             }
-            let delay = if !bridge_ready { 2 } else { 5 };
+            // An offline machine does not need a tight retry loop. The old
+            // two-second cadence made a resident wallpaper open two timed-out
+            // loopback requests repeatedly and filled the Trace-level log.
+            let delay = if !bridge_ready { 5 } else { 5 };
             tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
         }
     });
@@ -1875,7 +1903,15 @@ fn run_with_edition(lite: bool) {
         .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {
             log::info!("second dsh-wallpaper launch redirected to existing instance");
         }))
-        .plugin(tauri_plugin_log::Builder::new().build())
+        // The log plugin defaults to Trace. The resident Harness probe and
+        // WebView2 internals would otherwise append a DEBUG connection line
+        // every few seconds, adding needless I/O and obscuring real startup
+        // failures in the small rotating log.
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .build(),
+        )
         .plugin(tauri_plugin_dialog::init())
         .manage(AppCore::default());
 
