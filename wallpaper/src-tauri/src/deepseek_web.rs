@@ -261,8 +261,21 @@ const SNAPSHOT_SCRIPT: &str = r#"
     // and fall back to textContent so a zero-size wrapper never hides a reply.
     const bodies = [...(node.querySelectorAll?.('.ds-markdown,[class*="markdown"],[data-testid*="markdown"]') || [])]
       .filter((candidate) => visible(candidate, true));
-    const body = bodies.at(-1) || node;
-    return textOf(body);
+    if (!bodies.length) return textOf(node);
+    const bodySet = new Set(bodies);
+    // A rendered answer can contain nested Markdown nodes, or several
+    // same-level blocks for separate paragraphs. Taking only the final body
+    // loses every preceding block. Keep only the outermost candidates, then merge
+    // sibling blocks in document order.
+    const outerBodies = bodies.filter((candidate) => {
+      let parent = candidate.parentElement;
+      while (parent && parent !== node) {
+        if (bodySet.has(parent)) return false;
+        parent = parent.parentElement;
+      }
+      return true;
+    });
+    return outerBodies.map(textOf).filter(Boolean).join('\n\n') || textOf(node);
   };
   const assistantKeyOf = (node) => node.closest?.('[data-virtual-list-item-key]')?.getAttribute('data-virtual-list-item-key')
     || node.getAttribute?.('data-message-id')
@@ -1252,6 +1265,9 @@ mod tests {
         assert!(super::SNAPSHOT_SCRIPT.contains("latestAssistant"));
         assert!(super::SNAPSHOT_SCRIPT.contains("latestAssistantKey"));
         assert!(super::SNAPSHOT_SCRIPT.contains("assistantCount"));
+        assert!(super::SNAPSHOT_SCRIPT.contains("outerBodies"));
+        assert!(super::SNAPSHOT_SCRIPT.contains("join('\\n\\n')"));
+        assert!(!super::SNAPSHOT_SCRIPT.contains("const body = bodies.at(-1)"));
         assert!(!super::SNAPSHOT_SCRIPT.contains("!dom_changed"));
         assert!(
             super::TRIGGER_SEND_SCRIPT.contains("functionRowRightColumn")
