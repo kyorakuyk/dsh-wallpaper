@@ -8,7 +8,7 @@
 pnpm build   # 产物在 wallpaper/dist/（index.html + assets/）
 ```
 
-> 产物使用相对路径（`base: './'`），可被任意静态服务器或壁纸引擎直接加载。
+> 产物使用根绝对路径（`base: '/'`），必须从站点根路径通过静态服务器提供；不要直接双击 `index.html`。`pnpm preview` 会提供可供网页壁纸引擎访问的本地 URL。
 
 ## 方式 A：开源网页壁纸引擎（推荐）
 
@@ -30,7 +30,7 @@ pnpm build   # 产物在 wallpaper/dist/（index.html + assets/）
 
 > 长期运行建议：把静态服务器做成自启服务，或用 `python -m http.server` / `npx serve` 等常驻进程。
 
-## 方式 B：Tauri 壳（自研 WorkerW 宿主，P2）
+## 方式 B：Tauri 壳（当前主产品，自研 WorkerW 宿主）
 
 需要"真壁纸层 + 穿透控制 + 托盘 + 系统锁屏联动"时，用 Tauri 2 做壳：
 

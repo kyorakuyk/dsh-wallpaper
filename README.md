@@ -24,7 +24,7 @@ pnpm desktop:build:lite
 | 🎨 **形态系统** | ✅ | 蓝/黑 × 幼/成年 四形态，立绘即时切换（useMemo），气泡跟随立绘 |
 | 🌊 **深海背景** | ✅ | 3 款深海室内插画 + 默认渐变，设置面板切换，持久化 |
 | 💬 **聊天后端** | ✅ | DeepSeek API（流式）+ Harness（Bridge 会话）+ DeepSeek 网页 DOM 桥接（实验能力） |
-| 🔌 **DSH 会话桥** | ✅ | `bridge/` 独立插件：loopback REST/SSE + bearer token 鉴权 |
+| 🔌 **DSH 会话桥** | 🧪 | `bridge/` 独立插件：loopback REST/SSE + bearer token 鉴权；会话恢复限定在桌面工作区，真机安装联调仍待完成 |
 | 🖥️ **Tauri 壳** | ✅ | 统一 WorkerW 背景宿主（画面与桌面内交互热区）+ 独立设置窗口、托盘、开机自启 |
 | 🖥️ **完整版多屏** | 🧪 | 显示器枚举、逐屏背景、会话窗/立绘目标屏幕选择；Lite 首发仍为单主屏 |
 | 🔐 **锁屏接管** | 🧪 | 安全备份/恢复与无副作用 MSIX 打包验证已完成；已安装 MSIX 的 `Win+L` 人工验收待做 |
@@ -81,7 +81,7 @@ pnpm desktop:build   # 构建安装包
 
 ## 形态系统（persona）
 
-形态由 `assets/personas/<id>/` 目录 + `manifest.json` 定义。内置 4 个形态（均有专属透明立绘）：
+当前内置形态由 `wallpaper/src/persona/registry.ts` 注册表定义，素材保存在 `assets/personas/` 与 `wallpaper/public/personas/`；用户目录扫描和 `manifest.json` 驱动的自定义形态仍是后续能力。内置 4 个形态（均有专属透明立绘）：
 
 | id | 名称 | 后端 | 年龄段 |
 |---|---|---|---|
@@ -90,7 +90,7 @@ pnpm desktop:build   # 构建安装包
 | `blue-adult` | 蓝色成年鲸鱼娘 | DeepSeek 蓝色主题 | 成年 |
 | `black-child` | 黑红幼年鲸鱼娘 | DSH Wallpaper Bridge | 幼 |
 
-### manifest.json 规范（用户定制）
+### manifest.json 草案（尚未由运行时扫描）
 
 ```jsonc
 {
@@ -140,7 +140,7 @@ dsh-wallpaper/
 ├── wallpaper/                  # 壁纸前端 + Tauri 壳
 │   ├── src/
 │   │   ├── scenes/             # 状态机 + 场景（Sleep/Wake/Idle/Chat）
-│   │   ├── persona/            # 形态注册表 + manifest
+│   │   ├── persona/            # 当前内置形态注册表（用户扫描待实现）
 │   │   ├── chat/               # 聊天适配器（mock/native/deepseekWeb）
 │   │   ├── connect/            # 3080 探测 + harness 状态
 │   │   ├── domain/             # 类型 + 模型分层
@@ -150,7 +150,7 @@ dsh-wallpaper/
 │   └── src-tauri/              # Rust 壳（WorkerW 宿主/设置窗口/托盘/锁屏/自启/聊天）
 ├── bridge/                     # DSH 会话桥插件（loopback REST/SSE）
 ├── assets/personas/            # 全部素材（立绘/动画帧/背景/留档）
-├── scripts/                    # 素材生成与处理（11 个脚本）
+├── scripts/                    # 素材生成与处理（17 个脚本）
 └── docs/                       # 壁纸引擎接入指南
 ```
 

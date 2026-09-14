@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
@@ -10,7 +12,7 @@ use super::{
     ActiveTheme, AppearanceExporter, AppearanceImporter, AppearanceRepository, AppearanceSlot,
     AssetMediaType, AssetOrigin, AssetRecord, AssetStatus, ExportError, ExportResult,
     ExportThemeMetadata, ImportError, ImportResult, ImportSource, StoreError, ThemeRecord,
-    ThemeSource,
+    ThemeSource, DEFAULT_MAX_ASSET_BYTES,
 };
 
 // Keep the caller boundary with the commands that own the sensitive library
@@ -27,6 +29,25 @@ fn require_appearance_reader(caller: &tauri::WebviewWindow) -> Result<(), String
     matches!(caller.label(), "background" | "settings")
         .then_some(())
         .ok_or_else(|| "该命令只允许壁纸或设置中心调用。".into())
+}
+
+/// Resolve only a bounded amount of user-controlled asset data across the
+/// native/renderer boundary. The metadata check avoids an obvious oversized
+/// file, while the bounded read also covers a file that grows after the check.
+fn read_resolved_asset(source: &Path) -> Result<Vec<u8>, AppearanceCommandError> {
+    let metadata = std::fs::metadata(source).map_err(|_| AppearanceCommandError::internal())?;
+    if !metadata.is_file() || metadata.len() > DEFAULT_MAX_ASSET_BYTES {
+        return Err(AppearanceCommandError::invalid_argument());
+    }
+    let file = File::open(source).map_err(|_| AppearanceCommandError::internal())?;
+    let mut bytes = Vec::new();
+    file.take(DEFAULT_MAX_ASSET_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| AppearanceCommandError::internal())?;
+    if bytes.len() as u64 > DEFAULT_MAX_ASSET_BYTES {
+        return Err(AppearanceCommandError::invalid_argument());
+    }
+    Ok(bytes)
 }
 
 pub struct AppearanceState {
@@ -224,7 +245,7 @@ impl AppearanceState {
             return Ok(None);
         };
         let source = paths.root.join(&asset.object_path);
-        let bytes = std::fs::read(&source).map_err(|_| AppearanceCommandError::internal())?;
+        let bytes = read_resolved_asset(&source)?;
         Ok(Some(ResolvedAssetDto {
             id: asset.id,
             media_type: asset.media_type.as_str().into(),
@@ -253,7 +274,7 @@ impl AppearanceState {
                 AppearanceCommandError::from(StoreError::NotFound("asset not found".into()))
             })?;
         let source = paths.root.join(&asset.object_path);
-        let bytes = std::fs::read(&source).map_err(|_| AppearanceCommandError::internal())?;
+        let bytes = read_resolved_asset(&source)?;
         Ok(Some(ResolvedAssetDto {
             id: asset.id,
             media_type: asset.media_type.as_str().into(),

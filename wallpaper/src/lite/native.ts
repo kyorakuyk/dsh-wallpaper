@@ -31,8 +31,8 @@ export async function desktopWallpaperFallbackStatus(): Promise<DesktopWallpaper
   return invokeNative<DesktopWallpaperFallbackStatus>('desktop_wallpaper_fallback_status')
 }
 
-export async function clearStaleLockScreenBackup(): Promise<string> {
-  return invokeNative<string>('clear_stale_lock_screen_backup')
+export async function clearStaleLockScreenBackup(confirmed: boolean): Promise<string> {
+  return invokeNative<string>('clear_stale_lock_screen_backup', { confirmed })
 }
 
 export async function autostartStatus(): Promise<AutostartStatus> {

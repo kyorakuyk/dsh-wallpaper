@@ -858,9 +858,10 @@ async fn set_lock_screen_enabled(
 async fn clear_stale_lock_screen_backup(
     caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
+    confirmed: bool,
 ) -> Result<String, String> {
     require_settings(&caller)?;
-    windows_integration::clear_stale_lock_screen_backup(&app).await
+    windows_integration::clear_stale_lock_screen_backup(&app, confirmed).await
 }
 
 #[tauri::command]

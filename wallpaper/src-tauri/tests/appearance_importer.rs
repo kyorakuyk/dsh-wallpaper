@@ -7,7 +7,7 @@ use std::path::Path;
 
 use appearance::{
     AppearanceImporter, AppearancePaths, AppearanceRepository, AppearanceSlot, AppearanceState,
-    ImportLimits, ImportResult, ImportSource,
+    ImportLimits, ImportResult, ImportSource, DEFAULT_MAX_ASSET_BYTES,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -255,6 +255,35 @@ fn enforces_file_count_and_size_limits() {
     fs::write(folder.join("a.png"), b"a").unwrap();
     fs::write(folder.join("b.png"), b"b").unwrap();
     assert!(importer.import_path(&folder, &mut repository).is_err());
+    assert_eq!(fs::read_dir(&paths.staging).unwrap().count(), 0);
+}
+
+#[test]
+fn rejects_default_oversized_file_before_copying_into_staging() {
+    let (directory, paths, mut repository, importer) = setup();
+    let too_large = directory.path().join("too-large.png");
+    let file = fs::File::create(&too_large).unwrap();
+    file.set_len(DEFAULT_MAX_ASSET_BYTES + 1).unwrap();
+
+    assert!(importer.import_path(&too_large, &mut repository).is_err());
+    assert!(!paths.inbox.join("too-large.png").exists());
+    assert_eq!(fs::read_dir(&paths.staging).unwrap().count(), 0);
+}
+
+#[test]
+fn rejects_zip_expansion_ratio_before_writing_the_payload() {
+    let (directory, paths, mut repository, importer) = setup();
+    let archive_path = directory.path().join("expanded.zip");
+    let file = fs::File::create(&archive_path).unwrap();
+    let mut archive = zip::ZipWriter::new(file);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    archive.start_file("background.webp", options).unwrap();
+    archive.write_all(&vec![b'a'; 2 * 1024 * 1024]).unwrap();
+    archive.finish().unwrap();
+
+    assert!(importer
+        .import_path(&archive_path, &mut repository)
+        .is_err());
     assert_eq!(fs::read_dir(&paths.staging).unwrap().count(), 0);
 }
 

@@ -35,7 +35,10 @@ const MAX_IDENTIFIER_BYTES: usize = 200;
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const TURN_TIMEOUT: Duration = Duration::from_secs(180);
 const PAGE_READY_TIMEOUT: Duration = Duration::from_secs(30);
-const QUIET_COMPLETION_POLLS: u8 = 12;
+// A quiet stream is not enough evidence by itself: slow model output can
+// pause for several seconds. It may participate only when the page exposes a
+// terminal action for the latest assistant node.
+const QUIET_COMPLETION_POLLS: u8 = 20;
 const DEEPSEEK_URL: &str = "https://chat.deepseek.com/";
 
 #[derive(Default)]
@@ -96,6 +99,8 @@ struct WebSnapshot {
     #[serde(default)]
     busy: bool,
     #[serde(default)]
+    completion_hint: bool,
+    #[serde(default)]
     messages: Vec<WebMessage>,
 }
 
@@ -113,20 +118,21 @@ struct WebActionResult {
 }
 
 /// Decide whether a DOM-polled turn has produced its final reply.  The
-/// website's busy marker is only a hint: it can remain visible for a few
-/// seconds after the assistant node is committed, so a stable non-empty body
-/// is allowed to finish the turn even while `state == "generating"`.
+/// website's busy marker can remain visible after the assistant node is
+/// committed, but a stable body alone must not finish a still-generating turn.
+/// The generating fallback therefore requires an explicit terminal DOM hint.
 fn web_turn_completion_ready(
     response_started: bool,
     output: &str,
     assistant: &str,
     quiet_polls: u8,
     stable_polls: u8,
+    completion_hint: bool,
 ) -> bool {
     response_started
         && !output.is_empty()
         && assistant == output
-        && (stable_polls >= 2 || quiet_polls >= QUIET_COMPLETION_POLLS)
+        && (stable_polls >= 2 || (completion_hint && quiet_polls >= QUIET_COMPLETION_POLLS))
 }
 
 /// Only capture a body after it is known to belong to the current assistant
@@ -284,6 +290,17 @@ const SNAPSHOT_SCRIPT: &str = r#"
   const assistantEntries = assistantNodes
     .map((node) => ({ node, role: 'assistant', key: assistantKeyOf(node), content: assistantContentOf(node) }))
     .filter((entry) => entry.content && entry.content.length <= 100000);
+  // A retry/regenerate control is stronger evidence than a generic loading
+  // class, but only accept one that appears after the latest assistant node.
+  // Older answers can retain their own retry buttons while a new answer is
+  // still streaming.
+  const terminalAction = [...buttons].reverse().find((node) => {
+    if (!visible(node) || disabled(node)) return false;
+    return /重新生成|再次生成|regenerate|retry|try again/.test(labelOf(node));
+  });
+  const latestAssistantNode = assistantEntries.at(-1)?.node;
+  const completionHint = Boolean(terminalAction && latestAssistantNode
+    && (latestAssistantNode.compareDocumentPosition?.(terminalAction) & Node.DOCUMENT_POSITION_FOLLOWING));
   const directAssistantSet = new Set(assistantNodes);
   const explicit = [...document.querySelectorAll('[data-message-author-role],[data-role],[class*="user-message"]')]
     .filter((node) => !directAssistantSet.has(node));
@@ -359,6 +376,7 @@ const SNAPSHOT_SCRIPT: &str = r#"
     latestAssistantKey: assistantEntries.at(-1)?.key || null,
     composerFound: Boolean(composer),
     busy,
+    completionHint,
     messages: normalizedMessages,
   };
 })()
@@ -1049,7 +1067,7 @@ pub async fn send(
             }
             if Instant::now() >= deadline {
                 log::warn!(
-                    "deepseek web turn timed out: conversation={}, request={}, state={}, messages={}, assistant_count={}, latest_assistant_len={}, composer_found={}, busy={}, revision={}",
+                    "deepseek web turn timed out: conversation={}, request={}, state={}, messages={}, assistant_count={}, latest_assistant_len={}, composer_found={}, busy={}, completion_hint={}, revision={}",
                     conversation_id,
                     request_id,
                     last_observation.state,
@@ -1058,6 +1076,7 @@ pub async fn send(
                     last_observation.latest_assistant.as_ref().map_or(0, |value| value.len()),
                     last_observation.composer_found,
                     last_observation.busy,
+                    last_observation.completion_hint,
                     last_observation.revision,
                 );
                 return Err("DeepSeek 网页响应超时；可以在网页窗口中检查当前会话。".into());
@@ -1165,12 +1184,11 @@ pub async fn send(
             } else {
                 if response_started && !output.is_empty() && assistant == output {
                     quiet_polls = quiet_polls.saturating_add(1);
-                    // The page can keep a stale "stop generating" button or
-                    // mutate a streaming cursor after the answer is already
-                    // committed. Content stability is therefore the primary
-                    // completion signal; DOM revision and the busy marker are
-                    // only hints and must not hold a completed turn forever.
-                    if current.state != "generating" || quiet_polls >= QUIET_COMPLETION_POLLS {
+                    // The page can keep a stale "stop generating" button after
+                    // the answer is committed. Content stability is useful,
+                    // but quiet time alone is not enough to finish a turn:
+                    // slow streaming is allowed to pause without truncation.
+                    if current.state != "generating" {
                         stable_polls = stable_polls.saturating_add(1);
                     } else {
                         stable_polls = 0;
@@ -1180,7 +1198,14 @@ pub async fn send(
                     stable_polls = 0;
                 }
             }
-            if web_turn_completion_ready(response_started, &output, assistant, quiet_polls, stable_polls) {
+            if web_turn_completion_ready(
+                response_started,
+                &output,
+                assistant,
+                quiet_polls,
+                stable_polls,
+                current.completion_hint,
+            ) {
                 emit_event(
                     &app,
                     &conversation_id,
@@ -1276,13 +1301,22 @@ mod tests {
     }
 
     #[test]
-    fn a_stable_reply_finishes_even_when_the_page_keeps_busy_hint() {
-        assert!(web_turn_completion_ready(
+    fn a_stable_reply_does_not_finish_from_busy_hint_alone() {
+        assert!(!web_turn_completion_ready(
             true,
             "最终回复",
             "最终回复",
             12,
             0,
+            false,
+        ));
+        assert!(web_turn_completion_ready(
+            true,
+            "最终回复",
+            "最终回复",
+            20,
+            0,
+            true,
         ));
     }
 
@@ -1293,27 +1327,37 @@ mod tests {
             "最终回复",
             "最终回复",
             1,
-            1
+            1,
+            false,
         ));
         assert!(web_turn_completion_ready(
             true,
             "最终回复",
             "最终回复",
             1,
-            2
+            2,
+            false,
         ));
     }
 
     #[test]
     fn empty_or_changed_body_never_finishes_a_turn() {
-        assert!(!web_turn_completion_ready(true, "", "", 20, 20));
-        assert!(!web_turn_completion_ready(true, "旧回复", "新回复", 20, 20));
+        assert!(!web_turn_completion_ready(true, "", "", 20, 20, true));
+        assert!(!web_turn_completion_ready(
+            true,
+            "旧回复",
+            "新回复",
+            20,
+            20,
+            true,
+        ));
         assert!(!web_turn_completion_ready(
             false,
             "最终回复",
             "最终回复",
             20,
-            20
+            20,
+            true,
         ));
     }
 

@@ -24,7 +24,7 @@ export interface DesktopDisplayInfo { id: string; name: string; bounds: DesktopR
 export interface NativeRuntime {
   isNative: boolean
   setLockScreen(enabled: boolean): Promise<string>
-  clearStaleLockScreenBackup(): Promise<string>
+  clearStaleLockScreenBackup(confirmed: boolean): Promise<string>
   lockScreenDiagnostics(): Promise<LockScreenDiagnostics>
   setAutostart(enabled: boolean): Promise<AutostartStatus>
   autostartStatus(): Promise<AutostartStatus>
@@ -78,10 +78,10 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<string>('set_lock_screen_enabled', { enabled })
   },
-  async clearStaleLockScreenBackup() {
+  async clearStaleLockScreenBackup(confirmed) {
     if (!await tauriAvailable()) return '浏览器预览不支持清理系统锁屏恢复点。'
     const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<string>('clear_stale_lock_screen_backup')
+    return invoke<string>('clear_stale_lock_screen_backup', { confirmed })
   },
   async lockScreenDiagnostics() {
     if (!await tauriAvailable()) return { supported: false, packageIdentity: false, takeoverAvailable: false, backupExists: false, backupValid: false, staleBackup: false, managedImageReady: false, managedImageActive: false, developmentBuild: false, warnings: ['浏览器预览不支持系统锁屏诊断。'] }

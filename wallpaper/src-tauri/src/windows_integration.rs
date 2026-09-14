@@ -2040,7 +2040,15 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
 }
 
 #[cfg(windows)]
-pub async fn clear_stale_lock_screen_backup(app: &tauri::AppHandle) -> Result<String, String> {
+pub async fn clear_stale_lock_screen_backup(
+    app: &tauri::AppHandle,
+    confirmed: bool,
+) -> Result<String, String> {
+    if !confirmed {
+        return Err(
+            "清理旧锁屏恢复点需要明确确认；该操作会永久删除已保存的原锁屏图片副本。".into(),
+        );
+    }
     let _transaction = LOCK_SCREEN_TRANSACTION
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -2061,7 +2069,7 @@ pub async fn clear_stale_lock_screen_backup(app: &tauri::AppHandle) -> Result<St
     let managed_image_active = managed_image_is_active(Some(&current), &managed_path)
         || managed_image_is_active(Some(&current), &packaged_sleep_image);
     discard_stale_backup(&config_dir, managed_image_active)?;
-    Ok("已清理旧锁屏恢复点；Windows 当前锁屏图片未作任何修改。".into())
+    Ok("已清理旧锁屏恢复点；Windows 当前锁屏图片未作任何修改，保存的原图副本已永久删除。".into())
 }
 
 /// Restoring a snapshot is only safe while the current lock-screen image is

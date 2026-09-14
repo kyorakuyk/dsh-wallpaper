@@ -7,7 +7,8 @@ use std::path::Path;
 use appearance::{
     AppearanceExporter, AppearanceImporter, AppearancePaths, AppearanceRepository, AppearanceSlot,
     AppearanceState, AssetMediaType, AssetOrigin, AssetRecord, AssetStatus, ExportThemeMetadataDto,
-    ThemeRecord, ThemeSource, OFFICIAL_BASE_THEME_ID, OFFICIAL_BASE_THEME_VERSION,
+    ThemeRecord, ThemeSource, DEFAULT_MAX_ASSET_BYTES, OFFICIAL_BASE_THEME_ID,
+    OFFICIAL_BASE_THEME_VERSION,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -247,6 +248,30 @@ fn maps_failures_to_stable_errors_without_internal_details() {
         .unwrap_err();
     assert_eq!(missing_exporter.code, "APPEARANCE_INTERNAL");
     assert!(!missing_exporter.message.contains("C:/secret"));
+}
+
+#[test]
+fn refuses_to_resolve_an_oversized_asset_across_the_renderer_boundary() {
+    let directory = tempdir().unwrap();
+    let paths = AppearancePaths::new(directory.path().join("app-data"));
+    paths.create().unwrap();
+    let mut repository = AppearanceRepository::open(&paths.catalog).unwrap();
+    let asset = asset(
+        "background",
+        AssetStatus::Classified,
+        AssetOrigin::Loose,
+    );
+    repository.insert_asset(&asset).unwrap();
+    let object = paths.root.join(&asset.object_path);
+    fs::create_dir_all(object.parent().unwrap()).unwrap();
+    let file = fs::File::create(&object).unwrap();
+    file.set_len(DEFAULT_MAX_ASSET_BYTES + 1).unwrap();
+
+    let importer = AppearanceImporter::new(paths.clone()).unwrap();
+    let exporter = AppearanceExporter::new(paths.clone()).unwrap();
+    let state = AppearanceState::with_runtime_io(repository, importer, exporter, paths);
+    let error = state.resolve_library_asset("background").unwrap_err();
+    assert_eq!(error.code, "APPEARANCE_INVALID_ARGUMENT");
 }
 
 #[test]

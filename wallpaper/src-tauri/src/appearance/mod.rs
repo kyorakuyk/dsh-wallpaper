@@ -11,7 +11,10 @@ pub use commands::{
     ExportThemeMetadataDto, ImportBatchDto, ImportResultDto, ThemeSummaryDto,
 };
 pub use exporter::{AppearanceExporter, ExportError, ExportResult, ExportThemeMetadata};
-pub use importer::{AppearanceImporter, ImportError, ImportLimits, ImportResult, ImportSource};
+pub use importer::{
+    AppearanceImporter, ImportError, ImportLimits, ImportResult, ImportSource,
+    DEFAULT_MAX_ASSET_BYTES,
+};
 pub use official::{
     official_base_theme, OfficialThemeBootstrapOutcome, OFFICIAL_BASE_THEME_ID,
     OFFICIAL_BASE_THEME_VERSION,

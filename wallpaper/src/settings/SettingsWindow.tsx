@@ -132,10 +132,11 @@ export function SettingsWindow() {
   }
   const clearStaleLockScreenBackup = async () => {
     if (lockScreenOperationRef.current) return
+    if (!window.confirm('清理旧锁屏恢复点会永久删除已保存的原锁屏图片副本。Windows 当前锁屏图片不会被修改。确定继续吗？')) return
     lockScreenOperationRef.current = true
     setLockScreenBusy(true)
     try {
-      setNotice(await nativeRuntime.clearStaleLockScreenBackup())
+      setNotice(await nativeRuntime.clearStaleLockScreenBackup(true))
       await refreshLockScreenDiagnostics()
     } catch (error) {
       setNotice(`清理旧恢复点失败：${String(error)}`)

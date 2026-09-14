@@ -123,6 +123,44 @@ describe('native chat boundary', () => {
     expect(readme).toContain('DeepSeek 网页 DOM 桥接')
   })
 
+  it('requires explicit confirmation before deleting a saved lock-screen original', async () => {
+    const [runtime, liteNative, settings, liteSettings, lib, integration] = await Promise.all([
+      readFile(resolve(wallpaperRoot, 'src/native/runtime.ts'), 'utf8'),
+      readFile(resolve(wallpaperRoot, 'src/lite/native.ts'), 'utf8'),
+      readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8'),
+      readFile(resolve(wallpaperRoot, 'src/lite/LiteSettingsWindow.tsx'), 'utf8'),
+      readNative('src/lib.rs'),
+      readNative('src/windows_integration.rs'),
+    ])
+    expect(runtime).toContain('clearStaleLockScreenBackup(confirmed: boolean)')
+    expect(runtime).toContain("{ confirmed }")
+    expect(liteNative).toContain('clearStaleLockScreenBackup(confirmed: boolean)')
+    expect(settings).toContain('window.confirm(')
+    expect(liteSettings).toContain('window.confirm(')
+    expect(lib).toContain('confirmed: bool')
+    expect(integration).toContain('永久删除已保存的原锁屏图片副本')
+  })
+
+  it('bounds appearance assets before they cross the IPC base64 boundary', async () => {
+    const [commands, importer] = await Promise.all([
+      readNative('src/appearance/commands.rs'),
+      readNative('src/appearance/importer.rs'),
+    ])
+    expect(commands).toContain('read_resolved_asset')
+    expect(commands).toContain('DEFAULT_MAX_ASSET_BYTES')
+    expect(importer).toContain('DEFAULT_MAX_ASSET_BYTES')
+    expect(importer).toContain('MAX_ZIP_EXPANSION_RATIO')
+    expect(importer).toContain('total_size')
+  })
+
+  it('does not treat a quiet generating page as complete without a terminal hint', async () => {
+    const web = await readNative('src/deepseek_web.rs')
+    expect(web).toContain('completion_hint')
+    expect(web).toContain('terminalAction')
+    expect(web).toContain('QUIET_COMPLETION_POLLS: u8 = 20')
+    expect(web).toContain('completion_hint && quiet_polls')
+  })
+
   it('keeps autostart changes off the settings renderer thread and migrates old installs', async () => {
     const [lib, settings] = await Promise.all([
       readNative('src/lib.rs'),

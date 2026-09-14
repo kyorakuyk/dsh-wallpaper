@@ -190,10 +190,11 @@ export function LiteSettingsWindow() {
 
   const clearStaleLockScreenBackup = async () => {
     if (lockOperationRef.current) return
+    if (!window.confirm('清理过期恢复点会永久删除已保存的原锁屏图片副本。Windows 当前锁屏图片不会被修改。确定继续吗？')) return
     lockOperationRef.current = true
     setLockScreenBusy(true)
     try {
-      setNotice(await liteNative.clearStaleLockScreenBackup())
+      setNotice(await liteNative.clearStaleLockScreenBackup(true))
       await refreshDiagnostics()
     } catch (error) {
       setNotice(`清理旧锁屏恢复点失败：${String(error)}`)
@@ -243,7 +244,7 @@ export function LiteSettingsWindow() {
         <SettingRow title="登录过渡底图" detail={desktopFallbackBusy ? '正在更新 Explorer 桌面底图。' : desktopFallbackStatus?.managedActive ? '已确认 Explorer 正在使用睡眠画面；重启后可减少解锁空档。' : desktopFallbackStatus?.warning ?? '让 Explorer 在应用启动前先显示睡眠画面，减少解锁后的原壁纸空档。'}><Toggle label="登录过渡底图" checked={settings.desktopWallpaperFallback} disabled={desktopFallbackBusy} onChange={(value) => void setDesktopFallback(value)} /></SettingRow>
         <SettingRow title="登录后自动启动" detail={autostartBusy ? '正在更新启动任务。' : '使用当前用户的 Windows 启动任务。'}><Toggle label="登录后自动启动" checked={settings.autostart} disabled={autostartBusy} onChange={(value) => void setAutostart(value)} /></SettingRow>
         <div className="lite-actions"><button type="button" onClick={() => void openLockScreenSettings()}>打开 Windows 锁屏设置</button><button type="button" onClick={() => void refreshDiagnostics()}>刷新诊断</button></div>
-        {lockScreenDiagnostics && <div className="lite-diagnostics"><strong>{lockScreenDiagnostics.takeoverAvailable ? '锁屏接管可用' : '当前暂不可接管锁屏'}</strong>{lockScreenDiagnostics.warnings.slice(0, 2).map((warning) => <span key={warning}>{warning}</span>)}{desktopFallbackStatus?.backupExists && desktopFallbackStatus.warning && <span>{desktopFallbackStatus.warning}</span>}{lockScreenDiagnostics.staleBackup && <button type="button" className="lite-diagnostics-action" disabled={lockScreenBusy} onClick={() => void clearStaleLockScreenBackup()}>清理过期恢复点</button>}</div>}
+        {lockScreenDiagnostics && <div className="lite-diagnostics"><strong>{lockScreenDiagnostics.takeoverAvailable ? '锁屏接管可用' : '当前暂不可接管锁屏'}</strong>{lockScreenDiagnostics.warnings.slice(0, 2).map((warning) => <span key={warning}>{warning}</span>)}{desktopFallbackStatus?.backupExists && desktopFallbackStatus.warning && <span>{desktopFallbackStatus.warning}</span>}{lockScreenDiagnostics.staleBackup && <button type="button" className="lite-diagnostics-action" disabled={lockScreenBusy} onClick={() => void clearStaleLockScreenBackup()}>清理过期恢复点（删除原图副本）</button>}</div>}
       </section>
 
       <section className="lite-card">

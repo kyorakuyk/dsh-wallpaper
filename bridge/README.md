@@ -22,3 +22,9 @@ handed off to Harness.
 The host may override the initial preset with `desktopPermission`. This applies
 only when creating a new desktop session; the wallpaper control surface remains
 the place where the user changes the active session permission afterward.
+
+The bridge registers no status, control, or session route unless the host web
+server is bound to the exact loopback address `127.0.0.1`. Every new session is
+attached to the dedicated desktop workspace, and `resumeSessionId` is accepted
+only for a session already owned by that workspace; unknown or foreign IDs
+return the same `resume-unavailable` response without disclosing ownership.

@@ -143,7 +143,14 @@ function desktopWorkspaceTitle(config: Config): string {
 }
 
 function desktopWorkspacePath(config: Config): string {
-  return resolve(config.workspacePath?.trim() || join(configuredTokenRoot(config), 'workspace', 'dsh-wallpaper-desktop'))
+  return resolve(config.workspacePath?.trim() || config.cwd?.trim() || join(configuredTokenRoot(config), 'workspace', 'dsh-wallpaper-desktop'))
+}
+
+/** The wallpaper bridge is intentionally local-only, including every
+ * mutating/control route. Keep this as one exact predicate so a future route
+ * cannot accidentally copy only the status-route guard. */
+export function isLoopbackWebServerHost(host: unknown): host is '127.0.0.1' {
+  return host === '127.0.0.1'
 }
 
 export function desktopEntryPrompt(cwd: string, workspaceTitle: string, permission: string): string {
@@ -731,9 +738,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   // makes the wallpaper's route toggle misleading.  The mutating routes
   // below still wait for their complete service set.
   ctx.inject(['webServer'], (statusContext) => {
-    if (statusContext.webServer.host !== '127.0.0.1') {
-      throw new Error('dsh-wallpaper-bridge refuses to run on a non-loopback WebServer')
-    }
+    if (!isLoopbackWebServerHost(statusContext.webServer.host)) return
     const dispose = statusContext.webServer.register({
       kind: 'exact',
       path: `${API_PREFIX}/status`,
@@ -764,6 +769,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   // expose `agents` next to `webServer` must not hide a real Cordis scope
   // where only the declared dependencies are available.
   ctx.inject(['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry', 'permissionPresets', 'commands'], (wctx) => {
+    if (!isLoopbackWebServerHost(wctx.webServer.host)) return
     const controlDispose = wctx.webServer.register({
       kind: 'prefix',
       path: `${API_PREFIX}/control`,
@@ -869,23 +875,29 @@ export function apply(ctx: Context, config: Config = {}): void {
             const requested = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
             const requestedResume = typeof body.resumeSessionId === 'string' ? body.resumeSessionId.trim() : ''
             const automaticDailySession = !requested && !requestedResume
-            const workspace = automaticDailySession
-              ? await ensureDesktopWorkspace(
-                (wctx as unknown as { workspaceRegistry: WorkspaceRegistry }).workspaceRegistry,
-                config,
-              )
-              : undefined
+            // Every session created by this bridge belongs to the dedicated
+            // desktop workspace. Apart from keeping the cwd boundary
+            // consistent, this gives resumeSessionId a durable ownership
+            // check instead of accepting any well-shaped DSH session ID.
+            const workspace = await ensureDesktopWorkspace(
+              (wctx as unknown as { workspaceRegistry: WorkspaceRegistry }).workspaceRegistry,
+              config,
+            )
             stage = 'session-identity'
             const dailyId = localDailyWallpaperSessionId()
             const recoveredDailyId = recoveredDailyWallpaperSessionId(dailyId)
             const recoveredDailyExists = automaticDailySession
-              && workspace?.sessionIds.some((sessionId) => String(sessionId) === recoveredDailyId)
+              && workspace.sessionIds.some((sessionId) => String(sessionId) === recoveredDailyId)
             const id = automaticDailySession
               ? (recoveredDailyExists ? recoveredDailyId : dailyId)
               : requestedResume || requested || `wallpaper-${randomUUID()}`
-            const resume = requestedResume || (workspace?.sessionIds.some((sessionId) => String(sessionId) === id) ? id : '')
-            if (resume && !canResume()) return json(res, 409, { error: 'resume-unavailable' })
             if (!isSafeSessionId(id)) return json(res, 400, { error: 'invalid-session-id' })
+            const ownedResume = workspace.sessionIds.some((sessionId) => String(sessionId) === id)
+            const resume = requestedResume || automaticDailySession
+              ? (ownedResume ? id : '')
+              : ''
+            if (requestedResume && !resume) return json(res, 409, { error: 'resume-unavailable' })
+            if (resume && !canResume()) return json(res, 409, { error: 'resume-unavailable' })
             const existing = live.get(id)
             if (existing) return json(res, 200, sessionSummary(existing))
             const provider = typeof body.provider === 'string' && body.provider.trim() ? body.provider.trim() : undefined
@@ -926,8 +938,8 @@ export function apply(ctx: Context, config: Config = {}): void {
             // A fresh DSH session therefore needs a host-owned workspace even
             // when the operator did not configure a narrower bridge cwd.
             // `process.cwd()` is the DSH launch directory, never HTTP input.
-            const cwd = workspace?.path || config.cwd?.trim() || process.cwd()
-            const workspaceTitle = workspace?.title || desktopWorkspaceTitle(config)
+            const cwd = workspace.path
+            const workspaceTitle = workspace.title
             let pending = creating.get(id)
             const createdByThisRequest = pending === undefined
             if (!pending) {
@@ -953,7 +965,7 @@ export function apply(ctx: Context, config: Config = {}): void {
                     // only its workspace pointer, and create a deterministic
                     // replacement so the desktop entry remains usable.
                     void error
-                    await workspace?.detachSession(SessionId(id))
+                    await workspace.detachSession(SessionId(id))
                     effectiveId = recoveredDailyWallpaperSessionId(dailyId)
                     handle = await wctx.agents.create({
                       sessionId: SessionId(effectiveId),
@@ -992,7 +1004,7 @@ export function apply(ctx: Context, config: Config = {}): void {
                 }
                 const entry: LiveSession = { handle, clients: new Set<ServerResponse>() }
                 live.set(effectiveId, entry)
-                if (workspace && (!resume || effectiveId !== id)) await workspace.attachSession(SessionId(effectiveId))
+                if (!resume || effectiveId !== id) await workspace.attachSession(SessionId(effectiveId))
                 return entry
               })()
               creating.set(id, pending)

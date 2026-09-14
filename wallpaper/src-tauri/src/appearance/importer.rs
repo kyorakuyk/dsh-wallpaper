@@ -18,6 +18,12 @@ use super::types::{
 
 static BATCH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Appearance assets are rendered into a WebView and later crossed through
+/// an IPC/base64 boundary. Keep the default below a size that can create a
+/// multi-hundred-megabyte transient allocation in the renderer.
+pub const DEFAULT_MAX_ASSET_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_ZIP_EXPANSION_RATIO: u64 = 100;
+
 #[derive(Debug, Clone, Copy)]
 pub struct ImportLimits {
     pub max_files: usize,
@@ -28,9 +34,9 @@ pub struct ImportLimits {
 impl Default for ImportLimits {
     fn default() -> Self {
         Self {
-            max_files: 2_000,
-            max_file_size: 512 * 1024 * 1024,
-            max_package_size: 2 * 1024 * 1024 * 1024,
+            max_files: 256,
+            max_file_size: DEFAULT_MAX_ASSET_BYTES,
+            max_package_size: 256 * 1024 * 1024,
         }
     }
 }
@@ -362,8 +368,16 @@ fn stage_single_file(
         .and_then(|name| name.to_str())
         .ok_or_else(|| ImportError::InvalidPackage("文件名无效".into()))?;
     let destination = staging.join(name);
+    let metadata = fs::metadata(source)?;
+    if !metadata.is_file() {
+        return Err(ImportError::InvalidPackage("导入路径不是普通文件".into()));
+    }
+    if metadata.len() > limits.max_file_size {
+        return Err(ImportError::InvalidPackage("主题包单文件过大".into()));
+    }
     fs::copy(source, &destination)?;
-    Ok(vec![hash_file(&destination, name.into(), limits)?])
+    let file = hash_file(&destination, name.into(), limits)?;
+    enforce_package_limits(&[file], limits)
 }
 
 fn stage_folder(
@@ -397,6 +411,9 @@ fn collect_folder_files(
         if metadata.is_dir() {
             collect_folder_files(root, &path, staging, files, limits)?;
         } else if metadata.is_file() {
+            if metadata.len() > limits.max_file_size {
+                return Err(ImportError::InvalidPackage("主题包单文件过大".into()));
+            }
             let destination = staging.join(relative);
             if let Some(parent) = destination.parent() {
                 fs::create_dir_all(parent)?;
@@ -420,12 +437,24 @@ fn stage_zip(
         return Err(ImportError::InvalidPackage("主题包文件数量超限".into()));
     }
     let mut files = Vec::new();
+    let mut total_size = 0u64;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
         let name = entry.name().to_owned();
         let path = normalize_relative_path(Path::new(&name))?;
         if entry.is_dir() {
             continue;
+        }
+        let declared_size = entry.size();
+        let compressed_size = entry.compressed_size();
+        if declared_size > limits.max_file_size {
+            return Err(ImportError::InvalidPackage("主题包单文件过大".into()));
+        }
+        // Reject highly expanded entries before writing them to staging. The
+        // declared size is checked again while reading because ZIP metadata
+        // is untrusted and may not match the bytes actually produced.
+        if declared_size > compressed_size.saturating_mul(MAX_ZIP_EXPANSION_RATIO) {
+            return Err(ImportError::InvalidPackage("主题包压缩倍率超限".into()));
         }
         if entry
             .unix_mode()
@@ -449,6 +478,10 @@ fn stage_zip(
             size = size.saturating_add(read as u64);
             if size > limits.max_file_size {
                 return Err(ImportError::InvalidPackage("主题包单文件过大".into()));
+            }
+            total_size = total_size.saturating_add(read as u64);
+            if total_size > limits.max_package_size {
+                return Err(ImportError::InvalidPackage("主题包总大小超限".into()));
             }
             output.write_all(&buffer[..read])?;
         }

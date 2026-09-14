@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { API_PREFIX } from '../src/protocol.ts'
-import { apply, desktopEntryPrompt, tokenFileForRoot, windowsTokenAclCommands, windowsTokenDirectoryAclCommands } from '../src/index.ts'
+import { apply, desktopEntryPrompt, isLoopbackWebServerHost, tokenFileForRoot, windowsTokenAclCommands, windowsTokenDirectoryAclCommands } from '../src/index.ts'
 
 interface CapturedResponse {
   status: number
@@ -112,6 +112,7 @@ function response(options: ResponseOptions = {}): CapturedResponse {
 async function createHarness(
   persistenceEnabled = false,
   prepareTokenRoot?: (tokenRoot: string) => Promise<void>,
+  webServerHost: string = '127.0.0.1',
 ): Promise<RouteHarness> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-wallpaper-bridge-'))
   cleanups.push(root)
@@ -148,7 +149,7 @@ async function createHarness(
     }),
   }
   const webServer = {
-    host: '127.0.0.1' as const,
+    host: webServerHost,
     register: (route: { path: string; handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void> }) => {
       routes.set(route.path, route.handler)
       return () => { routes.delete(route.path) }
@@ -211,6 +212,14 @@ describe('wallpaper bridge HTTP routes', () => {
   it('declares both agent lifecycle and web-server dependencies for HTTP routes', async () => {
     const harness = await createHarness()
     expect(harness.injectedDependencies).toEqual(['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry', 'permissionPresets', 'commands'])
+  })
+
+  it('registers no route when the host is not the exact loopback address', async () => {
+    expect(isLoopbackWebServerHost('127.0.0.1')).toBe(true)
+    expect(isLoopbackWebServerHost('localhost')).toBe(false)
+    expect(isLoopbackWebServerHost('0.0.0.0')).toBe(false)
+    const harness = await createHarness(false, undefined, '0.0.0.0')
+    expect(harness.routes.size).toBe(0)
   })
 
   it('uses only its fixed token slot beneath the host-owned root', () => {
@@ -288,7 +297,7 @@ describe('wallpaper bridge HTTP routes', () => {
     expect(harness.create).toHaveBeenCalledOnce()
     expect(harness.create).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'wallpaper-test',
-      meta: { cwd: process.cwd(), agentPreset: 'standard' },
+      meta: { cwd: harness.workspace.path, agentPreset: 'standard' },
       agentOptions: { provider: 'default-provider', model: 'default-model' },
     }))
 
@@ -341,6 +350,23 @@ describe('wallpaper bridge HTTP routes', () => {
     expect(harness.create).toHaveBeenCalledOnce()
   })
 
+  it('rejects a resume ID outside the bridge-owned desktop workspace', async () => {
+    const harness = await createHarness(true)
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+    const sessionsRoute = harness.routes.get(`${API_PREFIX}/sessions`)
+    await call(statusRoute, request('GET', `${API_PREFIX}/status`))
+    const token = (await readFile(harness.tokenFile, 'utf8')).trim()
+
+    const owned = await call(sessionsRoute, request('POST', `${API_PREFIX}/sessions`, { sessionId: 'desktop-owned' }, `Bearer ${token}`))
+    expect(owned.status).toBe(201)
+    expect(harness.workspace.sessionIds).toContain('desktop-owned')
+
+    const foreign = await call(sessionsRoute, request('POST', `${API_PREFIX}/sessions`, { resumeSessionId: 'foreign-dsh-session' }, `Bearer ${token}`))
+    expect(foreign.status).toBe(409)
+    expect(JSON.parse(foreign.body)).toEqual({ error: 'resume-unavailable' })
+    expect(harness.create).toHaveBeenCalledOnce()
+  })
+
   it('rejects malformed or unsafe client input without returning request content', async () => {
     const harness = await createHarness()
     const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
@@ -378,7 +404,7 @@ describe('wallpaper bridge HTTP routes', () => {
     expect(created.status).toBe(201)
     expect(harness.create).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'host-owned-cwd',
-      meta: { cwd: process.cwd(), agentPreset: 'standard' },
+      meta: { cwd: harness.workspace.path, agentPreset: 'standard' },
     }))
   })
 
