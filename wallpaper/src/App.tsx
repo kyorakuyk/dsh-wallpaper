@@ -10,6 +10,7 @@ import { isHarnessReady, monitorHarness } from './connect/harness.ts'
 import { PersonaRegistry } from './persona/registry.ts'
 import { IdleScene } from './scenes/IdleScene.tsx'
 import { MultiScreenIdleScene } from './scenes/MultiScreenIdleScene.tsx'
+import { MultiScreenWakeScene } from './scenes/MultiScreenWakeScene.tsx'
 import { SleepScene } from './scenes/SleepScene.tsx'
 import { WakeScene } from './scenes/WakeScene.tsx'
 import { INITIAL_RUNTIME_STATE, reduceRuntime } from './scenes/stateMachine.ts'
@@ -816,7 +817,19 @@ export function App({ surface = 'combined' }: AppProps) {
   }
   const scene = useMemo(() => {
     if (runtime.phase === 'booting' || runtime.phase === 'locked') return <SleepScene persona={persona} mode="system" />
-    if (runtime.phase === 'waking') return <WakeScene persona={persona} startIndex={1} enabled={settings.animationsEnabled && !settings.skipWakeAnimation} speed={settings.animationSpeed} onFirstWakeFrame={() => { void nativeRuntime.releaseNativeBootstrap().catch((error) => patchRuntime({ error: String(error) })) }} onWakeDone={() => { baseDispatch({ type: 'WAKE_DONE' }); dispatchCore('wake-done') }} />
+    if (runtime.phase === 'waking') {
+      const wakeProps = {
+        persona,
+        startIndex: 1,
+        enabled: settings.animationsEnabled && !settings.skipWakeAnimation,
+        speed: settings.animationSpeed,
+        onFirstWakeFrame: () => { void nativeRuntime.releaseNativeBootstrap().catch((error) => patchRuntime({ error: String(error) })) },
+        onWakeDone: () => { baseDispatch({ type: 'WAKE_DONE' }); dispatchCore('wake-done') },
+      }
+      return multiScreenActive
+        ? <MultiScreenWakeScene displays={desktopDisplays} {...wakeProps} />
+        : <WakeScene {...wakeProps} />
+    }
     const question = questionPrompt?.[0]
     const questionOptions = question?.options?.map((option) => option.label).join(' / ')
     const bubbleText = question

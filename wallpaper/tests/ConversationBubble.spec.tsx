@@ -1,4 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
+import { readFile } from 'node:fs/promises'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { ConversationBubble, insertNewlineAtSelection } from '../src/features/chat/ConversationBubble.tsx'
 
@@ -160,5 +163,13 @@ describe('ConversationBubble', () => {
     expect(html).toContain('aria-label="输入消息"')
     expect(html).not.toMatch(/<textarea[^>]*disabled/)
     expect(html).toMatch(/<button[^>]*disabled[^>]*aria-label="发送消息"/)
+  })
+
+  it('keeps transcript text above the history fade overlay', async () => {
+    const css = await readFile(resolve(dirname(fileURLToPath(import.meta.url)), '../src/features/chat/ConversationBubble.css'), 'utf8')
+    expect(css).toMatch(/\.dsh-chat__history-wrap::before,[\s\S]*?z-index: 0;/)
+    expect(css).toMatch(/\.dsh-chat__history \{[\s\S]*?position: relative;[\s\S]*?z-index: 1;/)
+    expect(css).toContain('mask-image: none')
+    expect(css).toContain('-webkit-mask-image: none')
   })
 })

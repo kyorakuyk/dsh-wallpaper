@@ -26,7 +26,7 @@ export const DEFAULT_WAKE_FRAMES = [
 ]
 
 /** 每帧停留时长（ms）：睡脸稍久，中间过渡稍快 */
-const FRAME_DURATIONS = [2200, 1400, 1600, 2000]
+export const WAKE_FRAME_DURATIONS = [2200, 1400, 1600, 2000]
 
 export function wakeFrameSources(persona: PersonaManifest): string[] {
   return persona.animations?.wake?.frames?.length
@@ -74,7 +74,7 @@ export function WakeScene({ persona, onWakeDone, onFirstWakeFrame, startIndex = 
       return () => clearTimeout(t)
     }
     // 帧序列模式：按 FRAME_DURATIONS 逐帧切换，播完回调
-    const duration = FRAME_DURATIONS[Math.min(frameIndexRef.current, FRAME_DURATIONS.length - 1)] / Math.max(0.25, speed)
+    const duration = WAKE_FRAME_DURATIONS[Math.min(frameIndexRef.current, WAKE_FRAME_DURATIONS.length - 1)] / Math.max(0.25, speed)
     const t = setTimeout(() => {
       if (frameIndexRef.current >= frames.length - 1) {
         onWakeDoneRef.current()

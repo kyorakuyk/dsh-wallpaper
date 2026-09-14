@@ -26,7 +26,7 @@ pnpm desktop:build:lite
 | 💬 **聊天后端** | ✅ | DeepSeek API（流式）+ Harness（Bridge 会话）+ DeepSeek 网页 DOM 桥接（实验能力） |
 | 🔌 **DSH 会话桥** | 🧪 | `bridge/` 独立插件：loopback REST/SSE + bearer token 鉴权；会话恢复限定在桌面工作区，真机安装联调仍待完成 |
 | 🖥️ **Tauri 壳** | ✅ | 统一 WorkerW 背景宿主（画面与桌面内交互热区）+ 独立设置窗口、托盘、开机自启 |
-| 🖥️ **完整版多屏** | 🧪 | 显示器枚举、逐屏背景、会话窗/立绘目标屏幕选择；Lite 首发仍为单主屏 |
+| 🖥️ **完整版多屏** | 🧪 | 显示器枚举、逐屏背景与苏醒帧、会话窗/立绘目标屏幕选择；Lite 首发仍为单主屏 |
 | 🔐 **锁屏接管** | 🧪 | 安全备份/恢复与无副作用 MSIX 打包验证已完成；已安装 MSIX 的 `Win+L` 人工验收待做 |
 | 🔒 **凭据安全** | ✅ | DeepSeek API Key 只存 Windows 凭据管理器（keyring） |
 
@@ -160,7 +160,7 @@ dsh-wallpaper/
 - **Harness 探测**：只将版本与能力兼容的 Wallpaper Bridge 判为可用；3080 根页面可访问但缺少 Bridge 时仅显示诊断状态
 - **形态联动**：`autoSwitchHarness` 开启时，兼容 Bridge 连续就绪后才切换黑红形态；失去兼容 Bridge 后可手动切回（可关闭）
 - **Tauri 壳**：单一 `background` WebView 注入 WorkerW（画面和桌面内交互热区共用宿主）；`settings` 是唯一独立应用窗口。非热区输入通过原生命中测试交还 Explorer；另有 WTS 锁定/解锁、托盘菜单、MSIX StartupTask 优先且兼容 Run 键的自启和 keyring 凭据。
-- **启动首帧**：原生首帧先使用随包睡眠图；Explorer 尚未提供 WorkerW 时在限定时间内重试并暂挂 Progman，后台宿主恢复时同步把首帧层重新挂到 WorkerW。启动阶段只记录父窗口类型、尺寸、阶段和耗时；诊断文件位于进程的 `%LOCALAPPDATA%\DSHWallpaper\startup-diagnostic.log`。MSIX 运行时 Windows 通常会把 `%LOCALAPPDATA%` 重定向到包容器，实际路径形如 `%LOCALAPPDATA%\Packages\<package-family>\LocalCache\Local\DSHWallpaper\startup-diagnostic.log`，可用 `rg --files $env:LOCALAPPDATA -g startup-diagnostic.log` 定位。
+- **启动首帧**：原生首帧先使用随包睡眠图；Explorer 尚未提供 WorkerW 时在限定时间内重试并暂挂 Progman，后台宿主恢复时同步把首帧层重新挂到 WorkerW。原生层按当前每块显示器的物理区域独立裁切绘制，前端苏醒帧也按显示器区域分别播放。启动阶段只记录父窗口类型、尺寸、显示器数量、阶段和耗时；诊断文件位于进程的 `%LOCALAPPDATA%\DSHWallpaper\startup-diagnostic.log`。MSIX 运行时 Windows 通常会把 `%LOCALAPPDATA%` 重定向到包容器，实际路径形如 `%LOCALAPPDATA%\Packages\<package-family>\LocalCache\Local\DSHWallpaper\startup-diagnostic.log`，可用 `rg --files $env:LOCALAPPDATA -g startup-diagnostic.log` 定位。
 - **bridge 协议**：`/api/wallpaper/v1` 版本化 REST/SSE，status 公开、会话路由 bearer token 鉴权（token 存 `$DSH_HOME/wallpaper/bridge-token`，仅原生壳读取）
 
 ## 测试
@@ -191,7 +191,7 @@ cargo test --manifest-path wallpaper/src-tauri/Cargo.toml
 - [x] 苏醒帧动画序列（variant-anima，人设修正：有腿+尾巴装饰）
 - [x] 深海室内背景切换
 - [x] DSH 会话桥（bridge/）+ 聊天双通道
-- [🧪] 完整版多屏分层（逐屏背景与交互目标屏幕；Windows 11 真机验收待做）
+- [🧪] 完整版多屏分层（逐屏背景/苏醒帧与交互目标屏幕；Windows 11 多显示器真机验收待做）
 - [ ] 真机安装联调（bridge 挂载 + 会话打通）
 - [ ] 素材导入 UI + 用户形态扫描
 
