@@ -171,7 +171,8 @@ describe('settings normalization wiring', () => {
     const window = (await readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8')).replace(/\r\n?/g, '\n')
 
     // The desktop receiver no longer trusts the cross-WebView payload.
-    expect(app).toContain('setSettings(normalizeReceivedSettings(event.payload))')
+    expect(app).toContain('setSettings(normalizeReceivedSettings(payload))')
+    expect(app).toContain('(emit) => listen<WallpaperSettings>')
     expect(app).not.toContain('setSettings(event.payload)')
     // Load and save share the same pure boundary.
     expect(store).toMatch(/if \(raw\) return normalizeSettings\(JSON\.parse\(raw\)\)/)

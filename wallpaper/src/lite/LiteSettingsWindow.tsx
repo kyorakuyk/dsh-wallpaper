@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { AutostartStatus, LockScreenDiagnostics, TranslucentTbStatus } from '../native/runtime.ts'
 import * as liteNative from './native.ts'
 import { assetUrl, DEFAULT_LITE_SETTINGS, LITE_BACKGROUND_OPTIONS, LITE_PORTRAIT_OPTIONS, loadLiteSettings, saveLiteSettings } from './settings.ts'
+import { listenUntilDisposed } from '../runtime/lifecycle.ts'
 import type { LiteSettings } from './types.ts'
 import './LiteSettingsWindow.css'
 
@@ -115,14 +116,20 @@ export function LiteSettingsWindow() {
       void refreshDesktopFallback()
       void refreshTranslucentTb()
       void refreshCustomImages()
-    })
+    }).catch((error) => setNotice(`读取本地设置失败：${String(error)}`))
     if (!('__TAURI_INTERNALS__' in window)) return
     const current = getCurrentWindow()
-    const closeListener = current.onCloseRequested((event) => {
-      event.preventDefault()
-      void invoke('hide_settings_window')
-    })
-    return () => { void closeListener.then((dispose) => dispose()) }
+    // The close listener is registered without awaiting the native call, so a
+    // window that closes before it resolves releases the disposer immediately
+    // instead of leaving a listener alive for the rest of the process.
+    return listenUntilDisposed<{ preventDefault: () => void }>(
+      async (emit) => current.onCloseRequested((event) => emit(event)),
+      (event) => {
+        event.preventDefault()
+        void invoke('hide_settings_window').catch((error) => setNotice(String(error)))
+      },
+      { onError: (error) => setNotice(String(error)) },
+    ).dispose
   }, [])
 
   useEffect(() => {

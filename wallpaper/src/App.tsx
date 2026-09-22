@@ -26,6 +26,7 @@ import { shouldApplyAppSnapshot } from './runtime/appSnapshot.ts'
 import type { DesktopWorkspace } from './runtime/desktopWorkspace.ts'
 import { WidgetHost } from './widgets/WidgetHost.tsx'
 import { displayCssRect, displayTopologySignature, displayUiScale, preferredDisplayId, virtualDesktopBounds } from './runtime/displayLayout.ts'
+import { listenUntilDisposed } from './runtime/lifecycle.ts'
 
 const registry = new PersonaRegistry()
 
@@ -420,7 +421,6 @@ export function App({ surface = 'combined' }: AppProps) {
       const timer = setTimeout(() => baseDispatch({ type: 'BOOT_READY', playWake: settings.animationsEnabled && !settings.skipWakeAnimation }), 120)
       return () => clearTimeout(timer)
     }
-    let unsubscribe: () => void = () => undefined
     const applySnapshot = (snapshot: Awaited<ReturnType<typeof appCoreClient.snapshot>>) => {
       if (!shouldApplyAppSnapshot(appSnapshotRevisionRef.current, snapshot.revision)) return
       appSnapshotRevisionRef.current = snapshot.revision
@@ -449,30 +449,37 @@ export function App({ surface = 'combined' }: AppProps) {
         if (settings.interactionLayout === 'taskbar-docked') setInteractionState('collapsed')
       }
     }
-    void Promise.all([
-      appCoreClient.snapshot().then(applySnapshot),
-      appCoreClient.subscribe(applySnapshot).then((dispose) => { unsubscribe = dispose }),
-    ])
+    // The subscription is owned by the helper: if this effect is torn down
+    // before `subscribe()` resolves, the listener it returns is released
+    // immediately instead of being stored in a component that is already gone.
+    const listener = listenUntilDisposed(
+      (onSnapshot) => appCoreClient.subscribe(onSnapshot),
+      applySnapshot,
+      { onError: (error) => patchRuntime({ error: String(error) }) },
+    )
+    void appCoreClient.snapshot()
+      .then(applySnapshot)
+      .catch((error) => patchRuntime({ error: String(error) }))
     const timer = setTimeout(() => dispatchCore('boot-ready', { playWake: settings.animationsEnabled && !settings.skipWakeAnimation }), 120)
     return () => {
       clearTimeout(timer)
-      unsubscribe()
+      listener.dispose()
     }
   }, [settings.animationsEnabled, settings.interactionLayout, settings.skipWakeAnimation, surface])
 
   useEffect(() => {
     if (!nativeRuntime.isNative) return
-    let dispose: () => void = () => undefined
-    void listen<WallpaperSettings>('settings-changed', (event) => {
-      // Settings are authored in a separate WebView. The payload is the
-      // source of truth; localStorage here belongs only to this WebView.
-      // It still crosses a process boundary as untrusted JSON, so it goes
-      // through the same whitelist rebuild as a local load: a malformed or
-      // future payload must degrade to defaults per field instead of handing
-      // the desktop renderer a value of the wrong type.
-      setSettings(normalizeReceivedSettings(event.payload))
-    }).then((unlisten) => { dispose = unlisten })
-    return () => dispose()
+    // Settings are authored in a separate WebView. The payload is the
+    // source of truth; localStorage here belongs only to this WebView.
+    // It still crosses a process boundary as untrusted JSON, so it goes
+    // through the same whitelist rebuild as a local load: a malformed or
+    // future payload must degrade to defaults per field instead of handing
+    // the desktop renderer a value of the wrong type.
+    return listenUntilDisposed<WallpaperSettings>(
+      (emit) => listen<WallpaperSettings>('settings-changed', (event) => emit(event.payload)),
+      (payload) => setSettings(normalizeReceivedSettings(payload)),
+      { onError: (error) => patchRuntime({ error: String(error) }) },
+    ).dispose
   }, [])
 
   useEffect(() => {
@@ -499,8 +506,11 @@ export function App({ surface = 'combined' }: AppProps) {
       }, 120)
     }
     void refresh()
-    const disposePromise = listen('display-changed', delayedRefresh)
-      .then((unlisten) => () => unlisten())
+    const displayListener = listenUntilDisposed<unknown>(
+      (emit) => listen('display-changed', () => emit(undefined)),
+      delayedRefresh,
+      { onError: (error) => patchRuntime({ error: `显示器事件订阅失败：${String(error)}` }) },
+    )
     window.addEventListener('resize', delayedRefresh)
     const timer = window.setInterval(() => { void refresh() }, 5000)
     return () => {
@@ -508,7 +518,7 @@ export function App({ surface = 'combined' }: AppProps) {
       window.removeEventListener('resize', delayedRefresh)
       window.clearInterval(timer)
       if (scheduledRefresh !== undefined) window.clearTimeout(scheduledRefresh)
-      void disposePromise.then((dispose) => dispose())
+      displayListener.dispose()
     }
   }, [])
 
@@ -690,49 +700,59 @@ export function App({ surface = 'combined' }: AppProps) {
 
   useEffect(() => {
     if (!nativeRuntime.isNative) return
-    let unsubscribe: () => void = () => undefined
     let observedLockOrSuspend = false
-    void nativeRuntime.listenSystem((event) => {
-      // The native host emits one synthetic `resume` on registration so a
-      // current desktop can initialize its visual state. Do not mistake that
-      // boot-time signal for an unlock policy boundary.
-      if (shouldIgnoreUnpairedResume(observedLockOrSuspend, event)) {
-        return
-      }
-      if (event === 'locked' || event === 'suspend') observedLockOrSuspend = true
-      if (!appCoreClient.native && (event === 'locked' || event === 'suspend')) baseDispatch({ type: 'LOCK' })
-      if (event === 'unlocked' || event === 'resume') {
-        if (settings.interactionLayout === 'taskbar-docked') setInteractionState('collapsed')
-        const now = new Date()
-        const policy = conversationPolicyRef.current
-        if (shouldStartNewConversationOnUnlock(policy, previousUnlockDayRef.current, now)) {
-          setConversationGeneration((value) => value + 1)
+    const listener = listenUntilDisposed<'locked' | 'unlocked' | 'suspend' | 'resume'>(
+      (emit) => nativeRuntime.listenSystem(emit),
+      (event) => {
+        // The native host emits one synthetic `resume` on registration so a
+        // current desktop can initialize its visual state. Do not mistake that
+        // boot-time signal for an unlock policy boundary.
+        if (shouldIgnoreUnpairedResume(observedLockOrSuspend, event)) {
+          return
         }
-        previousUnlockDayRef.current = localCalendarDay(now)
-        observedLockOrSuspend = false
-        if (!appCoreClient.native) baseDispatch({ type: 'UNLOCK', playWake: settings.playWakeOnEveryUnlock && settings.animationsEnabled && !settings.skipWakeAnimation })
-      }
-    }).then((dispose) => { unsubscribe = dispose })
-    return () => unsubscribe()
+        if (event === 'locked' || event === 'suspend') observedLockOrSuspend = true
+        if (!appCoreClient.native && (event === 'locked' || event === 'suspend')) baseDispatch({ type: 'LOCK' })
+        if (event === 'unlocked' || event === 'resume') {
+          if (settings.interactionLayout === 'taskbar-docked') setInteractionState('collapsed')
+          const now = new Date()
+          const policy = conversationPolicyRef.current
+          if (shouldStartNewConversationOnUnlock(policy, previousUnlockDayRef.current, now)) {
+            setConversationGeneration((value) => value + 1)
+          }
+          previousUnlockDayRef.current = localCalendarDay(now)
+          observedLockOrSuspend = false
+          if (!appCoreClient.native) baseDispatch({ type: 'UNLOCK', playWake: settings.playWakeOnEveryUnlock && settings.animationsEnabled && !settings.skipWakeAnimation })
+        }
+      },
+      { onError: (error) => patchRuntime({ error: `系统会话事件订阅失败：${String(error)}` }) },
+    )
+    return () => listener.dispose()
   }, [settings.animationsEnabled, settings.interactionLayout, settings.playWakeOnEveryUnlock, settings.skipWakeAnimation])
 
   useEffect(() => {
     if (!nativeRuntime.isNative) return
-    let unsubscribe: () => void = () => undefined
-    void nativeRuntime.listenTray((event) => {
-      changeBackend(event.backend)
-    }).then((dispose) => { unsubscribe = dispose })
-    return () => unsubscribe()
+    const listener = listenUntilDisposed<{ type: 'backend'; backend: BackendMode }>(
+      (emit) => nativeRuntime.listenTray(emit),
+      (event) => changeBackend(event.backend),
+      { onError: (error) => patchRuntime({ error: String(error) }) },
+    )
+    return () => listener.dispose()
   }, [])
 
   useEffect(() => {
     if (!nativeRuntime.isNative) return
-    let dispose: () => void = () => undefined
-    void import('@tauri-apps/api/event').then(({ listen }) => listen<'enter' | 'leave'>('desktop-workspace-toggle', (event) => {
-      if (event.payload === 'enter') enterInnerWorkspace()
-      else leaveInnerWorkspace()
-    })).then((unlisten) => { dispose = unlisten })
-    return () => dispose()
+    const listener = listenUntilDisposed<'enter' | 'leave'>(
+      async (emit) => {
+        const { listen: listenEvent } = await import('@tauri-apps/api/event')
+        return listenEvent<'enter' | 'leave'>('desktop-workspace-toggle', (event) => emit(event.payload))
+      },
+      (payload) => {
+        if (payload === 'enter') enterInnerWorkspace()
+        else leaveInnerWorkspace()
+      },
+      { onError: (error) => patchRuntime({ error: String(error) }) },
+    )
+    return () => listener.dispose()
   }, [settings.interactionLayout])
 
   useEffect(() => {
@@ -742,9 +762,12 @@ export function App({ surface = 'combined' }: AppProps) {
 
   useEffect(() => {
     if (!nativeAppearance.isNative) return
-    let dispose: () => void = () => undefined
-    void listen('appearance-changed', () => { void refreshAppearance() }).then((unlisten) => { dispose = unlisten })
-    return () => dispose()
+    const listener = listenUntilDisposed<unknown>(
+      (emit) => listen('appearance-changed', () => emit(undefined)),
+      () => { void refreshAppearance() },
+      { onError: (error) => patchRuntime({ error: `外观变更订阅失败：${String(error)}` }) },
+    )
+    return () => listener.dispose()
   }, [surface])
 
   useEffect(() => {

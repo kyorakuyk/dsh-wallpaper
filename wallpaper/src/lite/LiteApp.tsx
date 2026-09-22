@@ -9,6 +9,7 @@ import { assetUrl, DEFAULT_LITE_SETTINGS, LITE_BACKGROUND_OPTIONS, LITE_PORTRAIT
 import type { LiteSettings } from './types.ts'
 import * as liteNative from './native.ts'
 import { litePersona } from './persona.ts'
+import { listenUntilDisposed } from '../runtime/lifecycle.ts'
 import './LiteScene.css'
 
 type LitePhase = 'booting' | 'locked' | 'waking' | 'idle'
@@ -50,40 +51,33 @@ export function LiteApp() {
       })
       return () => { disposed = true }
     }
-    let unsubscribe: () => void = () => undefined
-    let disposed = false
     const applySnapshot = (snapshot: Awaited<ReturnType<typeof liteRuntime.snapshot>>) => {
       if (snapshot.phase === 'waking' && suppressNativeWakeRef.current) return
-      if (!disposed) setPhase(phaseFromSnapshot(snapshot.phase))
+      setPhase(phaseFromSnapshot(snapshot.phase))
     }
-    void liteRuntime.subscribe(applySnapshot).then((dispose) => { unsubscribe = dispose })
+    const listener = listenUntilDisposed(
+      (onSnapshot) => liteRuntime.subscribe(onSnapshot),
+      applySnapshot,
+    )
     void liteRuntime.snapshot().then(async (snapshot) => {
       applySnapshot(snapshot)
       const loaded = await loading
-      if (disposed || snapshot.phase !== 'booting') return
+      if (snapshot.phase !== 'booting') return
       const next = await liteRuntime.dispatch(
         'boot-ready',
         loaded.animationsEnabled && !loaded.skipWakeAnimation,
       )
       applySnapshot(next)
-    })
-    return () => {
-      disposed = true
-      unsubscribe()
-    }
+    }).catch(() => undefined)
+    return () => listener.dispose()
   }, [])
 
   useEffect(() => {
     if (!('__TAURI_INTERNALS__' in window)) return
-    let disposed = false
-    let dispose: () => void = () => undefined
-    void listen<LiteSettings>('settings-changed', (event) => {
-      if (!disposed) setSettings(normalizeLiteSettings(event.payload))
-    }).then((unlisten) => { dispose = unlisten })
-    return () => {
-      disposed = true
-      dispose()
-    }
+    return listenUntilDisposed<LiteSettings>(
+      (emit) => listen<LiteSettings>('settings-changed', (event) => emit(event.payload)),
+      (payload) => setSettings(normalizeLiteSettings(payload)),
+    ).dispose
   }, [])
 
   useEffect(() => {
@@ -150,28 +144,28 @@ export function LiteApp() {
       window.addEventListener('keydown', onKey)
       return () => window.removeEventListener('keydown', onKey)
     }
-    let disposed = false
-    let dispose: () => void = () => undefined
     let observedLockOrSuspend = false
-    void listen<'locked' | 'unlocked' | 'suspend' | 'resume'>('system-session', (event) => {
-      if (disposed) return
-      if (event.payload === 'locked' || event.payload === 'suspend') {
-        observedLockOrSuspend = true
-        suppressNativeWakeRef.current = false
-        setPhase('locked')
-        return
-      }
-      if (event.payload === 'resume' && !observedLockOrSuspend) return
-      if (event.payload !== 'unlocked' && event.payload !== 'resume') return
-      // Rust has already moved AppCore to waking for a real unlock. If the
-      // user disabled the animation, explicitly settle it back to idle.
-      unlockPreview(true)
-      observedLockOrSuspend = false
-    }).then((unlisten) => { dispose = unlisten })
-    return () => {
-      disposed = true
-      dispose()
-    }
+    const listener = listenUntilDisposed<'locked' | 'unlocked' | 'suspend' | 'resume'>(
+      async (emit) => {
+        const { listen: listenEvent } = await import('@tauri-apps/api/event')
+        return listenEvent<'locked' | 'unlocked' | 'suspend' | 'resume'>('system-session', (event) => emit(event.payload))
+      },
+      (payload) => {
+        if (payload === 'locked' || payload === 'suspend') {
+          observedLockOrSuspend = true
+          suppressNativeWakeRef.current = false
+          setPhase('locked')
+          return
+        }
+        if (payload === 'resume' && !observedLockOrSuspend) return
+        if (payload !== 'unlocked' && payload !== 'resume') return
+        // Rust has already moved AppCore to waking for a real unlock. If the
+        // user disabled the animation, explicitly settle it back to idle.
+        unlockPreview(true)
+        observedLockOrSuspend = false
+      },
+    )
+    return () => listener.dispose()
   }, [])
 
   let scene
