@@ -1,9 +1,15 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 const storage = new Map<string, string>()
 vi.stubGlobal('localStorage', {
   getItem: (key: string) => storage.get(key) ?? null,
   setItem: (key: string, value: string) => storage.set(key, value),
+})
+
+beforeAll(() => {
+  // App.tsx also exposes pure lifecycle helpers, but its native clients read
+  // `window` while the module is initialized.
+  if (!('window' in globalThis)) vi.stubGlobal('window', {})
 })
 
 describe('conversation lifecycle policy', () => {
@@ -39,5 +45,22 @@ describe('conversation lifecycle policy', () => {
     saveConversationPointer('deepseek-api', 'local-day', localMidnight)
     expect(localCalendarDay(localMidnight)).toBe('2026-08-18')
     expect(resumeConversationId('deepseek-api', 'daily', localMidnight)).toBe('local-day')
+  })
+
+  it('only starts a fresh web route when the selected policy has no resumable pointer', async () => {
+    const { shouldStartNewWebConversation } = await import('../src/App.tsx')
+    expect(shouldStartNewWebConversation('resume-last', undefined)).toBe(false)
+    expect(shouldStartNewWebConversation('resume-last', 'saved-web')).toBe(false)
+    expect(shouldStartNewWebConversation('daily', 'saved-web')).toBe(false)
+    expect(shouldStartNewWebConversation('daily', undefined)).toBe(true)
+    expect(shouldStartNewWebConversation('new-on-unlock', 'saved-web')).toBe(true)
+  })
+
+  it('does not persist route-unsafe conversation pointers', async () => {
+    const { isValidConversationId, resumeConversationId, saveConversationPointer } = await import('../src/settings/store.ts')
+    expect(isValidConversationId('saved-web')).toBe(true)
+    expect(isValidConversationId('saved/web')).toBe(false)
+    saveConversationPointer('deepseek-web', 'saved/web')
+    expect(resumeConversationId('deepseek-web', 'resume-last')).toBeUndefined()
   })
 })

@@ -28,7 +28,6 @@ function srgbLuminance(red: number, green: number, blue: number): number {
 
 /**
  * Samples the visible part of a cover-fitted desktop background where the
- * right-side portrait rests. The values deliberately live in CSS variables so
  * any later drag/position setting only needs to supply a new anchor.
  */
 export function usePortraitEnvironmentBlend(backgroundUrl: string, anchor = { x: 0.79, y: 0.78 }, sampleSize?: PortraitSampleSize): PortraitEnvironment {
@@ -42,6 +41,10 @@ export function usePortraitEnvironmentBlend(backgroundUrl: string, anchor = { x:
     }
     let cancelled = false
     const image = new Image()
+    // Only request CORS for truly external images. Data URLs and packaged
+    // assets are already readable by the current document; forcing a CORS
+    // mode on them can make custom/local backgrounds fail unnecessarily.
+    if (/^https?:\/\//i.test(backgroundUrl)) image.crossOrigin = 'anonymous'
     image.decoding = 'async'
     image.onload = () => {
       try {
@@ -94,10 +97,17 @@ export function usePortraitEnvironmentBlend(backgroundUrl: string, anchor = { x:
 
   useEffect(() => {
     if (sampleSize) return
-    const refresh = () => setViewport(`${window.innerWidth}x${window.innerHeight}`)
+    let timeout: number
+    const refresh = () => {
+      window.clearTimeout(timeout)
+      timeout = window.setTimeout(() => setViewport(`${window.innerWidth}x${window.innerHeight}`), 250)
+    }
     window.addEventListener('resize', refresh)
-    return () => window.removeEventListener('resize', refresh)
-  }, [])
+    return () => {
+      window.removeEventListener('resize', refresh)
+      window.clearTimeout(timeout)
+    }
+  }, [sampleSize])
 
   return environment
 }

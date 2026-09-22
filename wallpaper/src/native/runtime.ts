@@ -4,6 +4,7 @@ import type { HarnessStatus } from '../connect/harness.ts'
 export interface NativeSendOptions {
   conversationId?: string
   requestId?: string
+  newConversation?: boolean
   baseUrl?: string
   model?: string
   /** CNY per million input tokens. Omitted means pricing is not configured. */
@@ -18,6 +19,7 @@ export interface ManagedDshStatus { managed: boolean; running: boolean; pid?: nu
 export interface AutostartStatus { enabled: boolean; source: 'startup-task' | 'run' | 'none' | 'disabled-by-user' | 'disabled-by-policy' | 'unsupported' }
 export interface DeepSeekWebStatus { state: 'loading' | 'logged-out' | 'ready' | 'generating' | 'unsupported'; conversationId?: string; model?: string; signature: string }
 export interface DeepSeekWebHistory { messages: ChatMessage[]; conversationId?: string; model?: string; state: DeepSeekWebStatus['state'] | 'loading' }
+export interface DeepSeekWebAdapterConfigStatus { schemaVersion: number; adapterVersion: string; source: 'builtin' | 'local'; path: string; warning?: string }
 export interface DesktopRect { x: number; y: number; width: number; height: number }
 export interface DesktopDisplayInfo { id: string; name: string; bounds: DesktopRect; workArea: DesktopRect; scaleFactor: number; primary: boolean }
 
@@ -40,9 +42,12 @@ export interface NativeRuntime {
   promptForApiKeyCredential(): Promise<boolean>
   requestDeepSeekLogin(): Promise<void>
   releaseNativeBootstrap(): Promise<void>
-  ensureDeepSeekWeb(): Promise<void>
+  ensureDeepSeekWeb(conversationId?: string, newConversation?: boolean): Promise<void>
   deepseekWebStatus(): Promise<DeepSeekWebStatus>
-  deepseekWebHistory(): Promise<DeepSeekWebHistory>
+  deepseekWebHistory(conversationId?: string, newConversation?: boolean): Promise<DeepSeekWebHistory>
+  deepseekWebAdapterConfig(): Promise<DeepSeekWebAdapterConfigStatus>
+  openDeepSeekWebAdapterConfig(): Promise<DeepSeekWebAdapterConfigStatus>
+  resetDeepSeekWebAdapterConfig(): Promise<DeepSeekWebAdapterConfigStatus>
   openSettingsWindow(): Promise<void>
   listenSystem(listener: (event: 'locked' | 'unlocked' | 'suspend' | 'resume') => void): Promise<() => void>
   listenChat(listener: (event: ScopedChatEvent) => void): Promise<() => void>
@@ -59,7 +64,7 @@ export interface NativeRuntime {
   probeHarness(): Promise<HarnessStatus>
   desktopDisplays(): Promise<DesktopDisplayInfo[]>
   desktopLayoutMetrics(displayId?: string): Promise<{ expandedBottomInset: number; taskbarVisible: boolean }>
-  scanDshPaths(): Promise<Array<{ rootPath: string; source: string }>>
+  scanDshPaths(hintPath?: string, deepScan?: boolean): Promise<Array<{ rootPath: string; source: string }>>
   launchDsh(rootPath: string, profile: string, command?: string): Promise<number>
   managedDshStatus(): Promise<ManagedDshStatus>
   stopManagedDsh(): Promise<void>
@@ -131,20 +136,35 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('release_native_bootstrap')
   },
-  async ensureDeepSeekWeb() {
+  async ensureDeepSeekWeb(conversationId, newConversation = false) {
     if (!await tauriAvailable()) return
     const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('deepseek_web_ensure')
+    await invoke('deepseek_web_ensure', { conversationId, newConversation })
   },
   async deepseekWebStatus() {
     if (!await tauriAvailable()) return { state: 'loading', signature: 'deepseek-chat-dom-v2' }
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<DeepSeekWebStatus>('deepseek_web_status')
   },
-  async deepseekWebHistory() {
+  async deepseekWebHistory(conversationId, newConversation = false) {
     if (!await tauriAvailable()) return { messages: [], state: 'loading' }
     const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<DeepSeekWebHistory>('deepseek_web_history')
+    return invoke<DeepSeekWebHistory>('deepseek_web_history', { conversationId, newConversation })
+  },
+  async deepseekWebAdapterConfig() {
+    if (!await tauriAvailable()) return { schemaVersion: 1, adapterVersion: 'preview', source: 'builtin', path: '浏览器预览不支持本地网页适配器配置' }
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<DeepSeekWebAdapterConfigStatus>('deepseek_web_adapter_config_status')
+  },
+  async openDeepSeekWebAdapterConfig() {
+    if (!await tauriAvailable()) throw new Error('浏览器预览不支持打开网页适配器配置')
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<DeepSeekWebAdapterConfigStatus>('open_deepseek_web_adapter_config')
+  },
+  async resetDeepSeekWebAdapterConfig() {
+    if (!await tauriAvailable()) throw new Error('浏览器预览不支持恢复网页适配器配置')
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<DeepSeekWebAdapterConfigStatus>('reset_deepseek_web_adapter_config')
   },
   async openSettingsWindow() {
     if (!await tauriAvailable()) return
@@ -168,6 +188,7 @@ export const nativeRuntime: NativeRuntime = {
       text,
       conversationId: options?.conversationId,
       requestId: options?.requestId,
+      newConversation: options?.newConversation,
       baseUrl: options?.baseUrl,
       model: options?.model,
       priceInputPerMillion: options?.priceInputPerMillion,
@@ -247,9 +268,9 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<{ expandedBottomInset: number; taskbarVisible: boolean }>('desktop_layout_metrics', { displayId })
   },
-  async scanDshPaths() {
+  async scanDshPaths(hintPath, deepScan = false) {
     const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<Array<{ rootPath: string; source: string }>>('scan_dsh_paths')
+    return invoke<Array<{ rootPath: string; source: string }>>('scan_dsh_paths', { hintPath, deepScan })
   },
   async launchDsh(rootPath, profile, command) {
     const { invoke } = await import('@tauri-apps/api/core')

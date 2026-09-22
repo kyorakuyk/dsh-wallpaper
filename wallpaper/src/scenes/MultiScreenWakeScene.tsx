@@ -9,7 +9,7 @@ import type { PersonaManifest } from '../persona/types.ts'
 import type { DesktopDisplayInfo } from '../native/runtime.ts'
 import { displayCssRect, virtualDesktopBounds } from '../runtime/displayLayout.ts'
 import { placeholderPortrait } from '../ui/whale.ts'
-import { WAKE_FRAME_DURATIONS, wakeFrameSources } from './WakeScene.tsx'
+import { WAKE_FRAME_DURATIONS, useWakeFramePreload, wakeFrameSources } from './WakeScene.tsx'
 import './MultiScreenWakeScene.css'
 
 export interface MultiScreenWakeSceneProps {
@@ -47,6 +47,7 @@ export function MultiScreenWakeScene({
     [persona.assets.wake, persona.kind],
   )
   const hasFrames = frames.length > 1
+  useWakeFramePreload(frames, enabled && hasFrames)
 
   useEffect(() => {
     if (!hasFrames || index < 1 || firstWakeFrameReportedRef.current) return

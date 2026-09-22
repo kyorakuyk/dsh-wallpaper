@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
+use crate::deepseek_web_config::{self, DeepSeekWebAdapterConfig};
+#[cfg(windows)]
 use tauri::webview::NewWindowResponse;
 #[cfg(windows)]
 use tauri::{
@@ -28,6 +30,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 const WINDOW_LABEL: &str = "deepseek-web";
 const DOM_SIGNATURE: &str = "deepseek-chat-dom-v2";
+const ADAPTER_CONFIG_MARKER: &str = "__DSH_DEEPSEEK_WEB_ADAPTER_CONFIG__";
 const MAX_CALLBACK_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MESSAGE_BYTES: usize = 100_000;
 const MAX_MESSAGES: usize = 256;
@@ -174,6 +177,18 @@ const INIT_SCRIPT: &str = r#"
 #[cfg(windows)]
 const SNAPSHOT_SCRIPT: &str = r#"
 (() => {
+  const adapterConfig = __DSH_DEEPSEEK_WEB_ADAPTER_CONFIG__;
+  const query = (selectors) => {
+    try { return [...document.querySelectorAll(selectors.join(','))]; } catch (_) { return []; }
+  };
+  const queryWithin = (node, selectors) => {
+    try { return [...node.querySelectorAll(selectors.join(','))]; } catch (_) { return []; }
+  };
+  const hasToken = (value, tokens) => tokens.some((token) => value.includes(String(token).toLowerCase()));
+  const assistantSelector = adapterConfig.assistantSelectors.join(',');
+  const hasAssistant = (node) => {
+    try { return Boolean(node.querySelector?.(assistantSelector)); } catch (_) { return false; }
+  };
   const signature = 'deepseek-chat-dom-v2';
   const textOf = (node) => {
     if (!node) return '';
@@ -201,7 +216,7 @@ const SNAPSHOT_SCRIPT: &str = r#"
     || /(?:^|[\s_-])disabled(?:$|[\s_-])/i.test(typeof node?.className === 'string' ? node.className : '');
   const labelOf = (node) => [node?.getAttribute?.('aria-label') || '', node?.getAttribute?.('title') || '', node?.getAttribute?.('data-testid') || '', textOf(node)].join(' ').toLowerCase();
   const buttons = [...document.querySelectorAll('button,[role="button"]')];
-  const composerCandidates = [...document.querySelectorAll('textarea,[contenteditable="true"]')]
+  const composerCandidates = query(adapterConfig.composerSelectors)
     .filter((node) => visible(node, true));
   // DeepSeek's current composer uses a textarea named `search` and renders
   // the send/stop control as an icon-only role=button. Keep the input
@@ -212,12 +227,12 @@ const SNAPSHOT_SCRIPT: &str = r#"
   const stopButton = buttons.find((node) => {
     if (!visible(node) || disabled(node)) return false;
     const label = labelOf(node);
-    return /停止|stop|cancel|interrupt/.test(label);
+    return hasToken(label, adapterConfig.stopTokens);
   });
   const loadingButton = buttons.find((node) => visible(node) && !disabled(node)
-    && node.classList?.contains('ds-button--loading'));
-  const loginHint = [...document.querySelectorAll('button,a,[role="button"],h1,h2,h3,[class*="sign-in"],[class*="auth"]')].some((node) => visible(node) && /登录|登入|扫码|log\s*in|sign\s*in/.test(labelOf(node)));
-  const appShellHint = Boolean(document.querySelector('.ds-button,.ds-textarea,[class*="inputWrapper"],[data-virtual-list-item-key]'));
+    && node.classList?.contains(adapterConfig.loadingClass));
+  const loginHint = [...document.querySelectorAll('button,a,[role="button"],h1,h2,h3,[class*="sign-in"],[class*="auth"]')].some((node) => visible(node) && hasToken(labelOf(node), adapterConfig.loginTokens));
+  const appShellHint = query(adapterConfig.appShellSelectors).length > 0;
   const busy = Boolean(stopButton)
     || Boolean(loadingButton)
     || Boolean(composerSurface?.getAttribute('aria-busy') === 'true')
@@ -231,18 +246,17 @@ const SNAPSHOT_SCRIPT: &str = r#"
       node?.getAttribute?.('aria-label') || '',
       typeof node?.className === 'string' ? node.className : '',
     ].join(' ').toLowerCase();
-    if (/(?:^|[\s_-])(?:assistant|ai-message|bot-message|deepseek-assistant)(?:$|[\s_-])/.test(raw)) return 'assistant';
-    if (/(?:^|[\s_-])(?:user|user-message|human-message)(?:$|[\s_-])/.test(raw)) return 'user';
+    if (hasToken(raw, adapterConfig.assistantRoleTokens)) return 'assistant';
+    if (hasToken(raw, adapterConfig.userRoleTokens)) return 'user';
     return null;
   };
-  const assistantSelector = '.ds-assistant-message-main-content,[data-message-author-role="assistant"],[data-role="assistant"],[data-role="assistant_message"],[data-testid*="assistant-message"],[class*="assistant-message"]';
-  const assistantNodes = [...document.querySelectorAll(assistantSelector)]
+  const assistantNodes = query(adapterConfig.assistantSelectors)
     .filter((node) => visible(node, true));
   // A few DeepSeek deployments put the assistant marker on an ancestor and
   // the actual text in a markdown child. Include that child explicitly so a
   // virtualized/display:contents layout cannot make the latest answer look
   // absent to the native poller.
-  const markdownAssistantNodes = [...document.querySelectorAll('.ds-markdown,[class*="markdown"]')]
+  const markdownAssistantNodes = query(adapterConfig.markdownSelectors)
     .filter((node) => {
       const owner = node.closest?.('[data-message-author-role],[data-role],[class*="assistant-message"],[class*="assistant"]');
       return Boolean(owner && /assistant|ai-message|bot-message|deepseek-assistant/i.test([
@@ -265,7 +279,7 @@ const SNAPSHOT_SCRIPT: &str = r#"
     // DeepSeek currently puts the rendered Markdown in this node, but the
     // node itself can be `display: contents`. Read the Markdown child first
     // and fall back to textContent so a zero-size wrapper never hides a reply.
-    const bodies = [...(node.querySelectorAll?.('.ds-markdown,[class*="markdown"],[data-testid*="markdown"]') || [])]
+    const bodies = queryWithin(node, adapterConfig.markdownSelectors)
       .filter((candidate) => visible(candidate, true));
     if (!bodies.length) return textOf(node);
     const bodySet = new Set(bodies);
@@ -296,7 +310,7 @@ const SNAPSHOT_SCRIPT: &str = r#"
   // still streaming.
   const terminalAction = [...buttons].reverse().find((node) => {
     if (!visible(node) || disabled(node)) return false;
-    return /重新生成|再次生成|regenerate|retry|try again/.test(labelOf(node));
+    return hasToken(labelOf(node), adapterConfig.terminalTokens);
   });
   const latestAssistantNode = assistantEntries.at(-1)?.node;
   const completionHint = Boolean(terminalAction && latestAssistantNode
@@ -304,10 +318,10 @@ const SNAPSHOT_SCRIPT: &str = r#"
   const directAssistantSet = new Set(assistantNodes);
   const explicit = [...document.querySelectorAll('[data-message-author-role],[data-role],[class*="user-message"]')]
     .filter((node) => !directAssistantSet.has(node));
-  const virtualItems = [...document.querySelectorAll('[data-virtual-list-item-key]')]
-    .filter((node) => !node.querySelector?.(assistantSelector));
-  const fallback = [...document.querySelectorAll('article,[data-testid*="message"],[class*="message"]')]
-    .filter((node) => !node.querySelector?.(assistantSelector));
+  const virtualItems = query(['[data-virtual-list-item-key]'])
+    .filter((node) => !hasAssistant(node));
+  const fallback = query(adapterConfig.messageSelectors)
+    .filter((node) => !hasAssistant(node));
   const messages = [];
   const seen = new Set();
   const push = (node, role, content = textOf(node)) => {
@@ -345,10 +359,33 @@ const SNAPSHOT_SCRIPT: &str = r#"
   let conversationId = document.querySelector('[data-conversation-id]')?.getAttribute('data-conversation-id') || null;
   const parts = location.pathname.split('/').filter(Boolean);
   if (!conversationId) {
-    for (let index = 0; index + 1 < parts.length; index += 1) {
-      if (/^(?:chat|conversation|c|s)$/i.test(parts[index]) && /^[A-Za-z0-9_-]{4,200}$/.test(parts[index + 1])) {
-        conversationId = parts[index + 1];
-        break;
+    const marker = adapterConfig.conversationPathTemplate.indexOf('{id}');
+    if (marker >= 0) {
+      const prefix = adapterConfig.conversationPathTemplate.slice(0, marker);
+      const suffix = adapterConfig.conversationPathTemplate.slice(marker + 4);
+      if (location.pathname.startsWith(prefix) && location.pathname.endsWith(suffix)) {
+        const end = suffix ? location.pathname.length - suffix.length : location.pathname.length;
+        const candidate = location.pathname.slice(prefix.length, end);
+        if (/^[A-Za-z0-9._-]{1,200}$/.test(candidate)) conversationId = candidate;
+      }
+    }
+    if (!conversationId) {
+      // Legacy fallback for a config that only updates selectors but retains
+      // an older route shape. Prefer the final `s/id` pair so `/a/chat/s/id`
+      // never records the literal route segment `s`.
+      for (let index = parts.length - 2; index >= 0; index -= 1) {
+        const marker = parts[index];
+        const candidate = parts[index + 1];
+        if (/^s$/i.test(marker) && /^[A-Za-z0-9._-]{1,200}$/.test(candidate)) {
+          conversationId = candidate;
+          break;
+        }
+        if (/^(?:chat|conversation|c)$/i.test(marker)
+          && !/^s$/i.test(candidate)
+          && /^[A-Za-z0-9._-]{1,200}$/.test(candidate)) {
+          conversationId = candidate;
+          break;
+        }
       }
     }
   }
@@ -395,15 +432,31 @@ fn safe_identifier(value: Option<String>, fallback: String) -> String {
     let Some(value) = value.map(|value| value.trim().to_string()) else {
         return fallback;
     };
-    if value.is_empty()
-        || value.as_bytes().len() > MAX_IDENTIFIER_BYTES
-        || !value.chars().all(|character| {
+    if is_safe_identifier(&value) {
+        value
+    } else {
+        fallback
+    }
+}
+
+#[cfg(windows)]
+fn is_safe_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.as_bytes().len() <= MAX_IDENTIFIER_BYTES
+        && value.chars().all(|character| {
             character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
         })
-    {
-        fallback
+}
+
+#[cfg(windows)]
+fn requested_conversation_id(value: Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = value.map(|value| value.trim().to_string()) else {
+        return Ok(None);
+    };
+    if is_safe_identifier(&value) {
+        Ok(Some(value))
     } else {
-        value
+        Err("DeepSeek 网页会话 ID 无效。".into())
     }
 }
 
@@ -423,6 +476,55 @@ fn is_deepseek_url(url: &tauri::Url) -> bool {
 #[cfg(windows)]
 fn open_external_url_allowed(url: &tauri::Url) -> bool {
     matches!(url.scheme(), "http" | "https")
+}
+
+#[cfg(windows)]
+fn conversation_url(
+    config: &DeepSeekWebAdapterConfig,
+    conversation_id: &str,
+) -> Result<tauri::Url, String> {
+    if !is_safe_identifier(conversation_id) {
+        return Err("DeepSeek 网页会话 ID 无效。".into());
+    }
+    let Some((prefix, suffix)) = config.conversation_path_template.split_once("{id}") else {
+        return Err("DeepSeek 网页会话路由配置无效。".into());
+    };
+    format!("{}{prefix}{conversation_id}{suffix}", config.site_origin)
+        .parse()
+        .map_err(|error| format!("DeepSeek 网页会话地址无效：{error}"))
+}
+
+#[cfg(windows)]
+fn url_conversation_id<'a>(
+    url: &'a tauri::Url,
+    config: &DeepSeekWebAdapterConfig,
+) -> Option<&'a str> {
+    let path = url.path().trim_end_matches('/');
+    if let Some((prefix, suffix)) = config.conversation_path_template.split_once("{id}") {
+        if path.starts_with(prefix) && path.ends_with(suffix) {
+            let end = path.len().saturating_sub(suffix.len());
+            let candidate = &path[prefix.len()..end];
+            if is_safe_identifier(candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    let segments: Vec<&str> = url
+        .path_segments()?
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    segments.windows(2).rev().find_map(|pair| {
+        // The current route is `/a/chat/s/<id>`; do not mistake the literal
+        // `s` route segment for the conversation ID after `chat/`.
+        let is_marker = pair[0].eq_ignore_ascii_case("s")
+            || (matches!(pair[0], "chat" | "conversation" | "c")
+                && !pair[1].eq_ignore_ascii_case("s"));
+        if is_marker && is_safe_identifier(pair[1]) {
+            Some(pair[1])
+        } else {
+            None
+        }
+    })
 }
 
 #[cfg(windows)]
@@ -494,20 +596,59 @@ fn ensure_window(app: &AppHandle) -> Result<WebviewWindow, String> {
 }
 
 #[cfg(windows)]
-fn start_navigation(window: &WebviewWindow) -> Result<(), String> {
+fn start_navigation(
+    window: &WebviewWindow,
+    config: &DeepSeekWebAdapterConfig,
+    conversation_id: Option<&str>,
+    new_conversation: bool,
+) -> Result<bool, String> {
     let current = window.url().ok();
-    if current
-        .as_ref()
-        .is_some_and(|url| url.as_str() != "about:blank" && is_deepseek_url(url))
-    {
-        return Ok(());
+    let requested_url = if new_conversation {
+        None
+    } else if let Some(conversation_id) = conversation_id {
+        Some(conversation_url(config, conversation_id)?)
+    } else {
+        None
+    };
+    let same_target = match (new_conversation, conversation_id, current.as_ref()) {
+        (true, _, Some(url)) => url.as_str() == DEEPSEEK_URL,
+        (false, Some(conversation_id), Some(url)) => {
+            is_deepseek_url(url) && url_conversation_id(url, config) == Some(conversation_id)
+        }
+        (false, None, Some(url)) => url.as_str() != "about:blank" && is_deepseek_url(url),
+        _ => false,
+    };
+    if same_target {
+        return Ok(false);
     }
-    let url = DEEPSEEK_URL
-        .parse()
-        .map_err(|error| format!("DeepSeek 网页地址无效：{error}"))?;
+    let url = match requested_url {
+        Some(url) => url,
+        None => DEEPSEEK_URL
+            .parse()
+            .map_err(|error| format!("DeepSeek 网页地址无效：{error}"))?,
+    };
     window
         .navigate(url)
-        .map_err(|error| format!("无法打开 DeepSeek 应用内页面：{error}"))
+        .map_err(|error| format!("无法打开 DeepSeek 应用内页面：{error}"))?;
+    Ok(true)
+}
+
+#[cfg(windows)]
+fn fresh_route_ready(
+    window: &WebviewWindow,
+    config: &DeepSeekWebAdapterConfig,
+    previous_conversation_id: Option<&str>,
+) -> bool {
+    let Ok(url) = window.url() else {
+        return false;
+    };
+    if url.as_str() == DEEPSEEK_URL {
+        return true;
+    }
+    let Some(current_conversation_id) = url_conversation_id(&url, config) else {
+        return false;
+    };
+    previous_conversation_id != Some(current_conversation_id)
 }
 
 #[cfg(windows)]
@@ -583,17 +724,53 @@ fn validate_snapshot(mut snapshot: WebSnapshot) -> Result<WebSnapshot, String> {
 }
 
 #[cfg(windows)]
-async fn snapshot(window: &WebviewWindow) -> Result<WebSnapshot, String> {
-    validate_snapshot(eval_json(window, SNAPSHOT_SCRIPT).await?)
+fn configured_script(script: &str, config: &DeepSeekWebAdapterConfig) -> Result<String, String> {
+    let encoded = serde_json::to_string(config)
+        .map_err(|error| format!("DeepSeek 网页配置序列化失败：{error}"))?;
+    if !script.contains(ADAPTER_CONFIG_MARKER) {
+        return Err("DeepSeek 网页脚本缺少配置占位符。".into());
+    }
+    Ok(script.replace(ADAPTER_CONFIG_MARKER, &encoded))
 }
 
 #[cfg(windows)]
-async fn wait_for_page_snapshot(window: &WebviewWindow) -> Result<WebSnapshot, String> {
+async fn snapshot(window: &WebviewWindow, script: &str) -> Result<WebSnapshot, String> {
+    validate_snapshot(eval_json(window, script).await?)
+}
+
+#[cfg(windows)]
+async fn wait_for_page_snapshot(
+    window: &WebviewWindow,
+    config: &DeepSeekWebAdapterConfig,
+    snapshot_script: &str,
+    expected_conversation_id: Option<&str>,
+    require_fresh_route: bool,
+    previous_conversation_id: Option<&str>,
+) -> Result<WebSnapshot, String> {
     let deadline = Instant::now() + PAGE_READY_TIMEOUT;
     let mut last_error: Option<String> = None;
     loop {
-        match snapshot(window).await {
-            Ok(snapshot) if snapshot.state != "loading" => return Ok(snapshot),
+        match snapshot(window, snapshot_script).await {
+            Ok(snapshot)
+                if snapshot.state != "loading"
+                    && (!require_fresh_route
+                        || fresh_route_ready(window, config, previous_conversation_id))
+                    && (expected_conversation_id.is_none()
+                        || snapshot.state == "logged-out"
+                        || snapshot.state == "unsupported"
+                        || snapshot.conversation_id.as_deref() == expected_conversation_id) =>
+            {
+                return Ok(snapshot);
+            }
+            Ok(snapshot) if expected_conversation_id.is_some() => {
+                last_error = Some(format!(
+                    "DeepSeek 网页尚未切换到指定会话（当前：{}）。",
+                    snapshot.conversation_id.as_deref().unwrap_or("未知")
+                ));
+            }
+            Ok(_) if require_fresh_route => {
+                last_error = Some("DeepSeek 网页尚未切换到新的会话页面。".into());
+            }
             Ok(_) => {}
             Err(error) => last_error = Some(error),
         }
@@ -608,11 +785,12 @@ async fn wait_for_page_snapshot(window: &WebviewWindow) -> Result<WebSnapshot, S
 }
 
 #[cfg(windows)]
-fn prepare_send_script(text: &str) -> Result<String, String> {
+fn prepare_send_script(text: &str, config: &DeepSeekWebAdapterConfig) -> Result<String, String> {
     let encoded = serde_json::to_string(text).map_err(|error| error.to_string())?;
-    Ok(format!(
+    let script = format!(
         r#"
 (() => {{
+  const adapterConfig = __DSH_DEEPSEEK_WEB_ADAPTER_CONFIG__;
   const value = {encoded};
   const visible = (node) => {{
     if (!node) return false;
@@ -623,7 +801,8 @@ fn prepare_send_script(text: &str) -> Result<String, String> {
   const disabled = (node) => Boolean(node?.disabled)
     || node?.getAttribute?.('aria-disabled') === 'true'
     || node?.getAttribute?.('data-disabled') === 'true';
-  const inputs = [...document.querySelectorAll('textarea,[contenteditable="true"]')];
+  let inputs;
+  try {{ inputs = [...document.querySelectorAll(adapterConfig.composerSelectors.join(','))]; }} catch (_) {{ inputs = []; }}
   const input = inputs.find((node) => visible(node) && !disabled(node) && !node.readOnly);
   if (!input) return {{ ok: false, reason: 'composer-not-found' }};
   input.focus();
@@ -644,12 +823,18 @@ fn prepare_send_script(text: &str) -> Result<String, String> {
   return {{ ok: true, reason: 'prepared' }};
 }})()
 "#
-    ))
+    );
+    configured_script(&script, config)
 }
 
 #[cfg(windows)]
 const TRIGGER_SEND_SCRIPT: &str = r#"
 (() => {
+  const adapterConfig = __DSH_DEEPSEEK_WEB_ADAPTER_CONFIG__;
+  const query = (selectors) => {
+    try { return [...document.querySelectorAll(selectors.join(','))]; } catch (_) { return []; }
+  };
+  const hasToken = (value, tokens) => tokens.some((token) => value.includes(String(token).toLowerCase()));
   const visible = (node) => {
     if (!node) return false;
     const style = getComputedStyle(node);
@@ -661,14 +846,14 @@ const TRIGGER_SEND_SCRIPT: &str = r#"
     || node?.getAttribute?.('data-disabled') === 'true'
     || /(?:^|[\s_-])disabled(?:$|[\s_-])/i.test(typeof node?.className === 'string' ? node.className : '');
   const labelOf = (node) => [node?.getAttribute?.('aria-label') || '', node?.getAttribute?.('title') || '', node?.getAttribute?.('data-testid') || '', node?.innerText || ''].join(' ').toLowerCase();
-  const input = [...document.querySelectorAll('textarea,[contenteditable="true"]')]
+  const input = query(adapterConfig.composerSelectors)
     .find((node) => visible(node) && !disabled(node) && !node.readOnly);
   if (!input) return { ok: false, reason: 'composer-not-found' };
   const candidatesIn = (scope) => [...scope.querySelectorAll('button,[role="button"]')]
     .filter((node) => visible(node));
   let action;
   const semantic = candidatesIn(document).filter((node) => !disabled(node)
-    && (/发送|send|submit|continue/.test(labelOf(node))
+    && (hasToken(labelOf(node), adapterConfig.sendTokens)
       || /send|submit|continue/i.test(node.getAttribute('data-testid') || '')));
   action = semantic.at(-1);
   if (!action) {
@@ -691,7 +876,7 @@ const TRIGGER_SEND_SCRIPT: &str = r#"
     return { ok: true, reason: 'clicked-primary-control' };
   }
   const buttons = [...document.querySelectorAll('button,[role="button"]')];
-  const send = buttons.find((node) => visible(node) && !disabled(node) && /发送|send|submit|continue/.test(labelOf(node)))
+  const send = buttons.find((node) => visible(node) && !disabled(node) && hasToken(labelOf(node), adapterConfig.sendTokens))
     || [...document.querySelectorAll('[data-testid*="send"],[data-testid*="submit"]')].find((node) => visible(node) && !disabled(node));
   if (send) { send.click(); return { ok: true, reason: 'sent' }; }
   const form = input.closest('form');
@@ -707,12 +892,14 @@ const TRIGGER_SEND_SCRIPT: &str = r#"
 #[cfg(windows)]
 const STOP_SCRIPT: &str = r#"
 (() => {
+  const adapterConfig = __DSH_DEEPSEEK_WEB_ADAPTER_CONFIG__;
+  const hasToken = (value, tokens) => tokens.some((token) => value.includes(String(token).toLowerCase()));
   const labelOf = (node) => [node?.getAttribute?.('aria-label') || '', node?.getAttribute?.('title') || '', node?.innerText || ''].join(' ').toLowerCase();
   const disabled = (node) => Boolean(node?.disabled)
     || node?.getAttribute?.('aria-disabled') === 'true'
     || node?.getAttribute?.('data-disabled') === 'true';
   const buttons = [...document.querySelectorAll('button,[role="button"]')];
-  const stop = buttons.find((node) => !disabled(node) && (/停止|stop|cancel|interrupt/.test(labelOf(node)) || /stop|cancel|interrupt/i.test(node.getAttribute('data-testid') || '')));
+  const stop = buttons.find((node) => !disabled(node) && (hasToken(labelOf(node), adapterConfig.stopTokens) || /stop|cancel|interrupt/i.test(node.getAttribute('data-testid') || '')));
   if (!stop) return { ok: false, reason: 'stop-not-found' };
   stop.click();
   return { ok: true, reason: 'stopped' };
@@ -788,22 +975,34 @@ impl DeepSeekWebState {
 }
 
 #[cfg(windows)]
-pub fn ensure(app: &AppHandle) -> Result<(), String> {
+pub fn ensure(
+    app: &AppHandle,
+    conversation_id: Option<String>,
+    new_conversation: bool,
+) -> Result<(), String> {
     let window = ensure_window(app)?;
-    let _ = start_navigation(&window);
+    let config = deepseek_web_config::load(app)?.config;
+    let conversation_id = requested_conversation_id(conversation_id)?;
+    start_navigation(
+        &window,
+        &config,
+        conversation_id.as_deref(),
+        new_conversation,
+    )?;
     Ok(())
 }
 
 #[cfg(not(windows))]
-pub fn ensure(_: &tauri::AppHandle) -> Result<(), String> {
+pub fn ensure(_: &tauri::AppHandle, _: Option<String>, _: bool) -> Result<(), String> {
     Err("DeepSeek 应用内网页通讯目前仅支持 Windows WebView2。".into())
 }
 
 #[cfg(windows)]
 pub fn show_login(app: &AppHandle) -> Result<(), String> {
     let window = ensure_window(app)?;
+    let config = deepseek_web_config::load(app)?.config;
     reveal_window(&window);
-    start_navigation(&window)?;
+    start_navigation(&window, &config, None, false)?;
     // A freshly-created WebView2 window can finish its controller setup after
     // the first Tauri `show()` message. Retry once after the native HWND exists
     // so the login action never leaves a hidden, otherwise healthy WebView.
@@ -837,9 +1036,10 @@ pub fn show_login(_: &tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(windows)]
 pub async fn status(app: &AppHandle) -> Result<WebStatus, String> {
-    // Keep the resident wallpaper light: selecting the default web route does
-    // not create a Chromium renderer until the user opens login or sends the
-    // first message. Once created, the same window/profile is reused.
+    // The page lives in its own persistent profile and is reused after the
+    // first creation. The adapter may already have created it while restoring
+    // a saved web conversation; status itself never creates a new window.
+    let config = deepseek_web_config::load(app)?.config;
     let Some(window) = app.get_webview_window(WINDOW_LABEL) else {
         return Ok(WebStatus {
             state: "loading".into(),
@@ -848,7 +1048,8 @@ pub async fn status(app: &AppHandle) -> Result<WebStatus, String> {
             signature: DOM_SIGNATURE.into(),
         });
     };
-    match snapshot(&window).await {
+    let snapshot_script = configured_script(SNAPSHOT_SCRIPT, &config)?;
+    match snapshot(&window, &snapshot_script).await {
         Ok(snapshot) => Ok(WebStatus {
             state: snapshot.state,
             conversation_id: snapshot.conversation_id,
@@ -870,7 +1071,14 @@ pub async fn status(_: &tauri::AppHandle) -> Result<WebStatus, String> {
 }
 
 #[cfg(windows)]
-pub async fn history(app: &AppHandle) -> Result<WebHistory, String> {
+pub async fn history(
+    app: &AppHandle,
+    conversation_id: Option<String>,
+    new_conversation: bool,
+) -> Result<WebHistory, String> {
+    let config = deepseek_web_config::load(app)?.config;
+    let requested_id = requested_conversation_id(conversation_id)?;
+    let conversation_id = if new_conversation { None } else { requested_id };
     let Some(window) = app.get_webview_window(WINDOW_LABEL) else {
         return Ok(WebHistory {
             messages: Vec::new(),
@@ -879,8 +1087,31 @@ pub async fn history(app: &AppHandle) -> Result<WebHistory, String> {
             state: "loading".into(),
         });
     };
-    let _ = start_navigation(&window);
-    let snapshot = match wait_for_page_snapshot(&window).await {
+    let previous_conversation_id = if new_conversation {
+        window
+            .url()
+            .ok()
+            .and_then(|url| url_conversation_id(&url, &config).map(str::to_owned))
+    } else {
+        None
+    };
+    let navigation_started = start_navigation(
+        &window,
+        &config,
+        conversation_id.as_deref(),
+        new_conversation,
+    )?;
+    let snapshot_script = configured_script(SNAPSHOT_SCRIPT, &config)?;
+    let snapshot = match wait_for_page_snapshot(
+        &window,
+        &config,
+        &snapshot_script,
+        conversation_id.as_deref(),
+        new_conversation && navigation_started,
+        previous_conversation_id.as_deref(),
+    )
+    .await
+    {
         Ok(snapshot) => snapshot,
         Err(error) => {
             log::debug!("deepseek web history snapshot unavailable: {error}");
@@ -912,7 +1143,11 @@ pub async fn history(app: &AppHandle) -> Result<WebHistory, String> {
 }
 
 #[cfg(not(windows))]
-pub async fn history(_: &tauri::AppHandle) -> Result<WebHistory, String> {
+pub async fn history(
+    _: &tauri::AppHandle,
+    _: Option<String>,
+    _: bool,
+) -> Result<WebHistory, String> {
     Err("DeepSeek 应用内网页通讯目前仅支持 Windows WebView2。".into())
 }
 
@@ -923,6 +1158,7 @@ pub async fn send(
     text: String,
     conversation_id: Option<String>,
     request_id: Option<String>,
+    new_conversation: bool,
 ) -> Result<String, String> {
     if text.trim().is_empty() {
         return Err("消息不能为空。".into());
@@ -930,11 +1166,36 @@ pub async fn send(
     if text.as_bytes().len() > MAX_MESSAGE_BYTES {
         return Err(format!("单条网页消息不能超过 {MAX_MESSAGE_BYTES} 字节。"));
     }
+    let requested_id = requested_conversation_id(conversation_id)?;
+    let requested_conversation_id = if new_conversation { None } else { requested_id };
     let window = ensure_window(&app)?;
-    start_navigation(&window)?;
-    let initial = wait_for_page_snapshot(&window).await?;
+    let config = deepseek_web_config::load(&app)?.config;
+    let previous_conversation_id = if new_conversation {
+        window
+            .url()
+            .ok()
+            .and_then(|url| url_conversation_id(&url, &config).map(str::to_owned))
+    } else {
+        None
+    };
+    let navigation_started = start_navigation(
+        &window,
+        &config,
+        requested_conversation_id.as_deref(),
+        new_conversation,
+    )?;
+    let snapshot_script = configured_script(SNAPSHOT_SCRIPT, &config)?;
+    let initial = wait_for_page_snapshot(
+        &window,
+        &config,
+        &snapshot_script,
+        requested_conversation_id.as_deref(),
+        new_conversation && navigation_started,
+        previous_conversation_id.as_deref(),
+    )
+    .await?;
     let conversation_id = safe_identifier(
-        initial.conversation_id.clone().or(conversation_id),
+        requested_conversation_id.or(initial.conversation_id.clone()),
         format!("web-{}", now_millis()),
     );
     let request_id = safe_identifier(request_id, format!("web-request-{}", now_millis()));
@@ -1005,7 +1266,11 @@ pub async fn send(
             Some(&request_id),
             json!({ "type": "status", "activity": "sending" }),
         );
-        let prepared: WebActionResult = eval_json(&window, &prepare_send_script(&text)?).await?;
+        let prepared: WebActionResult = eval_json(
+            &window,
+            &prepare_send_script(&text, &config)?,
+        )
+        .await?;
         if !prepared.ok {
             return Err("DeepSeek 网页输入框尚未准备好，请稍候重试。".into());
         }
@@ -1019,7 +1284,7 @@ pub async fn send(
             if attempt > 0 {
                 tokio::time::sleep(Duration::from_millis(80)).await;
             }
-            action = eval_json(&window, TRIGGER_SEND_SCRIPT).await?;
+            action = eval_json(&window, &configured_script(TRIGGER_SEND_SCRIPT, &config)?).await?;
             if action.ok {
                 break;
             }
@@ -1082,7 +1347,7 @@ pub async fn send(
                 return Err("DeepSeek 网页响应超时；可以在网页窗口中检查当前会话。".into());
             }
             tokio::time::sleep(POLL_INTERVAL).await;
-            let current = snapshot(&window).await?;
+            let current = snapshot(&window, &snapshot_script).await?;
             last_observation = current.clone();
             if current.state == "logged-out" {
                 let _ = show_login(&app);
@@ -1253,6 +1518,7 @@ pub async fn send(
     _: String,
     _: Option<String>,
     _: Option<String>,
+    _: bool,
 ) -> Result<String, String> {
     Err("DeepSeek 应用内网页通讯目前仅支持 Windows WebView2。".into())
 }
@@ -1262,8 +1528,10 @@ pub async fn cancel(app: &AppHandle, state: &DeepSeekWebState) -> Result<(), Str
     let Some((request_id, conversation_id)) = state.cancel() else {
         return Ok(());
     };
+    let config = deepseek_web_config::load(app)?.config;
     if let Ok(window) = ensure_window(app) {
-        let _: Result<WebActionResult, _> = eval_json(&window, STOP_SCRIPT).await;
+        let script = configured_script(STOP_SCRIPT, &config)?;
+        let _: Result<WebActionResult, _> = eval_json(&window, &script).await;
     }
     emit_event(
         app,
@@ -1286,18 +1554,69 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn snapshot_script_keeps_direct_assistant_body_and_safe_diagnostics() {
-        assert!(super::SNAPSHOT_SCRIPT.contains(".ds-assistant-message-main-content"));
+        assert!(super::SNAPSHOT_SCRIPT.contains("__DSH_DEEPSEEK_WEB_ADAPTER_CONFIG__"));
+        assert!(super::SNAPSHOT_SCRIPT.contains("adapterConfig.assistantSelectors"));
+        assert!(super::SNAPSHOT_SCRIPT.contains("queryWithin"));
         assert!(super::SNAPSHOT_SCRIPT.contains("latestAssistant"));
         assert!(super::SNAPSHOT_SCRIPT.contains("latestAssistantKey"));
         assert!(super::SNAPSHOT_SCRIPT.contains("assistantCount"));
         assert!(super::SNAPSHOT_SCRIPT.contains("outerBodies"));
         assert!(super::SNAPSHOT_SCRIPT.contains("join('\\n\\n')"));
+        assert!(
+            super::SNAPSHOT_SCRIPT.contains("final `s/id`")
+                || super::SNAPSHOT_SCRIPT.contains("literal route segment `s`")
+        );
         assert!(!super::SNAPSHOT_SCRIPT.contains("const body = bodies.at(-1)"));
         assert!(!super::SNAPSHOT_SCRIPT.contains("!dom_changed"));
         assert!(
             super::TRIGGER_SEND_SCRIPT.contains("functionRowRightColumn")
                 || super::TRIGGER_SEND_SCRIPT.contains("clicked-primary-control")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pinned_route_uses_the_conversation_id_not_the_literal_route_segment() {
+        let config = crate::deepseek_web_config::builtin_config().expect("builtin adapter config");
+        let url = super::conversation_url(&config, "saved-conversation").expect("conversation URL");
+        assert_eq!(
+            url.as_str(),
+            "https://chat.deepseek.com/a/chat/s/saved-conversation"
+        );
+        assert_eq!(
+            super::url_conversation_id(&url, &config),
+            Some("saved-conversation")
+        );
+        assert_eq!(
+            super::url_conversation_id(
+                &"https://chat.deepseek.com/a/chat/s/other?from=history"
+                    .parse()
+                    .expect("DeepSeek route"),
+                &config,
+            ),
+            Some("other")
+        );
+        assert!(super::conversation_url(&config, "saved/conversation").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn action_scripts_are_materialized_from_the_declarative_config() {
+        let mut config =
+            crate::deepseek_web_config::builtin_config().expect("builtin adapter config");
+        config.composer_selectors = vec![".custom-composer".into()];
+        config.send_tokens = vec!["dispatch".into()];
+        let snapshot =
+            super::configured_script(super::SNAPSHOT_SCRIPT, &config).expect("snapshot script");
+        let prepare = super::prepare_send_script("hello", &config).expect("prepare script");
+        let trigger =
+            super::configured_script(super::TRIGGER_SEND_SCRIPT, &config).expect("trigger script");
+        let stop = super::configured_script(super::STOP_SCRIPT, &config).expect("stop script");
+        for script in [&snapshot, &prepare, &trigger, &stop] {
+            assert!(!script.contains(super::ADAPTER_CONFIG_MARKER));
+            assert!(script.contains(".custom-composer"));
+        }
+        assert!(trigger.contains("dispatch"));
     }
 
     #[test]

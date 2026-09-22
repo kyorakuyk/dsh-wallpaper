@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import { appCoreClient } from '../runtime/appCoreClient.ts'
-import { nativeRuntime, type AutostartStatus, type DesktopDisplayInfo, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
+import { nativeRuntime, type AutostartStatus, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
 import { loadSettings, saveSettings, type WallpaperSettings } from './store.ts'
 import { SettingsPanel } from './SettingsPanel.tsx'
 import { chooseAppearanceImportPaths, nativeAppearance } from '../native/appearance.ts'
@@ -22,10 +22,12 @@ export function SettingsWindow() {
   const [desktopDisplays, setDesktopDisplays] = useState<DesktopDisplayInfo[]>([])
   const [lockScreenBusy, setLockScreenBusy] = useState(false)
   const [autostartBusy, setAutostartBusy] = useState(false)
+  const [dshScanBusy, setDshScanBusy] = useState(false)
   const [notice, setNotice] = useState<string>()
   const [appearanceAssets, setAppearanceAssets] = useState<AppearanceAssetSummary[]>([])
   const [appearanceOverrides, setAppearanceOverrides] = useState<Partial<Record<AppearanceSlot, string>>>({})
   const [appearanceBusy, setAppearanceBusy] = useState(false)
+  const [deepseekWebAdapterConfig, setDeepseekWebAdapterConfig] = useState<DeepSeekWebAdapterConfigStatus>()
   // A state update does not become visible to an async callback until React
   // renders again. Keep the last committed settings here so a successful
   // lock-screen request never overwrites unrelated settings changed while it
@@ -33,6 +35,7 @@ export function SettingsWindow() {
   const settingsRef = useRef(settings)
   const lockScreenOperationRef = useRef(false)
   const autostartOperationRef = useRef(false)
+  const dshScanOperationRef = useRef(false)
   const lockScreenDiagnosticsRequestRef = useRef(0)
 
   const commitSettings = (next: WallpaperSettings) => {
@@ -61,7 +64,25 @@ export function SettingsWindow() {
     .catch((error) => setNotice(`素材库读取失败：${String(error)}`))
 
   const refreshTranslucentTb = () => void nativeRuntime.translucentTbStatus().then(setTranslucentTb).catch((error) => setNotice(String(error)))
-  const scanDsh = () => void nativeRuntime.scanDshPaths().then(setDshCandidates).catch((error) => setNotice(String(error)))
+  const scanDsh = async (announce = false) => {
+    if (dshScanOperationRef.current) return
+    dshScanOperationRef.current = true
+    setDshScanBusy(true)
+    try {
+      const candidates = await nativeRuntime.scanDshPaths(settingsRef.current.dshLaunch.rootPath, announce)
+      setDshCandidates(candidates)
+      if (announce) {
+        setNotice(candidates.length > 0
+          ? `扫描完成，发现 ${candidates.length} 个 DSH 项目。`
+          : '未发现 DSH 项目；请手动填写可访问的项目根目录。')
+      }
+    } catch (error) {
+      setNotice(`扫描 DSH 失败：${String(error)}`)
+    } finally {
+      dshScanOperationRef.current = false
+      setDshScanBusy(false)
+    }
+  }
   const refreshManagedDsh = () => void nativeRuntime.managedDshStatus().then(setManagedDsh).catch((error) => setNotice(String(error)))
   const refreshLockScreenDiagnostics = async () => {
     const request = ++lockScreenDiagnosticsRequestRef.current
@@ -79,6 +100,26 @@ export function SettingsWindow() {
       setDesktopDisplays(await nativeRuntime.desktopDisplays())
     } catch (error) {
       setNotice(`显示器列表读取失败：${String(error)}`)
+    }
+  }
+  const refreshDeepSeekWebAdapterConfig = () => void nativeRuntime.deepseekWebAdapterConfig()
+    .then(setDeepseekWebAdapterConfig)
+    .catch((error) => setNotice(`网页适配器配置读取失败：${String(error)}`))
+  const openDeepSeekWebAdapterConfig = async () => {
+    try {
+      setDeepseekWebAdapterConfig(await nativeRuntime.openDeepSeekWebAdapterConfig())
+      setNotice('已打开网页适配器配置；保存后下一次网页状态、历史或发送操作会读取新配置。')
+    } catch (error) {
+      setNotice(`网页适配器配置打开失败：${String(error)}`)
+    }
+  }
+  const resetDeepSeekWebAdapterConfig = async () => {
+    if (!window.confirm('恢复默认网页适配器配置会覆盖当前本地 override 文件。确定继续吗？')) return
+    try {
+      setDeepseekWebAdapterConfig(await nativeRuntime.resetDeepSeekWebAdapterConfig())
+      setNotice('网页适配器配置已恢复默认。')
+    } catch (error) {
+      setNotice(`网页适配器配置恢复失败：${String(error)}`)
     }
   }
   const refreshAutostartStatus = async () => {
@@ -148,12 +189,12 @@ export function SettingsWindow() {
   useEffect(() => {
     void appCoreClient.snapshot().then((snapshot) => { setHarness(snapshot.harness); setInteractionEnabled(snapshot.interaction.enabled) })
     refreshTranslucentTb()
-    scanDsh()
+    void scanDsh()
     refreshManagedDsh()
     void refreshAutostartStatus()
     refreshLockScreenDiagnostics()
     void refreshDesktopDisplays()
-    refreshAppearance()
+    refreshDeepSeekWebAdapterConfig()
     const current = getCurrentWindow()
     const unlisten = current.onCloseRequested((event) => {
       event.preventDefault()
@@ -229,7 +270,8 @@ export function SettingsWindow() {
       harnessStatus={harness}
       translucentTb={translucentTb}
       dshCandidates={dshCandidates}
-      onScanDsh={scanDsh}
+      onScanDsh={() => { void scanDsh(true) }}
+      dshScanBusy={dshScanBusy}
       onAdoptDsh={(rootPath) => change({ ...settingsRef.current, dshLaunch: { ...settingsRef.current.dshLaunch, rootPath } })}
       onLaunchDsh={() => { const dsh = settingsRef.current.dshLaunch; if (!dsh.rootPath) return; void nativeRuntime.launchDsh(dsh.rootPath, dsh.profile, dsh.command).then((pid) => { setNotice(`已启动 DSH（PID ${pid}），等待 Bridge 就绪后可在桌面切换。`); refreshManagedDsh() }).catch((error) => setNotice(String(error))) }}
       managedDsh={managedDsh}
@@ -256,11 +298,16 @@ export function SettingsWindow() {
       desktopDisplays={desktopDisplays}
       onRefreshDesktopDisplays={refreshDesktopDisplays}
       onRequestDeepSeekLogin={() => void nativeRuntime.requestDeepSeekLogin().catch((error) => setNotice(`无法打开 DeepSeek 应用内页面：${String(error)}`))}
+      deepseekWebAdapterConfig={deepseekWebAdapterConfig}
+      onRefreshDeepSeekWebAdapterConfig={refreshDeepSeekWebAdapterConfig}
+      onOpenDeepSeekWebAdapterConfig={() => { void openDeepSeekWebAdapterConfig() }}
+      onResetDeepSeekWebAdapterConfig={() => { void resetDeepSeekWebAdapterConfig() }}
       onConfigureApiKey={() => void nativeRuntime.promptForApiKeyCredential()
         .then((saved) => { if (saved) setNotice('DeepSeek API Key 已更新到 Windows 凭据管理器。') })
         .catch((error) => setNotice(String(error)))}
       interactionEnabled={interactionEnabled}
       onSetInteractionEnabled={(enabled) => void appCoreClient.setInteractionEnabled(enabled).then((snapshot) => setInteractionEnabled(snapshot.interaction.enabled)).catch((error) => setNotice(String(error)))}
+      onOpenAppearance={() => { refreshAppearance() }}
       onClose={close}
     />
   </main>

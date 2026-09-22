@@ -279,6 +279,12 @@
           "markdownDescription": "Enables the connect_harness command without any pre-configured scope."
         },
         {
+          "description": "Enables the deepseek_web_adapter_config_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-deepseek-web-adapter-config-status",
+          "markdownDescription": "Enables the deepseek_web_adapter_config_status command without any pre-configured scope."
+        },
+        {
           "description": "Enables the deepseek_web_ensure command without any pre-configured scope.",
           "type": "string",
           "const": "allow-deepseek-web-ensure",
@@ -417,6 +423,12 @@
           "markdownDescription": "Enables the notify_appearance_changed command without any pre-configured scope."
         },
         {
+          "description": "Enables the open_deepseek_web_adapter_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-deepseek-web-adapter-config",
+          "markdownDescription": "Enables the open_deepseek_web_adapter_config command without any pre-configured scope."
+        },
+        {
           "description": "Enables the open_settings_window command without any pre-configured scope.",
           "type": "string",
           "const": "allow-open-settings-window",
@@ -457,6 +469,12 @@
           "type": "string",
           "const": "allow-release-native-bootstrap",
           "markdownDescription": "Enables the release_native_bootstrap command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the reset_deepseek_web_adapter_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-reset-deepseek-web-adapter-config",
+          "markdownDescription": "Enables the reset_deepseek_web_adapter_config command without any pre-configured scope."
         },
         {
           "description": "Enables the scan_dsh_paths command without any pre-configured scope.",
@@ -633,6 +651,12 @@
           "markdownDescription": "Denies the connect_harness command without any pre-configured scope."
         },
         {
+          "description": "Denies the deepseek_web_adapter_config_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-deepseek-web-adapter-config-status",
+          "markdownDescription": "Denies the deepseek_web_adapter_config_status command without any pre-configured scope."
+        },
+        {
           "description": "Denies the deepseek_web_ensure command without any pre-configured scope.",
           "type": "string",
           "const": "deny-deepseek-web-ensure",
@@ -771,6 +795,12 @@
           "markdownDescription": "Denies the notify_appearance_changed command without any pre-configured scope."
         },
         {
+          "description": "Denies the open_deepseek_web_adapter_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-deepseek-web-adapter-config",
+          "markdownDescription": "Denies the open_deepseek_web_adapter_config command without any pre-configured scope."
+        },
+        {
           "description": "Denies the open_settings_window command without any pre-configured scope.",
           "type": "string",
           "const": "deny-open-settings-window",
@@ -811,6 +841,12 @@
           "type": "string",
           "const": "deny-release-native-bootstrap",
           "markdownDescription": "Denies the release_native_bootstrap command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the reset_deepseek_web_adapter_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-reset-deepseek-web-adapter-config",
+          "markdownDescription": "Denies the reset_deepseek_web_adapter_config command without any pre-configured scope."
         },
         {
           "description": "Denies the scan_dsh_paths command without any pre-configured scope.",

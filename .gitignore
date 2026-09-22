@@ -33,3 +33,29 @@ Thumbs.db
 # Editor
 .vscode/
 .idea/
+
+# Job-hunt / interview material (local only — do not commit)
+# 求职与面试材料、学习路线：仅本地使用，不进仓库
+/docs/interview-*.md
+/docs/campus-recruit-*.md
+/docs/career-*.md
+/docs/learning-guide.md
+
+# 简历：含真实姓名 / 手机 / 邮箱，绝不入库
+/docs/resume/
+
+# Public-overview staging (local staging → copied into the public notes repo)
+# 公开概览仓的本地暂存稿：内容属于对外仓，不进本私有仓
+/docs/public-overview/
+
+# Agent workspace (memory / scratch)
+# 工作日志含私人分析、面试策略与跨项目引用，绝不入库
+.workbuddy/
+.hermes/
+
+# Ad-hoc agent scratch output at repo root
+/_tmp_*
+/_probe*
+/_loc.txt
+/_test*.txt
+/_tsc.txt

@@ -8,6 +8,8 @@ mod appearance;
 mod chat;
 #[cfg(not(feature = "lite"))]
 mod deepseek_web;
+#[cfg(not(feature = "lite"))]
+mod deepseek_web_config;
 mod lock_screen_backup;
 mod native_bootstrap;
 mod windows_integration;
@@ -15,6 +17,10 @@ mod windows_integration;
 use app_core::{Activity, AppAction, AppCore, AppSnapshot, HarnessAvailability};
 #[cfg(not(feature = "lite"))]
 use app_core::BackendMode;
+#[cfg(not(feature = "lite"))]
+use std::collections::{HashSet, VecDeque};
+#[cfg(not(feature = "lite"))]
+use std::path::{Path, PathBuf};
 #[cfg(not(feature = "lite"))]
 use std::process::Child;
 use std::sync::OnceLock;
@@ -37,6 +43,166 @@ pub fn prepare_native_bootstrap() {
 struct DshPathCandidate {
     root_path: String,
     source: String,
+}
+
+#[cfg(not(feature = "lite"))]
+const DSH_SCAN_MAX_DIRECTORIES: usize = 4096;
+#[cfg(not(feature = "lite"))]
+const DSH_SCAN_MAX_DEPTH: u8 = 5;
+
+#[cfg(not(feature = "lite"))]
+fn is_dsh_root(path: &Path) -> bool {
+    path.join("package.json").is_file() && path.join("apps").join("cli").is_dir()
+}
+
+#[cfg(not(feature = "lite"))]
+fn enqueue_dsh_scan_root(
+    queue: &mut VecDeque<(PathBuf, u8, String)>,
+    path: PathBuf,
+    source: &str,
+) {
+    if !path.as_os_str().is_empty() && path.is_dir() {
+        queue.push_back((path, 0, source.to_string()));
+    }
+}
+
+#[cfg(not(feature = "lite"))]
+fn should_skip_dsh_scan_directory(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return true;
+    };
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "$recycle.bin"
+            | "appdata"
+            | "build"
+            | "dist"
+            | ".git"
+            | "node_modules"
+            | "program files"
+            | "program files (x86)"
+            | "programdata"
+            | "system volume information"
+            | "target"
+            | "windows"
+    )
+}
+
+#[cfg(not(feature = "lite"))]
+fn scan_dsh_paths_blocking(hint_path: Option<String>, deep_scan: bool) -> Vec<DshPathCandidate> {
+    let mut queue = VecDeque::new();
+    let mut visited = HashSet::new();
+    let mut seen_candidates = HashSet::new();
+    let mut candidates = Vec::new();
+
+    if let Some(hint) = hint_path
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        enqueue_dsh_scan_root(&mut queue, PathBuf::from(hint), "当前设置路径");
+    }
+    if let Ok(current) = std::env::current_dir() {
+        enqueue_dsh_scan_root(&mut queue, current, "当前目录");
+    }
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        let home = PathBuf::from(home);
+        for relative in [
+            "source/deepseek-harness",
+            "Documents/deepseek-harness",
+            "Documents/DeepSeekHarness/deepseek-harness",
+            "Desktop/deepseek-harness",
+            "Downloads/deepseek-harness",
+        ] {
+            enqueue_dsh_scan_root(&mut queue, home.join(relative), "常见项目目录");
+        }
+        enqueue_dsh_scan_root(&mut queue, home, "用户目录扫描");
+    }
+    if let Ok(dsh_root) = std::env::var("DSH_ROOT") {
+        enqueue_dsh_scan_root(&mut queue, PathBuf::from(dsh_root), "DSH_ROOT 环境变量");
+    }
+    if deep_scan {
+        for drive in b'A'..=b'Z' {
+            let root = PathBuf::from(format!("{}:\\", drive as char));
+            enqueue_dsh_scan_root(&mut queue, root, "磁盘扫描");
+        }
+    }
+
+    while let Some((path, depth, source)) = queue.pop_front() {
+        if visited.len() >= DSH_SCAN_MAX_DIRECTORIES {
+            break;
+        }
+        let key = path.to_string_lossy().to_ascii_lowercase();
+        if !visited.insert(key) {
+            continue;
+        }
+        if is_dsh_root(&path) {
+            let root = std::fs::canonicalize(&path).unwrap_or(path.clone());
+            let candidate_key = root.to_string_lossy().to_ascii_lowercase();
+            if seen_candidates.insert(candidate_key) {
+                candidates.push(DshPathCandidate {
+                    root_path: root.to_string_lossy().into_owned(),
+                    source: source.clone(),
+                });
+            }
+        }
+        if depth >= DSH_SCAN_MAX_DEPTH {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let child = entry.path();
+            if entry.file_type().map(|value| value.is_dir()).unwrap_or(false)
+                && !should_skip_dsh_scan_directory(&child)
+            {
+                queue.push_back((child, depth.saturating_add(1), source.clone()));
+            }
+        }
+    }
+
+    candidates
+}
+
+#[cfg(not(feature = "lite"))]
+fn resolve_dsh_launcher(value: &str) -> Option<PathBuf> {
+    let requested = Path::new(value);
+    if requested.components().count() > 1 || value.contains('/') || value.contains('\\') {
+        return requested.is_file().then(|| requested.to_path_buf());
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        for directory in std::env::split_paths(&path) {
+            let candidate = directory.join(value);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        for candidate in [
+            std::env::var_os("ProgramFiles").map(|root| PathBuf::from(root).join("nodejs").join(value)),
+            std::env::var_os("LOCALAPPDATA").map(|root| PathBuf::from(root).join("Programs").join("nodejs").join(value)),
+            std::env::var_os("APPDATA").map(|root| PathBuf::from(root).join("npm").join(value)),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(feature = "lite"))]
+fn dsh_port_is_occupied() -> bool {
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], 3080)),
+        std::time::Duration::from_millis(250),
+    )
+    .is_ok()
 }
 
 /// A DSH process is only "managed" when this instance spawned it and still
@@ -85,33 +251,17 @@ fn is_lite_edition() -> bool {
 
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
-fn scan_dsh_paths(caller: tauri::WebviewWindow) -> Result<Vec<DshPathCandidate>, String> {
+async fn scan_dsh_paths(
+    caller: tauri::WebviewWindow,
+    hint_path: Option<String>,
+    deep_scan: Option<bool>,
+) -> Result<Vec<DshPathCandidate>, String> {
     require_wallpaper_surface(&caller)?;
-    let mut candidates = Vec::new();
-    let mut push = |path: std::path::PathBuf, source: &str| {
-        if path.join("package.json").is_file() && path.join("apps").join("cli").is_dir() {
-            candidates.push(DshPathCandidate {
-                root_path: path.to_string_lossy().into_owned(),
-                source: source.into(),
-            });
-        }
-    };
-    if let Ok(current) = std::env::current_dir() {
-        push(current, "当前目录");
-    }
-    if let Ok(home) = std::env::var("USERPROFILE") {
-        push(
-            std::path::PathBuf::from(home)
-                .join("source")
-                .join("deepseek-harness"),
-            "常见项目目录",
-        );
-    }
-    push(
-        std::path::PathBuf::from(r"C:\DeepSeekHarness\deepseek-harness"),
-        "常见项目目录",
-    );
-    Ok(candidates)
+    tauri::async_runtime::spawn_blocking(move || {
+        scan_dsh_paths_blocking(hint_path, deep_scan.unwrap_or(false))
+    })
+        .await
+        .map_err(|error| format!("扫描 DSH 未完成：{error}"))
 }
 
 #[tauri::command]
@@ -152,11 +302,17 @@ fn launch_dsh(
     } else {
         "pnpm.cmd"
     });
-    if (launcher.contains('/') || launcher.contains('\\'))
-        && !std::path::Path::new(launcher).is_file()
-    {
-        return Err("自定义 DSH 启动器不存在".into());
-    }
+    let launcher_path = resolve_dsh_launcher(launcher).ok_or_else(|| {
+        if configured_launcher.is_some() {
+            format!("找不到自定义 DSH 启动器：{launcher}")
+        } else if use_bundled_cli {
+            "未找到 Node.js。请确认 node.exe 已加入系统 PATH，或在启动命令中填写 Node.js 的完整路径。"
+                .to_string()
+        } else {
+            "未找到 pnpm。请确认 pnpm.cmd 已加入系统 PATH，或在启动命令中填写启动器的完整路径。"
+                .to_string()
+        }
+    })?;
     let mut managed = state
         .0
         .lock()
@@ -167,7 +323,12 @@ fn launch_dsh(
             Ok(Some(_)) | Err(_) => *managed = None,
         }
     }
-    let mut launch = std::process::Command::new(launcher);
+    if dsh_port_is_occupied() {
+        return Err(
+            "本机 3080 端口已被其他进程占用；请先关闭已有 DSH，再启动配置的 DSH。".into(),
+        );
+    }
+    let mut launch = std::process::Command::new(launcher_path);
     if use_bundled_cli {
         // `pnpm dsh` intentionally loads the TypeScript source through
         // `tsx/esm`, which is convenient for development but needlessly adds
@@ -865,12 +1026,14 @@ async fn clear_stale_lock_screen_backup(
 }
 
 #[tauri::command]
-fn get_lock_screen_diagnostics(
+async fn get_lock_screen_diagnostics(
     caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
 ) -> Result<windows_integration::LockScreenDiagnostics, String> {
     require_settings(&caller)?;
-    windows_integration::lock_screen_diagnostics(&app)
+    tauri::async_runtime::spawn_blocking(move || windows_integration::lock_screen_diagnostics(&app))
+        .await
+        .map_err(|error| format!("读取锁屏诊断未完成：{error}"))?
 }
 
 fn set_autostart_blocking(enabled: bool) -> Result<windows_integration::AutostartStatus, String> {
@@ -948,28 +1111,48 @@ struct TranslucentTbStatus {
     source: Option<String>,
 }
 
-#[tauri::command]
-fn translucent_tb_status(caller: tauri::WebviewWindow) -> Result<TranslucentTbStatus, String> {
-    require_settings(&caller)?;
+#[cfg(windows)]
+fn hide_child_console(command: &mut std::process::Command) {
+    std::os::windows::process::CommandExt::creation_flags(command, 0x08000000);
+}
+
+fn translucent_tb_status_blocking() -> Result<TranslucentTbStatus, String> {
     #[cfg(windows)]
     {
-        let running = std::process::Command::new("tasklist")
-            .args(["/FI", "IMAGENAME eq TranslucentTB.exe", "/FO", "CSV", "/NH"])
-            .output()
-            .ok()
-            .is_some_and(|output| {
-                String::from_utf8_lossy(&output.stdout)
-                    .to_ascii_lowercase()
-                    .contains("translucenttb.exe")
-            });
-        let alias = std::process::Command::new("where.exe")
-            .arg("ttb.exe")
+        let mut tasklist = std::process::Command::new("tasklist");
+        tasklist.args(["/FI", "IMAGENAME eq TranslucentTB.exe", "/FO", "CSV", "/NH"]);
+        hide_child_console(&mut tasklist);
+        let running = tasklist.output().ok().is_some_and(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .to_ascii_lowercase()
+                .contains("translucenttb.exe")
+        });
+
+        let mut where_command = std::process::Command::new("where.exe");
+        where_command.arg("ttb.exe");
+        hide_child_console(&mut where_command);
+        let alias = where_command
             .output()
             .ok()
             .is_some_and(|output| output.status.success());
-        let packaged = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", "if (Get-AppxPackage -Name TranslucentTB -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"])
-            .status().ok().is_some_and(|status| status.success());
+
+        // AppX discovery is occasionally slow on a busy Windows session, so
+        // this whole probe runs on a blocking worker and the child console is
+        // explicitly suppressed. The settings WebView remains responsive.
+        let mut packaged_command = std::process::Command::new("powershell.exe");
+        packaged_command.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "if (Get-AppxPackage -Name TranslucentTB -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }",
+        ]);
+        hide_child_console(&mut packaged_command);
+        let packaged = packaged_command
+            .status()
+            .ok()
+            .is_some_and(|status| status.success());
+
         return Ok(TranslucentTbStatus {
             installed: alias || packaged,
             running,
@@ -982,12 +1165,23 @@ fn translucent_tb_status(caller: tauri::WebviewWindow) -> Result<TranslucentTbSt
             },
         });
     }
+
     #[cfg(not(windows))]
     Ok(TranslucentTbStatus {
         installed: false,
         running: false,
         source: None,
     })
+}
+
+#[tauri::command]
+async fn translucent_tb_status(
+    caller: tauri::WebviewWindow,
+) -> Result<TranslucentTbStatus, String> {
+    require_settings(&caller)?;
+    tauri::async_runtime::spawn_blocking(translucent_tb_status_blocking)
+        .await
+        .map_err(|error| format!("读取透明任务栏状态未完成：{error}"))?
 }
 
 #[tauri::command]
@@ -1229,11 +1423,15 @@ async fn show_deepseek_login(
 async fn deepseek_web_ensure(
     caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
+    conversation_id: Option<String>,
+    new_conversation: Option<bool>,
 ) -> Result<(), String> {
     require_background(&caller)?;
-    tauri::async_runtime::spawn_blocking(move || deepseek_web::ensure(&app))
-        .await
-        .map_err(|error| format!("DeepSeek 网页预热未完成：{error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        deepseek_web::ensure(&app, conversation_id, new_conversation.unwrap_or(false))
+    })
+    .await
+    .map_err(|error| format!("DeepSeek 网页预热未完成：{error}"))?
 }
 
 #[tauri::command]
@@ -1251,9 +1449,47 @@ async fn deepseek_web_status(
 async fn deepseek_web_history(
     caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
+    conversation_id: Option<String>,
+    new_conversation: Option<bool>,
 ) -> Result<deepseek_web::WebHistory, String> {
     require_background(&caller)?;
-    deepseek_web::history(&app).await
+    deepseek_web::history(&app, conversation_id, new_conversation.unwrap_or(false)).await
+}
+
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+async fn deepseek_web_adapter_config_status(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<deepseek_web_config::AdapterConfigStatus, String> {
+    require_settings(&caller)?;
+    tauri::async_runtime::spawn_blocking(move || deepseek_web_config::status(&app))
+        .await
+        .map_err(|error| format!("读取 DeepSeek 网页配置未完成：{error}"))?
+}
+
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+async fn open_deepseek_web_adapter_config(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<deepseek_web_config::AdapterConfigStatus, String> {
+    require_settings(&caller)?;
+    tauri::async_runtime::spawn_blocking(move || deepseek_web_config::open(&app))
+        .await
+        .map_err(|error| format!("打开 DeepSeek 网页配置未完成：{error}"))?
+}
+
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+async fn reset_deepseek_web_adapter_config(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<deepseek_web_config::AdapterConfigStatus, String> {
+    require_settings(&caller)?;
+    tauri::async_runtime::spawn_blocking(move || deepseek_web_config::reset(&app))
+        .await
+        .map_err(|error| format!("恢复 DeepSeek 网页配置未完成：{error}"))?
 }
 
 #[tauri::command]
@@ -1321,6 +1557,7 @@ async fn send_chat(
     text: String,
     conversation_id: Option<String>,
     request_id: Option<String>,
+    new_conversation: Option<bool>,
     base_url: Option<String>,
     model: Option<String>,
     price_input_per_million: Option<f64>,
@@ -1329,9 +1566,16 @@ async fn send_chat(
     require_background(&caller)?;
     match mode.as_str() {
         "deepseek-web" => {
-            deepseek_web::send(app, web_state.inner(), text, conversation_id, request_id)
-                .await
-                .map(Some)
+            deepseek_web::send(
+                app,
+                web_state.inner(),
+                text,
+                conversation_id,
+                request_id,
+                new_conversation.unwrap_or(false),
+            )
+            .await
+            .map(Some)
         }
         "deepseek-api" => chat::send_api(
             app,
@@ -1861,6 +2105,9 @@ macro_rules! register_edition_commands {
             deepseek_web_ensure,
             deepseek_web_status,
             deepseek_web_history,
+            deepseek_web_adapter_config_status,
+            open_deepseek_web_adapter_config,
+            reset_deepseek_web_adapter_config,
             open_settings_window,
             start_settings_drag,
             hide_settings_window,

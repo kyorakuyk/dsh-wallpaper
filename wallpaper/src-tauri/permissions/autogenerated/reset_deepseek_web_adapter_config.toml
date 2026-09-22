@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-reset-deepseek-web-adapter-config"
+description = "Enables the reset_deepseek_web_adapter_config command without any pre-configured scope."
+commands.allow = ["reset_deepseek_web_adapter_config"]
+
+[[permission]]
+identifier = "deny-reset-deepseek-web-adapter-config"
+description = "Denies the reset_deepseek_web_adapter_config command without any pre-configured scope."
+commands.deny = ["reset_deepseek_web_adapter_config"]

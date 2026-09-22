@@ -4,7 +4,7 @@ import type { BackendMode, ModelTierRule } from '../domain/types.ts'
 import { BACKGROUND_OPTIONS, MAX_PRICE_PER_MILLION, normalizedPrice, type WallpaperSettings } from './store.ts'
 import type { AppearanceAssetSummary } from '../features/appearance/appearanceViewModel.ts'
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
-import type { DesktopDisplayInfo, LockScreenDiagnostics, ManagedDshStatus } from '../native/runtime.ts'
+import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, LockScreenDiagnostics, ManagedDshStatus } from '../native/runtime.ts'
 import { preferredDisplayId } from '../runtime/displayLayout.ts'
 import { OfficialPersonaCards } from '../persona/OfficialPersonaCards.tsx'
 import './SettingsPanel.css'
@@ -20,17 +20,23 @@ export interface SettingsPanelProps {
   onClose: () => void
   interactionEnabled: boolean
   onSetInteractionEnabled: (enabled: boolean) => void
+  onOpenAppearance: () => void
   translucentTb: { installed: boolean; running: boolean; source?: string }
   onRefreshTranslucentTb: () => void
   onLaunchTranslucentTb: () => void
   onInstallTranslucentTb: () => void
   dshCandidates: Array<{ rootPath: string; source: string }>
   onScanDsh: () => void
+  dshScanBusy: boolean
   onAdoptDsh: (rootPath: string) => void
   onLaunchDsh: () => void
   managedDsh: ManagedDshStatus
   onRefreshManagedDsh: () => void
   onStopManagedDsh: () => void
+  deepseekWebAdapterConfig?: DeepSeekWebAdapterConfigStatus
+  onRefreshDeepSeekWebAdapterConfig: () => void
+  onOpenDeepSeekWebAdapterConfig: () => void
+  onResetDeepSeekWebAdapterConfig: () => void
   appearanceAssets: AppearanceAssetSummary[]
   appearanceOverrides: Partial<Record<AppearanceSlot, string>>
   appearanceBusy: boolean
@@ -148,7 +154,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
     </header>
 
     <aside className="settings-sidebar">
-      <nav>{pages.map((item) => <button key={item.id} className={page === item.id ? 'is-active' : ''} onClick={() => setPage(item.id)}><span className="settings-nav__icon">{item.icon}</span><span><strong>{item.label}</strong><small>{item.hint}</small></span></button>)}</nav>
+      <nav>{pages.map((item) => <button key={item.id} className={page === item.id ? 'is-active' : ''} onClick={() => { setPage(item.id); if (item.id === 'appearance') props.onOpenAppearance() }}><span className="settings-nav__icon">{item.icon}</span><span><strong>{item.label}</strong><small>{item.hint}</small></span></button>)}</nav>
       <div className="settings-sidebar__status"><i className={harnessStatus === 'bridge-ready' ? 'is-online' : ''} /><span>{harnessStatus === 'bridge-ready' ? 'DSH Bridge 已连接' : harnessStatus === 'web-only' ? 'DSH 在线，缺少 Bridge' : 'DSH 当前离线'}</span></div>
     </aside>
 
@@ -160,6 +166,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <Field title="中央会话窗" detail="关闭后仅可通过托盘右键或此处重新显示；不会因失焦、切换应用或按 Esc 自动消失。"><Toggle label="显示中央会话窗" checked={props.interactionEnabled} onChange={props.onSetInteractionEnabled} /></Field>
           <Field title="气泡布局" detail="中央悬浮始终展开；任务栏停靠以胶囊按钮唤起。"><Choice label="气泡布局" value={settings.interactionLayout} onChange={(value) => set({ interactionLayout: value as WallpaperSettings['interactionLayout'] })} options={[{ value: 'floating', label: '中央玻璃悬浮' }, { value: 'taskbar-docked', label: '任务栏停靠胶囊' }]} /></Field>
           <Field title="历史抽屉默认展开" detail="启动或解锁后直接显示最近的对话。"><Toggle label="历史抽屉默认展开" checked={settings.historyStartsExpanded} onChange={(value) => set({ historyStartsExpanded: value })} /></Field>
+          <Field title="发送消息快捷键" detail="习惯回车换行的开发者可切换为 Ctrl+Enter 发送。"><Choice label="发送消息快捷键" value={settings.sendShortcut} onChange={(value) => set({ sendShortcut: value as WallpaperSettings['sendShortcut'] })} options={[{ value: 'Enter', label: 'Enter 发送，Ctrl+Enter 换行' }, { value: 'Ctrl+Enter', label: 'Ctrl+Enter 发送，Enter 换行' }]} /></Field>
         </Card>
         {props.desktopDisplays.length > 1 && <Card title={`多屏桌面 · 已检测 ${props.desktopDisplays.length} 个屏幕`} description="每块屏幕独立铺满自己的背景；对话窗和立绘可以分别指定目标屏幕。未单独指定的屏幕跟随全局背景。">
           <Field title="启用独立多屏背景" detail={settings.multiScreen.enabled ? '已按屏幕分别渲染；修改某一屏不会改变其他屏幕的背景选择。' : '关闭时保持现有跨虚拟桌面的单一场景；开启后才显示逐屏选择。'}><Toggle label="启用独立多屏背景" checked={settings.multiScreen.enabled} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, enabled: value } })} /></Field>
@@ -170,7 +177,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
           </>}
           <div className="integration-actions"><button className="settings-action secondary" onClick={() => void props.onRefreshDesktopDisplays()}>刷新显示器检测</button></div>
         </Card>}
-        <Card title="会话生命周期"><Field title="新会话策略" detail="每个后端分别保留自己的最近会话。"><Choice label="新会话策略" value={settings.conversationPolicy} onChange={(value) => set({ conversationPolicy: value as WallpaperSettings['conversationPolicy'] })} options={[{ value: 'resume-last', label: '恢复最近会话' }, { value: 'new-on-unlock', label: '每次解锁新建' }, { value: 'daily', label: '每日新建' }]} /></Field></Card>
+        <Card title="会话生命周期"><Field title="新会话策略" detail="网页模式会固定到同一个 DeepSeek 会话地址；其他后端分别保留自己的最近会话。"><Choice label="新会话策略" value={settings.conversationPolicy} onChange={(value) => set({ conversationPolicy: value as WallpaperSettings['conversationPolicy'] })} options={[{ value: 'resume-last', label: '恢复最近会话' }, { value: 'new-on-unlock', label: '每次解锁新建' }, { value: 'daily', label: '每日新建' }]} /></Field></Card>
         <Card title="高级外观" description="环境渐变只作用于立绘；会话窗使用独立的亚克力透明度。">
           <Field title="环境渐变长度" detail={`从暗侧向亮侧延伸至 ${settings.portraitAmbientLength}%`}><input type="range" min="35" max="100" step="1" value={settings.portraitAmbientLength} onChange={(event) => set({ portraitAmbientLength: Number(event.target.value) })} /></Field>
           <Field title="环境渐变强度" detail={`${Math.round(settings.portraitAmbientStrength * 100)}%`}><input type="range" min="0" max="1" step="0.01" value={settings.portraitAmbientStrength} onChange={(event) => set({ portraitAmbientStrength: Number(event.target.value) })} /></Field>
@@ -185,7 +192,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <Field title="DSH 就绪时自动切换" detail="仅检测到兼容的壁纸 Bridge 才会切换。"><Toggle label="DSH 自动切换" checked={settings.autoSwitchHarness} onChange={(value) => set({ autoSwitchHarness: value })} /></Field>
         </Card>
         <Card title="DeepSeek Harness 启动" description="自动扫描只建议候选路径；壁纸只启动自己登记的 DSH 进程，不会关闭其他 3080 服务。">
-          <Field title="自动扫描"><button className="settings-action secondary" onClick={props.onScanDsh}>扫描 DSH</button></Field>
+          <Field title="自动扫描" detail={props.dshScanBusy ? '正在后台搜索可识别的 DSH 项目目录，请稍候。' : props.dshCandidates.length > 0 ? `已发现 ${props.dshCandidates.length} 个候选目录。` : '支持迁移后的磁盘位置；扫描不会阻塞设置中心。'}><button className="settings-action secondary" disabled={props.dshScanBusy} onClick={props.onScanDsh}>{props.dshScanBusy ? '扫描中…' : '扫描 DSH'}</button></Field>
           {props.dshCandidates.map((candidate) => <Field key={candidate.rootPath} title={candidate.rootPath} detail={candidate.source}><button className="settings-action secondary" onClick={() => props.onAdoptDsh(candidate.rootPath)}>采用</button></Field>)}
           <Field title="DSH 根目录"><input value={settings.dshLaunch.rootPath ?? ''} placeholder="自动扫描或手动填写 dsh 项目目录" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, rootPath: e.target.value || undefined } })} /></Field>
           <Field title="Profile"><input value={settings.dshLaunch.profile} placeholder="desktop" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, profile: e.target.value || 'desktop' } })} /></Field>
@@ -193,7 +200,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <Field title="启动 DSH" detail="仅启动此处配置的 profile，不会接管已有 3080 服务。"><button className="settings-action" disabled={!settings.dshLaunch.rootPath || props.managedDsh.running} onClick={props.onLaunchDsh}>{props.managedDsh.running ? `运行中 · PID ${props.managedDsh.pid}` : '启动'}</button></Field>
           <Field title="受管进程" detail={props.managedDsh.managed ? `${props.managedDsh.rootPath} · profile ${props.managedDsh.profile}` : '未由本应用启动 DSH；外部 DSH 不会被停止。'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshManagedDsh}>刷新</button><button className="settings-action secondary" disabled={!props.managedDsh.running} onClick={props.onStopManagedDsh}>停止本应用启动的 DSH</button></span></Field>
         </Card>
-        <Card title="DeepSeek 网页入口（实验）" description="在应用内持久 WebView2 中打开 DeepSeek 官方页面，登录后可从桌面会话窗发送消息。"><Field title="官方页面" detail="页面和登录状态由独立 WebView2 配置目录保存；本应用不读取、复制或记录 Cookie。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开应用内页面</button></Field></Card>
+        <Card title="DeepSeek 网页入口（实验）" description="在应用内持久 WebView2 中打开 DeepSeek 官方页面，登录后可从桌面会话窗发送消息。"><Field title="官方页面" detail="页面和登录状态由独立 WebView2 配置目录保存；本应用不读取、复制或记录 Cookie。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开应用内页面</button></Field><Field title="网页适配器配置" detail={props.deepseekWebAdapterConfig ? `${props.deepseekWebAdapterConfig.source === 'local' ? '本地 override' : '内置默认'} · ${props.deepseekWebAdapterConfig.adapterVersion} · ${props.deepseekWebAdapterConfig.path}${props.deepseekWebAdapterConfig.warning ? ` · ${props.deepseekWebAdapterConfig.warning}` : ''}` : '正在读取配置状态…'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshDeepSeekWebAdapterConfig}>刷新</button><button className="settings-action secondary" onClick={props.onOpenDeepSeekWebAdapterConfig}>打开配置</button><button className="settings-action secondary" onClick={props.onResetDeepSeekWebAdapterConfig}>恢复默认</button></span></Field></Card>
         <Card title="DeepSeek API" description="API 模式会产生实际费用，密钥只保存在 Windows 凭据管理器。">
           <Field title="API 地址"><input value={settings.deepseekApi.baseUrl} onChange={(e) => set({ deepseekApi: { ...settings.deepseekApi, baseUrl: e.target.value } })} /></Field>
           <Field title="模型"><input value={settings.deepseekApi.model} onChange={(e) => set({ deepseekApi: { ...settings.deepseekApi, model: e.target.value } })} /></Field>

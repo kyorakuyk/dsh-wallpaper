@@ -43,6 +43,7 @@ export interface ConversationBubbleProps {
   commands?: readonly { name: string; description: string; input?: { hint: string } }[]
   onSelectPermission?: (permission: string) => void
   onExpand?: () => void
+  sendShortcut?: 'Enter' | 'Ctrl+Enter'
   onToggleHistory: () => void
   onSend: (text: string) => void
   onStop: () => void
@@ -246,14 +247,25 @@ export function ConversationBubble(props: ConversationBubbleProps) {
             setDraft(nextDraft)
           }}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && event.ctrlKey && !event.altKey && !event.metaKey && !event.nativeEvent.isComposing) {
-              event.preventDefault()
-              insertNewline(event.currentTarget)
-              return
-            }
-            if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey && !event.nativeEvent.isComposing) {
+            if (event.nativeEvent.isComposing || event.altKey || event.metaKey) return
+
+            const isSend = props.sendShortcut === 'Ctrl+Enter'
+              ? event.key === 'Enter' && event.ctrlKey && !event.shiftKey
+              : event.key === 'Enter' && !event.shiftKey && !event.ctrlKey
+
+            const isNewline = props.sendShortcut === 'Ctrl+Enter'
+              ? event.key === 'Enter' && !event.ctrlKey
+              : event.key === 'Enter' && (event.ctrlKey || event.shiftKey)
+
+            if (isSend) {
               event.preventDefault()
               submit()
+            } else if (isNewline) {
+              // Only need to manually insert if the browser doesn't do it naturally
+              if (props.sendShortcut === 'Enter' && event.ctrlKey) {
+                event.preventDefault()
+                insertNewline(event.currentTarget)
+              }
             }
           }}
           placeholder={composerPlaceholder(Boolean(props.disabled), props.activity)}

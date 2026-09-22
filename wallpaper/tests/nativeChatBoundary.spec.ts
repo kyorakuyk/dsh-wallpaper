@@ -107,6 +107,24 @@ describe('native chat boundary', () => {
     ]))
   })
 
+  it('keeps the DeepSeek adapter override declarative and settings-scoped', async () => {
+    const [web, config, settings] = await Promise.all([
+      readNative('src/deepseek_web.rs'),
+      readNative('config/deepseek-web-adapter.json'),
+      readCapability('settings'),
+    ])
+    expect(web).toContain('configured_script')
+    expect(web).toContain('ADAPTER_CONFIG_MARKER')
+    expect(web).not.toContain('eval(')
+    expect(config).toContain('"schemaVersion": 1')
+    expect(config).toContain('"conversationPathTemplate": "/a/chat/s/{id}"')
+    expect(permissions(settings)).toEqual(expect.arrayContaining([
+      'allow-deepseek-web-adapter-config-status',
+      'allow-open-deepseek-web-adapter-config',
+      'allow-reset-deepseek-web-adapter-config',
+    ]))
+  })
+
   it('keeps the native first-frame handoff bounded and recoverable', async () => {
     const [bootstrap, integration, readme] = await Promise.all([
       readNative('src/native_bootstrap.rs'),
@@ -171,6 +189,24 @@ describe('native chat boundary', () => {
     expect(settings).toContain("nativeRuntime.autostartStatus()")
     expect(settings).toContain('autostartOperationRef')
     expect(settings).toContain('autostartBusy')
+  })
+
+  it('keeps settings probes off the UI thread and gives migrated DSH paths feedback', async () => {
+    const [lib, settings, runtime] = await Promise.all([
+      readNative('src/lib.rs'),
+      readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8'),
+      readFile(resolve(wallpaperRoot, 'src/native/runtime.ts'), 'utf8'),
+    ])
+    expect(lib).toMatch(/async\s+fn\s+translucent_tb_status[\s\S]*?spawn_blocking\(translucent_tb_status_blocking\)/)
+    expect(lib).toMatch(/async\s+fn\s+get_lock_screen_diagnostics[\s\S]*?spawn_blocking\(move \|\| windows_integration::lock_screen_diagnostics/)
+    expect(lib).toMatch(/async\s+fn\s+scan_dsh_paths[\s\S]*?spawn_blocking\(move \|\| \{[\s\S]*?scan_dsh_paths_blocking/)
+    expect(lib).toContain('hide_child_console')
+    expect(lib).toContain('本机 3080 端口已被其他进程占用')
+    expect(settings).toContain('dshScanBusy')
+    expect(settings).toContain('扫描完成，发现')
+    expect(settings).toContain('未发现 DSH 项目')
+    expect(runtime).toContain('scanDshPaths(hintPath?: string, deepScan?: boolean)')
+    expect(runtime).toContain("'scan_dsh_paths', { hintPath, deepScan }")
   })
 
   it('uses the built DSH CLI for managed launches when it is available', async () => {

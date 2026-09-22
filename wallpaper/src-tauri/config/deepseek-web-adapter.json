@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "adapterVersion": "deepseek-chat-dom-v2.1",
+  "siteOrigin": "https://chat.deepseek.com",
+  "conversationPathTemplate": "/a/chat/s/{id}",
+  "composerSelectors": [
+    "textarea",
+    "[contenteditable=\"true\"]"
+  ],
+  "assistantSelectors": [
+    ".ds-assistant-message-main-content",
+    "[data-message-author-role=\"assistant\"]",
+    "[data-role=\"assistant\"]",
+    "[data-role=\"assistant_message\"]",
+    "[data-testid*=\"assistant-message\"]",
+    "[class*=\"assistant-message\"]"
+  ],
+  "markdownSelectors": [
+    ".ds-markdown",
+    "[class*=\"markdown\"]",
+    "[data-testid*=\"markdown\"]"
+  ],
+  "messageSelectors": [
+    "article",
+    "[data-testid*=\"message\"]",
+    "[class*=\"message\"]"
+  ],
+  "appShellSelectors": [
+    ".ds-button",
+    ".ds-textarea",
+    "[class*=\"inputWrapper\"]",
+    "[data-virtual-list-item-key]"
+  ],
+  "loadingClass": "ds-button--loading",
+  "sendTokens": [
+    "发送",
+    "send",
+    "submit",
+    "continue"
+  ],
+  "stopTokens": [
+    "停止",
+    "stop",
+    "cancel",
+    "interrupt"
+  ],
+  "terminalTokens": [
+    "重新生成",
+    "再次生成",
+    "regenerate",
+    "retry",
+    "try again"
+  ],
+  "loginTokens": [
+    "登录",
+    "登入",
+    "扫码",
+    "log in",
+    "sign in"
+  ],
+  "assistantRoleTokens": [
+    "assistant",
+    "ai-message",
+    "bot-message",
+    "deepseek-assistant"
+  ],
+  "userRoleTokens": [
+    "user",
+    "user-message",
+    "human-message"
+  ]
+}

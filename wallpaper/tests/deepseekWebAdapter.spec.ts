@@ -34,6 +34,7 @@ describe('DeepSeek web adapter', () => {
       await adapter.connect()
       await adapter.send('你好')
 
+      expect(nativeRuntime.ensureDeepSeekWeb).toHaveBeenCalledWith(undefined, false)
       expect(nativeRuntime.sendChat).toHaveBeenCalledWith('deepseek-web', '你好', expect.objectContaining({ conversationId: 'web-current', requestId: expect.any(String) }))
       expect(events).toEqual(expect.arrayContaining([
         { type: 'message', role: 'user', content: '你好' },
@@ -50,6 +51,80 @@ describe('DeepSeek web adapter', () => {
       nativeRuntime.listenChat = originalListen
       nativeRuntime.sendChat = originalSend
       nativeRuntime.cancelChat = originalCancel
+    }
+  })
+
+  it('pins connect and history to the saved DeepSeek conversation', async () => {
+    const originalEnsure = nativeRuntime.ensureDeepSeekWeb
+    const originalStatus = nativeRuntime.deepseekWebStatus
+    const originalHistory = nativeRuntime.deepseekWebHistory
+    const originalListen = nativeRuntime.listenChat
+    try {
+      nativeRuntime.ensureDeepSeekWeb = vi.fn(async () => undefined)
+      nativeRuntime.deepseekWebStatus = vi.fn(async () => ({
+        state: 'ready',
+        // This simulates a stale route being reported while the requested
+        // navigation is still being committed by WebView2.
+        conversationId: 'web-stale',
+        signature: 'deepseek-chat-dom-v2',
+      }))
+      nativeRuntime.deepseekWebHistory = vi.fn(async (conversationId) => ({
+        messages: [],
+        conversationId,
+        state: 'ready' as const,
+      }))
+      nativeRuntime.listenChat = vi.fn(async () => () => undefined)
+
+      const adapter = new DeepSeekWebAdapter('saved-conversation')
+      await adapter.connect()
+      expect(adapter.conversationId()).toBe('saved-conversation')
+      await adapter.history()
+
+      expect(nativeRuntime.ensureDeepSeekWeb).toHaveBeenCalledWith('saved-conversation', false)
+      expect(nativeRuntime.deepseekWebHistory).toHaveBeenCalledWith('saved-conversation', false)
+      expect(adapter.conversationId()).toBe('saved-conversation')
+      adapter.disconnect()
+    } finally {
+      nativeRuntime.ensureDeepSeekWeb = originalEnsure
+      nativeRuntime.deepseekWebStatus = originalStatus
+      nativeRuntime.deepseekWebHistory = originalHistory
+      nativeRuntime.listenChat = originalListen
+    }
+  })
+
+  it('starts a fresh web route without adopting the previous page ID', async () => {
+    const originalEnsure = nativeRuntime.ensureDeepSeekWeb
+    const originalStatus = nativeRuntime.deepseekWebStatus
+    const originalHistory = nativeRuntime.deepseekWebHistory
+    const originalListen = nativeRuntime.listenChat
+    try {
+      nativeRuntime.ensureDeepSeekWeb = vi.fn(async () => undefined)
+      nativeRuntime.deepseekWebStatus = vi.fn(async () => ({
+        state: 'ready',
+        conversationId: 'previous-conversation',
+        signature: 'deepseek-chat-dom-v2',
+      }))
+      nativeRuntime.deepseekWebHistory = vi.fn(async () => ({
+        messages: [],
+        conversationId: 'fresh-conversation',
+        state: 'ready' as const,
+      }))
+      nativeRuntime.listenChat = vi.fn(async () => () => undefined)
+
+      const adapter = new DeepSeekWebAdapter(undefined, true)
+      await adapter.connect()
+      expect(adapter.conversationId()).toBeUndefined()
+      await adapter.history()
+
+      expect(nativeRuntime.ensureDeepSeekWeb).toHaveBeenCalledWith(undefined, true)
+      expect(nativeRuntime.deepseekWebHistory).toHaveBeenCalledWith(undefined, true)
+      expect(adapter.conversationId()).toBe('fresh-conversation')
+      adapter.disconnect()
+    } finally {
+      nativeRuntime.ensureDeepSeekWeb = originalEnsure
+      nativeRuntime.deepseekWebStatus = originalStatus
+      nativeRuntime.deepseekWebHistory = originalHistory
+      nativeRuntime.listenChat = originalListen
     }
   })
 

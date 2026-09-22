@@ -8,7 +8,7 @@ export { assetUrl }
 
 export type InteractionLayout = 'floating' | 'taskbar-docked'
 
-export const SETTINGS_VERSION = 8
+export const SETTINGS_VERSION = 9
 /** Keep renderer validation aligned with the native request boundary. A value
  * beyond this ceiling is almost certainly a unit/configuration error and must
  * not be presented as a configured price when Rust deliberately ignores it. */
@@ -71,6 +71,8 @@ export interface WallpaperSettings {
   autostart: boolean
   /** 应用内睡眠模式快捷键 */
   sleepHotkey: string
+  /** 发送消息快捷键 */
+  sendShortcut: 'Enter' | 'Ctrl+Enter'
   background: BackgroundId
   historyStartsExpanded: boolean
   animationIntensity: 'low' | 'normal' | 'high'
@@ -101,6 +103,7 @@ export const DEFAULT_SETTINGS: WallpaperSettings = {
   lockScreenEnabled: false,
   autostart: false,
   sleepHotkey: 'Alt+W',
+  sendShortcut: 'Enter',
   background: 'workspace',
   historyStartsExpanded: false,
   animationIntensity: 'normal',
@@ -115,7 +118,7 @@ export const DEFAULT_SETTINGS: WallpaperSettings = {
   dshLaunch: { profile: 'desktop' },
 }
 
-const KEY = 'dsh-wallpaper:settings:v8'
+const KEY = 'dsh-wallpaper:settings:v9'
 
 function validDisplayId(value: string): boolean {
   return value.length > 0 && value.length <= 128 && !/[\u0000-\u001f\u007f]/.test(value)
@@ -156,6 +159,7 @@ function migrate(raw: unknown): WallpaperSettings {
     autoSwitchHarness: value.autoSwitchHarness ?? value.autoSwitchPersona ?? false,
     modelTierRules: Array.isArray(value.modelTierRules) ? value.modelTierRules : [],
     bubbleOverrides: value.bubbleOverrides ?? {},
+    sendShortcut: value.sendShortcut === 'Ctrl+Enter' ? 'Ctrl+Enter' : 'Enter',
     portraitAmbientLength: typeof value.portraitAmbientLength === 'number' ? Math.min(100, Math.max(35, value.portraitAmbientLength)) : DEFAULT_SETTINGS.portraitAmbientLength,
     portraitAmbientStrength: typeof value.portraitAmbientStrength === 'number' ? Math.min(1, Math.max(0, value.portraitAmbientStrength)) : DEFAULT_SETTINGS.portraitAmbientStrength,
     conversationOpacity: typeof value.conversationOpacity === 'number' ? Math.min(.96, Math.max(.2, value.conversationOpacity)) : DEFAULT_SETTINGS.conversationOpacity,
@@ -191,7 +195,7 @@ function normalizeApiSettings(value: Partial<ApiSettings> | undefined): ApiSetti
 
 export function loadSettings(): WallpaperSettings {
   try {
-    const raw = localStorage.getItem(KEY) ?? localStorage.getItem('dsh-wallpaper:settings:v7') ?? localStorage.getItem('dsh-wallpaper:settings:v6') ?? localStorage.getItem('dsh-wallpaper:settings:v5') ?? localStorage.getItem('dsh-wallpaper:settings:v4') ?? localStorage.getItem('dsh-wallpaper:settings:v3') ?? localStorage.getItem('dsh-wallpaper:settings:v2') ?? localStorage.getItem('dsh-wallpaper:settings')
+    const raw = localStorage.getItem(KEY) ?? localStorage.getItem('dsh-wallpaper:settings:v8') ?? localStorage.getItem('dsh-wallpaper:settings:v7') ?? localStorage.getItem('dsh-wallpaper:settings:v6') ?? localStorage.getItem('dsh-wallpaper:settings:v5') ?? localStorage.getItem('dsh-wallpaper:settings:v4') ?? localStorage.getItem('dsh-wallpaper:settings:v3') ?? localStorage.getItem('dsh-wallpaper:settings:v2') ?? localStorage.getItem('dsh-wallpaper:settings')
     if (raw) return migrate(JSON.parse(raw))
   } catch {
     /* 忽略损坏的配置 */
@@ -211,6 +215,14 @@ export interface ConversationPointers {
   'deepseek-web'?: { id: string; updatedAt: number; day: string }
   'deepseek-api'?: { id: string; updatedAt: number; day: string }
   harness?: { id: string; updatedAt: number; day: string; bridgeRevision?: number }
+}
+
+/** Conversation IDs are embedded in an official DeepSeek route by Rust. */
+export function isValidConversationId(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= 200
+    && /^[A-Za-z0-9._-]+$/.test(value)
 }
 
 /**
@@ -233,6 +245,7 @@ export function loadConversationPointers(): ConversationPointers {
 }
 
 export function saveConversationPointer(backend: BackendMode, id: string, now: Date = new Date()): void {
+  if (backend === 'deepseek-web' && !isValidConversationId(id)) return
   try {
     const pointers = loadConversationPointers()
     pointers[backend] = {
@@ -252,7 +265,9 @@ export function resumeConversationId(backend: BackendMode, policy: ConversationP
   if (backend === 'harness'
     && (pointer as ConversationPointers['harness'])?.bridgeRevision !== HARNESS_POINTER_REVISION) return undefined
   if (policy === 'daily' && pointer.day !== localCalendarDay(now)) return undefined
-  return pointer.id
+  return backend === 'deepseek-web'
+    ? isValidConversationId(pointer.id) ? pointer.id : undefined
+    : pointer.id
 }
 
 /** 应用气泡覆盖：persona 的 bubbles 与设置覆盖合并 */

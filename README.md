@@ -42,7 +42,7 @@ pnpm desktop:build:lite
 ☀️ 待机    深海背景 + 右侧立绘 + 气泡「早上好！今天要做什么呢？」
    │ 单击立绘 / 快捷键
    ▼
-💬 会话    DeepSeek API、Harness 或 DeepSeek 网页 DOM 桥接可在壁纸中对话；网页模式使用独立持久 WebView2
+💬 会话    DeepSeek API、Harness 或 DeepSeek 网页 DOM 桥接可在壁纸中对话；网页模式使用独立持久 WebView2，并按会话策略固定/恢复 DeepSeek 会话
    ▼
 🖥️ Harness  兼容的 DSH Wallpaper Bridge 就绪后，立绘切换为黑红主题，并通过其会话接口通信（默认 loopback `http://127.0.0.1:3080`）
 ```
@@ -161,6 +161,8 @@ dsh-wallpaper/
 - **形态联动**：`autoSwitchHarness` 开启时，兼容 Bridge 连续就绪后才切换黑红形态；失去兼容 Bridge 后可手动切回（可关闭）
 - **Tauri 壳**：单一 `background` WebView 注入 WorkerW（画面和桌面内交互热区共用宿主）；`settings` 是唯一独立应用窗口。非热区输入通过原生命中测试交还 Explorer；另有 WTS 锁定/解锁、托盘菜单、MSIX StartupTask 优先且兼容 Run 键的自启和 keyring 凭据。
 - **启动首帧**：原生首帧先使用随包睡眠图；Explorer 尚未提供 WorkerW 时在限定时间内重试并暂挂 Progman，后台宿主恢复时同步把首帧层重新挂到 WorkerW。原生层按当前每块显示器的物理区域独立裁切绘制，前端苏醒帧也按显示器区域分别播放。启动阶段只记录父窗口类型、尺寸、显示器数量、阶段和耗时；诊断文件位于进程的 `%LOCALAPPDATA%\DSHWallpaper\startup-diagnostic.log`。MSIX 运行时 Windows 通常会把 `%LOCALAPPDATA%` 重定向到包容器，实际路径形如 `%LOCALAPPDATA%\Packages\<package-family>\LocalCache\Local\DSHWallpaper\startup-diagnostic.log`，可用 `rg --files $env:LOCALAPPDATA -g startup-diagnostic.log` 定位。
+- **DeepSeek 网页会话**：应用内 WebView2 使用独立持久数据目录保存网页登录态，但会话指针单独由壁纸保存。默认“恢复最近会话”会导航到保存的 `https://chat.deepseek.com/a/chat/s/<conversation-id>`，历史读取和发送前都会确认页面已处于该会话；只有策略判定需要新建时，才会回到根路由创建新会话。应用不读取或复制 Cookie，也不会因 WebView 重载自动创建新的重复会话。
+- **DeepSeek 网页适配配置**：选择器、角色标签和会话路由模板来自 `wallpaper/src-tauri/config/deepseek-web-adapter.json`。设置中心可打开应用配置目录中的 `deepseek-web-adapter.override.json`；保存后下一次网页操作读取新配置，配置无效时自动回退内置版本。该配置只允许声明式选择器和标签，不允许 JavaScript、Cookie、凭据或任意域名；配置维护说明见 [`docs/deepseek-web-adapter.md`](docs/deepseek-web-adapter.md)。
 - **bridge 协议**：`/api/wallpaper/v1` 版本化 REST/SSE，status 公开、会话路由 bearer token 鉴权（token 存 `$DSH_HOME/wallpaper/bridge-token`，仅原生壳读取）
 
 ## 测试

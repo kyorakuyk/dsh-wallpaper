@@ -177,6 +177,19 @@ export function shouldStartNewConversationOnUnlock(
 }
 
 /**
+ * WebView2 keeps cookies and page state, but the DeepSeek root route can still
+ * select a different conversation after a reload. When there is no pointer
+ * to resume, the non-resume policies must explicitly start from that root;
+ * `resume-last` intentionally adopts the current page on first use.
+ */
+export function shouldStartNewWebConversation(
+  policy: WallpaperSettings['conversationPolicy'],
+  resumeId: string | undefined,
+): boolean {
+  return policy === 'new-on-unlock' || (policy === 'daily' && !resumeId)
+}
+
+/**
  * `register_session_events` emits an initial `resume` while the background
  * WebView is starting. A resume is a policy boundary only after this process
  * has observed the matching suspend; otherwise it may be that synthetic
@@ -568,9 +581,15 @@ export function App({ surface = 'combined' }: AppProps) {
   useEffect(() => {
     const adapterBackend = runtime.backend
     const conversationPolicy = conversationPolicyRef.current
+    const webResumeId = adapterBackend === 'deepseek-web'
+      ? resumeConversationId('deepseek-web', conversationPolicy)
+      : undefined
     const adapter: ChatAdapter = nativeRuntime.isNative
       ? adapterBackend === 'deepseek-web'
-        ? new DeepSeekWebAdapter()
+        ? new DeepSeekWebAdapter(
+            webResumeId,
+            shouldStartNewWebConversation(conversationPolicy, webResumeId),
+          )
         : new NativeChatAdapter(
             adapterBackend,
             adapterBackend === 'deepseek-api'
@@ -870,7 +889,7 @@ export function App({ surface = 'combined' }: AppProps) {
         harnessLaunchPendingRef.current = true
         harnessLaunchStartedAtRef.current = Date.now()
         try {
-          const rootPath = settings.dshLaunch.rootPath ?? (await nativeRuntime.scanDshPaths())[0]?.rootPath
+          const rootPath = settings.dshLaunch.rootPath ?? (await nativeRuntime.scanDshPaths(settings.dshLaunch.rootPath, true))[0]?.rootPath
           if (!rootPath) {
             harnessLaunchPendingRef.current = false
             harnessLaunchStartedAtRef.current = undefined
@@ -917,6 +936,7 @@ export function App({ surface = 'combined' }: AppProps) {
         }
       }}
       disabled={runtime.backend === 'harness' && runtime.harness !== 'bridge-ready'}
+      sendShortcut={settings.sendShortcut}
       onToggleHistory={() => {
         if (workspace !== 'front') {
           setInnerHistoryExpanded((value) => !value)

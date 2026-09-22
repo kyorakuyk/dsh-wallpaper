@@ -11,8 +11,15 @@ export class DeepSeekWebAdapter extends EventChatAdapter {
   readonly mode = 'deepseek-web' as const
   private connected = false
   private sessionId: string | undefined
+  private newConversation: boolean
   private requestId: string | undefined
   private nativeUnsubscribe: (() => void) | undefined
+
+  constructor(resumeConversationId?: string, newConversation = false) {
+    super()
+    this.sessionId = resumeConversationId
+    this.newConversation = newConversation
+  }
 
   /**
    * The native invoke resolves after the DOM polling turn has ended, but the
@@ -62,8 +69,19 @@ export class DeepSeekWebAdapter extends EventChatAdapter {
       // into a false `done` state after login/error handling.
       if ((chatEvent.type === 'auth-required' || chatEvent.type === 'error') && this.requestId === activeRequestId) this.requestId = undefined
     })
+    // The WebView is persistent, but its current route is not a session
+    // contract: DeepSeek may return to the root route after a reload. Pin the
+    // native page to the saved conversation before reading its status/history.
+    // A fresh lifecycle deliberately starts from the root route instead.
+    await nativeRuntime.ensureDeepSeekWeb(
+      this.newConversation ? undefined : this.sessionId,
+      this.newConversation,
+    )
     const status = await nativeRuntime.deepseekWebStatus()
-    this.sessionId = status.conversationId
+    // A navigation request can still be in flight when status is sampled. Do
+    // not let the old page's ID overwrite a saved target (or a fresh-route
+    // request) before history confirms the actual page.
+    if (!this.newConversation && !this.sessionId) this.sessionId = status.conversationId
     this.connected = true
     this.emit({ type: 'model', provider: 'deepseek-web', model: status.model ?? 'deepseek-chat', tier: 'unknown' })
     if (status.state === 'unsupported') {
@@ -95,8 +113,10 @@ export class DeepSeekWebAdapter extends EventChatAdapter {
       const returnedConversationId = await nativeRuntime.sendChat(this.mode, text, {
         conversationId: options?.conversationId ?? this.sessionId,
         requestId,
+        newConversation: this.newConversation,
       })
       if (returnedConversationId) this.sessionId = returnedConversationId
+      this.newConversation = false
       // `send_chat` resolves only after Rust has finished the DOM polling turn.
       // If the corresponding `done`/assistant event was lost at the WebView
       // boundary, release the renderer here instead of leaving the Stop button
@@ -129,7 +149,8 @@ export class DeepSeekWebAdapter extends EventChatAdapter {
   }
 
   async history(): Promise<ChatMessage[]> {
-    const result = await nativeRuntime.deepseekWebHistory()
+    const result = await nativeRuntime.deepseekWebHistory(this.sessionId, this.newConversation)
+    this.newConversation = false
     this.sessionId = result.conversationId ?? this.sessionId
     if (result.model) this.emit({ type: 'model', provider: 'deepseek-web', model: result.model, tier: 'unknown' })
     return result.messages
