@@ -50,6 +50,9 @@ export const Config: Schema<Config> = Schema.object({
 interface LiveSession {
   handle: AgentHandle
   clients: Set<ServerResponse>
+  /** Last time this handle did anything (subscriber attach, event, message).
+   * The idle sweep uses it to release handles nobody is watching. */
+  lastActivityAt: number
 }
 
 /** The narrow host-owned default model API consumed by the bridge. */
@@ -105,6 +108,25 @@ const MAX_SSE_QUESTION_COUNT = 8
 const MAX_SSE_QUESTION_OPTIONS = 12
 const MAX_SSE_TOKEN_COUNT = 1_000_000_000_000
 const MAX_SSE_COST = 1_000_000
+// Resource ceilings. The bridge is a resident process that any local
+// token-holder can drive, so every allocation it owns needs an explicit bound:
+// live agent handles, SSE subscribers per handle, in-flight creations, and the
+// history payload it puts on the wire.
+//
+// A desktop has one wallpaper; more than a handful of live sessions means a
+// client is leaking handles rather than doing work, so refuse instead of
+// growing. Over-limit requests get a stable 429/409 the caller can act on
+// rather than an unbounded allocation.
+export const MAX_LIVE_SESSIONS = 8
+export const MAX_SSE_CLIENTS_PER_SESSION = 4
+export const MAX_PENDING_CREATIONS = 8
+export const MAX_HISTORY_MESSAGES = 256
+export const MAX_HISTORY_BYTES = 4 * 1024 * 1024
+/** An idle handle with no subscriber is released after this long. Timestamps
+ * and message ids are preserved, so a reconnect resumes the same DSH session
+ * instead of losing the transcript. */
+export const LIVE_SESSION_IDLE_TTL_MS = 10 * 60 * 1000
+export const LIVE_SESSION_SWEEP_INTERVAL_MS = 30 * 1000
 const MIN_TOKEN_LENGTH = 32
 const execFileAsync = promisify(execFile)
 const TOKEN_DIRECTORY_NAME = 'wallpaper'
@@ -114,6 +136,17 @@ const DESKTOP_ENTRY_CONTEXT_NAME = 'wallpaper:desktop-entry'
 
 class RequestBodyError extends Error {
   constructor(readonly status: 400 | 413, readonly code: 'invalid-request' | 'request-too-large') {
+    super(code)
+  }
+}
+
+/**
+ * A resource ceiling was reached. `status`/`code` are stable contract values:
+ * 429 means "retry later, this bridge is full", 409 means "this specific
+ * handle is already fully subscribed".
+ */
+class BridgeLimitError extends Error {
+  constructor(readonly status: 429 | 409, readonly code: string) {
     super(code)
   }
 }
@@ -633,10 +666,47 @@ function approvalSummary(toolName: unknown): string {
     : '一个工具调用需要在 Harness 中批准'
 }
 
-function historyOf(session: Session): Array<Record<string, unknown>> {
-  return session.deriveMessages()
+/**
+ * History is trimmed *here*, before it becomes a JSON response body. The
+ * native client already rejects an oversized history payload, so letting the
+ * bridge serialize megabytes only for the peer to discard them wastes the
+ * wallpaper's memory and the loopback bandwidth. Newest messages win, and an
+ * individual message body is never truncated.
+ */
+export function historyOf(session: Session, limit = MAX_HISTORY_MESSAGES, maxBytes = MAX_HISTORY_BYTES): {
+  messages: Array<Record<string, unknown>>
+  truncated: boolean
+} {
+  const all = session.deriveMessages()
     .filter(isVisibleWallpaperMessage)
     .map((message) => ({ id: message.id, role: message.role, content: contentText(message) }))
+  const requested = Number.isSafeInteger(limit) && limit > 0
+    ? Math.min(limit, MAX_HISTORY_MESSAGES)
+    : MAX_HISTORY_MESSAGES
+  const budget = Number.isSafeInteger(maxBytes) && maxBytes > 0
+    ? Math.min(maxBytes, MAX_HISTORY_BYTES)
+    : MAX_HISTORY_BYTES
+
+  const kept: Array<Record<string, unknown>> = []
+  let bytes = 0
+  for (let index = all.length - 1; index >= 0; index -= 1) {
+    if (kept.length >= requested) break
+    const message = all[index]
+    if (!message) break
+    const size = Buffer.byteLength(JSON.stringify(message), 'utf8')
+    // Always keep the newest message, even if that single body is over budget:
+    // dropping it would silently lose the answer the user is reading.
+    if (kept.length > 0 && bytes + size > budget) break
+    bytes += size
+    kept.push(message)
+  }
+  kept.reverse()
+  return { messages: kept, truncated: kept.length < all.length }
+}
+
+/** An over-limit request keeps the connection usable but allocates nothing. */
+function requireCapacity(condition: boolean, status: 429 | 409, code: string): void {
+  if (!condition) throw new BridgeLimitError(status, code)
 }
 
 export function apply(ctx: Context, config: Config = {}): void {
@@ -648,6 +718,22 @@ export function apply(ctx: Context, config: Config = {}): void {
   // allowed to receive messages or SSE subscribers.
   const creating = new Map<string, Promise<LiveSession>>()
   let stopping = false
+  /** A subscriber attach or event counts as activity for the idle sweep. */
+  const touch = (entry: LiveSession): void => { entry.lastActivityAt = Date.now() }
+  /**
+   * Release handles that no subscriber is watching. The DSH session itself is
+   * durable: only this process's live agent handle goes away, and a reconnect
+   * resumes the same session ID.
+   */
+  const sweepIdleSessions = (now = Date.now()): void => {
+    if (stopping) return
+    for (const [sessionId, entry] of [...live]) {
+      if (entry.clients.size > 0) continue
+      if (now - entry.lastActivityAt < LIVE_SESSION_IDLE_TTL_MS) continue
+      live.delete(sessionId)
+      void entry.handle.dispose().catch(() => undefined)
+    }
+  }
   const canResume = (): boolean => {
     // Keep the lightweight unit-test harness compatible while production
     // Cordis contexts use `get()` for optional service discovery.
@@ -663,6 +749,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   const publish = (sessionId: string, event: BridgeEvent): void => {
     const entry = live.get(sessionId)
     if (!entry) return
+    touch(entry)
     for (const client of [...entry.clients]) {
       if (client.writableEnded || client.destroyed) entry.clients.delete(client)
       else if (!sse(client, event)) entry.clients.delete(client)
@@ -857,8 +944,7 @@ export function apply(ctx: Context, config: Config = {}): void {
 
     const sessionsDispose = wctx.webServer.register({
       kind: 'prefix',
-      path: `${API_PREFIX}/sessions`,
-      handler: async (req, res) => {
+      path: `${API_PREFIX}/sessions`,      handler: async (req, res) => {
         const host = wctx as unknown as { commands: Commands }
         await tokenReady
         if (tokenFailure !== undefined) return json(res, 503, { error: 'bridge-token-unavailable', reference: tokenFailure })
@@ -893,13 +979,30 @@ export function apply(ctx: Context, config: Config = {}): void {
               : requestedResume || requested || `wallpaper-${randomUUID()}`
             if (!isSafeSessionId(id)) return json(res, 400, { error: 'invalid-session-id' })
             const ownedResume = workspace.sessionIds.some((sessionId) => String(sessionId) === id)
+            // An unmatched resume ID is rewritten to a fresh session before the
+            // live lookup, so a client that simply reconnects must resolve to
+            // the live handle it already owns rather than being told the
+            // (nonexistent) resume is unavailable. Without this order, a
+            // reconnect while persistence is unavailable answered 409 even
+            // though the very same session was live in this process.
+            const effectiveIdRequest = (requestedResume || automaticDailySession) && !ownedResume
+              ? `wallpaper-${randomUUID()}`
+              : id
+            const existing = live.get(effectiveIdRequest)
+            if (existing) {
+              touch(existing)
+              return json(res, 200, sessionSummary(existing))
+            }
             const resume = requestedResume || automaticDailySession
               ? (ownedResume ? id : '')
               : ''
             if (requestedResume && !resume) return json(res, 409, { error: 'resume-unavailable' })
             if (resume && !canResume()) return json(res, 409, { error: 'resume-unavailable' })
-            const existing = live.get(id)
-            if (existing) return json(res, 200, sessionSummary(existing))
+            // Refuse rather than allocate once this bridge already owns its
+            // full set of live handles, or once the in-flight creations could
+            // exceed that set. 429 is the actionable stable answer.
+            requireCapacity(live.size < MAX_LIVE_SESSIONS, 429, 'too-many-live-sessions')
+            requireCapacity(creating.size < MAX_PENDING_CREATIONS, 429, 'too-many-pending-sessions')
             const provider = typeof body.provider === 'string' && body.provider.trim() ? body.provider.trim() : undefined
             const model = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : undefined
             // `ctx.agents.create()` is intentionally low-level: unlike the
@@ -1002,7 +1105,7 @@ export function apply(ctx: Context, config: Config = {}): void {
                   await handle.dispose().catch(() => undefined)
                   throw new Error('wallpaper bridge is shutting down')
                 }
-                const entry: LiveSession = { handle, clients: new Set<ServerResponse>() }
+                const entry: LiveSession = { handle, clients: new Set<ServerResponse>(), lastActivityAt: Date.now() }
                 live.set(effectiveId, entry)
                 if (!resume || effectiveId !== id) await workspace.attachSession(SessionId(effectiveId))
                 return entry
@@ -1024,10 +1127,28 @@ export function apply(ctx: Context, config: Config = {}): void {
 
           if (route.kind === 'history') {
             if (req.method !== 'GET') return json(res, 405, { error: 'method-not-allowed' })
-            return json(res, 200, { sessionId: route.sessionId, messages: historyOf(entry.handle.agent.session) })
+            const query = new URL(req.url ?? '', 'http://127.0.0.1').searchParams
+            const limit = Number.parseInt(query.get('limit') ?? '', 10)
+            const maxBytes = Number.parseInt(query.get('maxBytes') ?? '', 10)
+            const history = historyOf(entry.handle.agent.session, limit, maxBytes)
+            touch(entry)
+            return json(res, 200, {
+              sessionId: route.sessionId,
+              messages: history.messages,
+              truncated: history.truncated,
+              limits: { maxMessages: MAX_HISTORY_MESSAGES, maxBytes: MAX_HISTORY_BYTES },
+            })
           }
           if (route.kind === 'events') {
             if (req.method !== 'GET') return json(res, 405, { error: 'method-not-allowed' })
+            // One wallpaper reader per handle is the normal case. A second
+            // subscriber is only ever a reconnect overlap, so a small cap
+            // catches a leaking client before it can multiply the write fan-out.
+            requireCapacity(
+              entry.clients.size < MAX_SSE_CLIENTS_PER_SESSION,
+              409,
+              'too-many-subscribers',
+            )
             res.statusCode = 200
             res.setHeader('content-type', 'text/event-stream; charset=utf-8')
             res.setHeader('cache-control', 'no-store')
@@ -1036,6 +1157,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             // connection setup cannot race past the client. The snapshot then
             // brings a newly attached reader up to the current state.
             entry.clients.add(res)
+            touch(entry)
             // The native client treats this header as a connection-ready
             // acknowledgement. It is set only after `clients.add`, so a
             // successful response proves the bridge will observe the first
@@ -1091,6 +1213,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             else json(res, error.status, { error: error.code })
             return
           }
+          if (error instanceof BridgeLimitError) return json(res, error.status, { error: error.code })
           if (error instanceof SyntaxError || error instanceof RangeError) return malformed(res, error, wctx.logger)
           const reference = errorReference(error)
           wctx.logger.warn(`wallpaper bridge request failed (${reference})`)
@@ -1098,8 +1221,18 @@ export function apply(ctx: Context, config: Config = {}): void {
         }
       },
     })
-    wctx.effect(() => () => { controlDispose(); sessionsDispose() })
+    wctx.effect(() => {
+      // Release live agent handles nobody is watching. This is a background
+      // timer with a bounded per-tick cost (it only walks `live`, never a
+      // session's message list) and it is cleared on teardown with the routes.
+      const sweep = setInterval(() => sweepIdleSessions(), LIVE_SESSION_SWEEP_INTERVAL_MS)
+      if (typeof sweep.unref === 'function') sweep.unref()
+      return () => {
+        clearInterval(sweep)
+        controlDispose()
+        sessionsDispose()
+      }
+    })
   })
 }
-
 export default apply

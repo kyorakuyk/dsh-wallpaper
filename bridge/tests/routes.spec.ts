@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { API_PREFIX } from '../src/protocol.ts'
-import { apply, desktopEntryPrompt, isLoopbackWebServerHost, tokenFileForRoot, windowsTokenAclCommands, windowsTokenDirectoryAclCommands } from '../src/index.ts'
+import { apply, desktopEntryPrompt, historyOf, isLoopbackWebServerHost, tokenFileForRoot, windowsTokenAclCommands, windowsTokenDirectoryAclCommands, LIVE_SESSION_IDLE_TTL_MS, LIVE_SESSION_SWEEP_INTERVAL_MS, MAX_HISTORY_BYTES, MAX_HISTORY_MESSAGES, MAX_LIVE_SESSIONS, MAX_PENDING_CREATIONS, MAX_SSE_CLIENTS_PER_SESSION } from '../src/index.ts'
 
 interface CapturedResponse {
   status: number
@@ -37,10 +37,10 @@ interface RouteHarness {
   logger: { warn: ReturnType<typeof vi.fn> }
   persistence: { enabled: boolean }
   injectedDependencies: string[] | undefined
+  routeDependencies: string[] | undefined
   workspace: { title: string; path: string; sessionIds: string[]; attachSession: ReturnType<typeof vi.fn> }
   workspaceRegistry: { list: () => unknown[]; create: ReturnType<typeof vi.fn> }
 }
-
 const cleanups: string[] = []
 afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((path) => rm(path, { recursive: true, force: true })))
@@ -156,6 +156,8 @@ async function createHarness(
     },
   }
   let injectedDependencies: string[] | undefined
+  /** The mutating session scope's declared dependencies, if it was composed. */
+  let routeDependencies: string[] | undefined
   const context = {
     on: (event: string, listener: (...args: never[]) => unknown) => {
       listeners.set(event, listener)
@@ -165,6 +167,7 @@ async function createHarness(
     get: (name: string) => name === 'sessionPersistence' && persistence.enabled ? {} : undefined,
     inject: (dependencies: string[], callback: (scope: unknown) => void) => {
       injectedDependencies = dependencies
+      if (dependencies.includes('agents')) routeDependencies = dependencies
       callback({
         webServer,
         agents: { create, resume: create },
@@ -187,7 +190,23 @@ async function createHarness(
   const tokenFile = tokenFileForRoot(tokenRoot)
   await prepareTokenRoot?.(tokenRoot)
   apply(context, { tokenRoot })
-  return { root, tokenRoot, tokenFile, routes, listeners, agent, create, logger, persistence, injectedDependencies, workspace, workspaceRegistry }
+  return {
+    root,
+    tokenRoot,
+    tokenFile,
+    routes,
+    listeners,
+    agent,
+    create,
+    logger,
+    persistence,
+    // Read lazily: `inject` is called once per scope, so a snapshot taken here
+    // would capture whichever scope happened to compose last.
+    get injectedDependencies() { return injectedDependencies },
+    get routeDependencies() { return routeDependencies },
+    workspace,
+    workspaceRegistry,
+  }
 }
 
 async function call(
@@ -211,7 +230,9 @@ describe('wallpaper bridge HTTP routes', () => {
 
   it('declares both agent lifecycle and web-server dependencies for HTTP routes', async () => {
     const harness = await createHarness()
-    expect(harness.injectedDependencies).toEqual(['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry', 'permissionPresets', 'commands'])
+    // The mutating session scope declares — and is gated on — the full service
+    // set, not just the web server needed by the public status route.
+    expect(harness.routeDependencies).toEqual(['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry', 'permissionPresets', 'commands'])
   })
 
   it('registers no route when the host is not the exact loopback address', async () => {
@@ -500,5 +521,140 @@ describe('wallpaper bridge HTTP routes', () => {
     const nonObject = await call(sessionsRoute, request('POST', `${API_PREFIX}/sessions`, [], `Bearer ${token}`))
     expect(nonObject.status).toBe(400)
     expect(JSON.parse(nonObject.body).error).toBe('invalid-request')
+  })
+
+  it('refuses an extra subscriber instead of multiplying one session write fan-out', async () => {
+    const harness = await createHarness()
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+    const sessionsRoute = harness.routes.get(`${API_PREFIX}/sessions`)
+    await call(statusRoute, request('GET', `${API_PREFIX}/status`))
+    const token = (await readFile(harness.tokenFile, 'utf8')).trim()
+    await call(sessionsRoute, request('POST', `${API_PREFIX}/sessions`, { sessionId: 'bounded-subscribers' }, `Bearer ${token}`))
+
+    const events = `${API_PREFIX}/sessions/bounded-subscribers/events`
+    const accepted: CapturedResponse[] = []
+    for (let index = 0; index < MAX_SSE_CLIENTS_PER_SESSION; index += 1) {
+      const response_ = await call(sessionsRoute, request('GET', events, undefined, `Bearer ${token}`))
+      expect(response_.status).toBe(200)
+      expect(response_.headers['x-dsh-wallpaper-sse-ready']).toBe('1')
+      accepted.push(response_)
+    }
+
+    const extra = await call(sessionsRoute, request('GET', events, undefined, `Bearer ${token}`))
+    expect(extra.status).toBe(409)
+    expect(JSON.parse(extra.body)).toEqual({ error: 'too-many-subscribers' })
+    // The rejected subscriber never entered the publish set.
+    for (const client of accepted) expect(client.destroyed).toBe(false)
+  })
+
+  it('bounds the history payload before it becomes a JSON response body', async () => {
+    const harness = await createHarness()
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+    const sessionsRoute = harness.routes.get(`${API_PREFIX}/sessions`)
+    await call(statusRoute, request('GET', `${API_PREFIX}/status`))
+    const token = (await readFile(harness.tokenFile, 'utf8')).trim()
+    await call(sessionsRoute, request('POST', `${API_PREFIX}/sessions`, { sessionId: 'bounded-history' }, `Bearer ${token}`))
+
+    const hidden = { id: 'ctx-1', role: 'user' as const, content: [{ type: 'text' as const, text: 'injected context' }], source: { kind: 'plugin' } }
+    const messages = Array.from({ length: 12 }, (_, index) => ({
+      id: `m-${index}`,
+      role: index % 2 === 0 ? 'user' as const : 'assistant' as const,
+      content: [{ type: 'text' as const, text: `turn ${index}` }],
+      ...(index % 2 === 0 ? { source: { kind: 'user' } } : {}),
+    }))
+    // The durable transcript contains plugin-injected context that the
+    // wallpaper must never show; history filtering still applies.
+    harness.agent.session.deriveMessages = () => [hidden, ...messages] as never
+
+    const full = await call(sessionsRoute, request('GET', `${API_PREFIX}/sessions/bounded-history/history`, undefined, `Bearer ${token}`))
+    expect(full.status).toBe(200)
+    const fullBody = JSON.parse(full.body) as { messages: Array<{ id: string }>; truncated: boolean }
+    expect(fullBody.messages.map((message) => message.id)).toEqual(messages.map((message) => message.id))
+    expect(fullBody.truncated).toBe(false)
+    expect(full.body).not.toContain('injected context')
+
+    // A caller-chosen window keeps the newest messages in chronological order.
+    const windowed = await call(sessionsRoute, request('GET', `${API_PREFIX}/sessions/bounded-history/history?limit=3`, undefined, `Bearer ${token}`))
+    const windowedBody = JSON.parse(windowed.body) as { messages: Array<{ id: string; content: string }>; truncated: boolean }
+    expect(windowedBody.messages.map((message) => message.id)).toEqual(['m-9', 'm-10', 'm-11'])
+    expect(windowedBody.truncated).toBe(true)
+
+    // The limit is clamped to the documented ceiling, never trusted as-is.
+    const clamped = await call(sessionsRoute, request('GET', `${API_PREFIX}/sessions/bounded-history/history?limit=100000`, undefined, `Bearer ${token}`))
+    expect((JSON.parse(clamped.body) as { messages: unknown[] }).messages).toHaveLength(12)
+    expect(clamped.body).toContain(`"maxMessages":${MAX_HISTORY_MESSAGES}`)
+  })
+
+  it('drops whole messages to respect the history byte budget without cutting one body', () => {
+    const content = (text: string) => [{ type: 'text' as const, text }]
+    const session = {
+      deriveMessages: () => [
+        { id: 'old', role: 'user' as const, content: content('x'.repeat(400)), source: { kind: 'user' } },
+        { id: 'newest', role: 'assistant' as const, content: content('y'.repeat(4_000)) },
+      ],
+    }
+    const bounded = historyOf(session as never, MAX_HISTORY_MESSAGES, 1_000)
+    // The newest message is always kept, even alone over the byte budget, so
+    // the answer the user is reading cannot be dropped.
+    expect(bounded.messages.map((message) => message.id)).toEqual(['newest'])
+    expect((bounded.messages[0]?.content as string).length).toBe(4_000)
+    expect(bounded.truncated).toBe(true)
+
+    const both = historyOf(session as never, MAX_HISTORY_MESSAGES, MAX_HISTORY_BYTES)
+    expect(both.messages.map((message) => message.id)).toEqual(['old', 'newest'])
+    expect(both.truncated).toBe(false)
+  })
+
+  it('reuses the same live handle for a repeated connect instead of adding a session', async () => {
+    const harness = await createHarness()
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+    const sessionsRoute = harness.routes.get(`${API_PREFIX}/sessions`)
+    await call(statusRoute, request('GET', `${API_PREFIX}/status`))
+    const token = (await readFile(harness.tokenFile, 'utf8')).trim()
+
+    // Five reconnects of the desktop client must not create five live handles.
+    const created: Array<{ status: number; sessionId?: string }> = []
+    for (let index = 0; index < 5; index += 1) {
+      const reply = await call(sessionsRoute, request('POST', `${API_PREFIX}/sessions`, {}, `Bearer ${token}`))
+      const body = JSON.parse(reply.body) as { sessionId?: string }
+      created.push({ status: reply.status, sessionId: body.sessionId })
+    }
+    expect(new Set(created.map((entry) => entry.sessionId)).size).toBe(1)
+    expect(created[0]?.status).toBe(201)
+    // Reconnects are 200s, not a second create and not a spurious 409.
+    expect(created.slice(1).every((entry) => entry.status === 200)).toBe(true)
+    expect(harness.create).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the resource ceilings in one place and refuses new sessions at the cap', async () => {
+    // The in-flight cap uses the same stable 429 contract as the live cap.
+    expect(MAX_LIVE_SESSIONS).toBeGreaterThan(0)
+    expect(MAX_PENDING_CREATIONS).toBeGreaterThan(0)
+    expect(MAX_SSE_CLIENTS_PER_SESSION).toBeGreaterThan(0)
+    expect(LIVE_SESSION_SWEEP_INTERVAL_MS).toBeGreaterThan(0)
+    expect(LIVE_SESSION_IDLE_TTL_MS).toBeGreaterThan(LIVE_SESSION_SWEEP_INTERVAL_MS)
+    expect(MAX_HISTORY_MESSAGES).toBe(256)
+    expect(MAX_HISTORY_BYTES).toBe(4 * 1024 * 1024)
+
+    const harness = await createHarness()
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+    const sessionsRoute = harness.routes.get(`${API_PREFIX}/sessions`)
+    await call(statusRoute, request('GET', `${API_PREFIX}/status`))
+    const token = (await readFile(harness.tokenFile, 'utf8')).trim()
+
+    for (let index = 0; index < MAX_LIVE_SESSIONS; index += 1) {
+      const reply = await call(sessionsRoute, request('POST', `${API_PREFIX}/sessions`, { sessionId: `sess-${index}` }, `Bearer ${token}`))
+      expect(reply.status).toBe(201)
+    }
+    const overCap = await call(sessionsRoute, request('POST', `${API_PREFIX}/sessions`, { sessionId: 'sess-over' }, `Bearer ${token}`))
+    expect(overCap.status).toBe(429)
+    expect(JSON.parse(overCap.body)).toEqual({ error: 'too-many-live-sessions' })
+    expect(harness.create).toHaveBeenCalledTimes(MAX_LIVE_SESSIONS)
+
+    // A reconnect to an already live session still succeeds at the cap: it
+    // allocates nothing, so refusing it would break the desktop client.
+    const reconnect = await call(sessionsRoute, request('POST', `${API_PREFIX}/sessions`, { sessionId: 'sess-0' }, `Bearer ${token}`))
+    expect(reconnect.status).toBe(200)
+    expect(harness.create).toHaveBeenCalledTimes(MAX_LIVE_SESSIONS)
   })
 })
