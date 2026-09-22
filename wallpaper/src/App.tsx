@@ -14,7 +14,7 @@ import { MultiScreenWakeScene } from './scenes/MultiScreenWakeScene.tsx'
 import { SleepScene } from './scenes/SleepScene.tsx'
 import { WakeScene } from './scenes/WakeScene.tsx'
 import { INITIAL_RUNTIME_STATE, reduceRuntime } from './scenes/stateMachine.ts'
-import { BACKGROUND_OPTIONS, applyBubbleOverrides, assetUrl, loadSettings, localCalendarDay, resumeConversationId, saveConversationPointer, type WallpaperSettings } from './settings/store.ts'
+import { BACKGROUND_OPTIONS, applyBubbleOverrides, assetUrl, loadSettings, localCalendarDay, normalizeReceivedSettings, resumeConversationId, saveConversationPointer, type WallpaperSettings } from './settings/store.ts'
 import { nativeRuntime, type DesktopDisplayInfo, type NativeSendOptions } from './native/runtime.ts'
 import { listen } from '@tauri-apps/api/event'
 import type { AppSurface } from './surface.ts'
@@ -466,7 +466,11 @@ export function App({ surface = 'combined' }: AppProps) {
     void listen<WallpaperSettings>('settings-changed', (event) => {
       // Settings are authored in a separate WebView. The payload is the
       // source of truth; localStorage here belongs only to this WebView.
-      setSettings(event.payload)
+      // It still crosses a process boundary as untrusted JSON, so it goes
+      // through the same whitelist rebuild as a local load: a malformed or
+      // future payload must degrade to defaults per field instead of handing
+      // the desktop renderer a value of the wrong type.
+      setSettings(normalizeReceivedSettings(event.payload))
     }).then((unlisten) => { dispose = unlisten })
     return () => dispose()
   }, [])
