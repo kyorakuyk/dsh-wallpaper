@@ -41,9 +41,9 @@ interface RouteHarness {
   workspace: { title: string; path: string; sessionIds: string[]; attachSession: ReturnType<typeof vi.fn> }
   workspaceRegistry: { list: () => unknown[]; create: ReturnType<typeof vi.fn> }
 }
-const cleanups: string[] = []
+const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => {
-  await Promise.all(cleanups.splice(0).map((path) => rm(path, { recursive: true, force: true })))
+  await Promise.allSettled(cleanups.splice(0).map(async (cleanup) => { await cleanup() }))
 })
 
 function request(
@@ -115,8 +115,8 @@ async function createHarness(
   webServerHost: string = '127.0.0.1',
 ): Promise<RouteHarness> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-wallpaper-bridge-'))
-  cleanups.push(root)
   const tokenRoot = join(root, 'host-owned-dsh-root')
+  const effects: Array<() => unknown> = []
   const routes = new Map<string, (req: IncomingMessage, res: ServerResponse) => void | Promise<void>>()
   const listeners = new Map<string, (...args: never[]) => unknown>()
   const agent = {
@@ -163,7 +163,7 @@ async function createHarness(
       listeners.set(event, listener)
       return () => { listeners.delete(event) }
     },
-    effect: () => undefined,
+    effect: (callback: () => unknown) => { effects.push(callback) },
     get: (name: string) => name === 'sessionPersistence' && persistence.enabled ? {} : undefined,
     inject: (dependencies: string[], callback: (scope: unknown) => void) => {
       injectedDependencies = dependencies
@@ -181,7 +181,7 @@ async function createHarness(
         permissionPresets: { names: ['workspace-write', 'danger-full-access'], current: () => 'workspace-write', set: vi.fn() },
         commands: { list: () => [], execute: vi.fn(async () => undefined) },
         logger,
-        effect: () => undefined,
+        effect: (callback: () => unknown) => { effects.push(callback) },
       })
     },
   } as unknown as Context
@@ -190,6 +190,16 @@ async function createHarness(
   const tokenFile = tokenFileForRoot(tokenRoot)
   await prepareTokenRoot?.(tokenRoot)
   apply(context, { tokenRoot })
+  cleanups.push(async () => {
+    // Token provisioning starts before the first HTTP request. Run the Cordis
+    // effect disposers before removing the fixture root so whoami/icacls and
+    // the idle sweep cannot still hold a handle below it.
+    for (const effect of effects) {
+      const disposer = effect()
+      if (typeof disposer === 'function') await (disposer as () => unknown)()
+    }
+    await rm(root, { recursive: true, force: true })
+  })
   return {
     root,
     tokenRoot,
