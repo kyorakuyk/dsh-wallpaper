@@ -17,6 +17,86 @@ import { API_PREFIX, BRIDGE_VERSION, bearerAuthorized, contentText, errorReferen
 export const name = 'wallpaper-bridge'
 export const inject = ['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry', 'permissionPresets', 'commands']
 
+/**
+ * Owns asynchronous work that outlives the call which started it, so plugin
+ * teardown can wait for it.
+ *
+ * `apply()` starts token provisioning — `mkdir`, `whoami.exe`, four `icacls`
+ * passes, a file create/write — as a detached promise. Nothing awaited it at
+ * teardown, so a caller that removed the token root right after disposing the
+ * plugin (a test fixture, a DSH shutdown that cleans its data directory, a
+ * launched-then-stopped DSH) deleted a directory while `icacls` still held a
+ * handle on it. On Windows that surfaces as EBUSY from the caller's file
+ * operation, and the outcome looked like a flaky unrelated failure.
+ *
+ * Every detached task must therefore be registered here. `settle()` is
+ * idempotent, stops new work from being accepted, and resolves only once every
+ * registered task has finished.
+ */
+export class AsyncWorkTracker {
+  private readonly pending = new Set<Promise<unknown>>()
+  private drained: Promise<void> | undefined
+  private closed = false
+
+  /** True once `settle()` has been requested; no new work is accepted after. */
+  get isDraining(): boolean {
+    return this.closed
+  }
+
+  /**
+   * Track an already-started promise. Returns `false` when the tracker is
+   * draining, in which case the caller must not rely on its side effects.
+   */
+  track(work: Promise<unknown>): boolean {
+    if (this.closed) return false
+    // Remove on settlement, and absorb rejection here so a tracked task that
+    // fails never becomes an unhandled rejection of its own. The promise added
+    // to `pending` must be the one that removes itself, otherwise the set would
+    // never drain.
+    let tracked: Promise<void>
+    tracked = work.then(
+      () => undefined,
+      (error: unknown) => {
+        this.onError?.(error)
+        return undefined
+      },
+    ).finally(() => { this.pending.delete(tracked) })
+    this.pending.add(tracked)
+    return true
+  }
+
+  /** Run a task under the tracker, refusing to start once draining. */
+  run(work: () => Promise<void>): boolean {
+    if (this.closed) return false
+    return this.track(Promise.resolve().then(work))
+  }
+
+  /** How many registered tasks are still running. */
+  get size(): number {
+    return this.pending.size
+  }
+
+  /**
+   * Stop accepting work and resolve once everything registered has finished.
+   * Calling it twice returns the same promise and never re-opens the tracker.
+   */
+  settle(): Promise<void> {
+    this.closed = true
+    if (this.drained) return this.drained
+    // Re-check `pending` until it is empty: a task may register a follow-up
+    // before it resolves, and that follow-up must also be awaited.
+    this.drained = (async () => {
+      while (this.pending.size > 0) {
+        await Promise.allSettled([...this.pending])
+      }
+    })()
+    return this.drained
+  }
+
+  /** Optional sink for a tracked task's failure. Set before tracking. */
+  onError: ((error: unknown) => void) | undefined
+}
+
 export interface Config {
   /**
    * Host-owned DSH data root. The bridge always creates its bearer token at
@@ -718,6 +798,8 @@ export function apply(ctx: Context, config: Config = {}): void {
   // allowed to receive messages or SSE subscribers.
   const creating = new Map<string, Promise<LiveSession>>()
   let stopping = false
+  /** The idle-sweep timer, owned here so teardown can clear it explicitly. */
+  let sweepTimer: NodeJS.Timeout | undefined
   /** A subscriber attach or event counts as activity for the idle sweep. */
   const touch = (entry: LiveSession): void => { entry.lastActivityAt = Date.now() }
   /**
@@ -742,9 +824,19 @@ export function apply(ctx: Context, config: Config = {}): void {
   }
   let token = ''
   let tokenFailure: string | undefined
-  const tokenReady = ensureToken(configuredTokenRoot(config))
-    .then((value) => { token = value })
-    .catch((error: unknown) => { tokenFailure = errorReference(error) })
+  // Token provisioning is the first detached asynchronous work this plugin
+  // starts, and the only piece that touches the filesystem before any request.
+  // Registering it is what lets teardown wait instead of racing it.
+  const bootstrap = new AsyncWorkTracker()
+  bootstrap.onError = () => undefined
+  const tokenReady: Promise<void> = (async () => {
+    try {
+      token = await ensureToken(configuredTokenRoot(config))
+    } catch (error) {
+      tokenFailure = errorReference(error)
+    }
+  })()
+  bootstrap.track(tokenReady)
 
   const publish = (sessionId: string, event: BridgeEvent): void => {
     const entry = live.get(sessionId)
@@ -803,21 +895,41 @@ export function apply(ctx: Context, config: Config = {}): void {
     return next()
   })
 
-  ctx.effect(() => async () => {
-    stopping = true
-    const disposals: Promise<void>[] = []
-    for (const entry of live.values()) {
-      for (const client of entry.clients) client.end()
-      disposals.push(entry.handle.dispose())
-    }
-    live.clear()
-    // A create already in flight cannot be cancelled through the public DSH
-    // API. Await it so its post-await shutdown check can dispose the handle
-    // instead of installing it after this bridge has been torn down.
-    await Promise.allSettled([...creating.values()])
-    creating.clear()
-    await Promise.allSettled(disposals)
-  })
+  // Teardown order matters and every step is idempotent, because a caller can
+  // dispose the plugin more than once and because a shutdown races whatever
+  // asynchronous bootstrap work was still running.
+  let teardown: Promise<void> | undefined
+  const teardownOnce = (): Promise<void> => {
+    if (teardown) return teardown
+    teardown = (async () => {
+      stopping = true
+      // 1. Stop accepting work. The idle sweep is the other timer that can
+      //    dispose a handle, so it goes first.
+      clearInterval(sweepTimer)
+      // 2. Let the detached bootstrap finish. `ensureToken` spawns `whoami` and
+      //    four `icacls` passes against the token directory; a caller that
+      //    removes the token root as soon as this plugin is gone would
+      //    otherwise delete a directory those processes still hold, which
+      //    Windows reports as EBUSY against the caller's own file operation.
+      await bootstrap.settle()
+      // 3. Release every live handle and its subscribers.
+      const disposals: Promise<void>[] = []
+      for (const entry of live.values()) {
+        for (const client of entry.clients) client.end()
+        disposals.push(entry.handle.dispose())
+      }
+      live.clear()
+      // A create already in flight cannot be cancelled through the public DSH
+      // API. Await it so its post-await shutdown check can dispose the handle
+      // instead of installing it after this bridge has been torn down.
+      await Promise.allSettled([...creating.values()])
+      creating.clear()
+      await Promise.allSettled(disposals)
+    })()
+    return teardown
+  }
+
+  ctx.effect(() => teardownOnce)
 
   // Status must not depend on optional session-control services.  A Web
   // profile may take longer to compose commands, presets, or workspaces than
@@ -949,6 +1061,11 @@ export function apply(ctx: Context, config: Config = {}): void {
         await tokenReady
         if (tokenFailure !== undefined) return json(res, 503, { error: 'bridge-token-unavailable', reference: tokenFailure })
         if (!bearerAuthorized(req.headers.authorization, token)) return json(res, 401, { error: 'unauthorized' })
+        // Tokens stay valid while the bridge is alive, so a request that lands
+        // after teardown must be refused rather than creating a handle this
+        // process will never dispose. Checked after authentication so a
+        // shutdown never turns into an information leak about the bridge state.
+        if (stopping) return json(res, 503, { error: 'bridge-shutting-down' })
         const url = new URL(req.url ?? '/', 'http://127.0.0.1')
         const route = parseSessionRoute(url.pathname)
         if (!route) return json(res, 404, { error: 'not-found' })
@@ -1225,10 +1342,11 @@ export function apply(ctx: Context, config: Config = {}): void {
       // Release live agent handles nobody is watching. This is a background
       // timer with a bounded per-tick cost (it only walks `live`, never a
       // session's message list) and it is cleared on teardown with the routes.
-      const sweep = setInterval(() => sweepIdleSessions(), LIVE_SESSION_SWEEP_INTERVAL_MS)
-      if (typeof sweep.unref === 'function') sweep.unref()
+      sweepTimer = setInterval(() => sweepIdleSessions(), LIVE_SESSION_SWEEP_INTERVAL_MS)
+      if (typeof sweepTimer.unref === 'function') sweepTimer.unref()
       return () => {
-        clearInterval(sweep)
+        clearInterval(sweepTimer)
+        sweepTimer = undefined
         controlDispose()
         sessionsDispose()
       }
