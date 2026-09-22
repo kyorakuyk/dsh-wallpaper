@@ -14,7 +14,7 @@ use std::{
 };
 
 const MAX_ENCRYPTED_BYTES: u64 = 32 * 1024 * 1024;
-const MAX_PLAINTEXT_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_PLAINTEXT_BYTES: usize = 16 * 1024 * 1024;
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Errors intentionally omit file contents, ciphertext and transcript text.
@@ -24,6 +24,11 @@ static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub enum PersistenceError {
     Unavailable,
     InvalidArchive,
+    /// The value the caller asked to persist exceeds the plaintext ceiling.
+    /// This is separated from `InvalidArchive` because it is *not* a reason to
+    /// distrust the existing ciphertext: the caller must trim its data instead
+    /// of permanently disabling persistence.
+    TooLarge,
     Io,
     Serialization,
     Encryption,
@@ -35,6 +40,7 @@ impl std::fmt::Display for PersistenceError {
         let message = match self {
             Self::Unavailable => "当前平台不支持受保护的 API 会话存储",
             Self::InvalidArchive => "加密 API 会话记录格式无效",
+            Self::TooLarge => "API 会话记录超过可保存的容量上限",
             Self::Io => "无法安全读写加密 API 会话记录",
             Self::Serialization => "无法序列化 API 会话记录",
             Self::Encryption => "无法加密 API 会话记录",
@@ -127,10 +133,30 @@ impl EncryptedJsonStore {
     fn save_unlocked<T: Serialize>(&self, value: &T) -> Result<(), PersistenceError> {
         let plaintext = serde_json::to_vec(value).map_err(|_| PersistenceError::Serialization)?;
         if plaintext.len() > MAX_PLAINTEXT_BYTES {
-            return Err(PersistenceError::InvalidArchive);
+            // Distinct from a damaged archive: the caller's value is valid but
+            // too large, so it must trim rather than stop persisting forever.
+            return Err(PersistenceError::TooLarge);
         }
         let ciphertext = dpapi_protect(&plaintext)?;
         self.write_ciphertext_atomically(&ciphertext)
+    }
+
+    /// Size of `value` as it would be stored, without encrypting or writing.
+    /// Callers that must stay under `MAX_PLAINTEXT_BYTES` use this to decide
+    /// how much data to drop before attempting a write.
+    pub fn serialized_len<T: Serialize>(value: &T) -> Result<usize, PersistenceError> {
+        serde_json::to_vec(value)
+            .map(|plaintext| plaintext.len())
+            .map_err(|_| PersistenceError::Serialization)
+    }
+
+    /// Serializes `value` once and fails with `TooLarge` if it would not fit.
+    pub fn ensure_fits<T: Serialize>(value: &T) -> Result<usize, PersistenceError> {
+        let len = Self::serialized_len(value)?;
+        if len > MAX_PLAINTEXT_BYTES {
+            return Err(PersistenceError::TooLarge);
+        }
+        Ok(len)
     }
 
     fn read_ciphertext(&self) -> Result<Option<Vec<u8>>, PersistenceError> {

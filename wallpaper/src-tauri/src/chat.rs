@@ -47,6 +47,20 @@ const MAX_API_MESSAGE_BYTES: usize = 100_000;
 const MAX_API_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_API_SSE_BUFFER_BYTES: usize = 256 * 1024;
 const MAX_API_RATE_PER_MILLION: f64 = 1_000_000.0;
+/// No-data deadline for one read on an API response stream. The *total*
+/// lifetime stays long because a single answer can legitimately stream for
+/// minutes, but a half-open connection that stops producing bytes must not hold
+/// the composer's request slot until the 24-hour ceiling expires. Every
+/// received chunk restarts this deadline, so a slow but live model is never
+/// mistaken for a stalled one.
+const API_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+/// The DSH bridge heartbeats every 15s, so this window tolerates three missed
+/// beats before the desktop declares the event stream dead.
+const HARNESS_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Stable error code the renderer can rely on for a stalled stream. It is
+/// deliberately distinct from a transport failure so the UI can say "no data
+/// for N seconds" instead of blaming the network.
+const API_STREAM_IDLE_TIMEOUT_CODE: &str = "DEEPSEEK_API_IDLE_TIMEOUT";
 /// Preserve room for the latest turn while preventing a restored transcript
 /// from becoming an unbounded request body. This is a byte bound because the
 /// compatible API accepts UTF-8 strings rather than an application token
@@ -100,6 +114,46 @@ fn generic_bridge_http_error(status: reqwest::StatusCode) -> String {
     format!(
         "DSH bridge 请求被拒绝（HTTP {}）。请确认 bridge 版本、会话状态与连接后重试。",
         status.as_u16()
+    )
+}
+
+/// What one watchdog-guarded stream read produced.
+enum StreamRead<T> {
+    /// A transport event arrived (possibly the end of the stream).
+    Event(Option<T>),
+    /// The peer produced nothing within the idle deadline.
+    Idle,
+    /// The user cancelled: cancellation always wins over the idle deadline.
+    Cancelled,
+}
+
+/// Await the next item on `stream` with an idle deadline.
+///
+/// `timeout` is a *per-read* budget, not a total lifetime: every event resets
+/// it. Cancellation is polled independently and takes precedence, so a user
+/// stop is never reported as a timeout.
+async fn next_with_idle_timeout<S, T>(
+    stream: &mut S,
+    cancel: &mut oneshot::Receiver<()>,
+    idle: Duration,
+) -> StreamRead<T>
+where
+    S: futures_util::Stream<Item = T> + Unpin,
+{
+    let deadline = tokio::time::sleep(idle);
+    tokio::pin!(deadline);
+    tokio::select! {
+        biased;
+        _ = &mut *cancel => StreamRead::Cancelled,
+        item = stream.next() => StreamRead::Event(item),
+        _ = &mut deadline => StreamRead::Idle,
+    }
+}
+
+fn api_idle_timeout_error() -> String {
+    format!(
+        "DeepSeek API 已 {} 秒没有返回数据，本次请求已安全停止；请检查网络后重试。",
+        API_STREAM_IDLE_TIMEOUT.as_secs()
     )
 }
 
@@ -162,7 +216,17 @@ impl ChatState {
     }
 
     fn persist_api_conversations_locked(&self) -> Result<(), String> {
-        let store = self
+        self.persist_api_conversations_for(None)
+    }
+
+    /// Persist the in-memory transcripts, trimming to the durable budget first.
+    ///
+    /// `protected` names the transcript the user is currently in; it is the
+    /// last thing trimmed.  A write that still cannot fit gives up for the rest
+    /// of this process (`writable = false`) so every later turn does not repeat
+    /// a full copy/merge/serialize cycle against a doomed archive.
+    fn persist_api_conversations_for(&self, protected: Option<&str>) -> Result<(), String> {
+        let mut store = self
             .api_store
             .lock()
             .map_err(|_| "API conversation storage state poisoned".to_string())?;
@@ -174,37 +238,125 @@ impl ChatState {
             .lock()
             .map_err(|_| "API conversation state poisoned".to_string())?
             .clone();
-        let merged = store
-            .store
-            .update::<ApiConversationArchive, _, _>(|existing| {
-                let mut conversations = match existing {
-                    Some(archive) if archive.schema_version == API_CONVERSATION_SCHEMA_VERSION => {
-                        archive.conversations
-                    }
-                    // Never overwrite an archive written by a newer schema.
-                    Some(_) => {
-                        return Err(crate::api_persistence::PersistenceError::InvalidArchive)
-                    }
-                    None => HashMap::new(),
-                };
-                merge_api_conversations(&mut conversations, local_conversations);
-                Ok((
-                    ApiConversationArchive {
-                        schema_version: API_CONVERSATION_SCHEMA_VERSION,
-                        conversations: conversations.clone(),
-                    },
-                    conversations,
-                ))
-            })
-            .map_err(|_| "无法保存加密 API 会话记录；已有记录未被覆盖。".to_string())?;
-        // Adopt the durable merged view while still inside the transaction.
-        // This prevents a second process's transcript from being forgotten by
-        // the next local append.
-        *self
-            .api_conversations
+        // Clone the store handle so the (slow) cross-process transaction does
+        // not hold the store mutex. The `writable` flag, not the mutex, is what
+        // concurrent turns observe.
+        let store_ref = store.store.clone();
+        let outcome = store_ref.update::<ApiConversationArchive, _, _>(|existing| {
+            let mut conversations = match existing {
+                Some(archive) if archive.schema_version == API_CONVERSATION_SCHEMA_VERSION => {
+                    archive.conversations
+                }
+                // Never overwrite an archive written by a newer schema.
+                Some(_) => {
+                    return Err(crate::api_persistence::PersistenceError::InvalidArchive)
+                }
+                None => HashMap::new(),
+            };
+            merge_api_conversations(&mut conversations, local_conversations);
+            trim_api_archive(&mut conversations, protected);
+            let archive = ApiConversationArchive {
+                schema_version: API_CONVERSATION_SCHEMA_VERSION,
+                conversations: conversations.clone(),
+            };
+            // Fail closed inside the transaction, so an archive that still
+            // cannot fit never replaces the ciphertext already on disk.
+            crate::api_persistence::EncryptedJsonStore::ensure_fits(&archive)?;
+            Ok((archive, conversations))
+        });
+        match outcome {
+            Ok(merged) => {
+                // Adopt the durable merged view while still inside the
+                // transaction. This prevents a second process's transcript from
+                // being forgotten by the next local append.
+                *self
+                    .api_conversations
+                    .lock()
+                    .map_err(|_| "API conversation state poisoned".to_string())? = merged;
+                Ok(())
+            }
+            Err(crate::api_persistence::PersistenceError::TooLarge) => {
+                // Stop retrying for this process instead of re-copying a
+                // hopeless archive on every later turn. The existing ciphertext
+                // is untouched and in-memory chat keeps working.
+                store.writable = false;
+                Err("API 会话记录已达到容量上限，本次运行不再写入磁盘；已有记录未被覆盖。请在设置中删除部分 API 会话后重启应用。".into())
+            }
+            Err(_) => Err("无法保存加密 API 会话记录；已有记录未被覆盖。".to_string()),
+        }
+    }
+
+    /// Delete one API transcript under both the in-process transaction guard
+    /// and the cross-process store lock, so a concurrent writer cannot
+    /// resurrect the deleted conversation through a stale merge.
+    pub fn delete_api_conversation(&self, conversation_id: &str) -> Result<bool, String> {
+        let mut removed = false;
+        self.update_api_archive(|conversations| {
+            removed = conversations.remove(conversation_id).is_some();
+        })?;
+        Ok(removed)
+    }
+
+    /// Delete every API transcript this process can see.
+    pub fn clear_api_conversations(&self) -> Result<usize, String> {
+        let mut count = 0;
+        self.update_api_archive(|conversations| {
+            count = conversations.len();
+            conversations.clear();
+        })?;
+        Ok(count)
+    }
+
+    /// Rewrite the durable archive through one locked read/modify/write.  The
+    /// operation is deliberately infallible: an unexpected failure must leave
+    /// the on-disk ciphertext untouched, not half-applied.
+    fn update_api_archive<F>(&self, mutate: F) -> Result<(), String>
+    where
+        F: FnOnce(&mut HashMap<String, ApiConversation>),
+    {
+        let _transaction = self
+            .api_transcript_transaction
             .lock()
-            .map_err(|_| "API conversation state poisoned".to_string())? = merged;
-        Ok(())
+            .map_err(|_| "API transcript transaction state poisoned".to_string())?;
+        let mut store = self
+            .api_store
+            .lock()
+            .map_err(|_| "API conversation storage state poisoned".to_string())?;
+        if !store.writable {
+            return Err("加密 API 会话记录不可用；为保护已有记录，本次不会覆盖它。".into());
+        }
+        let store_ref = store.store.clone();
+        let outcome = store_ref.update::<ApiConversationArchive, _, _>(|existing| {
+            let mut conversations = match existing {
+                Some(archive) if archive.schema_version == API_CONVERSATION_SCHEMA_VERSION => {
+                    archive.conversations
+                }
+                Some(_) => {
+                    return Err(crate::api_persistence::PersistenceError::InvalidArchive)
+                }
+                None => HashMap::new(),
+            };
+            mutate(&mut conversations);
+            let archive = ApiConversationArchive {
+                schema_version: API_CONVERSATION_SCHEMA_VERSION,
+                conversations: conversations.clone(),
+            };
+            crate::api_persistence::EncryptedJsonStore::ensure_fits(&archive)?;
+            Ok((archive, conversations))
+        });
+        match outcome {
+            Ok(merged) => {
+                *self
+                    .api_conversations
+                    .lock()
+                    .map_err(|_| "API conversation state poisoned".to_string())? = merged;
+                Ok(())
+            }
+            Err(crate::api_persistence::PersistenceError::TooLarge) => Err(
+                "API 会话记录达到容量上限；请先删除部分 API 会话后重试。".into(),
+            ),
+            Err(_) => Err("无法更新加密 API 会话记录；已有记录未被覆盖。".to_string()),
+        }
     }
 
     #[cfg(test)]
@@ -271,8 +423,32 @@ struct ApiMessage {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ApiConversation {
     messages: Vec<ApiMessage>,
+    /// Last time this transcript was written.  Older archives predate the
+    /// field, so a missing value falls back to the newest message timestamp.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    updated_at: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+impl ApiConversation {
+    /// `updated_at` is the eviction key.  Never let a transcript that predates
+    /// the field (or one whose clock is missing) sort as newer than a real one.
+    fn effective_updated_at(&self) -> u64 {
+        if self.updated_at != 0 {
+            return self.updated_at;
+        }
+        self.messages
+            .iter()
+            .map(|message| message.created_at)
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -324,7 +500,116 @@ fn merge_api_conversations(
                 .cmp(&right.created_at)
                 .then_with(|| left.id.cmp(&right.id))
         });
+        target.updated_at = target.updated_at.max(incoming.updated_at);
     }
+}
+
+/// Target size for one encrypted API archive.  The persistence layer still
+/// refuses anything above its own hard ceiling; this lower budget is what the
+/// application trims to *before* attempting a write, so a long-lived install
+/// drops its oldest turns instead of permanently failing to persist.
+pub const API_CONVERSATION_TARGET_PLAINTEXT_BYTES: usize = 12 * 1024 * 1024;
+/// Never split a message body, so the only lever left for one conversation is
+/// how many recent turns it keeps.
+const MAX_API_MESSAGES_PER_CONVERSATION: usize = 400;
+/// A conversation is one transcript, not one message: keep a generous number
+/// of them and evict by last activity instead of by insertion order.
+const MAX_API_CONVERSATIONS: usize = 200;
+const MAX_API_TRIM_PASSES: usize = 64;
+
+/// Effective activity rank used for eviction.
+fn conversation_rank(conversation: &ApiConversation) -> u64 {
+    conversation.effective_updated_at()
+}
+
+fn archive_fits(conversations: &HashMap<String, ApiConversation>) -> bool {
+    let len: usize = EncryptedJsonStore::serialized_len(&ApiConversationArchive {
+        schema_version: API_CONVERSATION_SCHEMA_VERSION,
+        conversations: conversations.clone(),
+    })
+    .unwrap_or(usize::MAX);
+    len <= API_CONVERSATION_TARGET_PLAINTEXT_BYTES
+}
+
+/// Trim an archive to the persistence budget without ever cutting a message
+/// body in half and without rewriting the identity (id/timestamp) of a
+/// message it keeps.
+///
+/// Order of sacrifice, cheapest loss first:
+/// 1. everything older than the per-conversation message window;
+/// 2. whole *other* conversations, oldest activity first;
+/// 3. only as a last resort, the oldest messages of `protected` itself, which
+///    is the transcript the user is currently reading.
+///
+/// Returns `true` when anything was dropped.
+fn trim_api_archive(
+    conversations: &mut HashMap<String, ApiConversation>,
+    protected: Option<&str>,
+) -> bool {
+    let mut dropped = false;
+
+    // 1. Per-conversation window, anchored at the newest message.
+    for conversation in conversations.values_mut() {
+        if conversation.messages.len() > MAX_API_MESSAGES_PER_CONVERSATION {
+            let excess = conversation.messages.len() - MAX_API_MESSAGES_PER_CONVERSATION;
+            conversation.messages.drain(..excess);
+            dropped = true;
+        }
+    }
+    if archive_fits(conversations) {
+        return dropped;
+    }
+
+    // 2. Conversation count, oldest activity first.
+    if conversations.len() > MAX_API_CONVERSATIONS {
+        for (id, _) in ranked_eviction_order(conversations, protected)
+            .into_iter()
+            .take(conversations.len() - MAX_API_CONVERSATIONS)
+        {
+            conversations.remove(&id);
+            dropped = true;
+        }
+        if archive_fits(conversations) {
+            return true;
+        }
+    }
+    // 3. Still too large: drop whole conversations by age, keeping the one the
+    // caller protects until nothing else is left.
+    //
+    // There is deliberately no further step. If `protected` alone exceeds the
+    // budget, refusing the write (the caller's `TooLarge` path) is the correct
+    // outcome: silently mutilating the transcript the user is reading is worse
+    // than keeping it in memory and telling them history cannot be persisted.
+    for _ in 0..MAX_API_TRIM_PASSES {
+        let Some((id, _)) = ranked_eviction_order(conversations, protected)
+            .into_iter()
+            .next()
+        else {
+            break;
+        };
+        conversations.remove(&id);
+        dropped = true;
+        if archive_fits(conversations) {
+            return true;
+        }
+    }
+    dropped
+}
+
+/// Candidates for eviction, least recently active first.  An empty message
+/// list with no timestamp sorts first, so a corrupt or empty entry never
+/// outranks a real transcript.
+fn ranked_eviction_order(
+    conversations: &HashMap<String, ApiConversation>,
+    protected: Option<&str>,
+) -> Vec<(String, u64)> {
+    let mut ranked: Vec<(String, u64)> = conversations
+        .iter()
+        .filter(|(id, _)| Some(id.as_str()) != protected)
+        .map(|(id, conversation)| (id.clone(), conversation_rank(conversation)))
+        .collect();
+    ranked.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
+    ranked
 }
 
 fn unix_millis() -> u64 {
@@ -1597,53 +1882,65 @@ pub async fn send_api(
     let mut final_usage: Option<ApiUsage> = None;
     let mut canceled = false;
     let mut stream_error: Option<String> = None;
+    let mut idle_timed_out = false;
     loop {
-        tokio::select! {
-            _ = &mut cancel_rx => { canceled = true; break; }
-            chunk = stream.next() => {
-                let Some(chunk) = chunk else {
-                    match decoder.finish() {
-                        Ok(tail) => {
-                            if buffer.len().saturating_add(tail.len()) > MAX_API_SSE_BUFFER_BYTES {
-                                stream_error = Some("DeepSeek API 返回的流式记录过大，已安全停止接收。".into());
-                            } else {
-                                buffer.push_str(&tail);
-                            }
-                        }
-                        Err(_) => {
-                        stream_error = Some(generic_api_error("流式编码"));
-                        }
+        // Every event restarts the idle deadline; cancellation is polled with
+        // priority so a user stop is never reported as a timeout.
+        let chunk = match next_with_idle_timeout(&mut stream, &mut cancel_rx, API_STREAM_IDLE_TIMEOUT).await {
+            StreamRead::Cancelled => {
+                canceled = true;
+                break;
+            }
+            StreamRead::Idle => {
+                idle_timed_out = true;
+                break;
+            }
+            StreamRead::Event(chunk) => chunk,
+        };
+        let Some(chunk) = chunk else {
+            match decoder.finish() {
+                Ok(tail) => {
+                    if buffer.len().saturating_add(tail.len()) > MAX_API_SSE_BUFFER_BYTES {
+                        stream_error = Some("DeepSeek API 返回的流式记录过大，已安全停止接收。".into());
+                    } else {
+                        buffer.push_str(&tail);
                     }
-                    break;
-                };
-                match chunk {
-                    Ok(bytes) => {
-                        if buffer.len().saturating_add(bytes.len()) > MAX_API_SSE_BUFFER_BYTES {
-                            stream_error = Some("DeepSeek API 返回的流式记录过大，已安全停止接收。".into());
-                            break;
-                        }
-                        let decoded = match decoder.push(&bytes) {
-                            Ok(decoded) => decoded,
-                            Err(_) => { stream_error = Some(generic_api_error("流式编码")); break; }
-                        };
-                        buffer.push_str(&decoded);
-                        if buffer.len() > MAX_API_SSE_BUFFER_BYTES {
-                            stream_error = Some("DeepSeek API 返回的流式记录过大，已安全停止接收。".into());
-                            break;
-                        }
-                        for record in drain_sse_records(&mut buffer) {
-                            process_api_sse_record(&app, &state, &conversation_id, request_id, &event_request_id, &record, &mut full, &mut final_usage, pricing);
-                            if full.len() > MAX_API_RESPONSE_BYTES {
-                                stream_error = Some(format!("DeepSeek API 回复不能超过 {MAX_API_RESPONSE_BYTES} 字节。"));
-                                break;
-                            }
-                        }
-                        if stream_error.is_some() { break; }
-                    }
-                    Err(_) => { stream_error = Some(generic_api_error("流式连接")); break; }
+                }
+                Err(_) => {
+                    stream_error = Some(generic_api_error("流式编码"));
                 }
             }
+            break;
+        };
+        match chunk {
+            Ok(bytes) => {
+                if buffer.len().saturating_add(bytes.len()) > MAX_API_SSE_BUFFER_BYTES {
+                    stream_error = Some("DeepSeek API 返回的流式记录过大，已安全停止接收。".into());
+                    break;
+                }
+                let decoded = match decoder.push(&bytes) {
+                    Ok(decoded) => decoded,
+                    Err(_) => { stream_error = Some(generic_api_error("流式编码")); break; }
+                };
+                buffer.push_str(&decoded);
+                if buffer.len() > MAX_API_SSE_BUFFER_BYTES {
+                    stream_error = Some("DeepSeek API 返回的流式记录过大，已安全停止接收。".into());
+                    break;
+                }
+                for record in drain_sse_records(&mut buffer) {
+                    process_api_sse_record(&app, &state, &conversation_id, request_id, &event_request_id, &record, &mut full, &mut final_usage, pricing);
+                    if full.len() > MAX_API_RESPONSE_BYTES {
+                        stream_error = Some(format!("DeepSeek API 回复不能超过 {MAX_API_RESPONSE_BYTES} 字节。"));
+                        break;
+                    }
+                }
+                if stream_error.is_some() { break; }
+            }
+            Err(_) => { stream_error = Some(generic_api_error("流式连接")); break; }
         }
+    }
+    if idle_timed_out {
+        stream_error = Some(api_idle_timeout_error());
     }
     if !canceled && stream_error.is_none() {
         for record in finish_sse_records(&mut buffer) {
@@ -1701,8 +1998,17 @@ pub async fn send_api(
                     final_usage.clone(),
                 ));
             }
+            // Record activity for eviction order, never for display: messages
+            // keep their original ids and timestamps.
+            conversation.updated_at = conversation
+                .messages
+                .last()
+                .map(|message| message.created_at)
+                .unwrap_or_else(unix_millis)
+                .max(conversation.updated_at);
         }
-        state.persist_api_conversations_locked()
+        // The transcript the user is in is the last candidate for trimming.
+        state.persist_api_conversations_for(Some(&conversation_id))
     })()
     .err();
     if !full.is_empty() {
@@ -1743,7 +2049,14 @@ pub async fn send_api(
             request_id,
             &event_request_id,
             ChatEvent::Error {
-                code: "DEEPSEEK_API_STREAM".into(),
+                // A stalled stream gets a stable, distinct code so the renderer
+                // can explain "no data for N seconds" instead of reporting a
+                // generic transport failure.
+                code: if idle_timed_out {
+                    API_STREAM_IDLE_TIMEOUT_CODE.into()
+                } else {
+                    "DEEPSEEK_API_STREAM".into()
+                },
                 recoverable: true,
                 message: error,
             },
@@ -1798,16 +2111,59 @@ pub async fn send_api(
     Ok(conversation_id)
 }
 
-pub fn api_history(state: &ChatState, conversation_id: &str) -> Result<Value, String> {
+/// Default and maximum number of messages returned to the renderer in one
+/// `api_history` call. The archive can hold far more than any composer can
+/// display, and cloning a multi-megabyte transcript across IPC on every resume
+/// is what this bound exists to prevent.
+pub const DEFAULT_API_HISTORY_MESSAGES: usize = 200;
+pub const MAX_API_HISTORY_MESSAGES: usize = 1000;
+
+/// Read a bounded window of one API transcript.
+///
+/// `limit` counts from the newest message backwards, so the composer always
+/// receives the most recent context first and the extra bytes cross IPC only
+/// when the user explicitly asks for earlier turns.
+pub fn api_history(
+    state: &ChatState,
+    conversation_id: &str,
+    limit: Option<usize>,
+) -> Result<Value, String> {
     let conversations = state
         .api_conversations
         .lock()
         .map_err(|_| "API conversation state poisoned")?;
-    let messages = conversations
+    let stored = conversations
         .get(conversation_id)
-        .map(|conversation| conversation.messages.clone())
-        .unwrap_or_default();
-    Ok(serde_json::json!({ "messages": messages }))
+        .map(|conversation| conversation.messages.as_slice())
+        .unwrap_or(&[]);
+    let requested = limit
+        .unwrap_or(DEFAULT_API_HISTORY_MESSAGES)
+        .clamp(1, MAX_API_HISTORY_MESSAGES);
+    let returned = requested.min(stored.len());
+    let start = stored.len() - returned;
+    let messages = stored[start..].to_vec();
+    let bytes = EncryptedJsonStore::serialized_len(&messages).unwrap_or(0);
+    Ok(serde_json::json!({
+        "messages": messages,
+        "totalMessages": stored.len(),
+        "hasMore": start > 0,
+        "bytes": bytes,
+        "limit": requested,
+    }))
+}
+
+/// Delete one durable API transcript. Returns `true` when it existed.
+pub fn delete_api_conversation(state: &ChatState, conversation_id: &str) -> Result<bool, String> {
+    let trimmed = conversation_id.trim();
+    if trimmed.is_empty() {
+        return Err("会话标识无效".into());
+    }
+    state.delete_api_conversation(trimmed)
+}
+
+/// Delete every durable API transcript this process can see.
+pub fn clear_api_history(state: &ChatState) -> Result<usize, String> {
+    state.clear_api_conversations()
 }
 
 pub fn cancel_api(state: &ChatState) {
@@ -2309,76 +2665,95 @@ async fn connect_harness_events(
             let clean_eof: bool;
 
             loop {
-                tokio::select! {
-                    _ = &mut cancel_rx => break 'reconnect,
-                    chunk = stream.next() => {
-                        let Some(chunk) = chunk else {
-                            let tail = match decoder.finish() {
-                                Ok(tail) => tail,
-                                Err(_) => {
-                                    emit_stream_error("HARNESS_SSE_ENCODING", generic_harness_error("事件流编码"));
-                                    break 'reconnect;
-                                }
-                            };
-                            let records = match drain_bounded_harness_sse_records(&mut buffer, &tail) {
-                                Ok(records) => records,
-                                Err(()) => {
-                                    emit_stream_error("HARNESS_SSE_LIMIT", "DSH bridge 返回的流式事件过大，已安全停止接收。".into());
-                                    break 'reconnect;
-                                }
-                            };
-                            turn_started |= harness_records_have_turn_activity(&records, &session_id);
-                            turn_completed |= harness_records_have_terminal_event(&records, &session_id);
-                            forward_harness_sse_records(&app, &state, stream_id, &session_id, &connection_id, records);
-                            let records = match finish_bounded_harness_sse_records(&mut buffer) {
-                                Ok(records) => records,
-                                Err(()) => {
-                                    emit_stream_error("HARNESS_SSE_LIMIT", "DSH bridge 返回的流式事件过大，已安全停止接收。".into());
-                                    break 'reconnect;
-                                }
-                            };
-                            turn_started |= harness_records_have_turn_activity(&records, &session_id);
-                            turn_completed |= harness_records_have_terminal_event(&records, &session_id);
-                            forward_harness_sse_records(&app, &state, stream_id, &session_id, &connection_id, records);
-                            clean_eof = !turn_started || turn_completed;
-                            break;
-                        };
-                        match chunk {
-                            Ok(bytes) => {
-                                if bytes.len() > MAX_HARNESS_SSE_CHUNK_BYTES {
-                                    emit_stream_error("HARNESS_SSE_LIMIT", "DSH bridge 返回的流式事件过大，已安全停止接收。".into());
-                                    break 'reconnect;
-                                }
-                                let decoded = match decoder.push(&bytes) {
-                                    Ok(decoded) => decoded,
-                                    Err(_) => { emit_stream_error("HARNESS_SSE_ENCODING", generic_harness_error("事件流编码")); break 'reconnect; }
-                                };
-                                let records = match drain_bounded_harness_sse_records(&mut buffer, &decoded) {
-                                    Ok(records) => records,
-                                    Err(()) => {
-                                        emit_stream_error("HARNESS_SSE_LIMIT", "DSH bridge 返回的流式事件过大，已安全停止接收。".into());
-                                        break 'reconnect;
-                                    }
-                                };
-                                turn_started |= harness_records_have_turn_activity(&records, &session_id);
-                                turn_completed |= harness_records_have_terminal_event(&records, &session_id);
-                                forward_harness_sse_records(&app, &state, stream_id, &session_id, &connection_id, records);
-                            }
-                            Err(_) if turn_completed || !turn_started => {
-                                clean_eof = true;
-                                break;
-                            }
-                            Err(_) => {
-                                // A transport read error can happen after the
-                                // peer has already committed the assistant
-                                // message. Treat it like a reconnectable EOF;
-                                // the history reconciler will fill any missed
-                                // terminal event without flashing a false
-                                // "bridge offline" error in the UI.
-                                clean_eof = true;
-                                break;
-                            }
+                // The bridge heartbeats every 15s. A stream that produces
+                // nothing for a whole minute is dead, and without this deadline
+                // the reader would sit here until the 24-hour ceiling while the
+                // composer waits for a turn that can never arrive.
+                let chunk = match next_with_idle_timeout(
+                    &mut stream,
+                    &mut cancel_rx,
+                    HARNESS_STREAM_IDLE_TIMEOUT,
+                )
+                .await
+                {
+                    StreamRead::Cancelled => break 'reconnect,
+                    StreamRead::Idle => {
+                        emit_stream_error(
+                            "HARNESS_SSE_IDLE_TIMEOUT",
+                            format!(
+                                "DSH bridge 已 {} 秒没有心跳或事件，事件流已安全断开。",
+                                HARNESS_STREAM_IDLE_TIMEOUT.as_secs()
+                            ),
+                        );
+                        break 'reconnect;
+                    }
+                    StreamRead::Event(chunk) => chunk,
+                };
+                let Some(chunk) = chunk else {
+                    let tail = match decoder.finish() {
+                        Ok(tail) => tail,
+                        Err(_) => {
+                            emit_stream_error("HARNESS_SSE_ENCODING", generic_harness_error("事件流编码"));
+                            break 'reconnect;
                         }
+                    };
+                    let records = match drain_bounded_harness_sse_records(&mut buffer, &tail) {
+                        Ok(records) => records,
+                        Err(()) => {
+                            emit_stream_error("HARNESS_SSE_LIMIT", "DSH bridge 返回的流式事件过大，已安全停止接收。".into());
+                            break 'reconnect;
+                        }
+                    };
+                    turn_started |= harness_records_have_turn_activity(&records, &session_id);
+                    turn_completed |= harness_records_have_terminal_event(&records, &session_id);
+                    forward_harness_sse_records(&app, &state, stream_id, &session_id, &connection_id, records);
+                    let records = match finish_bounded_harness_sse_records(&mut buffer) {
+                        Ok(records) => records,
+                        Err(()) => {
+                            emit_stream_error("HARNESS_SSE_LIMIT", "DSH bridge 返回的流式事件过大，已安全停止接收。".into());
+                            break 'reconnect;
+                        }
+                    };
+                    turn_started |= harness_records_have_turn_activity(&records, &session_id);
+                    turn_completed |= harness_records_have_terminal_event(&records, &session_id);
+                    forward_harness_sse_records(&app, &state, stream_id, &session_id, &connection_id, records);
+                    clean_eof = !turn_started || turn_completed;
+                    break;
+                };
+                match chunk {
+                    Ok(bytes) => {
+                        if bytes.len() > MAX_HARNESS_SSE_CHUNK_BYTES {
+                            emit_stream_error("HARNESS_SSE_LIMIT", "DSH bridge 返回的流式事件过大，已安全停止接收。".into());
+                            break 'reconnect;
+                        }
+                        let decoded = match decoder.push(&bytes) {
+                            Ok(decoded) => decoded,
+                            Err(_) => { emit_stream_error("HARNESS_SSE_ENCODING", generic_harness_error("事件流编码")); break 'reconnect; }
+                        };
+                        let records = match drain_bounded_harness_sse_records(&mut buffer, &decoded) {
+                            Ok(records) => records,
+                            Err(()) => {
+                                emit_stream_error("HARNESS_SSE_LIMIT", "DSH bridge 返回的流式事件过大，已安全停止接收。".into());
+                                break 'reconnect;
+                            }
+                        };
+                        turn_started |= harness_records_have_turn_activity(&records, &session_id);
+                        turn_completed |= harness_records_have_terminal_event(&records, &session_id);
+                        forward_harness_sse_records(&app, &state, stream_id, &session_id, &connection_id, records);
+                    }
+                    Err(_) if turn_completed || !turn_started => {
+                        clean_eof = true;
+                        break;
+                    }
+                    Err(_) => {
+                        // A transport read error can happen after the
+                        // peer has already committed the assistant
+                        // message. Treat it like a reconnectable EOF;
+                        // the history reconciler will fill any missed
+                        // terminal event without flashing a false
+                        // "bridge offline" error in the UI.
+                        clean_eof = true;
+                        break;
                     }
                 }
             }
@@ -2390,11 +2765,34 @@ async fn connect_harness_events(
 
             // Do not spin if the host closes an idle response.  The short
             // delay also gives DSH time to re-register the next subscriber.
+            // `cancel_rx` is drained in this select, so a Stop that arrives
+            // between two connections ends the reader instead of being lost in
+            // the HTTP re-request below.
+            let mut reconnect_delay = Box::pin(tokio::time::sleep(Duration::from_millis(20)));
             tokio::select! {
-                _ = &mut cancel_rx => break,
-                _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+                biased;
+                _ = &mut cancel_rx => break 'reconnect,
+                _ = &mut reconnect_delay => {}
             }
-            let next = match auth(client.get(&url), &token).send().await {
+            // The re-request itself could hang on a wedged loopback socket, so
+            // it gets the same idle deadline.
+            let mut reconnect_request = Box::pin(auth(client.get(&url), &token).send());
+            let next = tokio::select! {
+                biased;
+                _ = &mut cancel_rx => break 'reconnect,
+                _ = tokio::time::sleep(HARNESS_STREAM_IDLE_TIMEOUT) => {
+                    emit_stream_error(
+                        "HARNESS_SSE_IDLE_TIMEOUT",
+                        format!(
+                            "DSH bridge 在 {} 秒内没有接受新的心跳连接；事件流已停止。",
+                            HARNESS_STREAM_IDLE_TIMEOUT.as_secs()
+                        ),
+                    );
+                    break 'reconnect;
+                }
+                result = &mut reconnect_request => result,
+            };
+            let next = match next {
                 Ok(next)
                     if next.status().is_success()
                         && next
@@ -2631,21 +3029,141 @@ pub fn cancel_harness_stream(state: &ChatState) {
 }
 
 #[cfg(test)]
+mod stream_watchdog_tests {
+    use super::{
+        api_idle_timeout_error, next_with_idle_timeout, StreamRead, API_STREAM_IDLE_TIMEOUT,
+        API_STREAM_IDLE_TIMEOUT_CODE, HARNESS_STREAM_IDLE_TIMEOUT,
+    };
+    use std::collections::VecDeque;
+    use std::time::Duration;
+    use tokio::sync::oneshot;
+
+    /// A test-only live stream: it waits `delay` before every item and then
+    /// yields it, so a test can prove the idle deadline is per-read and not a
+    /// total lifetime. A delay of `None` means "never produce another item".
+    fn scripted_stream(delays: Vec<Option<Duration>>) -> impl futures_util::Stream<Item = u8> + Unpin {
+        let mut queue: VecDeque<Option<Duration>> = delays.into();
+        Box::pin(futures_util::stream::unfold(0u8, move |count| {
+            let delay = queue.pop_front();
+            async move {
+                match delay {
+                    Some(Some(duration)) => {
+                        tokio::time::sleep(duration).await;
+                        Some((count, count + 1))
+                    }
+                    // Never yields: models a peer that stopped sending bytes.
+                    Some(None) => {
+                        std::future::pending::<()>().await;
+                        unreachable!()
+                    }
+                    None => None,
+                }
+            }
+        }))
+    }
+
+    #[tokio::test]
+    async fn an_idle_read_reports_a_timeout_instead_of_waiting_forever() {
+        let mut stream = scripted_stream(vec![None]);
+        let (_cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+        let outcome =
+            next_with_idle_timeout(&mut stream, &mut cancel_rx, Duration::from_millis(30)).await;
+        assert!(matches!(outcome, StreamRead::Idle));
+    }
+
+    #[tokio::test]
+    async fn every_event_restarts_the_idle_deadline() {
+        // Three items arriving once per 20ms keep a 60ms deadline from ever
+        // firing, which is what stops a slow-but-live model being killed.
+        let mut stream = scripted_stream(vec![
+            Some(Duration::from_millis(20)),
+            Some(Duration::from_millis(20)),
+            Some(Duration::from_millis(20)),
+        ]);
+        let (_cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+        for expected in 0..3u8 {
+            let outcome =
+                next_with_idle_timeout(&mut stream, &mut cancel_rx, Duration::from_millis(60)).await;
+            match outcome {
+                StreamRead::Event(Some(item)) => assert_eq!(item, expected),
+                _ => panic!("event {expected} was not delivered"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn end_of_stream_is_not_reported_as_an_idle_timeout() {
+        let mut stream = scripted_stream(vec![]);
+        let (_cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+        let outcome =
+            next_with_idle_timeout(&mut stream, &mut cancel_rx, Duration::from_millis(50)).await;
+        assert!(matches!(outcome, StreamRead::Event(None)));
+    }
+
+    #[tokio::test]
+    async fn cancellation_wins_over_an_elapsed_idle_deadline() {
+        // The deadline has already passed and no data will ever arrive. A stop
+        // arriving at the same moment must be reported as cancellation, so
+        // cleanup happens exactly once through the cancel path.
+        let mut stream = scripted_stream(vec![None]);
+        let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+        let _ = cancel_tx.send(());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let outcome =
+            next_with_idle_timeout(&mut stream, &mut cancel_rx, Duration::from_millis(10)).await;
+        assert!(matches!(outcome, StreamRead::Cancelled));
+    }
+
+    #[test]
+    fn idle_deadlines_match_the_documented_contract() {
+        // API: no data for two minutes. Harness: the bridge heartbeats every
+        // 15s, so a full minute covers three missed beats.
+        assert_eq!(API_STREAM_IDLE_TIMEOUT, Duration::from_secs(120));
+        assert_eq!(HARNESS_STREAM_IDLE_TIMEOUT, Duration::from_secs(60));
+        assert!(HARNESS_STREAM_IDLE_TIMEOUT < API_STREAM_IDLE_TIMEOUT);
+        assert_eq!(API_STREAM_IDLE_TIMEOUT_CODE, "DEEPSEEK_API_IDLE_TIMEOUT");
+        assert!(api_idle_timeout_error().contains("120"));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{
-        api_completion_url, api_request_messages, bridge_token_acl_is_private,
+        api_completion_url, api_history, api_request_messages, bridge_token_acl_is_private,
         drain_bounded_harness_sse_records, drain_sse_records, finish_api_request,
         finish_bounded_harness_sse_records, finish_harness_stream, finish_sse_records,
         harness_records_have_terminal_event, harness_records_have_turn_activity,
         is_current_api_request, is_current_harness_stream, owns_api_request, parse_bridge_event,
-        parse_harness_connection, parse_harness_history, sse_record_payload, ApiMessage,
-        ApiPricing, ApiUsage, ChatEvent, ChatState, HarnessConnection, HarnessHistoryMessage,
-        HarnessHistoryResponse, HarnessStreamCancellation, Usage, Utf8StreamDecoder,
+        parse_harness_connection, parse_harness_history, sse_record_payload, trim_api_archive,
+        ApiConversation, ApiConversationArchive, ApiMessage, ApiPricing, ApiUsage, ChatEvent,
+        ChatState, HarnessConnection, HarnessHistoryMessage, HarnessHistoryResponse,
+        HarnessStreamCancellation, Usage, Utf8StreamDecoder, API_CONVERSATION_SCHEMA_VERSION,
+        DEFAULT_API_HISTORY_MESSAGES, MAX_API_HISTORY_MESSAGES, MAX_API_MESSAGES_PER_CONVERSATION,
         MAX_API_RATE_PER_MILLION, MAX_API_REQUEST_CONTEXT_BYTES, MAX_HARNESS_EVENT_TEXT_BYTES,
         MAX_HARNESS_MESSAGE_BYTES, MAX_HARNESS_SSE_BUFFER_BYTES, MAX_HARNESS_SSE_EVENT_BYTES,
     };
     use crate::api_persistence::EncryptedJsonStore;
+    use std::collections::HashMap;
     use tokio::sync::oneshot;
+
+    fn message(id: &str, created_at: u64, content: &str) -> ApiMessage {
+        ApiMessage {
+            id: id.into(),
+            role: "assistant".into(),
+            content: content.into(),
+            created_at,
+            usage: None,
+        }
+    }
+
+    /// The exact plaintext size the archive would occupy on disk.
+    fn archive_len(conversations: &HashMap<String, ApiConversation>) -> usize {
+        EncryptedJsonStore::serialized_len(&ApiConversationArchive {
+            schema_version: API_CONVERSATION_SCHEMA_VERSION,
+            conversations: conversations.clone(),
+        })
+        .expect("serializable archive")
+    }
 
     #[test]
     fn sse_parser_accepts_lf_crlf_and_bare_cr_records_across_chunks() {
@@ -3076,5 +3594,295 @@ mod tests {
             messages[0].usage.as_ref().and_then(|usage| usage.cost),
             Some(0.0001)
         );
+    }
+
+    #[test]
+    fn trimming_over_budget_evicts_the_least_recent_conversation_first() {
+        // Many large conversations: the budget is exceeded, so whole
+        // transcripts are evicted by activity instead of the archive
+        // permanently failing to save.
+        let policy = "x".repeat(200_000);
+        let mut conversations: HashMap<String, ApiConversation> = HashMap::new();
+        for index in 0..80u64 {
+            conversations.insert(
+                format!("old-{index:03}"),
+                ApiConversation {
+                    messages: vec![
+                        message(&format!("old-{index:03}-u"), index * 10 + 1, &policy),
+                        message(&format!("old-{index:03}-a"), index * 10 + 2, &policy),
+                    ],
+                    updated_at: index * 10 + 2,
+                },
+            );
+        }
+        conversations.insert(
+            "current".into(),
+            ApiConversation {
+                messages: vec![
+                    message("current-u", 1_000_000, "still here"),
+                    message("current-a", 1_000_001, "still here too"),
+                ],
+                updated_at: 1_000_001,
+            },
+        );
+        assert!(archive_len(&conversations) > super::API_CONVERSATION_TARGET_PLAINTEXT_BYTES);
+
+        assert!(trim_api_archive(&mut conversations, Some("current")));
+        assert!(
+            archive_len(&conversations) <= super::API_CONVERSATION_TARGET_PLAINTEXT_BYTES,
+            "trimming must reach the target budget"
+        );
+        // The current transcript is intact, down to its message identity.
+        let current = conversations.get("current").expect("protected conversation");
+        assert_eq!(current.messages.len(), 2);
+        assert_eq!(current.messages[0].id, "current-u");
+        assert_eq!(current.messages[1].id, "current-a");
+        assert_eq!(current.messages[1].created_at, 1_000_001);
+        // The most recently active evicted conversation survives longest.
+        assert!(conversations.contains_key("old-079"));
+        assert!(!conversations.contains_key("old-000"));
+    }
+
+    #[test]
+    fn trimming_never_cuts_a_message_body_and_refuses_a_hopeless_conversation() {
+        // One protected conversation larger than the budget with no other
+        // conversation to evict. Bodies must stay whole, so the only correct
+        // outcome is "nothing to trim" - the caller then refuses the write and
+        // keeps the transcript in memory instead of shredding it.
+        let one_turn = "y".repeat(2 * 1024 * 1024);
+        let mut messages = Vec::new();
+        for index in 0..6u64 {
+            messages.push(message(&format!("u-{index}"), index * 2 + 1, &one_turn));
+            messages.push(message(&format!("a-{index}"), index * 2 + 2, &one_turn));
+        }
+        let mut conversations: HashMap<String, ApiConversation> = HashMap::new();
+        conversations.insert(
+            "current".into(),
+            ApiConversation {
+                messages: messages.clone(),
+                updated_at: 99,
+            },
+        );
+        let before = archive_len(&conversations);
+        assert!(before > super::API_CONVERSATION_TARGET_PLAINTEXT_BYTES);
+
+        assert!(!trim_api_archive(&mut conversations, Some("current")));
+        let current = conversations.get("current").expect("protected conversation");
+        // Every message survives, with its identity and its full body.
+        assert_eq!(current.messages.len(), messages.len());
+        for (kept, original) in current.messages.iter().zip(messages.iter()) {
+            assert_eq!(kept.id, original.id);
+            assert_eq!(kept.created_at, original.created_at);
+            assert_eq!(kept.content.len(), one_turn.len());
+        }
+        assert_eq!(archive_len(&conversations), before);
+    }
+
+    #[test]
+    fn trimming_applies_a_per_conversation_message_window() {
+        let mut messages = Vec::new();
+        for index in 0..(MAX_API_MESSAGES_PER_CONVERSATION as u64 + 5) {
+            messages.push(message(&format!("m-{index}"), index + 1, "短"));
+        }
+        let mut conversations: HashMap<String, ApiConversation> = HashMap::new();
+        conversations.insert(
+            "current".into(),
+            ApiConversation {
+                messages,
+                updated_at: 999,
+            },
+        );
+
+        assert!(trim_api_archive(&mut conversations, Some("current")));
+        let current = conversations.get("current").expect("conversation");
+        assert_eq!(current.messages.len(), MAX_API_MESSAGES_PER_CONVERSATION);
+        // The newest turns are the ones kept.
+        assert_eq!(current.messages.last().map(|m| m.id.as_str()), Some("m-404"));
+        assert_eq!(current.messages.first().map(|m| m.id.as_str()), Some("m-5"));
+    }
+
+    #[test]
+    fn api_history_returns_only_the_newest_requested_window() {
+        let state = ChatState::default();
+        for index in 0..10u64 {
+            state.append_api_conversation_for_test(
+                "conversation-a",
+                message(&format!("m-{index}"), index + 1, "content"),
+            );
+        }
+
+        let full = api_history(&state, "conversation-a", None).expect("history");
+        assert_eq!(full["messages"].as_array().map(Vec::len), Some(10));
+        assert_eq!(full["totalMessages"], 10);
+        assert_eq!(full["hasMore"], false);
+
+        let window = api_history(&state, "conversation-a", Some(3)).expect("windowed history");
+        let messages = window["messages"].as_array().expect("messages");
+        assert_eq!(messages.len(), 3);
+        // Newest-last order is preserved, so the composer keeps chronology.
+        assert_eq!(messages[0]["id"], "m-7");
+        assert_eq!(messages[2]["id"], "m-9");
+        assert_eq!(window["totalMessages"], 10);
+        assert_eq!(window["hasMore"], true);
+        assert!(window["bytes"].as_u64().unwrap_or(0) > 0);
+
+        // The renderer cannot ask for an unbounded clone.
+        let clamped = api_history(&state, "conversation-a", Some(usize::MAX)).expect("clamped");
+        assert_eq!(clamped["limit"], MAX_API_HISTORY_MESSAGES);
+        let zero = api_history(&state, "conversation-a", Some(0)).expect("minimum window");
+        assert_eq!(zero["limit"], 1);
+        assert_eq!(zero["messages"].as_array().map(Vec::len), Some(1));
+
+        let missing = api_history(&state, "missing", None).expect("empty history");
+        assert_eq!(missing["messages"].as_array().map(Vec::len), Some(0));
+        assert_eq!(missing["hasMore"], false);
+        assert_eq!(DEFAULT_API_HISTORY_MESSAGES, 200);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn oversized_save_stops_retrying_and_leaves_the_stored_archive_untouched() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("api-conversations.v1.dpapi");
+        let state = ChatState::with_store(EncryptedJsonStore::new(&path));
+
+        // One message larger than the whole plaintext ceiling: trimming cannot
+        // help, so persistence must give up instead of looping forever.
+        state.append_api_conversation_for_test(
+            "huge",
+            message(
+                "huge-1",
+                1,
+                &"z".repeat(super::MAX_API_REQUEST_CONTEXT_BYTES + 1),
+            ),
+        );
+        state.append_api_conversation_for_test(
+            "huge",
+            message("huge-2", 2, &"z".repeat(17 * 1024 * 1024)),
+        );
+        let measured = archive_len(&state.api_conversations.lock().expect("state").clone());
+        assert!(
+            measured > crate::api_persistence::MAX_PLAINTEXT_BYTES,
+            "fixture must exceed the hard ceiling, got {measured}"
+        );
+        // Persist with the oversized transcript protected: it is the one the
+        // user is in, so the trimmer must refuse rather than silently drop it.
+        let error = state
+            .persist_api_conversations_for(Some("huge"))
+            .expect_err("an oversized archive must be refused");
+        assert!(error.contains("容量上限"), "unexpected error: {error}");
+        assert!(
+            !path.exists(),
+            "a refused write must not create or replace the archive"
+        );
+
+        // The in-memory transcript still works, and the second attempt is
+        // refused without touching the store again.
+        assert_eq!(
+            state
+                .api_conversation("huge")
+                .expect("in-memory conversation")
+                .messages
+                .len(),
+            2
+        );
+        let second = state
+            .persist_api_conversations()
+            .expect_err("persistence stays disabled for this process");
+        assert!(second.contains("不可用"), "unexpected error: {second}");
+        assert!(!path.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn delete_and_clear_remove_durable_conversations_without_resurrection() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("api-conversations.v1.dpapi");
+        let state = ChatState::with_store(EncryptedJsonStore::new(&path));
+        state.append_api_conversation_for_test("conversation-a", message("a-1", 1, "a"));
+        state.append_api_conversation_for_test("conversation-b", message("b-1", 2, "b"));
+        state
+            .persist_api_conversations()
+            .expect("persist both conversations");
+
+        // A second process view: its in-memory map was loaded before the
+        // delete, so a naive merge would resurrect the removed transcript.
+        let stale = ChatState::with_store(EncryptedJsonStore::new(&path));
+        assert!(stale.api_conversation("conversation-a").is_some());
+
+        assert!(super::delete_api_conversation(&state, "conversation-a").expect("delete"));
+        assert!(!super::delete_api_conversation(&state, "conversation-a").expect("idempotent"));
+
+        let restored = ChatState::with_store(EncryptedJsonStore::new(&path));
+        assert!(restored.api_conversation("conversation-a").is_none());
+        assert!(restored.api_conversation("conversation-b").is_some());
+
+        assert_eq!(super::clear_api_history(&state).expect("clear"), 1);
+        let after_clear = ChatState::with_store(EncryptedJsonStore::new(&path));
+        assert!(after_clear.api_conversation("conversation-b").is_none());
+        assert_eq!(super::clear_api_history(&state).expect("clear again"), 0);
+        assert!(super::delete_api_conversation(&state, "   ").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn persistence_still_fails_closed_for_a_corrupt_archive() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("api-conversations.v1.dpapi");
+        std::fs::write(&path, b"not a DPAPI blob").expect("corrupt archive");
+        let before = std::fs::read(&path).expect("before");
+        let state = ChatState::with_store(EncryptedJsonStore::new(&path));
+
+        assert!(state.persist_api_conversations().is_err());
+        assert_eq!(std::fs::read(&path).expect("after"), before);
+        // A corrupt archive is not a size problem: it must not be reported as
+        // the recoverable capacity error.
+        let error = state.persist_api_conversations().expect_err("still refused");
+        assert!(!error.contains("容量上限"), "unexpected error: {error}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_trimmed_archive_is_written_instead_of_failing() {        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("api-conversations.v1.dpapi");
+        let state = ChatState::with_store(EncryptedJsonStore::new(&path));
+        // Build an archive above the *target* budget but below the hard
+        // ceiling, which is exactly the "long-lived install" case: the save
+        // must succeed by trimming, not fail.
+        let filler = "f".repeat(330_000);
+        for index in 0..20u64 {
+            for turn in 0..2u64 {
+                state.append_api_conversation_for_test(
+                    &format!("conversation-{index:02}"),
+                    message(
+                        &format!("c{index}-m{turn}"),
+                        index * 10 + turn + 1,
+                        &filler,
+                    ),
+                );
+            }
+        }
+        let stored = state
+            .api_conversations
+            .lock()
+            .expect("state")
+            .clone();
+        let measured = archive_len(&stored);
+        assert!(
+            measured > super::API_CONVERSATION_TARGET_PLAINTEXT_BYTES,
+            "fixture must exceed the target budget, got {measured}"
+        );
+        assert!(
+            measured < crate::api_persistence::MAX_PLAINTEXT_BYTES,
+            "fixture must stay under the hard ceiling, got {measured}"
+        );
+
+        state
+            .persist_api_conversations()
+            .expect("a trimmable archive must still be written");
+        let restored = ChatState::with_store(EncryptedJsonStore::new(&path));
+        let after = restored.api_conversations.lock().expect("restored").clone();
+        assert!(!after.is_empty(), "trimming must not empty the archive");
+        assert!(archive_len(&after) <= super::API_CONVERSATION_TARGET_PLAINTEXT_BYTES);
     }
 }

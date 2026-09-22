@@ -29,6 +29,8 @@
     "allow-harness-controls",
     "allow-harness-set-permission",
     "allow-api-history",
+    "allow-delete-api-conversation",
+    "allow-clear-api-history",
     "allow-probe-harness",
     "allow-launch-dsh",
     "allow-managed-dsh-status",

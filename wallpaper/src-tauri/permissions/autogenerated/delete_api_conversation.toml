@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-delete-api-conversation"
+description = "Enables the delete_api_conversation command without any pre-configured scope."
+commands.allow = ["delete_api_conversation"]
+
+[[permission]]
+identifier = "deny-delete-api-conversation"
+description = "Denies the delete_api_conversation command without any pre-configured scope."
+commands.deny = ["delete_api_conversation"]

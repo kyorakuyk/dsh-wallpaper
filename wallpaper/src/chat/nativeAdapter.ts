@@ -309,13 +309,30 @@ export class NativeChatAdapter extends EventChatAdapter {
   }
 
   async history(): Promise<ChatMessage[]> {
+    return this.boundedHistory()
+  }
+
+  /**
+   * The API transcript is read as a bounded window (`limit` counts backwards
+   * from the newest turn) instead of cloning an arbitrarily large archive
+   * across IPC. The caller asks for a larger window when the user wants to
+   * read earlier turns; the default matches the native command's own default.
+   */
+  async boundedHistory(limit?: number): Promise<ChatMessage[]> {
     const messages = this.mode === 'harness'
       ? await nativeRuntime.harnessHistory()
       : this.mode === 'deepseek-api' && this.sessionId
-        ? await nativeRuntime.apiHistory(this.sessionId)
+        ? (await nativeRuntime.apiHistory(this.sessionId, limit)).messages
         : []
     this.replaceKnownMessages(messages)
     return messages
+  }
+
+  /** True when older durable API turns exist beyond the returned window. */
+  async hasMoreApiHistory(): Promise<boolean> {
+    if (this.mode !== 'deepseek-api' || !this.sessionId) return false
+    const page = await nativeRuntime.apiHistory(this.sessionId, 1)
+    return page.totalMessages > 1
   }
 
   conversationId(): string | undefined { return this.sessionId }

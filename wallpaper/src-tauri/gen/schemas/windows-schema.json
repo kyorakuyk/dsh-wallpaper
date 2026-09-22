@@ -267,6 +267,12 @@
           "markdownDescription": "Enables the cancel_chat command without any pre-configured scope."
         },
         {
+          "description": "Enables the clear_api_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-clear-api-history",
+          "markdownDescription": "Enables the clear_api_history command without any pre-configured scope."
+        },
+        {
           "description": "Enables the clear_stale_lock_screen_backup command without any pre-configured scope.",
           "type": "string",
           "const": "allow-clear-stale-lock-screen-backup",
@@ -301,6 +307,12 @@
           "type": "string",
           "const": "allow-deepseek-web-status",
           "markdownDescription": "Enables the deepseek_web_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the delete_api_conversation command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-api-conversation",
+          "markdownDescription": "Enables the delete_api_conversation command without any pre-configured scope."
         },
         {
           "description": "Enables the desktop_displays command without any pre-configured scope.",
@@ -639,6 +651,12 @@
           "markdownDescription": "Denies the cancel_chat command without any pre-configured scope."
         },
         {
+          "description": "Denies the clear_api_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-clear-api-history",
+          "markdownDescription": "Denies the clear_api_history command without any pre-configured scope."
+        },
+        {
           "description": "Denies the clear_stale_lock_screen_backup command without any pre-configured scope.",
           "type": "string",
           "const": "deny-clear-stale-lock-screen-backup",
@@ -673,6 +691,12 @@
           "type": "string",
           "const": "deny-deepseek-web-status",
           "markdownDescription": "Denies the deepseek_web_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the delete_api_conversation command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-api-conversation",
+          "markdownDescription": "Denies the delete_api_conversation command without any pre-configured scope."
         },
         {
           "description": "Denies the desktop_displays command without any pre-configured scope.",

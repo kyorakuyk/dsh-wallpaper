@@ -1601,9 +1601,42 @@ fn api_history(
     caller: tauri::WebviewWindow,
     state: tauri::State<'_, chat::ChatState>,
     conversation_id: String,
+    limit: Option<usize>,
 ) -> Result<serde_json::Value, String> {
     require_background(&caller)?;
-    chat::api_history(state.inner(), &conversation_id)
+    chat::api_history(state.inner(), &conversation_id, limit)
+}
+
+/// Deleting durable API history touches the DPAPI archive, which is a file
+/// write plus a cross-process mutex wait. Keep it off the WebView command
+/// thread so a slow disk cannot freeze the wallpaper surface.
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+async fn delete_api_conversation(
+    caller: tauri::WebviewWindow,
+    state: tauri::State<'_, chat::ChatState>,
+    conversation_id: String,
+) -> Result<bool, String> {
+    require_background(&caller)?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        chat::delete_api_conversation(&state, &conversation_id)
+    })
+    .await
+    .map_err(|_| "删除 API 会话记录失败".to_string())?
+}
+
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+async fn clear_api_history(
+    caller: tauri::WebviewWindow,
+    state: tauri::State<'_, chat::ChatState>,
+) -> Result<usize, String> {
+    require_background(&caller)?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || chat::clear_api_history(&state))
+        .await
+        .map_err(|_| "清空 API 会话记录失败".to_string())?
 }
 
 #[tauri::command]
@@ -2123,6 +2156,8 @@ macro_rules! register_edition_commands {
             harness_controls,
             harness_set_permission,
             api_history,
+            delete_api_conversation,
+            clear_api_history,
             probe_harness,
             appearance::commands::appearance_get_state,
             appearance::commands::appearance_list_themes,

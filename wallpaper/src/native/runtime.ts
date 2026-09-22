@@ -20,6 +20,18 @@ export interface AutostartStatus { enabled: boolean; source: 'startup-task' | 'r
 export interface DeepSeekWebStatus { state: 'loading' | 'logged-out' | 'ready' | 'generating' | 'unsupported'; conversationId?: string; model?: string; signature: string }
 export interface DeepSeekWebHistory { messages: ChatMessage[]; conversationId?: string; model?: string; state: DeepSeekWebStatus['state'] | 'loading' }
 export interface DeepSeekWebAdapterConfigStatus { schemaVersion: number; adapterVersion: string; source: 'builtin' | 'local'; path: string; warning?: string }
+/**
+ * A bounded window of one durable API transcript. `hasMore` means older
+ * messages exist on disk but were not cloned across IPC; the caller asks for a
+ * larger `limit` when the user wants to read further back.
+ */
+export interface ApiHistoryPage {
+  messages: ChatMessage[]
+  totalMessages: number
+  hasMore: boolean
+  bytes: number
+  limit: number
+}
 export interface DesktopRect { x: number; y: number; width: number; height: number }
 export interface DesktopDisplayInfo { id: string; name: string; bounds: DesktopRect; workArea: DesktopRect; scaleFactor: number; primary: boolean }
 
@@ -59,7 +71,9 @@ export interface NativeRuntime {
   setHarnessPreset(preset: string): Promise<void>
   harnessControls(): Promise<{ permission: { current: string; options: string[] }; commands: Array<{ name: string; description: string; input?: { hint: string } }> }>
   setHarnessPermission(permission: string): Promise<void>
-  apiHistory(conversationId: string): Promise<ChatMessage[]>
+  apiHistory(conversationId: string, limit?: number): Promise<ApiHistoryPage>
+  deleteApiConversation(conversationId: string): Promise<boolean>
+  clearApiHistory(): Promise<number>
   listenTray(listener: (event: { type: 'backend'; backend: BackendMode }) => void): Promise<() => void>
   probeHarness(): Promise<HarnessStatus>
   desktopDisplays(): Promise<DesktopDisplayInfo[]>
@@ -226,26 +240,49 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('harness_set_permission', { permission })
   },
-  async apiHistory(conversationId) {
-    if (!await tauriAvailable()) return []
+  async apiHistory(conversationId, limit) {
+    if (!await tauriAvailable()) return { messages: [], totalMessages: 0, hasMore: false, bytes: 0, limit: limit ?? 0 }
     const { invoke } = await import('@tauri-apps/api/core')
-    const result = await invoke<{ messages: Array<{
-      id: string
-      role: 'user' | 'assistant'
-      content: string
-      createdAt: number
-      usage?: ChatMessage['usage']
-    }> }>('api_history', { conversationId })
+    const result = await invoke<{
+      messages: Array<{
+        id: string
+        role: 'user' | 'assistant'
+        content: string
+        createdAt: number
+        usage?: ChatMessage['usage']
+      }>
+      totalMessages?: number
+      hasMore?: boolean
+      bytes?: number
+      limit?: number
+    }>('api_history', { conversationId, limit })
     // Message ids, timestamps and final usage are persisted by the native
     // DPAPI archive. Preserve them on resume so React keys and session cost
     // remain stable instead of fabricating a fresh zero-cost transcript.
-    return result.messages.map((message) => ({
+    const messages = result.messages.map((message) => ({
       id: message.id,
       role: message.role,
       content: message.content,
       createdAt: message.createdAt,
       usage: message.usage,
     }))
+    return {
+      messages,
+      totalMessages: result.totalMessages ?? messages.length,
+      hasMore: result.hasMore === true,
+      bytes: result.bytes ?? 0,
+      limit: result.limit ?? messages.length,
+    }
+  },
+  async deleteApiConversation(conversationId) {
+    if (!await tauriAvailable()) return false
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<boolean>('delete_api_conversation', { conversationId })
+  },
+  async clearApiHistory() {
+    if (!await tauriAvailable()) return 0
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<number>('clear_api_history')
   },
   async listenTray(listener) {
     if (!await tauriAvailable()) return () => undefined
