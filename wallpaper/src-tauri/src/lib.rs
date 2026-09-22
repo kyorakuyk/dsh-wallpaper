@@ -463,6 +463,22 @@ fn require_wallpaper_surface(caller: &tauri::WebviewWindow) -> Result<(), String
     }
 }
 
+/// Owner of the durable API transcript archive. The wallpaper composer reads
+/// it (`api_history`) and the settings center lists and prunes it, so both
+/// declared WebViews are allowed and nothing else is.
+///
+/// Listing returns only conversation metadata — id, message count, bytes and
+/// last activity — never a message body, and deletion is the only mutation. A
+/// caller that is allowed to destroy the archive is by construction allowed to
+/// see its size.
+#[cfg(not(feature = "lite"))]
+fn require_api_history_owner(caller: &tauri::WebviewWindow) -> Result<(), String> {
+    match caller.label() {
+        BACKGROUND_WINDOW_LABEL | SETTINGS_WINDOW_LABEL => Ok(()),
+        _ => Err("该命令只允许壁纸或设置中心调用。".into()),
+    }
+}
+
 /// `keyring`'s Windows backend stores string secrets in a Generic Credential
 /// as a UTF-16 little-endian byte blob. CredUI returns UTF-16 code units, so
 /// encode them explicitly rather than relying on the host representation when
@@ -1607,9 +1623,29 @@ fn api_history(
     chat::api_history(state.inner(), &conversation_id, limit)
 }
 
+/// List the durable API transcripts so the settings center can offer a delete
+/// control. Returns metadata only; message bodies stay behind `api_history`.
+///
+/// The settings WebView is a separate process with an isolated storage
+/// partition, so its in-memory archive is a snapshot from its own start. The
+/// listing therefore reads the archive through the store rather than reporting
+/// that snapshot.
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+async fn list_api_conversations(
+    caller: tauri::WebviewWindow,
+    state: tauri::State<'_, chat::ChatState>,
+) -> Result<serde_json::Value, String> {
+    require_api_history_owner(&caller)?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || chat::list_api_conversations(&state))
+        .await
+        .map_err(|_| "读取 API 会话列表失败".to_string())?
+}
+
 /// Deleting durable API history touches the DPAPI archive, which is a file
 /// write plus a cross-process mutex wait. Keep it off the WebView command
-/// thread so a slow disk cannot freeze the wallpaper surface.
+/// thread so a slow disk cannot freeze the calling surface.
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
 async fn delete_api_conversation(
@@ -1617,7 +1653,7 @@ async fn delete_api_conversation(
     state: tauri::State<'_, chat::ChatState>,
     conversation_id: String,
 ) -> Result<bool, String> {
-    require_background(&caller)?;
+    require_api_history_owner(&caller)?;
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         chat::delete_api_conversation(&state, &conversation_id)
@@ -1632,7 +1668,7 @@ async fn clear_api_history(
     caller: tauri::WebviewWindow,
     state: tauri::State<'_, chat::ChatState>,
 ) -> Result<usize, String> {
-    require_background(&caller)?;
+    require_api_history_owner(&caller)?;
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || chat::clear_api_history(&state))
         .await
@@ -2156,6 +2192,7 @@ macro_rules! register_edition_commands {
             harness_controls,
             harness_set_permission,
             api_history,
+            list_api_conversations,
             delete_api_conversation,
             clear_api_history,
             probe_harness,

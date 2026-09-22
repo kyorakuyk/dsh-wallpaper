@@ -86,6 +86,8 @@ describe('settings probe plan', () => {
     expect([...PAGE_PROBES.connections].sort()).toEqual(['deepseekWebAdapterConfig', 'managedDsh', 'translucentTb'])
     expect(PAGE_PROBES.appearance).toEqual([])
     expect(PAGE_PROBES.personas).toEqual([])
+    // The history page reads the durable API archive; nothing else needs it.
+    expect([...PAGE_PROBES.history]).toEqual(['apiHistory'])
     expect([...PAGE_PROBES.system].sort()).toEqual(['autostartStatus', 'lockScreenDiagnostics'])
   })
 })

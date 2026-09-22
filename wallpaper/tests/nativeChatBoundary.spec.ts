@@ -53,6 +53,31 @@ describe('native chat boundary', () => {
     }
   })
 
+  it('grants the API history management commands to exactly the two owning windows', async () => {
+    const [background, settings, liteBackground] = await Promise.all([
+      readCapability('background'),
+      readCapability('settings'),
+      readFile(resolve(nativeRoot, 'capabilities/lite-background.json'), 'utf8').then((source) => JSON.parse(source) as { permissions?: unknown }),
+    ])
+    const management = [
+      'allow-list-api-conversations',
+      'allow-delete-api-conversation',
+      'allow-clear-api-history',
+    ]
+
+    // The settings center owns the delete UI; the wallpaper keeps them for its
+    // own archive handling. Reading a transcript body stays wallpaper-only.
+    for (const permission of management) {
+      expect(permissions(background)).toContain(permission)
+      expect(permissions(settings)).toContain(permission)
+    }
+    expect(permissions(settings)).not.toContain('allow-api-history')
+    // The Lite edition has no API backend, so it never touches the archive.
+    for (const permission of [...management, 'allow-api-history']) {
+      expect(permissions(liteBackground)).not.toContain(permission)
+    }
+  })
+
   it('uses explicit least-privilege core permissions for both WebViews', async () => {
     const [background, settings] = await Promise.all([readCapability('background'), readCapability('settings')])
 

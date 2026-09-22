@@ -32,6 +32,32 @@ export interface ApiHistoryPage {
   bytes: number
   limit: number
 }
+/**
+ * One durable API transcript, as listed for the settings history page. Message
+ * bodies are intentionally absent: this is a management view, not a reader.
+ */
+export interface ApiConversationSummary {
+  id: string
+  messageCount: number
+  /** Serialized size of this transcript — what the persistence budget acts on. */
+  bytes: number
+  updatedAt: number
+  firstMessageAt: number
+  lastMessageAt: number
+  /** True for the transcript this process is currently reading. */
+  active: boolean
+}
+
+export interface ApiConversationListing {
+  conversations: ApiConversationSummary[]
+  totalBytes: number
+  totalMessages: number
+  /** Size the application trims to before writing. */
+  budgetBytes: number
+  /** Hard ceiling above which a save is refused. */
+  maxBytes: number
+}
+
 export interface DesktopRect { x: number; y: number; width: number; height: number }
 export interface DesktopDisplayInfo { id: string; name: string; bounds: DesktopRect; workArea: DesktopRect; scaleFactor: number; primary: boolean }
 
@@ -72,6 +98,7 @@ export interface NativeRuntime {
   harnessControls(): Promise<{ permission: { current: string; options: string[] }; commands: Array<{ name: string; description: string; input?: { hint: string } }> }>
   setHarnessPermission(permission: string): Promise<void>
   apiHistory(conversationId: string, limit?: number): Promise<ApiHistoryPage>
+  listApiConversations(): Promise<ApiConversationListing>
   deleteApiConversation(conversationId: string): Promise<boolean>
   clearApiHistory(): Promise<number>
   listenTray(listener: (event: { type: 'backend'; backend: BackendMode }) => void): Promise<() => void>
@@ -272,6 +299,18 @@ export const nativeRuntime: NativeRuntime = {
       hasMore: result.hasMore === true,
       bytes: result.bytes ?? 0,
       limit: result.limit ?? messages.length,
+    }
+  },
+  async listApiConversations() {
+    if (!await tauriAvailable()) return { conversations: [], totalBytes: 0, totalMessages: 0, budgetBytes: 0, maxBytes: 0 }
+    const { invoke } = await import('@tauri-apps/api/core')
+    const result = await invoke<Partial<ApiConversationListing>>('list_api_conversations')
+    return {
+      conversations: result.conversations ?? [],
+      totalBytes: result.totalBytes ?? 0,
+      totalMessages: result.totalMessages ?? 0,
+      budgetBytes: result.budgetBytes ?? 0,
+      maxBytes: result.maxBytes ?? 0,
     }
   },
   async deleteApiConversation(conversationId) {

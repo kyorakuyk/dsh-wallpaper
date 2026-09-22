@@ -9,7 +9,7 @@
  * starts each group only when its page is actually shown, at most once.
  */
 
-export const SETTINGS_PAGES = ['general', 'connections', 'appearance', 'personas', 'system'] as const
+export const SETTINGS_PAGES = ['general', 'connections', 'appearance', 'personas', 'history', 'system'] as const
 export type SettingsPage = (typeof SETTINGS_PAGES)[number]
 
 /**
@@ -26,6 +26,7 @@ export const SETTINGS_PROBES = [
   'lockScreenDiagnostics',
   'autostartStatus',
   'desktopDisplays',
+  'apiHistory',
 ] as const
 export type SettingsProbe = (typeof SETTINGS_PROBES)[number]
 
@@ -38,6 +39,7 @@ export const PAGE_PROBES: Record<SettingsPage, readonly SettingsProbe[]> = {
   connections: ['managedDsh', 'translucentTb', 'deepseekWebAdapterConfig'],
   appearance: [],
   personas: [],
+  history: ['apiHistory'],
   system: ['lockScreenDiagnostics', 'autostartStatus'],
 }
 
@@ -186,6 +188,7 @@ const PROBE_ERROR_MESSAGES: Record<SettingsProbe, string> = {
   lockScreenDiagnostics: '锁屏检查失败',
   autostartStatus: '读取开机自启状态失败',
   desktopDisplays: '显示器列表读取失败',
+  apiHistory: '读取 API 会话记录失败',
 }
 
 export function settingsProbeErrorMessage(probe: SettingsProbe, error?: unknown): string {

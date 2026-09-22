@@ -171,6 +171,10 @@ pub struct ChatState {
     /// transcript mutation and persistence as one unit.  The encrypted store
     /// adds a named cross-process lock and reload/merge for a second process.
     api_transcript_transaction: Arc<Mutex<()>>,
+    /// The transcript this process is currently reading. Set when a send
+    /// starts, so a listing can mark it and so trimming protects it even when
+    /// the caller cannot name it.
+    active_api_conversation: Arc<Mutex<Option<String>>>,
 }
 
 impl Default for ChatState {
@@ -204,6 +208,38 @@ impl ChatState {
             api_conversations: Arc::new(Mutex::new(conversations)),
             api_store: Arc::new(Mutex::new(ApiConversationStore { store, writable })),
             api_transcript_transaction: Arc::default(),
+            active_api_conversation: Arc::default(),
+        }
+    }
+
+    /// Read the durable archive without adopting it.
+    ///
+    /// Used by the settings-facing listing, which must observe deletions and
+    /// other processes' writes rather than this process's snapshot. Reading
+    /// never overwrites the archive: an unreadable or future-schema archive is
+    /// reported as an error, exactly like a load.
+    fn load_api_archive(&self) -> Result<HashMap<String, ApiConversation>, String> {
+        let store_ref = {
+            let store = self
+                .api_store
+                .lock()
+                .map_err(|_| "API conversation storage state poisoned".to_string())?;
+            store.store.clone()
+        };
+        match store_ref.load::<ApiConversationArchive>() {
+            Ok(Some(archive)) if archive.schema_version == API_CONVERSATION_SCHEMA_VERSION => {
+                Ok(archive.conversations)
+            }
+            Ok(Some(_)) => Err("API 会话记录由更高版本写入；本版本不会修改它。".into()),
+            Ok(None) => Ok(HashMap::new()),
+            Err(_) => Err("无法读取加密 API 会话记录。".into()),
+        }
+    }
+
+    /// Record which transcript this process is currently reading.
+    fn set_active_api_conversation(&self, conversation_id: &str) {
+        if let Ok(mut active) = self.active_api_conversation.lock() {
+            *active = Some(conversation_id.to_string());
         }
     }
 
@@ -294,6 +330,15 @@ impl ChatState {
         self.update_api_archive(|conversations| {
             removed = conversations.remove(conversation_id).is_some();
         })?;
+        if removed {
+            // A deleted transcript must not stay claimed as this process's
+            // active one, or a later listing would mark a nonexistent row.
+            if let Ok(mut active) = self.active_api_conversation.lock() {
+                if active.as_deref() == Some(conversation_id) {
+                    active.take();
+                }
+            }
+        }
         Ok(removed)
     }
 
@@ -304,6 +349,9 @@ impl ChatState {
             count = conversations.len();
             conversations.clear();
         })?;
+        if let Ok(mut active) = self.active_api_conversation.lock() {
+            active.take();
+        }
         Ok(count)
     }
 
@@ -1796,6 +1844,9 @@ pub async fn send_api(
             return Err(error);
         }
     };
+    // Record the transcript this turn belongs to, so a listing can mark it and
+    // so trimming protects it.
+    state.set_active_api_conversation(&conversation_id);
     let history = {
         let conversations = state
             .api_conversations
@@ -2164,6 +2215,73 @@ pub fn delete_api_conversation(state: &ChatState, conversation_id: &str) -> Resu
 /// Delete every durable API transcript this process can see.
 pub fn clear_api_history(state: &ChatState) -> Result<usize, String> {
     state.clear_api_conversations()
+}
+
+/// Metadata for one durable API transcript. Message bodies are deliberately
+/// absent: the settings center needs to identify and delete a transcript, not
+/// to read it, so a listing can never become a second transcript exposure path.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiConversationSummary {
+    id: String,
+    message_count: usize,
+    /// Serialized size of this transcript — the number the trim budget acts on.
+    bytes: usize,
+    updated_at: u64,
+    first_message_at: u64,
+    last_message_at: u64,
+    /// True for the transcript this process is currently reading.
+    active: bool,
+}
+
+/// List the durable API transcripts, most recent activity first.
+///
+/// This reads the archive through the store instead of reporting
+/// `api_conversations`: the settings WebView is a separate process with its own
+/// state instance, so its in-memory map is a snapshot from its own start and a
+/// transcript deleted moments ago would still appear there.
+pub fn list_api_conversations(state: &ChatState) -> Result<Value, String> {
+    let stored = state.load_api_archive()?;
+    let active = state
+        .active_api_conversation
+        .lock()
+        .ok()
+        .and_then(|active| active.clone());
+    let mut summaries: Vec<ApiConversationSummary> = stored
+        .iter()
+        .map(|(id, conversation)| ApiConversationSummary {
+            id: id.clone(),
+            message_count: conversation.messages.len(),
+            bytes: EncryptedJsonStore::serialized_len(conversation).unwrap_or(0),
+            updated_at: conversation.effective_updated_at(),
+            first_message_at: conversation
+                .messages
+                .first()
+                .map(|message| message.created_at)
+                .unwrap_or(0),
+            last_message_at: conversation
+                .messages
+                .last()
+                .map(|message| message.created_at)
+                .unwrap_or(0),
+            active: active.as_deref() == Some(id.as_str()),
+        })
+        .collect();
+    summaries.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let total_bytes: usize = summaries.iter().map(|summary| summary.bytes).sum();
+    let total_messages: usize = summaries.iter().map(|summary| summary.message_count).sum();
+    Ok(serde_json::json!({
+        "conversations": summaries,
+        "totalBytes": total_bytes,
+        "totalMessages": total_messages,
+        "budgetBytes": API_CONVERSATION_TARGET_PLAINTEXT_BYTES,
+        "maxBytes": crate::api_persistence::MAX_PLAINTEXT_BYTES,
+    }))
 }
 
 pub fn cancel_api(state: &ChatState) {
@@ -3843,7 +3961,8 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn a_trimmed_archive_is_written_instead_of_failing() {        let directory = tempfile::tempdir().expect("temporary directory");
+    fn a_trimmed_archive_is_written_instead_of_failing() {
+        let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("api-conversations.v1.dpapi");
         let state = ChatState::with_store(EncryptedJsonStore::new(&path));
         // Build an archive above the *target* budget but below the hard
@@ -3884,5 +4003,132 @@ mod tests {
         let after = restored.api_conversations.lock().expect("restored").clone();
         assert!(!after.is_empty(), "trimming must not empty the archive");
         assert!(archive_len(&after) <= super::API_CONVERSATION_TARGET_PLAINTEXT_BYTES);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn listing_api_conversations_reports_metadata_without_message_bodies() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("api-conversations.v1.dpapi");
+        let state = ChatState::with_store(EncryptedJsonStore::new(&path));
+        state.append_api_conversation_for_test(
+            "older",
+            message("older-1", 10, &"o".repeat(500)),
+        );
+        state.append_api_conversation_for_test(
+            "newer",
+            message("newer-1", 20, "second transcript"),
+        );
+        state
+            .persist_api_conversations()
+            .expect("persist both conversations");
+
+        let listing = super::list_api_conversations(&state).expect("listing");
+        let conversations = listing["conversations"].as_array().expect("conversations");
+        assert_eq!(conversations.len(), 2);
+        // Most recent activity first.
+        assert_eq!(conversations[0]["id"], "newer");
+        assert_eq!(conversations[1]["id"], "older");
+        assert_eq!(conversations[1]["messageCount"], 1);
+        assert_eq!(conversations[1]["firstMessageAt"], 10);
+        assert_eq!(conversations[1]["lastMessageAt"], 10);
+        assert!(
+            conversations[1]["bytes"].as_u64().unwrap_or(0) >= 500,
+            "per-conversation size must reflect its own payload"
+        );
+        assert_eq!(listing["totalMessages"], 2);
+        assert_eq!(
+            listing["budgetBytes"],
+            super::API_CONVERSATION_TARGET_PLAINTEXT_BYTES
+        );
+        assert_eq!(
+            listing["maxBytes"],
+            crate::api_persistence::MAX_PLAINTEXT_BYTES
+        );
+        // A listing is not a second transcript exposure path.
+        assert!(!listing.to_string().contains("second transcript"));
+        assert!(!listing.to_string().contains(&"o".repeat(500)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn listing_reflects_a_deletion_made_by_another_state_instance() {
+        // The wallpaper and the settings center are separate processes with
+        // separate ChatState instances. The settings listing must read the
+        // archive, not its own snapshot, or a deleted row would reappear.
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("api-conversations.v1.dpapi");
+        let background = ChatState::with_store(EncryptedJsonStore::new(&path));
+        background.append_api_conversation_for_test("conversation-a", message("a-1", 1, "a"));
+        background.append_api_conversation_for_test("conversation-b", message("b-1", 2, "b"));
+        background
+            .persist_api_conversations()
+            .expect("persist both");
+
+        let settings = ChatState::with_store(EncryptedJsonStore::new(&path));
+        let before = super::list_api_conversations(&settings).expect("listing");
+        assert_eq!(before["conversations"].as_array().map(Vec::len), Some(2));
+
+        // The background deletes one transcript.
+        assert!(super::delete_api_conversation(&background, "conversation-a").expect("delete"));
+
+        // The settings snapshot still holds both, but the listing must not.
+        let after = super::list_api_conversations(&settings).expect("listing");
+        let ids: Vec<&str> = after["conversations"]
+            .as_array()
+            .expect("conversations")
+            .iter()
+            .filter_map(|entry| entry["id"].as_str())
+            .collect();
+        assert_eq!(ids, ["conversation-b"]);
+
+        // And clearing is visible immediately too.
+        assert_eq!(super::clear_api_history(&background).expect("clear"), 1);
+        let cleared = super::list_api_conversations(&settings).expect("listing");
+        assert_eq!(cleared["conversations"].as_array().map(Vec::len), Some(0));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn listing_marks_the_active_transcript_and_releases_it_on_delete() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("api-conversations.v1.dpapi");
+        let state = ChatState::with_store(EncryptedJsonStore::new(&path));
+        state.append_api_conversation_for_test("current", message("c-1", 1, "c"));
+        state.append_api_conversation_for_test("other", message("o-1", 2, "o"));
+        state.persist_api_conversations().expect("persist");
+        state.set_active_api_conversation("current");
+
+        let listing = super::list_api_conversations(&state).expect("listing");
+        let rows = listing["conversations"].as_array().expect("conversations");
+        let active: Vec<&str> = rows
+            .iter()
+            .filter(|row| row["active"] == true)
+            .filter_map(|row| row["id"].as_str())
+            .collect();
+        assert_eq!(active, ["current"]);
+
+        assert!(super::delete_api_conversation(&state, "current").expect("delete"));
+        let after = super::list_api_conversations(&state).expect("listing");
+        assert!(
+            after["conversations"]
+                .as_array()
+                .expect("conversations")
+                .iter()
+                .all(|row| row["active"] == false),
+            "a deleted transcript must not stay marked active"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn listing_fails_closed_for_a_corrupt_or_future_archive() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("api-conversations.v1.dpapi");
+        std::fs::write(&path, b"not a DPAPI blob").expect("corrupt archive");
+        let state = ChatState::with_store(EncryptedJsonStore::new(&path));
+        // A listing must never turn a damaged archive into an empty-looking
+        // list, which would read to the user as "everything was deleted".
+        assert!(super::list_api_conversations(&state).is_err());
     }
 }

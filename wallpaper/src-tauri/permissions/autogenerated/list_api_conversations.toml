@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-api-conversations"
+description = "Enables the list_api_conversations command without any pre-configured scope."
+commands.allow = ["list_api_conversations"]
+
+[[permission]]
+identifier = "deny-list-api-conversations"
+description = "Denies the list_api_conversations command without any pre-configured scope."
+commands.deny = ["list_api_conversations"]

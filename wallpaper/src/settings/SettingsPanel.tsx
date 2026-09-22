@@ -5,7 +5,7 @@ import { BACKGROUND_OPTIONS, MAX_PRICE_PER_MILLION, normalizedPrice, type Wallpa
 import { type SettingsPage } from './settingsProbes.ts'
 import type { AppearanceAssetSummary } from '../features/appearance/appearanceViewModel.ts'
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
-import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, LockScreenDiagnostics, ManagedDshStatus } from '../native/runtime.ts'
+import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, LockScreenDiagnostics, ManagedDshStatus, ApiConversationListing } from '../native/runtime.ts'
 import { preferredDisplayId } from '../runtime/displayLayout.ts'
 import { OfficialPersonaCards } from '../persona/OfficialPersonaCards.tsx'
 import './SettingsPanel.css'
@@ -59,6 +59,12 @@ export interface SettingsPanelProps {
   autostartBusy: boolean
   desktopDisplays: DesktopDisplayInfo[]
   onRefreshDesktopDisplays: () => void | Promise<void>
+  /** Durable DeepSeek API transcripts, for the history management page. */
+  apiHistory?: ApiConversationListing
+  apiHistoryBusy: boolean
+  onRefreshApiHistory: () => void
+  onDeleteApiConversation: (conversationId: string) => void
+  onClearApiHistory: () => void
 }
 
 const componentSlots: Array<{ slot: AppearanceSlot; label: string; detail: string }> = [
@@ -74,8 +80,42 @@ const pages: Array<{ id: Page; icon: string; label: string; hint: string }> = [
   { id: 'connections', icon: '⌁', label: '连接', hint: 'DeepSeek 与 DSH' },
   { id: 'appearance', icon: '◐', label: '外观', hint: '背景与动画' },
   { id: 'personas', icon: '◇', label: '形态', hint: '模型映射规则' },
+  { id: 'history', icon: '☰', label: '历史', hint: 'API 会话记录' },
   { id: 'system', icon: '⚙', label: '系统', hint: 'Windows 集成' },
 ]
+
+/** `18.4 MB`-style size for the history rows. */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  if (bytes < 1024) return `${Math.round(bytes)} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/** Local timestamp for one history row; `—` when the value is unknown. */
+export function formatHistoryTime(timestamp: number, now: Date = new Date()): string {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return '—'
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return '—'
+  const sameDay = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate()
+  const time = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+  return sameDay
+    ? `今天 ${time}`
+    : `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${time}`
+}
+
+/**
+ * How close the archive is to the ceiling that stops persistence, expressed as
+ * a percentage of the budget the application trims to. The UI must never imply
+ * "full" at exactly the budget: trimming happens silently at that point, and
+ * only the hard ceiling causes a refusal.
+ */
+export function historyPressure(totalBytes: number, budgetBytes: number): number {
+  if (!Number.isFinite(totalBytes) || !Number.isFinite(budgetBytes) || budgetBytes <= 0) return 0
+  return Math.max(0, Math.min(100, Math.round(totalBytes / budgetBytes * 100)))
+}
 
 function Card({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
   return <section className="settings-card"><header><h2>{title}</h2>{description && <p>{description}</p>}</header><div className="settings-card__body">{children}</div></section>
@@ -243,6 +283,73 @@ export function SettingsPanel(props: SettingsPanelProps) {
         <Card title="模型与形态映射" description="模型层级决定年龄，思考强度只改变氛围。">
           <div className="rule-list">{settings.modelTierRules.length === 0 && <div className="settings-empty"><strong>尚未创建自定义规则</strong><span>未识别模型会保持当前形态，冷启动默认为 Flash。</span></div>}{settings.modelTierRules.map((rule, index) => <div className="rule-row" key={index}><select aria-label="后端" value={rule.backend} onChange={(e) => updateRule(index, { backend: e.target.value as ModelTierRule['backend'] })}><option value="*">全部后端</option><option value="deepseek-web">DeepSeek Web</option><option value="deepseek-api">DeepSeek API</option><option value="harness">Harness</option></select><select aria-label="匹配方式" value={rule.match} onChange={(e) => updateRule(index, { match: e.target.value as ModelTierRule['match'] })}><option value="exact">精确</option><option value="contains">包含</option><option value="regex">正则</option></select><input aria-label="模型名称" value={rule.pattern} placeholder="模型名称或表达式" onChange={(e) => updateRule(index, { pattern: e.target.value })} /><select aria-label="形态" value={rule.tier} onChange={(e) => updateRule(index, { tier: e.target.value as ModelTierRule['tier'] })}><option value="flash">Flash · 幼年</option><option value="pro">Pro · 成年</option></select><button aria-label="删除规则" onClick={() => set({ modelTierRules: settings.modelTierRules.filter((_, i) => i !== index) })}>×</button></div>)}</div>
           <button className="settings-action secondary add-rule" onClick={() => set({ modelTierRules: [...settings.modelTierRules, { backend: '*', pattern: '', match: 'contains', tier: 'flash' }] })}>＋ 新增映射规则</button>
+        </Card>
+      </>}
+
+      {page === 'history' && <>
+        <Card
+          title="API 会话记录"
+          description="DeepSeek API 模式的历史记录以当前 Windows 用户的加密档案保存在本机。删除只影响这份档案，不影响 DeepSeek 网页入口或 Harness 会话。"
+        >
+          <div className="asset-library-toolbar">
+            <span>
+              共 {props.apiHistory?.conversations.length ?? 0} 个会话 ·{' '}
+              {props.apiHistory?.totalMessages ?? 0} 条消息 ·{' '}
+              {formatBytes(props.apiHistory?.totalBytes ?? 0)}
+              {props.apiHistory && props.apiHistory.budgetBytes > 0
+                ? `（预算 ${formatBytes(props.apiHistory.budgetBytes)}，超过后自动淘汰最旧记录）`
+                : ''}
+            </span>
+            <span className="integration-actions">
+              <button className="settings-action secondary" disabled={props.apiHistoryBusy} onClick={props.onRefreshApiHistory}>
+                {props.apiHistoryBusy ? '读取中…' : '刷新'}
+              </button>
+              <button
+                className="settings-action secondary"
+                disabled={props.apiHistoryBusy || (props.apiHistory?.conversations.length ?? 0) === 0}
+                onClick={props.onClearApiHistory}
+              >
+                清空全部 API 历史
+              </button>
+            </span>
+          </div>
+
+          {props.apiHistory && props.apiHistory.budgetBytes > 0 && <div className="history-usage" role="presentation">
+            <div className="history-usage__bar"><i style={{ width: `${historyPressure(props.apiHistory.totalBytes, props.apiHistory.budgetBytes)}%` }} /></div>
+            <small>
+              已用 {historyPressure(props.apiHistory.totalBytes, props.apiHistory.budgetBytes)}% 的应用预算；
+              硬上限 {formatBytes(props.apiHistory.maxBytes)}，达到上限时本次运行会停止写入磁盘而不是覆盖已有记录。
+            </small>
+          </div>}
+
+          {props.apiHistory === undefined && <div className="settings-empty"><strong>正在读取 API 会话记录…</strong><span>首次读取需要解密本机档案。</span></div>}
+
+          {props.apiHistory?.conversations.length === 0 && <div className="settings-empty">
+            <strong>没有可删除的 API 会话记录</strong>
+            <span>使用 DeepSeek API 模式发送过消息后，这里会出现可管理的会话。</span>
+          </div>}
+
+          {(props.apiHistory?.conversations.length ?? 0) > 0 && <div className="history-list">
+            {props.apiHistory?.conversations.map((conversation) => <div className="history-row" key={conversation.id}>
+              <span className="history-row__main">
+                <strong title={conversation.id}>
+                  {conversation.id}
+                  {conversation.active && <i className="history-row__badge">当前会话</i>}
+                </strong>
+                <small>
+                  {conversation.messageCount} 条消息 · {formatBytes(conversation.bytes)} · 最后活动 {formatHistoryTime(conversation.lastMessageAt)}
+                </small>
+              </span>
+              <button
+                className="settings-action secondary history-row__delete"
+                disabled={props.apiHistoryBusy}
+                aria-label={`删除 API 会话 ${conversation.id}`}
+                onClick={() => props.onDeleteApiConversation(conversation.id)}
+              >
+                删除
+              </button>
+            </div>)}
+          </div>}
         </Card>
       </>}
 

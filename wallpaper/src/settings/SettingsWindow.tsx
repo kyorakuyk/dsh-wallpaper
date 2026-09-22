@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import { appCoreClient } from '../runtime/appCoreClient.ts'
-import { nativeRuntime, type AutostartStatus, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
+import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
 import { loadSettings, saveSettings, type WallpaperSettings } from './store.ts'
 import { SettingsPanel } from './SettingsPanel.tsx'
 import {
@@ -38,6 +38,8 @@ export function SettingsWindow() {
   const [appearanceOverrides, setAppearanceOverrides] = useState<Partial<Record<AppearanceSlot, string>>>({})
   const [appearanceBusy, setAppearanceBusy] = useState(false)
   const [deepseekWebAdapterConfig, setDeepseekWebAdapterConfig] = useState<DeepSeekWebAdapterConfigStatus>()
+  const [apiHistory, setApiHistory] = useState<ApiConversationListing>()
+  const [apiHistoryBusy, setApiHistoryBusy] = useState(false)
   // A state update does not become visible to an async callback until React
   // renders again. Keep the last committed settings here so a successful
   // lock-screen request never overwrites unrelated settings changed while it
@@ -47,6 +49,7 @@ export function SettingsWindow() {
   const autostartOperationRef = useRef(false)
   const dshScanOperationRef = useRef(false)
   const lockScreenDiagnosticsRequestRef = useRef(0)
+  const apiHistoryOperationRef = useRef(false)
   // Probes must never outlive this window: `hide_settings_window` keeps the
   // WebView alive, but a reload or a real teardown would otherwise let a late
   // result update an unmounted component.
@@ -170,6 +173,12 @@ export function SettingsWindow() {
     lockScreenDiagnostics: refreshLockScreenDiagnostics,
     autostartStatus: refreshAutostartStatus,
     desktopDisplays: refreshDesktopDisplays,
+    // The history listing is a management view, not a live surface: it is read
+    // when the page opens and on explicit refresh, never polled.
+    apiHistory: async () => {
+      const listing = await nativeRuntime.listApiConversations()
+      if (mountedRef.current) setApiHistory(listing)
+    },
   }), [])
 
   const probeController = useMemo(() => createSettingsProbeController({
@@ -203,6 +212,65 @@ export function SettingsWindow() {
       setNotice('网页适配器配置已恢复默认。')
     } catch (error) {
       setNotice(`网页适配器配置恢复失败：${String(error)}`)
+    }
+  }
+
+  /**
+   * Deleting bumps the shared asset and the durable API transcript at the same
+   * time; `bumpRefreshEpoch` is not involved, so nothing else resets. These
+   * operations read and rewrite the encrypted archive, so they share one busy
+   * flag and a ref that closes the double-click window before the next render.
+   */
+  const refreshApiHistory = async () => {
+    if (apiHistoryOperationRef.current) return
+    apiHistoryOperationRef.current = true
+    setApiHistoryBusy(true)
+    try {
+      const listing = await nativeRuntime.listApiConversations()
+      if (mountedRef.current) setApiHistory(listing)
+    } catch (error) {
+      if (mountedRef.current) setNotice(settingsProbeErrorMessage('apiHistory', error))
+    } finally {
+      apiHistoryOperationRef.current = false
+      if (mountedRef.current) setApiHistoryBusy(false)
+    }
+  }
+
+  const deleteApiConversation = async (conversationId: string) => {
+    if (apiHistoryOperationRef.current) return
+    // Deleting a transcript is irreversible and cannot be undone from here.
+    if (!window.confirm(`删除 API 会话 ${conversationId} 的本地记录？此操作无法撤销。`)) return
+    apiHistoryOperationRef.current = true
+    setApiHistoryBusy(true)
+    try {
+      const removed = await nativeRuntime.deleteApiConversation(conversationId)
+      setNotice(removed ? `已删除 API 会话 ${conversationId} 的本地记录。` : '该会话已不存在，列表已刷新。')
+    } catch (error) {
+      setNotice(`删除 API 会话失败：${String(error)}`)
+    } finally {
+      apiHistoryOperationRef.current = false
+      if (mountedRef.current) setApiHistoryBusy(false)
+      // Re-read either way: a failed delete must not leave a stale row that
+      // looks like it succeeded.
+      await refreshApiHistory()
+    }
+  }
+
+  const clearApiHistory = async () => {
+    if (apiHistoryOperationRef.current) return
+    const count = apiHistory?.conversations.length ?? 0
+    if (!window.confirm(`清空全部 ${count} 个 API 会话的本地记录？此操作无法撤销，但不会影响 DeepSeek 网页入口或 Harness 会话。`)) return
+    apiHistoryOperationRef.current = true
+    setApiHistoryBusy(true)
+    try {
+      const cleared = await nativeRuntime.clearApiHistory()
+      setNotice(cleared > 0 ? `已清空 ${cleared} 个 API 会话的本地记录。` : '没有可清空的 API 会话记录。')
+    } catch (error) {
+      setNotice(`清空 API 历史失败：${String(error)}`)
+    } finally {
+      apiHistoryOperationRef.current = false
+      if (mountedRef.current) setApiHistoryBusy(false)
+      await refreshApiHistory()
     }
   }
 
@@ -395,6 +463,11 @@ export function SettingsWindow() {
       autostartBusy={autostartBusy}
       desktopDisplays={desktopDisplays}
       onRefreshDesktopDisplays={refreshDesktopDisplays}
+      apiHistory={apiHistory}
+      apiHistoryBusy={apiHistoryBusy}
+      onRefreshApiHistory={() => { void refreshApiHistory() }}
+      onDeleteApiConversation={(conversationId) => { void deleteApiConversation(conversationId) }}
+      onClearApiHistory={() => { void clearApiHistory() }}
       onRequestDeepSeekLogin={() => void nativeRuntime.requestDeepSeekLogin().catch((error) => setNotice(`无法打开 DeepSeek 应用内页面：${String(error)}`))}
       deepseekWebAdapterConfig={deepseekWebAdapterConfig}
       onRefreshDeepSeekWebAdapterConfig={refreshDeepSeekWebAdapterConfig}

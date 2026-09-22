@@ -55,6 +55,7 @@ fn main() {
             "harness_controls",
             "harness_set_permission",
             "api_history",
+            "list_api_conversations",
             "delete_api_conversation",
             "clear_api_history",
             "probe_harness",
