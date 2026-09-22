@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Activity, BackendMode, ChatMessage, RuntimeState, TokenUsage } from '../../domain/types.ts'
 import { Button, Glass, Icon } from '../../ui/primitives/index.ts'
 import { BACKEND_PRESENTATION, composerPlaceholder, formatCost, isBusyActivity, sessionCostSummary, turnUsageSummary } from './conversationViewModel.ts'
+import { growHistoryWindow, historyWindow, HISTORY_RENDER_WINDOW } from './streamRender.ts'
 import './ConversationBubble.css'
 
 /** Optional speaker labels for themes that want explicit attribution. */
@@ -59,8 +60,7 @@ export function insertNewlineAtSelection(value: string, start: number, end: numb
   }
 }
 
-function UsageLine({ usage }: { usage?: TokenUsage }) {
-  if (!usage) return null
+function UsageLine({ usage }: { usage?: TokenUsage }) {  if (!usage) return null
   return <small className="dsh-chat__message-usage">
     输入 {usage.input} · 输出 {usage.output}
     {usage.cacheRead !== undefined ? ` · 缓存 ${usage.cacheRead}` : ''}
@@ -75,6 +75,15 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const [commandMenuOpen, setCommandMenuOpen] = useState(false)
   const historyRef = useRef<HTMLDivElement>(null)
   const historyAutoScrollRef = useRef(true)
+  // Streaming history is prepended to the DOM when the user asks for earlier
+  // turns. Capture the scroll height before that commit and restore the same
+  // distance from the bottom afterwards, so the viewport does not jump.
+  const historyAnchorRef = useRef<number>()
+  // Deltas are coalesced upstream (App's chat-event handler) so this surface
+  // receives at most one streaming update per animation frame. It renders the
+  // prop directly: the live answer must never depend on an effect having run.
+  const streamText = props.streamingText
+  const [historyLimit, setHistoryLimit] = useState(HISTORY_RENDER_WINDOW)
   const busy = isBusyActivity(props.activity)
   const backend = BACKEND_PRESENTATION[props.backend]
   const totalCost = sessionCostSummary(props.messages)
@@ -89,6 +98,25 @@ export function ConversationBubble(props: ConversationBubbleProps) {
       : 'DSH Bridge 离线'
   const showHistory = props.historyExpanded
   const today = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(new Date())
+  const historyView = useMemo(() => historyWindow(props.messages.length, historyLimit), [props.messages.length, historyLimit])
+  // Only the newest slice is in the DOM. The full transcript stays in memory,
+  // and the live streaming article is rendered separately, so an in-progress
+  // answer is never truncated by this window.
+  const renderedMessages = historyView.visible === props.messages.length
+    ? props.messages
+    : props.messages.slice(props.messages.length - historyView.visible)
+
+  const loadEarlier = useCallback(() => {
+    const element = historyRef.current
+    if (element) historyAnchorRef.current = element.scrollHeight - element.scrollTop
+    setHistoryLimit((current) => growHistoryWindow(current, props.messages.length))
+  }, [props.messages.length])
+
+  // A new backend/transcript restores the default window; the user's "load
+  // earlier" choice is per-viewing, not a permanent setting.
+  useEffect(() => {
+    setHistoryLimit(HISTORY_RENDER_WINDOW)
+  }, [props.backend])
 
   const submit = () => {
     const text = draft.trim()
@@ -125,7 +153,17 @@ export function ConversationBubble(props: ConversationBubbleProps) {
       // user has not deliberately moved away from it.
       historyRef.current?.scrollTo({ top: historyRef.current.scrollHeight, behavior: 'auto' })
     }
-  }, [props.historyExpanded, props.messages.length, props.streamingText])
+  }, [props.historyExpanded, props.messages.length, streamText])
+
+  // Restore the reader's position after earlier turns were prepended.
+  useLayoutEffect(() => {
+    const anchor = historyAnchorRef.current
+    if (anchor === undefined) return
+    historyAnchorRef.current = undefined
+    const element = historyRef.current
+    if (!element) return
+    element.scrollTop = element.scrollHeight - anchor
+  }, [historyLimit])
 
   if (props.collapsed) return <button
     type="button"
@@ -161,14 +199,17 @@ export function ConversationBubble(props: ConversationBubbleProps) {
         }}
         onWheel={(event) => event.stopPropagation()}
       >
-        {props.messages.map((message, index) => <article key={message.id} className={`dsh-chat__message dsh-chat__message--${message.role}`} style={{ ['--message-index' as string]: String(Math.max(0, props.messages.length - index - 1)) }}>
+        {historyView.hasEarlier && <button type="button" className="dsh-chat__history-earlier" onClick={loadEarlier}>
+          加载更早的 {historyView.hidden} 条记录
+        </button>}
+        {renderedMessages.map((message, index) => <article key={message.id} className={`dsh-chat__message dsh-chat__message--${message.role}`} style={{ ['--message-index' as string]: String(Math.max(0, renderedMessages.length - index - 1)) }}>
           {props.speakerLabels?.[message.role]?.trim() && <span className="dsh-chat__message-label">{props.speakerLabels[message.role]}</span>}
           <p className="dsh-chat__message-body">{message.content}</p>
           <UsageLine usage={message.usage} />
         </article>)}
-        {props.streamingText && <article className="dsh-chat__message dsh-chat__message--assistant">
+        {streamText && <article className="dsh-chat__message dsh-chat__message--assistant">
           {props.speakerLabels?.assistant?.trim() && <span className="dsh-chat__message-label">{props.speakerLabels.assistant}</span>}
-          <p className="dsh-chat__message-body">{props.streamingText}<span className="dsh-chat__caret" aria-hidden="true" /></p>
+          <p className="dsh-chat__message-body">{streamText}<span className="dsh-chat__caret" aria-hidden="true" /></p>
         </article>}
       </div>
     </div>}

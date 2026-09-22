@@ -104,6 +104,20 @@
 .dsh-chat__empty strong { color: var(--dsh-text); font-size: 14px; }
 .dsh-chat__empty p { margin: 0; font-size: 12px; }
 
+/* Older turns stay in memory and in the transcript; this only renders them on
+   request, so the DOM stays bounded on a long-lived session. */
+.dsh-chat__history-earlier {
+  align-self: center;
+  padding: 6px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--dsh-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.dsh-chat__history-earlier:hover { color: var(--dsh-text); background: rgba(255, 255, 255, 0.1); }
+
 .dsh-chat__message { display: grid; max-width: 86%; gap: 5px; margin: 0; padding: 0; background: transparent; }
 .dsh-chat__history > .dsh-chat__message {
   --history-fade: clamp(.58, calc(.68 + (var(--message-index, 0) * .045)), .98);

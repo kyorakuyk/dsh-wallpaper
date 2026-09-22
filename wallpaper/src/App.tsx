@@ -27,6 +27,7 @@ import type { DesktopWorkspace } from './runtime/desktopWorkspace.ts'
 import { WidgetHost } from './widgets/WidgetHost.tsx'
 import { displayCssRect, displayTopologySignature, displayUiScale, preferredDisplayId, virtualDesktopBounds } from './runtime/displayLayout.ts'
 import { listenUntilDisposed } from './runtime/lifecycle.ts'
+import { frameSchedulerTarget, StreamTextBuffer } from './features/chat/streamRender.ts'
 
 const registry = new PersonaRegistry()
 
@@ -281,6 +282,19 @@ export function App({ surface = 'combined' }: AppProps) {
   const runtimeRef = useRef(runtime)
   runtimeRef.current = runtime
   const appSnapshotRevisionRef = useRef(-1)
+  /**
+   * Streaming text arrives one delta per model chunk. Committing each of them
+   * as its own React update (and its own auto-scroll) is what made a long
+   * answer re-render hundreds of times, so the deltas are coalesced into one
+   * commit per animation frame. Order is preserved exactly: appends
+   * concatenate in arrival order.
+   */
+  const streamBufferRef = useRef<StreamTextBuffer>()
+  if (!streamBufferRef.current) {
+    streamBufferRef.current = new StreamTextBuffer(frameSchedulerTarget(), (text) => {
+      setStreamingText((value) => value + text)
+    })
+  }
   const desktopDisplaysSignatureRef = useRef('')
   // Resolving library data URLs can finish out of order.  Each refresh gets a
   // monotonic epoch, so a slower pre-change resolve can never repaint the
@@ -635,20 +649,34 @@ export function App({ surface = 'combined' }: AppProps) {
     )
     const unsubscribe = adapter.subscribe((event) => {
       if (!isCurrent()) return
+      // Guaranteed by the ref initializer above; the local binding keeps the
+      // narrowing visible to TypeScript inside this closure.
+      const streamBuffer = streamBufferRef.current
+      if (!streamBuffer) return
       if (event.type === 'status') {
         if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current.activity = event.activity
         patchRuntime({ activity: event.activity }); dispatchCore('set-activity', { value: event.activity }); if (event.activity === 'idle' || event.activity === 'done') setQuestionPrompt(undefined)
       }
       if (event.type === 'delta') {
         if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current.activity = 'streaming'
-        patchRuntime({ activity: 'streaming' }); dispatchCore('set-activity', { value: 'streaming' }); setStreamingText((value) => value + event.text)
+        // A streaming turn publishes one delta per model chunk. Committing a
+        // React state update for every one of them is what made a long answer
+        // re-render hundreds of times, so deltas are coalesced into a single
+        // commit per animation frame and the order is preserved exactly.
+        patchRuntime({ activity: 'streaming' }); dispatchCore('set-activity', { value: 'streaming' }); streamBuffer.append(event.text)
       }
       if (event.type === 'message') {
         setMessages((items) => [...items, { id: crypto.randomUUID(), role: event.role, content: event.content, createdAt: Date.now(), usage: event.usage }])
         // Harness and future providers may attach final usage directly to the
         // final message instead of publishing a separate usage event.
         if (event.usage) setUsage(event.usage)
-        if (event.role === 'assistant') { setStreamingText(''); setQuestionPrompt(undefined) }
+        if (event.role === 'assistant') {
+          // Any delta still queued for the next frame belongs to the answer
+          // that just landed, so it is dropped rather than appended twice.
+          streamBuffer.reset()
+          setStreamingText('')
+          setQuestionPrompt(undefined)
+        }
       }
       if (event.type === 'usage') setUsage(event)
       if (event.type === 'model') patchRuntime({ model: event.model, provider: event.provider, modelTier: event.tier, reasoningEffort: event.effort })
