@@ -12,6 +12,13 @@
 export const SETTINGS_PAGES = ['general', 'connections', 'appearance', 'personas', 'system'] as const
 export type SettingsPage = (typeof SETTINGS_PAGES)[number]
 
+/**
+ * Fallback cadence for re-reading the monitor list while its page is open. The
+ * page also has an explicit refresh control, so this is a safety net for a
+ * hot-plug that arrives while settings is open, not a resident poll.
+ */
+export const DISPLAY_LIST_FALLBACK_INTERVAL_MS = 30_000
+
 export const SETTINGS_PROBES = [
   'translucentTb',
   'managedDsh',

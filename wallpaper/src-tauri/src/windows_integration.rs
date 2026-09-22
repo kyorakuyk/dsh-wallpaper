@@ -1412,6 +1412,28 @@ pub fn register_session_events(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Release the session notification and window subclass installed by
+/// `register_session_events`. Idempotent: it is safe to call on output that was
+/// never registered, and the `WM_NCDESTROY` cleanup above is harmless when this
+/// ran first.
+#[cfg(windows)]
+pub fn unregister_session_events(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("background") else {
+        return;
+    };
+    let Ok(raw) = window.hwnd() else {
+        return;
+    };
+    let hwnd = HWND(raw.0);
+    unsafe {
+        let _ = WTSUnRegisterSessionNotification(hwnd);
+        let _ = RemoveWindowSubclass(hwnd, Some(session_subclass_proc), 1);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn unregister_session_events(_: &tauri::AppHandle) {}
+
 #[cfg(windows)]
 fn dispatch_system_action(app: &tauri::AppHandle, action: AppAction) {
     let Some(core) = app.try_state::<AppCore>() else {

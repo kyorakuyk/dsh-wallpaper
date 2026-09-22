@@ -9,6 +9,7 @@ import {
   createProbeScheduler,
   createSettingsProbeController,
   settingsProbeErrorMessage,
+  DISPLAY_LIST_FALLBACK_INTERVAL_MS,
   PAGE_PROBES,
   type SettingsPage,
   type SettingsProbe,
@@ -293,12 +294,13 @@ export function SettingsWindow() {
     return () => { mountedRef.current = false }
   }, [page, probeController])
 
-  // While settings is open, a light polling refresh keeps the monitor list
-  // current without widening the settings-to-background event boundary. It
-  // only exists for pages that actually render the list.
+  // While settings is open, the monitor list is refreshed on a slow fallback
+  // cadence only. The settings WebView deliberately does not subscribe to the
+  // background's display events, and the page has an explicit "刷新显示器检测"
+  // control, so a fast resident poll bought nothing but IPC traffic.
   useEffect(() => {
     if (!PAGE_PROBES[page].includes('desktopDisplays')) return
-    const displayTimer = window.setInterval(() => { void refreshDesktopDisplays() }, 5000)
+    const displayTimer = window.setInterval(() => { void refreshDesktopDisplays() }, DISPLAY_LIST_FALLBACK_INTERVAL_MS)
     return () => window.clearInterval(displayTimer)
   }, [page])
 

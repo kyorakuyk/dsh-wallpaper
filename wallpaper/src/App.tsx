@@ -32,6 +32,17 @@ import { frameSchedulerTarget, StreamTextBuffer } from './features/chat/streamRe
 const registry = new PersonaRegistry()
 
 /**
+ * Fallback cadence for the expanded-layout inset. It is a safety net for a
+ * taskbar/topology change that emits no event, not the primary trigger: the
+ * measurement itself runs on display-changed, resize, and workspace
+ * transitions.
+ */
+export const LAYOUT_METRICS_FALLBACK_INTERVAL_MS = 30_000
+/** Fallback cadence for re-reading the display list; `display-changed` is the
+ * real trigger. */
+export const DISPLAY_TOPOLOGY_FALLBACK_INTERVAL_MS = 30_000
+
+/**
  * A chat adapter can finish connecting, loading history, or sending a message
  * after React has already selected another backend.  Treat the adapter object
  * and the backend it was created for as one identity; neither is sufficient on
@@ -526,7 +537,7 @@ export function App({ surface = 'combined' }: AppProps) {
       { onError: (error) => patchRuntime({ error: `显示器事件订阅失败：${String(error)}` }) },
     )
     window.addEventListener('resize', delayedRefresh)
-    const timer = window.setInterval(() => { void refresh() }, 5000)
+    const timer = window.setInterval(() => { void refresh() }, DISPLAY_TOPOLOGY_FALLBACK_INTERVAL_MS)
     return () => {
       disposed = true
       window.removeEventListener('resize', delayedRefresh)
@@ -596,15 +607,44 @@ export function App({ surface = 'combined' }: AppProps) {
     return () => { disposed = true; window.clearInterval(timer) }
   }, [harnessStarting, runtime.harness])
 
+  /**
+   * The expanded bottom inset depends on the taskbar and display topology, not
+   * on the clock. Polling it once per second was a permanent resident cost for
+   * a value that only changes on a display event, a resize, a conversation
+   * display switch, or a workspace transition. Measure on those events, and
+   * keep only a slow fallback so a taskbar change that emits nothing still
+   * converges.
+   */
   useEffect(() => {
     if (!nativeRuntime.isNative) return
     let disposed = false
-    const refresh = () => { void nativeRuntime.desktopLayoutMetrics(conversationDisplayId).then((metrics) => { if (!disposed) setExpandedBottomInset(metrics.expandedBottomInset) }) }
+    let frame = 0
+    const refresh = () => {
+      if (disposed) return
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        if (disposed) return
+        void nativeRuntime.desktopLayoutMetrics(conversationDisplayId)
+          .then((metrics) => { if (!disposed) setExpandedBottomInset(metrics.expandedBottomInset) })
+          .catch(() => undefined)
+      })
+    }
     refresh()
     window.addEventListener('resize', refresh)
-    const timer = window.setInterval(refresh, 1000)
-    return () => { disposed = true; window.removeEventListener('resize', refresh); window.clearInterval(timer) }
-  }, [conversationDisplayId])
+    const displayListener = listenUntilDisposed<unknown>(
+      (emit) => listen('display-changed', () => emit(undefined)),
+      refresh,
+      { onError: () => undefined },
+    )
+    const timer = window.setInterval(refresh, LAYOUT_METRICS_FALLBACK_INTERVAL_MS)
+    return () => {
+      disposed = true
+      cancelAnimationFrame(frame)
+      window.removeEventListener('resize', refresh)
+      window.clearInterval(timer)
+      displayListener.dispose()
+    }
+  }, [conversationDisplayId, interactionState, runtime.historyExpanded, workspace])
 
   useEffect(() => {
     const adapterBackend = runtime.backend

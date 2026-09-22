@@ -22,9 +22,9 @@ use std::sync::atomic::{
     AtomicBool, AtomicI32, AtomicIsize, AtomicU32, AtomicU64, AtomicU8, Ordering,
 };
 #[cfg(windows)]
-use std::sync::OnceLock;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 #[cfg(windows)]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use windows::core::{w, PCWSTR};
@@ -109,6 +109,14 @@ const OUTCOME_WINDOW_CLASS_FAILED: u8 = 4;
 const OUTCOME_WINDOW_FAILED: u8 = 5;
 #[cfg(windows)]
 const OUTCOME_READY: u8 = 6;
+/// How long the native hand-off window may stay up without the renderer
+/// reporting its first frame. The renderer normally reports within a few
+/// hundred milliseconds, so a WebView2 that never paints must not leave a
+/// full-screen hand-off window above the desktop forever.
+#[cfg(windows)]
+const BOOTSTRAP_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(20);
+#[cfg(windows)]
+static BOOTSTRAP_WATCHDOG: OnceLock<Arc<(Mutex<bool>, Condvar)>> = OnceLock::new();
 
 #[cfg(windows)]
 struct BootstrapWindowState {
@@ -724,6 +732,9 @@ pub fn prepare() {
         width,
         height
     );
+    // The hand-off layer is now visible above the desktop, so start the
+    // fallback that removes it if the renderer never reports its own frame.
+    arm_watchdog();
 }
 
 /// Rebind the native first-frame child after Explorer creates the real
@@ -832,6 +843,9 @@ pub fn reattach_to_workerw() -> Result<bool, String> {
 #[cfg(windows)]
 pub fn report_ready() {
     if !BOOTSTRAP_READY_REPORTED.swap(true, Ordering::AcqRel) {
+        // The renderer painted its own first frame, so the hand-off window no
+        // longer needs the watchdog fallback.
+        settle_watchdog();
         let ready_ms = BOOTSTRAP_READY_MS.load(Ordering::Acquire);
         let outcome = BOOTSTRAP_OUTCOME.load(Ordering::Acquire);
         let parent = BOOTSTRAP_PARENT.load(Ordering::Acquire);
@@ -864,6 +878,9 @@ pub fn report_ready() {
 
 #[cfg(windows)]
 pub fn release() -> Result<(), String> {
+    // A renderer-driven release is the normal path, so the watchdog stops
+    // waiting here instead of firing later against an already hidden window.
+    settle_watchdog();
     let raw = BOOTSTRAP_HWND.load(Ordering::Acquire);
     if raw == 0 {
         restore_startup_priority();
@@ -880,13 +897,91 @@ pub fn release() -> Result<(), String> {
     .map_err(|error| format!("无法释放原生首帧层：{error}"))
 }
 
+/// Begin watching the native hand-off window.
+///
+/// The renderer normally reports its first frame within a few hundred
+/// milliseconds. If it never does (WebView2 failed to start, the surface was
+/// relaunched into a broken profile, or `releaseNativeBootstrap` was never
+/// called), the hand-off window would otherwise sit above the desktop with no
+/// event that could ever remove it. This watchdog destroys it after
+/// `BOOTSTRAP_WATCHDOG_TIMEOUT` and records the reason in the startup log.
+///
+/// The watcher exits as soon as `release()`/`destroy()` reports the window is
+/// gone, so a healthy launch pays one short-lived thread and one condition
+/// variable.
+#[cfg(windows)]
+fn arm_watchdog() {
+    let shared = BOOTSTRAP_WATCHDOG
+        .get_or_init(|| Arc::new((Mutex::new(false), Condvar::new())))
+        .clone();
+    if shared.0.lock().map(|settled| *settled).unwrap_or(true) {
+        return;
+    }
+    std::thread::Builder::new()
+        .name("dsh-bootstrap-watchdog".into())
+        .spawn(move || {
+            let (lock, condvar) = &*shared;
+            let Ok(guard) = lock.lock() else { return };
+            let Ok((settled, timeout)) = condvar.wait_timeout_while(
+                guard,
+                BOOTSTRAP_WATCHDOG_TIMEOUT,
+                |settled| !*settled,
+            ) else {
+                return;
+            };
+            if *settled {
+                return;
+            }
+            drop(timeout);
+            record_startup_diagnostic("outcome=watchdog-timeout detail=bootstrap-not-released");
+            log::warn!(
+                "native bootstrap watchdog: renderer did not report a frame within {} s; releasing the hand-off layer",
+                BOOTSTRAP_WATCHDOG_TIMEOUT.as_secs()
+            );
+            let _ = destroy();
+        })
+        .ok();
+}
+
+/// Mark the hand-off window as finished so the watchdog stops waiting.
+#[cfg(windows)]
+fn settle_watchdog() {
+    if let Some(shared) = BOOTSTRAP_WATCHDOG.get() {
+        if let Ok(mut settled) = shared.0.lock() {
+            *settled = true;
+        }
+        shared.1.notify_all();
+    }
+}
+
+/// Destroy the hand-off window, releasing its GDI bitmaps and restoring the
+/// process priority. Used by the watchdog and by an orderly application exit;
+/// `release()` only hides it so a later lock/unlock can reuse it.
+#[cfg(windows)]
+pub fn destroy() -> Result<(), String> {
+    settle_watchdog();
+    let raw = BOOTSTRAP_HWND.load(Ordering::Acquire);
+    if raw == 0 {
+        restore_startup_priority();
+        return Ok(());
+    }
+    unsafe {
+        PostMessageW(
+            Some(HWND(raw as *mut _)),
+            DESTROY_MESSAGE,
+            WPARAM(0),
+            LPARAM(0),
+        )
+    }
+    .map_err(|error| format!("无法销毁原生首帧层：{error}"))
+}
+
 /// Display the cached eye-open frame without waiting for WebView2. The
 /// background renderer hides the surface again after painting its matching
 /// frame. Keeping the HWND alive makes this useful for every subsequent
 /// lock/unlock cycle, not only the first process launch.
 #[cfg(windows)]
-pub fn start_wake() -> Result<(), String> {
-    let raw = BOOTSTRAP_HWND.load(Ordering::Acquire);
+pub fn start_wake() -> Result<(), String> {    let raw = BOOTSTRAP_HWND.load(Ordering::Acquire);
     if raw == 0 {
         return Ok(());
     }
@@ -942,6 +1037,11 @@ pub fn release() -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
+pub fn destroy() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
 pub fn start_wake() -> Result<(), String> {
     Ok(())
 }
@@ -953,8 +1053,25 @@ pub fn show_sleep() -> Result<(), String> {
 
 #[cfg(all(test, windows))]
 mod tests {
-    use super::display_regions_from_bounds;
+    use super::{destroy, display_regions_from_bounds, BOOTSTRAP_WATCHDOG_TIMEOUT};
     use crate::windows_integration::{DesktopDisplayInfo, DesktopRect};
+    use std::time::Duration;
+
+    #[test]
+    fn destroying_without_a_hand_off_window_is_a_safe_no_op() {
+        // Exit cleanup runs unconditionally, including a launch that never got
+        // as far as creating the native window.
+        assert!(destroy().is_ok());
+        assert!(destroy().is_ok());
+    }
+
+    #[test]
+    fn the_renderer_has_a_bounded_window_to_report_its_first_frame() {
+        // Long enough for a cold WebView2 start, short enough that a broken
+        // launch cannot leave the hand-off layer above the desktop.
+        assert!(BOOTSTRAP_WATCHDOG_TIMEOUT >= Duration::from_secs(10));
+        assert!(BOOTSTRAP_WATCHDOG_TIMEOUT <= Duration::from_secs(60));
+    }
 
     fn display(
         id: &str,

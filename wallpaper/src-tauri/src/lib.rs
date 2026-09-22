@@ -2354,5 +2354,60 @@ fn run_with_edition(lite: bool) {
         })
         .build(tauri::generate_context!())
         .expect("failed to build dsh-wallpaper")
-        .run(|_, _| {});
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
+                shutdown_native_state(app);
+            }
+        });
+}
+
+/// Restore everything this process changed on the user's desktop.
+///
+/// Hiding the settings window or minimizing the wallpaper is not an exit and
+/// must not run any of this: the tray quit item and a real window close both
+/// reach `RunEvent::ExitRequested`, while tray "hide" only dispatches an
+/// action. Every step is idempotent, because `ExitRequested` can be followed by
+/// `Exit`.
+fn shutdown_native_state(app: &tauri::AppHandle) {
+    static SHUTDOWN: std::sync::Once = std::sync::Once::new();
+    SHUTDOWN.call_once(|| {
+        // 1. The desktop icon layer is deliberately hidden while the wallpaper
+        //    is resident; leaving it hidden after exit would strand the user
+        //    with an iconless desktop.
+        #[cfg(windows)]
+        windows_integration::restore_desktop_icons();
+
+        // 2. Destroy the native first-frame hand-off window. Hiding it is not
+        //    enough at exit: its GDI bitmaps and the boosted process priority
+        //    would outlive the WebView.
+        if let Err(error) = native_bootstrap::destroy() {
+            log::warn!("native bootstrap teardown failed: {error}");
+        }
+
+        // 3. Stop only the DSH child this process launched. An external DSH on
+        //    3080 belongs to the user and is never touched.
+        if let Some(state) = app.try_state::<ManagedDshState>() {
+            if let Ok(mut managed) = state.0.lock() {
+                if let Some(mut process) = managed.take() {
+                    #[cfg(windows)]
+                    {
+                        let _ = std::process::Command::new("taskkill.exe")
+                            .args(["/PID", &process.child.id().to_string(), "/T", "/F"])
+                            .output();
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        let _ = process.child.kill();
+                    }
+                    let _ = process.child.wait();
+                }
+            }
+        }
+
+        // 4. Release native session/notification resources owned by this
+        //    process so a restart does not inherit a stale registration.
+        windows_integration::unregister_session_events(app);
+
+        log::info!("dsh-wallpaper native state restored on exit");
+    });
 }
