@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { BackendMode, ModelTierRule } from '../domain/types.ts'
 import { BACKGROUND_OPTIONS, MAX_PRICE_PER_MILLION, normalizedPrice, type WallpaperSettings } from './store.ts'
+import { type SettingsPage } from './settingsProbes.ts'
 import type { AppearanceAssetSummary } from '../features/appearance/appearanceViewModel.ts'
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
 import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, LockScreenDiagnostics, ManagedDshStatus } from '../native/runtime.ts'
@@ -9,10 +10,16 @@ import { preferredDisplayId } from '../runtime/displayLayout.ts'
 import { OfficialPersonaCards } from '../persona/OfficialPersonaCards.tsx'
 import './SettingsPanel.css'
 
-type Page = 'general' | 'connections' | 'appearance' | 'personas' | 'system'
+type Page = SettingsPage
 
 export interface SettingsPanelProps {
   settings: WallpaperSettings
+  /**
+   * The active page is owned by `SettingsWindow`, because it also drives which
+   * system probes may start. `SettingsPanel` only renders the matching page.
+   */
+  page: Page
+  onPageChange: (page: Page) => void
   harnessStatus: 'offline' | 'web-only' | 'bridge-ready'
   onChange: (settings: WallpaperSettings) => void
   onRequestDeepSeekLogin: () => void
@@ -20,7 +27,6 @@ export interface SettingsPanelProps {
   onClose: () => void
   interactionEnabled: boolean
   onSetInteractionEnabled: (enabled: boolean) => void
-  onOpenAppearance: () => void
   translucentTb: { installed: boolean; running: boolean; source?: string }
   onRefreshTranslucentTb: () => void
   onLaunchTranslucentTb: () => void
@@ -131,8 +137,7 @@ export function PriceInput({
 }
 
 export function SettingsPanel(props: SettingsPanelProps) {
-  const { settings, harnessStatus, onChange, onClose, translucentTb } = props
-  const [page, setPage] = useState<Page>('general')
+  const { settings, harnessStatus, onChange, onClose, translucentTb, page } = props
   const set = (patch: Partial<WallpaperSettings>) => onChange({ ...settings, ...patch })
   const updateRule = (index: number, patch: Partial<ModelTierRule>) => set({ modelTierRules: settings.modelTierRules.map((rule, i) => i === index ? { ...rule, ...patch } : rule) })
   const pageMeta = pages.find((item) => item.id === page)!
@@ -154,7 +159,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
     </header>
 
     <aside className="settings-sidebar">
-      <nav>{pages.map((item) => <button key={item.id} className={page === item.id ? 'is-active' : ''} onClick={() => { setPage(item.id); if (item.id === 'appearance') props.onOpenAppearance() }}><span className="settings-nav__icon">{item.icon}</span><span><strong>{item.label}</strong><small>{item.hint}</small></span></button>)}</nav>
+      <nav>{pages.map((item) => <button key={item.id} className={page === item.id ? 'is-active' : ''} onClick={() => props.onPageChange(item.id)}><span className="settings-nav__icon">{item.icon}</span><span><strong>{item.label}</strong><small>{item.hint}</small></span></button>)}</nav>
       <div className="settings-sidebar__status"><i className={harnessStatus === 'bridge-ready' ? 'is-online' : ''} /><span>{harnessStatus === 'bridge-ready' ? 'DSH Bridge 已连接' : harnessStatus === 'web-only' ? 'DSH 在线，缺少 Bridge' : 'DSH 当前离线'}</span></div>
     </aside>
 

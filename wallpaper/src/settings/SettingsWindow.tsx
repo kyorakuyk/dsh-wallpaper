@@ -1,10 +1,18 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import { appCoreClient } from '../runtime/appCoreClient.ts'
 import { nativeRuntime, type AutostartStatus, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
 import { loadSettings, saveSettings, type WallpaperSettings } from './store.ts'
 import { SettingsPanel } from './SettingsPanel.tsx'
+import {
+  createProbeScheduler,
+  createSettingsProbeController,
+  settingsProbeErrorMessage,
+  PAGE_PROBES,
+  type SettingsPage,
+  type SettingsProbe,
+} from './settingsProbes.ts'
 import { chooseAppearanceImportPaths, nativeAppearance } from '../native/appearance.ts'
 import type { AppearanceAssetSummary } from '../features/appearance/appearanceViewModel.ts'
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
@@ -13,6 +21,7 @@ import './SettingsWindow.css'
 
 export function SettingsWindow() {
   const [settings, setSettings] = useState<WallpaperSettings>(() => loadSettings())
+  const [page, setPage] = useState<SettingsPage>('general')
   const [harness, setHarness] = useState<'offline' | 'web-only' | 'bridge-ready'>('offline')
   const [interactionEnabled, setInteractionEnabled] = useState(true)
   const [translucentTb, setTranslucentTb] = useState<TranslucentTbStatus>({ installed: false, running: false })
@@ -37,6 +46,10 @@ export function SettingsWindow() {
   const autostartOperationRef = useRef(false)
   const dshScanOperationRef = useRef(false)
   const lockScreenDiagnosticsRequestRef = useRef(0)
+  // Probes must never outlive this window: `hide_settings_window` keeps the
+  // WebView alive, but a reload or a real teardown would otherwise let a late
+  // result update an unmounted component.
+  const mountedRef = useRef(true)
 
   const commitSettings = (next: WallpaperSettings) => {
     settingsRef.current = next
@@ -60,16 +73,24 @@ export function SettingsWindow() {
   }, [notice])
 
   const refreshAppearance = () => void Promise.all([nativeAppearance.getState(), nativeAppearance.listAssets()])
-    .then(([snapshot, assets]) => { setAppearanceOverrides(snapshot.overrides); setAppearanceAssets(assets) })
+    .then(([snapshot, assets]) => {
+      if (!mountedRef.current) return
+      setAppearanceOverrides(snapshot.overrides)
+      setAppearanceAssets(assets)
+    })
     .catch((error) => setNotice(`素材库读取失败：${String(error)}`))
 
-  const refreshTranslucentTb = () => void nativeRuntime.translucentTbStatus().then(setTranslucentTb).catch((error) => setNotice(String(error)))
+  /**
+   * The manual scan is the *only* place that walks the disk for DSH projects.
+   * `deepScan` is requested explicitly here and never on window open.
+   */
   const scanDsh = async (announce = false) => {
     if (dshScanOperationRef.current) return
     dshScanOperationRef.current = true
     setDshScanBusy(true)
     try {
       const candidates = await nativeRuntime.scanDshPaths(settingsRef.current.dshLaunch.rootPath, announce)
+      if (!mountedRef.current) return
       setDshCandidates(candidates)
       if (announce) {
         setNotice(candidates.length > 0
@@ -83,11 +104,12 @@ export function SettingsWindow() {
       setDshScanBusy(false)
     }
   }
-  const refreshManagedDsh = () => void nativeRuntime.managedDshStatus().then(setManagedDsh).catch((error) => setNotice(String(error)))
+
   const refreshLockScreenDiagnostics = async () => {
     const request = ++lockScreenDiagnosticsRequestRef.current
     try {
       const diagnostics = await nativeRuntime.lockScreenDiagnostics()
+      if (!mountedRef.current) return
       // An older initial/refresh request may finish after a successful
       // takeover or restore. Never let it replace the newer system result.
       if (request === lockScreenDiagnosticsRequestRef.current) setLockScreenDiagnostics(diagnostics)
@@ -95,16 +117,76 @@ export function SettingsWindow() {
       if (request === lockScreenDiagnosticsRequestRef.current) setNotice(`锁屏检查失败：${String(error)}`)
     }
   }
+
   const refreshDesktopDisplays = async () => {
     try {
-      setDesktopDisplays(await nativeRuntime.desktopDisplays())
+      const displays = await nativeRuntime.desktopDisplays()
+      if (mountedRef.current) setDesktopDisplays(displays)
     } catch (error) {
       setNotice(`显示器列表读取失败：${String(error)}`)
     }
   }
-  const refreshDeepSeekWebAdapterConfig = () => void nativeRuntime.deepseekWebAdapterConfig()
-    .then(setDeepseekWebAdapterConfig)
-    .catch((error) => setNotice(`网页适配器配置读取失败：${String(error)}`))
+
+  const refreshAutostartStatus = async () => {
+    if (!nativeRuntime.isNative) return
+    try {
+      const status: AutostartStatus = await nativeRuntime.autostartStatus()
+      const current = settingsRef.current
+      if (!mountedRef.current) return
+      if (current.autostart !== status.enabled) {
+        const next = { ...current, autostart: status.enabled }
+        settingsRef.current = next
+        setSettings(next)
+        saveSettings(next)
+        void invoke('publish_settings', { settings: next }).catch((error) => setNotice(`设置同步失败：${String(error)}`))
+      }
+      if (status.source === 'disabled-by-user') setNotice('Windows 已禁用 DSH Wallpaper 开机启动，请在系统设置中允许。')
+      if (status.source === 'disabled-by-policy') setNotice('Windows 策略禁止 DSH Wallpaper 开机启动。')
+    } catch (error) {
+      setNotice(`读取开机自启状态失败：${String(error)}`)
+    }
+  }
+
+  /**
+   * One runner per probe. The controller decides *when* a runner may start;
+   * it never lets two runs of the same probe overlap, and it reports a failed
+   * probe as a notice instead of letting the window lose its interactivity.
+   */
+  const probeControllerHolder = useRef<{ refresh: (probe: SettingsProbe) => Promise<void> }>()
+  const probeRunners = useMemo<Record<SettingsProbe, () => Promise<unknown>>>(() => ({
+    translucentTb: async () => {
+      const status = await nativeRuntime.translucentTbStatus()
+      if (mountedRef.current) setTranslucentTb(status)
+    },
+    managedDsh: async () => {
+      const status = await nativeRuntime.managedDshStatus()
+      if (mountedRef.current) setManagedDsh(status)
+    },
+    deepseekWebAdapterConfig: async () => {
+      const status = await nativeRuntime.deepseekWebAdapterConfig()
+      if (mountedRef.current) setDeepseekWebAdapterConfig(status)
+    },
+    lockScreenDiagnostics: refreshLockScreenDiagnostics,
+    autostartStatus: refreshAutostartStatus,
+    desktopDisplays: refreshDesktopDisplays,
+  }), [])
+
+  const probeController = useMemo(() => createSettingsProbeController({
+    runProbe: (probe) => probeRunners[probe](),
+    schedule: createProbeScheduler(window),
+    onError: (probe, error) => setNotice(settingsProbeErrorMessage(probe, error)),
+  }), [probeRunners])
+  probeControllerHolder.current = probeController
+
+  /**
+   * Manual refresh buttons run a fresh probe. They must not be silently
+   * swallowed by the "already probed" bookkeeping, and they must not start a
+   * second run while the first one is still in flight.
+   */
+  const refreshProbe = (probe: SettingsProbe) => void probeControllerHolder.current?.refresh(probe)
+  const refreshTranslucentTb = () => refreshProbe('translucentTb')
+  const refreshManagedDsh = () => refreshProbe('managedDsh')
+  const refreshDeepSeekWebAdapterConfig = () => refreshProbe('deepseekWebAdapterConfig')
   const openDeepSeekWebAdapterConfig = async () => {
     try {
       setDeepseekWebAdapterConfig(await nativeRuntime.openDeepSeekWebAdapterConfig())
@@ -122,24 +204,7 @@ export function SettingsWindow() {
       setNotice(`网页适配器配置恢复失败：${String(error)}`)
     }
   }
-  const refreshAutostartStatus = async () => {
-    if (!nativeRuntime.isNative) return
-    try {
-      const status: AutostartStatus = await nativeRuntime.autostartStatus()
-      const current = settingsRef.current
-      if (current.autostart !== status.enabled) {
-        const next = { ...current, autostart: status.enabled }
-        settingsRef.current = next
-        setSettings(next)
-        saveSettings(next)
-        void invoke('publish_settings', { settings: next }).catch((error) => setNotice(`设置同步失败：${String(error)}`))
-      }
-      if (status.source === 'disabled-by-user') setNotice('Windows 已禁用 DSH Wallpaper 开机启动，请在系统设置中允许。')
-      if (status.source === 'disabled-by-policy') setNotice('Windows 策略禁止 DSH Wallpaper 开机启动。')
-    } catch (error) {
-      setNotice(`读取开机自启状态失败：${String(error)}`)
-    }
-  }
+
   const setLockScreenEnabled = async (enabled: boolean, force = false) => {
     // `lockScreenBusy` only changes after a render. The ref closes the small
     // double-click / keyboard activation window before that render occurs.
@@ -186,30 +251,59 @@ export function SettingsWindow() {
       setLockScreenBusy(false)
     }
   }
+
+  // First paint owns no probe at all: only the local settings and the AppCore
+  // snapshot (which the "显示中央会话窗" switch needs) are read up front. The
+  // visible page's own data starts on the next frame.
   useEffect(() => {
-    void appCoreClient.snapshot().then((snapshot) => { setHarness(snapshot.harness); setInteractionEnabled(snapshot.interaction.enabled) })
-    refreshTranslucentTb()
-    void scanDsh()
-    refreshManagedDsh()
-    void refreshAutostartStatus()
-    refreshLockScreenDiagnostics()
-    void refreshDesktopDisplays()
-    refreshDeepSeekWebAdapterConfig()
+    if (!appCoreClient.native) return
+    void appCoreClient.snapshot().then((snapshot) => {
+      if (!mountedRef.current) return
+      setHarness(snapshot.harness)
+      setInteractionEnabled(snapshot.interaction.enabled)
+    }).catch((error) => setNotice(String(error)))
+  }, [])
+
+  // The single native event subscription this window owns. It is registered
+  // without awaiting the native call, so a window that opens and closes
+  // quickly can never leave a stray listener behind.
+  useEffect(() => {
     const current = getCurrentWindow()
-    const unlisten = current.onCloseRequested((event) => {
+    let disposed = false
+    let unsubscribe: (() => void) | undefined
+    void current.onCloseRequested((event) => {
       event.preventDefault()
       void invoke('hide_settings_window')
-    })
-    // The background surface receives the native display-change event. The
-    // settings window intentionally does not subscribe to renderer events;
-    // while it is open, a light polling refresh keeps its monitor list current
-    // without widening the settings-to-background event boundary.
-    const displayTimer = window.setInterval(() => { void refreshDesktopDisplays() }, 5000)
+    }).then((dispose) => {
+      if (disposed) dispose()
+      else unsubscribe = dispose
+    }).catch((error) => setNotice(String(error)))
     return () => {
-      void unlisten.then((dispose) => dispose())
-      window.clearInterval(displayTimer)
+      disposed = true
+      unsubscribe?.()
+      unsubscribe = undefined
     }
   }, [])
+
+  // Grouped, once-only probes. Nothing here runs because the window opened;
+  // each group starts the first time its page is actually shown.
+  useEffect(() => {
+    mountedRef.current = true
+    probeController.activate(page)
+    return () => { mountedRef.current = false }
+  }, [page, probeController])
+
+  // While settings is open, a light polling refresh keeps the monitor list
+  // current without widening the settings-to-background event boundary. It
+  // only exists for pages that actually render the list.
+  useEffect(() => {
+    if (!PAGE_PROBES[page].includes('desktopDisplays')) return
+    const displayTimer = window.setInterval(() => { void refreshDesktopDisplays() }, 5000)
+    return () => window.clearInterval(displayTimer)
+  }, [page])
+
+  // A reload or a real teardown cancels every probe that has not started yet.
+  useEffect(() => () => probeController.dispose(), [probeController])
 
   const change = (next: WallpaperSettings) => {
     const previous = settingsRef.current
@@ -267,6 +361,8 @@ export function SettingsWindow() {
     {notice && <div className="settings-window__notice" role="status"><span>{notice}</span><button type="button" aria-label="关闭通知" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); setNotice(undefined) }}>×</button></div>}
     <SettingsPanel
       settings={settings}
+      page={page}
+      onPageChange={(next) => { setPage(next); if (next === 'appearance') refreshAppearance() }}
       harnessStatus={harness}
       translucentTb={translucentTb}
       dshCandidates={dshCandidates}
@@ -307,7 +403,6 @@ export function SettingsWindow() {
         .catch((error) => setNotice(String(error)))}
       interactionEnabled={interactionEnabled}
       onSetInteractionEnabled={(enabled) => void appCoreClient.setInteractionEnabled(enabled).then((snapshot) => setInteractionEnabled(snapshot.interaction.enabled)).catch((error) => setNotice(String(error)))}
-      onOpenAppearance={() => { refreshAppearance() }}
       onClose={close}
     />
   </main>
