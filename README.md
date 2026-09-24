@@ -102,6 +102,13 @@ reason 码由 `wallpaper/src/connect/harnessLabels.ts` 统一定义，只有 `br
   手动「启动」按钮始终使用该命令。
 - 根目录无效、找不到 Node/pnpm、profile 非法、进程启动失败分别给出不同原因，不做无限重试。
 
+> **自启项归属提醒**：自启优先使用包的 StartupTask，未打包的开发版才回退到
+> `HKCU\...\Run`。回退路径写入的是**当前进程自己的 exe 路径**，所以在开发版里切换
+> 「开机自启」会把 Run 项从已安装包改指向 `target\debug\dsh-wallpaper.exe`。
+> 验证「登录后自动启动 DSH」时请使用**签名测试包**，不要用开发版改自启项 ——
+> 否则登录时启动的是开发版，验收结论不成立。安装包升级时 `migrate_legacy_autostart`
+> 会把 Run 项迁移为 StartupTask；若 Windows 拒绝，旧项会被保留，因此升级不会造成自启空档。
+
 ### 更新已安装的 Bridge
 
 DSH profile 里的 Bridge 是**拷贝**而非指向本仓库的链接（desktop profile 使用 pnpm 的
@@ -115,6 +122,22 @@ dsh plugin --profile desktop install   # 换成你实际使用的 profile
 而不要只看本地构建输出。壁纸自身不会在后台执行包管理、下载代码或改写 DSH profile。
 版本矩阵、协议版本与包版本的区别、宿主适配层边界见
 [`bridge/README.md`](bridge/README.md)。
+
+### 当前真机验收状态（勿当作已通过）
+
+写这份文档时实测：
+
+| 环节 | 状态 |
+| --- | --- |
+| 壁纸自启项 | ✅ `HKCU\...\Run` 的 `dsh-wallpaper` 存在，指向已安装 `0.2.0.71` |
+| 已安装包是否含本功能 | ❌ `0.2.0.71`（构建于 2026-09-17）**不含**「随壁纸启动 DSH」，也不含本轮 Bridge 就绪/适配层改动 |
+| 开发版是否含本功能 | ✅ `target\debug\dsh-wallpaper.exe` 含 `autostart_managed_dsh`、`managed_dsh_autostart_status`，前端包含设置项与卡片文案 |
+| 已安装 Bridge | ❌ profile 内仍是 8/26 副本；本轮源码构建摘要不同 |
+
+因此：**「登录后自动启动 DSH」这条验收尚未成立**，必须先出一个含本功能的签名测试包并
+安装，再按「安装包版本 / 实际 exe 路径 / Windows 启动来源 / 壁纸与 DSH 启动时间 /
+Bridge ready 时间 / 关机重登后进程数」逐项记录。开发版通过 `pnpm desktop:dev` 只能证明
+手动启动路径。
 
 ## GitHub Actions
 
