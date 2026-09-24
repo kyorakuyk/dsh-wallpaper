@@ -700,6 +700,13 @@ async fn eval_json<T: DeserializeOwned>(window: &WebviewWindow, script: &str) ->
         return Err("DeepSeek 网页返回内容超过安全上限。".into());
     }
     serde_json::from_str::<T>(&raw).or_else(|_| {
+    // The transport is shared by every script, and a `null` result is
+    // the one failure that cannot be diagnosed from the deserializer error:
+    // it means the script itself produced nothing, so the raw value is the
+    // only evidence of what the page actually did.
+    if raw.len() <= 8 {
+        log::warn!("deepseek web eval produced no value: raw={raw:?}");
+    }
         let nested = serde_json::from_str::<String>(&raw)
             .map_err(|error| format!("DeepSeek 网页返回格式无效：{error}"))?;
         serde_json::from_str::<T>(&nested)
@@ -921,6 +928,19 @@ const TRIGGER_SEND_SCRIPT: &str = r#"
     return /upload|attach|attachment|file|附件|上传|添加文件/.test(label);
   };
   /**
+   * A short, non-sensitive description of a control, for the send trace.
+   *
+   * Named uniquely on purpose: `describe` is a common global on pages that ship a
+   * test runner, and a colliding declaration would fail the whole script.
+   */
+  const dshDescribe = (node) => {
+    if (!node) return 'none';
+    const tag = (node.tagName || '?').toLowerCase();
+    const cls = typeof node.className === 'string' ? node.className.slice(0, 60) : '';
+    const label = labelOf(node).slice(0, 40);
+    return `${tag}.${cls}|${label}`;
+  };
+  /**
    * Whether the page accepted the message, judged by the composer it owns.
    *
    * The composer is cleared when the page commits the draft. Reading it from the
@@ -975,7 +995,7 @@ const TRIGGER_SEND_SCRIPT: &str = r#"
     // Which control was actually clicked, when the outcome says it was wrong. An
     // icon-only attachment button carries no label, so the only reliable way to
     // identify it is to report what the candidate rule picked.
-    return { ok: false, reason: 'click-ignored:' + describe(action) };
+    return { ok: false, reason: 'click-ignored:' + dshDescribe(action) };
   }
   const buttons = [...document.querySelectorAll('button,[role="button"]')].filter((node) => !isFilePicker(node));
   const send = buttons.find((node) => visible(node) && !disabled(node) && hasToken(labelOf(node), adapterConfig.sendTokens))
@@ -1824,6 +1844,36 @@ mod tests {
         }
     }
 
+
+    /// Every helper the send script calls must be defined in that same script.
+    ///
+    /// The regression this pins, and the real cause of a long hunt: `describe` was
+    /// called from the `click-ignored` return but never defined. The script then threw
+    /// `ReferenceError`, the IIFE produced nothing, the transport delivered the JSON
+    /// text `null`, and the failure surfaced as "invalid type: null, expected a string"
+    /// — an error about deserialization for a JavaScript bug. The build cannot see any
+    /// of this, because the scripts are opaque strings.
+    #[cfg(windows)]
+    #[test]
+    fn every_helper_the_send_script_calls_is_defined_in_it() {
+        let script = super::TRIGGER_SEND_SCRIPT;
+        for helper in [
+            "labelOf",
+            "visible",
+            "disabled",
+            "hasToken",
+            "clickLikeUser",
+            "composerCleared",
+            "isFilePicker",
+            "dshDescribe",
+        ] {
+            assert!(
+                script.contains(&format!("const {helper} =")),
+                "TRIGGER_SEND_SCRIPT uses {helper} but never defines it, which throws at \\
+                 runtime and surfaces as an unrelated deserialization error",
+            );
+        }
+    }
 
     #[cfg(windows)]
     #[test]
