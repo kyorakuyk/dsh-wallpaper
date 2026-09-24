@@ -106,6 +106,29 @@ fn generic_api_error(stage: &str) -> String {
     format!("DeepSeek API {stage}失败；请检查地址、网络与访问密钥后重试。")
 }
 
+/// Whether a re-request may replace the dropped event stream.
+///
+/// A reconnect is only accepted when the response is successful *and* carries
+/// the ready acknowledgement. A 200 without it means a Bridge answered on the
+/// same path but did not subscribe this reader, so treating it as a live stream
+/// would leave the wallpaper waiting forever on a response nobody writes to.
+///
+/// Takes the two primitives rather than the response so the rule is testable
+/// without an `AppHandle` or a real socket, which the surrounding loop requires.
+fn reconnect_is_accepted(status: u16, ready_header: Option<&str>) -> bool {
+    (200..300).contains(&status) && ready_header == Some("1")
+}
+
+fn reconnect_response_is_ready(response: &reqwest::Response) -> bool {
+    reconnect_is_accepted(
+        response.status().as_u16(),
+        response
+            .headers()
+            .get("x-dsh-wallpaper-sse-ready")
+            .and_then(|value| value.to_str().ok()),
+    )
+}
+
 fn generic_harness_error(stage: &str) -> String {
     format!("DSH bridge {stage}失败；请确认 Harness 与壁纸 bridge 仍在运行。")
 }
@@ -2932,16 +2955,7 @@ async fn connect_harness_events(
                 result = &mut reconnect_request => result,
             };
             let next = match next {
-                Ok(next)
-                    if next.status().is_success()
-                        && next
-                            .headers()
-                            .get("x-dsh-wallpaper-sse-ready")
-                            .and_then(|value| value.to_str().ok())
-                            == Some("1") =>
-                {
-                    next
-                }
+                Ok(next) if reconnect_response_is_ready(&next) => next,
                 Ok(next) => {
                     emit_stream_error(
                         "HARNESS_DISCONNECTED",
@@ -3275,7 +3289,7 @@ mod tests {
         drain_bounded_harness_sse_records, drain_sse_records, finish_api_request,
         finish_bounded_harness_sse_records, finish_harness_stream, finish_sse_records,
         harness_http_error, harness_records_have_terminal_event, harness_records_have_turn_activity,
-        is_current_api_request, is_current_harness_stream, owns_api_request, parse_bridge_event,
+        is_current_api_request, is_current_harness_stream, owns_api_request, parse_bridge_event, reconnect_is_accepted,
         parse_harness_connection, parse_harness_history, sse_record_payload, trim_api_archive,
         ApiConversation, ApiConversationArchive, ApiMessage, ApiPricing, ApiUsage, ChatEvent,
         ChatState, HarnessConnection, HarnessHistoryMessage, HarnessHistoryResponse,
@@ -3287,6 +3301,25 @@ mod tests {
     use crate::api_persistence::EncryptedJsonStore;
     use std::collections::HashMap;
     use tokio::sync::oneshot;
+
+    /// Plan §3 requires "SSE 断线重连" to be covered. The reconnect *loop* needs an
+    /// `AppHandle` and a live socket, but its acceptance rule does not, so the
+    /// rule that decides whether a replacement stream is usable is pinned here.
+    #[test]
+    fn a_reconnect_is_only_accepted_when_it_is_ready() {
+        // The Bridge acknowledges a subscription with this header. Without it a
+        // 200 means "answered" but not "subscribed", and the reader would wait on
+        // a response nobody writes to.
+        assert!(reconnect_is_accepted(200, Some("1")));
+        assert!(!reconnect_is_accepted(200, None));
+        assert!(!reconnect_is_accepted(200, Some("0")));
+        // A non-2xx is not a stream regardless of any header.
+        for status in [301u16, 400, 401, 404, 409, 429, 500, 503] {
+            assert!(!reconnect_is_accepted(status, Some("1")), "status {status}");
+        }
+        // Other 2xx responses are still success, matching `is_success()`.
+        assert!(reconnect_is_accepted(204, Some("1")));
+    }
 
     /// Each rejection must name the fix, and the 404 case must point at the
     /// installation rather than at the connection: it is the symptom of a stale
