@@ -477,6 +477,26 @@ export function isValidConversationId(value: unknown): value is string {
     && value.length > 0
     && value.length <= 200
     && /^[A-Za-z0-9._-]+$/.test(value)
+    && !isLocalPlaceholderConversationId(value)
+}
+
+/**
+ * Whether an id is one this client invented rather than one DeepSeek issued.
+ *
+ * `deepseekWebAdapter` falls back to `web-<millis>` until the page reports a real
+ * conversation id, and that placeholder satisfies the character check above — so it
+ * was persisted as a resume pointer. Every later send then navigated to
+ * `/a/chat/s/web-<millis>`, a conversation DeepSeek does not have, where the page
+ * never becomes ready and the send stalled for the whole page-ready timeout.
+ * Rejecting it here keeps the placeholder out of storage; the native side also
+ * treats it as "no conversation", so an already-poisoned pointer heals instead of
+ * failing forever.
+ */
+export function isLocalPlaceholderConversationId(value: string): boolean {
+  if (!value.startsWith('web-')) return false
+  const rest = value.slice(4)
+  const digits = rest.startsWith('request-') ? rest.slice(8) : rest
+  return digits.length > 0 && /^\d+$/.test(digits)
 }
 
 /**

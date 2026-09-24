@@ -453,11 +453,38 @@ fn requested_conversation_id(value: Option<String>) -> Result<Option<String>, St
     let Some(value) = value.map(|value| value.trim().to_string()) else {
         return Ok(None);
     };
-    if is_safe_identifier(&value) {
-        Ok(Some(value))
-    } else {
-        Err("DeepSeek 网页会话 ID 无效。".into())
+    if !is_safe_identifier(&value) {
+        return Err("DeepSeek 网页会话 ID 无效。".into());
     }
+    // A locally invented id must never be treated as a resumable conversation.
+    //
+    // `send` falls back to `web-<millis>` when the page has not yet reported a real
+    // conversation id, and the renderer's own "valid id" check accepts any
+    // `[A-Za-z0-9._-]+`, so that placeholder was persisted as a resume pointer and
+    // replayed on every later send. The wallpaper then navigated to
+    // `/a/chat/s/web-<millis>` — a conversation that does not exist on DeepSeek —
+    // where the page never becomes ready, so every send stalled for the full
+    // page-ready timeout. Treating the placeholder as "no conversation" makes a
+    // poisoned pointer heal on the next send instead of failing forever.
+    if is_local_placeholder_id(&value) {
+        log::info!("deepseek web ignoring local placeholder conversation id: {value}");
+        return Ok(None);
+    }
+    Ok(Some(value))
+}
+
+/// Whether an id is one this client invented rather than one DeepSeek issued.
+///
+/// Matches only the exact shapes the fallbacks produce, so a real conversation id
+/// that merely starts with `web-` is unaffected.
+#[cfg(windows)]
+fn is_local_placeholder_id(value: &str) -> bool {
+    let rest = match value.strip_prefix("web-") {
+        Some(rest) => rest,
+        None => return false,
+    };
+    let digits = rest.strip_prefix("request-").unwrap_or(rest);
+    !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 #[cfg(windows)]
@@ -1221,6 +1248,15 @@ pub async fn send(
     if text.as_bytes().len() > MAX_MESSAGE_BYTES {
         return Err(format!("单条网页消息不能超过 {MAX_MESSAGE_BYTES} 字节。"));
     }
+    // TEMPORARY DIAGNOSTIC: this module otherwise logs only on timeout, at a level
+    // that made a stalled turn indistinguishable from one that never started.
+    log::info!(
+        "deepseek web send entry: bytes={}, new_conversation={}, conversation={:?}, request={:?}",
+        text.as_bytes().len(),
+        new_conversation,
+        conversation_id,
+        request_id,
+    );
     let requested_id = requested_conversation_id(conversation_id)?;
     let requested_conversation_id = if new_conversation { None } else { requested_id };
     let window = ensure_window(&app)?;
@@ -1321,11 +1357,24 @@ pub async fn send(
             Some(&request_id),
             json!({ "type": "status", "activity": "sending" }),
         );
+        // TEMPORARY DIAGNOSTIC: the page state the send is about to act on. A
+        // logged-out or unsupported page is otherwise indistinguishable from a
+        // control the page ignored.
+        log::info!(
+            "deepseek web initial snapshot: state={}, composer_found={}, busy={}, messages={}, assistant_count={}, revision={}",
+            initial.state,
+            initial.composer_found,
+            initial.busy,
+            initial.messages.len(),
+            initial.assistant_count,
+            initial.revision,
+        );
         let prepared: WebActionResult = eval_json(
             &window,
             &prepare_send_script(&text, &config)?,
         )
         .await?;
+        log::info!("deepseek web prepare: ok={} reason={}", prepared.ok, prepared.reason);
         if !prepared.ok {
             return Err("DeepSeek 网页输入框尚未准备好，请稍候重试。".into());
         }
@@ -1340,6 +1389,9 @@ pub async fn send(
                 tokio::time::sleep(Duration::from_millis(80)).await;
             }
             action = eval_json(&window, &configured_script(TRIGGER_SEND_SCRIPT, &config)?).await?;
+            // Every attempt is recorded, not only the successful one: a control the
+            // page ignores must be visible as a failing attempt.
+            log::info!("deepseek web trigger attempt {}: ok={} reason={}", attempt, action.ok, action.reason);
             if action.ok {
                 break;
             }
@@ -1659,6 +1711,46 @@ mod tests {
             !script.contains("action.click()"),
             "a bare click() no longer proves the control acted",
         );
+    }
+
+    /// A locally invented placeholder must never be replayed as a conversation.
+    ///
+    /// The regression this pins: `send` falls back to `web-<millis>` before the page
+    /// reports a real id, the renderer's "valid id" check accepted it because it is
+    /// `[A-Za-z0-9._-]+`, and it was persisted as a resume pointer. Every later send
+    /// then navigated to `/a/chat/s/web-<millis>` — a conversation DeepSeek does not
+    /// have — where the page never became ready, so each send stalled for the whole
+    /// page-ready timeout with the UI stuck on "processing".
+    #[cfg(windows)]
+    #[test]
+    fn a_local_placeholder_conversation_id_is_never_resumed() {
+        for placeholder in ["web-1789665335342", "web-request-1789665335342", "web-1"] {
+            assert!(
+                super::is_local_placeholder_id(placeholder),
+                "{placeholder} is generated locally and must not be resumed",
+            );
+            assert_eq!(
+                super::requested_conversation_id(Some(placeholder.to_string())).expect("accepted"),
+                None,
+                "a placeholder must resolve to \"no conversation\"",
+            );
+        }
+        // A real DeepSeek id is untouched, including one that merely starts with
+        // `web-`, so the guard cannot silence a legitimate conversation.
+        for real in [
+            "3f2b1c0a-1d2e-4f5a-9b8c-7d6e5f4a3b2c",
+            "web-abc123",
+            "web-1789665335342x",
+        ] {
+            assert!(
+                !super::is_local_placeholder_id(real),
+                "{real} is not one of this client's placeholders",
+            );
+            assert_eq!(
+                super::requested_conversation_id(Some(real.to_string())).expect("accepted"),
+                Some(real.to_string()),
+            );
+        }
     }
 
     #[cfg(windows)]

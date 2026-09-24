@@ -86,7 +86,7 @@ pub fn clean_exit_was_recorded() -> bool {
 /// also makes "the helper ran and repaired" a checkable fact after the fact.
 pub fn record_repair_outcome(outcome: &str) {
     let Some(dir) = repair_state_dir() else { return };
-    if let Err(error) = std::fs::create_dir_all(&dir) {
+    if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
     let stamp = std::time::SystemTime::now()
