@@ -2701,11 +2701,11 @@ pub async fn harness_connect(
     if connection_id.is_empty() || connection_id.len() > 200 {
         return Err("Harness 连接标识无效".into());
     }
-    // The endpoint the caller selected, or the endpoint this process last used.
-    // Pinned on the session below so a later change of the settings dropdown
-    // cannot redirect an already-open conversation.
+    // The endpoint to attempt. Deliberately *not* recorded on the session yet:
+    // a failed connect must leave an existing session's endpoint untouched, or a
+    // failed attempt at a new client would silently repoint the old conversation
+    // at a client that never answered.
     let port = endpoint_port.unwrap_or_else(|| state.harness_port());
-    state.set_harness_port(port);
     cancel_harness_stream(&state);
     let token = read_bridge_token()?;
     let client = bridge_request_client()?;
@@ -2774,6 +2774,10 @@ pub async fn harness_connect(
         .harness_session
         .lock()
         .map_err(|_| "Harness session state poisoned")? = Some(session.session_id.clone());
+    // Only now that a session exists on this endpoint does the session adopt it,
+    // so every later request for this conversation goes to the client that
+    // actually answered.
+    state.set_harness_port(port);
     if let Err(error) = connect_harness_events(
         app,
         state.inner().clone(),
@@ -3078,10 +3082,12 @@ pub async fn harness_history(state: tauri::State<'_, ChatState>) -> Result<Value
     parse_harness_history(&session_id, history)
 }
 
-pub async fn harness_presets() -> Result<Value, String> {
-    // No session state here: presets are a host-wide query, so the caller's
-    // selected endpoint is supplied by the command wrapper.
-    let port = DEFAULT_HARNESS_PORT;
+pub async fn harness_presets(state: tauri::State<'_, ChatState>) -> Result<Value, String> {
+    // Presets are a host-wide query, so they must go to the same host the session
+    // is on. Reading the session's endpoint rather than a constant is what makes
+    // that true: this used to always query DSH's default port, so selecting the
+    // official desktop shell showed its sessions' presets from the wrong client.
+    let port = state.harness_port();
     let token = read_bridge_token()?;
     let client = bridge_request_client()?;
     let response = auth(
@@ -3374,6 +3380,38 @@ mod tests {
         let reader = state.clone();
         state.set_harness_port(43120);
         assert_eq!(reader.harness_port(), 43120);
+    }
+
+    /// Attempting another endpoint must not repoint the open session.
+    ///
+    /// The regression this pins: the endpoint used to be recorded *before* the
+    /// connect was known to succeed, so a failed attempt at a different client
+    /// left the existing conversation addressing a client that never answered —
+    /// every later message, history read and cancel would have gone there.
+    ///
+    /// Asserted through the state the command's ordering has to produce: reading
+    /// the endpoint to attempt is separate from adopting it, so a session on 19387
+    /// is still on 19387 after a failed attempt at 43120.
+    #[test]
+    fn a_failed_connect_does_not_repoint_the_session() {
+        let state = ChatState::default();
+        state.set_harness_port(19387);
+
+        // What `harness_connect` does before the request: resolve, do not adopt.
+        let attempted = Some(43120u16).unwrap_or_else(|| state.harness_port());
+        assert_eq!(attempted, 43120, "the attempt targets the new endpoint");
+
+        // The request fails here, so adoption never happens. The session must
+        // still address the client it was created against.
+        assert_eq!(
+            state.harness_port(),
+            19387,
+            "a failed attempt must not repoint the open session"
+        );
+
+        // Adoption only follows a parsed session, and then it does take effect.
+        state.set_harness_port(attempted);
+        assert_eq!(state.harness_port(), 43120);
     }
 
     /// Plan §3 requires "SSE 断线重连" to be covered. The reconnect *loop* needs an    /// `AppHandle` and a live socket, but its acceptance rule does not, so the

@@ -386,6 +386,18 @@ export function App({ surface = 'combined' }: AppProps) {
 
   useEffect(() => {
     if (!nativeRuntime.isNative) return
+    // Every Tauri WebView owns an isolated storage partition, so the saved
+    // endpoint exists in this surface's storage but the native monitor — which
+    // owns the probe loop and resolves the endpoint sessions use — has its own
+    // state. Pushing it at startup is what makes a saved choice survive a
+    // restart; relying on the settings window to push it meant a user who never
+    // reopened settings got the default port instead.
+    // `null` clears the pin, letting the native scan discover an endpoint.
+    void nativeRuntime.setHarnessEndpoint(settings.dshLaunch.endpointPort ?? null).catch(() => null)
+  }, [settings.dshLaunch.endpointPort])
+
+  useEffect(() => {
+    if (!nativeRuntime.isNative) return
     let disposed = false
     void nativeRuntime.nativeBootstrapGeneration().then((generation) => {
       if (!disposed) setNativeHandoffGeneration((current) => Math.max(current ?? 0, generation))

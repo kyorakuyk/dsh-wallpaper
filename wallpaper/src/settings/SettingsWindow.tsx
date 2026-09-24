@@ -85,6 +85,16 @@ export function SettingsWindow() {
   // result update an unmounted component.
   const mountedRef = useRef(true)
 
+  useEffect(() => {
+    // Push the stored endpoint on mount, not only when the user changes it.
+    // The native monitor holds its own endpoint state, so without this a saved
+    // choice was only honoured after the user touched the control again — and
+    // this surface has a separate storage partition from the background one, so
+    // it cannot assume the other already pushed it.
+    void nativeRuntime.setHarnessEndpoint(settingsRef.current.dshLaunch.endpointPort ?? null)
+      .catch(() => null)
+  }, [])
+
   const commitSettings = (next: WallpaperSettings) => {
     settingsRef.current = next
     setSettings(next)

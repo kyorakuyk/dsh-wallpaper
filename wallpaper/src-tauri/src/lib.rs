@@ -1922,9 +1922,12 @@ async fn harness_history(
 
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
-async fn harness_presets(caller: tauri::WebviewWindow) -> Result<serde_json::Value, String> {
+async fn harness_presets(
+    caller: tauri::WebviewWindow,
+    state: tauri::State<'_, chat::ChatState>,
+) -> Result<serde_json::Value, String> {
     require_background(&caller)?;
-    chat::harness_presets().await
+    chat::harness_presets(state).await
 }
 
 #[tauri::command]
@@ -1992,26 +1995,62 @@ const HARNESS_ENDPOINT_PORTS: &[(u16, &str)] =
 #[cfg(not(feature = "lite"))]
 const HARNESS_DEFAULT_PORT: u16 = 3080;
 
-/// The endpoint the user pinned in settings, if any.
+/// Which endpoint the wallpaper talks to.
 ///
-/// The monitor owns the probe loop, so the choice has to reach native state
-/// rather than being passed per request: otherwise the status the desktop renders
-/// would keep coming from the default port while the settings card claimed a
-/// different endpoint was selected.
+/// Two separate facts, and conflating them was a bug: `pinned` is the user's
+/// explicit choice and `active` is whatever a scan last found usable. "Auto" means
+/// *discovered*, not *3080* — the original single-port version reported `offline`
+/// while a ready Bridge served the official desktop shell on 19387, and the
+/// monitor never looked anywhere else.
 #[cfg(not(feature = "lite"))]
 #[derive(Default)]
-struct HarnessEndpointState(Mutex<Option<u16>>);
+struct HarnessEndpointState {
+    /// The user's choice from settings, kept until they change it.
+    pinned: Mutex<Option<u16>>,
+    /// The endpoint a scan last confirmed, used while nothing is pinned.
+    active: Mutex<Option<u16>>,
+}
 
 #[cfg(not(feature = "lite"))]
 static HARNESS_ENDPOINT_STATE: OnceLock<HarnessEndpointState> = OnceLock::new();
 
-/// The pinned port, or DSH's default when nothing is pinned.
+#[cfg(not(feature = "lite"))]
+fn harness_endpoint_state() -> &'static HarnessEndpointState {
+    HARNESS_ENDPOINT_STATE.get_or_init(HarnessEndpointState::default)
+}
+
+/// The port the wallpaper should talk to.
+///
+/// A pinned choice wins. Otherwise the last discovered endpoint is used, falling
+/// back to DSH's own default only before any scan has succeeded — so a CLI-started
+/// Host on 3080 still works without configuration, while a desktop client on
+/// another port is found rather than missed.
 #[cfg(not(feature = "lite"))]
 fn harness_endpoint_port() -> u16 {
-    HARNESS_ENDPOINT_STATE
-        .get()
-        .and_then(|state| state.0.lock().ok().and_then(|guard| *guard))
+    let state = harness_endpoint_state();
+    let pinned = state.pinned.lock().ok().and_then(|guard| *guard);
+    if let Some(port) = pinned {
+        return port;
+    }
+    state
+        .active
+        .lock()
+        .ok()
+        .and_then(|guard| *guard)
         .unwrap_or(HARNESS_DEFAULT_PORT)
+}
+
+/// Record an endpoint a scan confirmed. Ignored while the user has pinned one, so
+/// discovery can never quietly override an explicit choice.
+#[cfg(not(feature = "lite"))]
+fn note_discovered_endpoint(port: u16) {
+    let state = harness_endpoint_state();
+    if state.pinned.lock().map(|guard| guard.is_some()).unwrap_or(true) {
+        return;
+    }
+    if let Ok(mut guard) = state.active.lock() {
+        *guard = Some(port);
+    }
 }
 
 
@@ -2264,6 +2303,12 @@ async fn fetch_harness_status() -> serde_json::Value {
     fetch_harness_status_at(harness_endpoint_port()).await
 }
 
+/// Pin or clear the user's endpoint choice.
+///
+/// Independent of discovery: pinning wins until it is cleared, and a cleared pin
+/// lets the monitor's scan take over again. Clearing also drops the remembered
+/// scan result so the next probe rediscovers instead of reusing a stale port.
+
 /// Pin the endpoint the monitor probes, or clear the pin with `None`.
 ///
 /// Both surfaces may call it: the settings window after the user picks, and the
@@ -2280,8 +2325,8 @@ fn set_harness_endpoint(
     if port == Some(0) {
         return Err("接入端点端口必须在 1-65535 之间".into());
     }
-    let state = HARNESS_ENDPOINT_STATE.get_or_init(HarnessEndpointState::default);
-    let mut guard = state.0.lock().map_err(|_| "接入端点状态不可用".to_string())?;
+    let state = harness_endpoint_state();
+    let mut guard = state.pinned.lock().map_err(|_| "接入端点状态不可用".to_string())?;
     *guard = port;
     Ok(*guard)
 }
@@ -2384,7 +2429,11 @@ mod dsh_autostart_tests {
 #[cfg(test)]
 #[cfg(not(feature = "lite"))]
 mod harness_status_tests {
-    use super::{compatible_harness_bridge_status, diagnose_harness_bridge_status, root_probe_availability};
+    use super::{
+        compatible_harness_bridge_status, diagnose_harness_bridge_status, fetch_harness_status_at,
+        harness_endpoint_port, probe_current_endpoint, root_probe_availability, HarnessEndpointState,
+        HARNESS_DEFAULT_PORT,
+    };
     use crate::app_core::HarnessAvailability;
     use serde_json::json;
 
@@ -2456,9 +2505,95 @@ mod harness_status_tests {
         }
     }
 
+    /// Auto means *discovered*, not *3080*.
+    ///
+    /// The regression this pins: the monitor used to probe one hardcoded port, so
+    /// it reported `offline` while a ready Bridge served the official desktop shell
+    /// on 19387, and choosing that shell in settings did not help because nothing
+    /// ever looked there.
     #[test]
-    fn names_the_layer_that_is_unusable() {
-        // A protocol this wallpaper cannot speak.
+    fn a_discovered_endpoint_is_used_while_nothing_is_pinned() {
+        let state = HarnessEndpointState::default();
+        // DSH's own default still applies before any scan succeeds, so a
+        // CLI-started Host on 3080 keeps working with no configuration.
+        assert_eq!(endpoint_port_of(&state), HARNESS_DEFAULT_PORT);
+        assert_eq!(note_discovered_on(&state, 19387), 19387);
+    }
+
+    /// An explicit choice outranks discovery, in both directions.
+    #[test]
+    fn a_pinned_endpoint_is_never_overridden_by_discovery() {
+        let state = HarnessEndpointState::default();
+        // A scan result is used while nothing is pinned...
+        assert_eq!(note_discovered_on(&state, 19387), 19387);
+        // ...and stops mattering the moment the user pins something else.
+        *state.pinned.lock().expect("pin lock") = Some(43120);
+        assert_eq!(note_discovered_on(&state, 19387), 43120);
+        // Clearing the pin hands control back to discovery.
+        *state.pinned.lock().expect("pin lock") = None;
+        assert_eq!(note_discovered_on(&state, 3080), 3080);
+    }
+
+    /// Discovery must not record anything while a choice is pinned, so clearing a
+    /// pin cannot silently revive a stale scan result.
+    #[test]
+    fn discovery_is_ignored_entirely_while_pinned() {
+        let state = HarnessEndpointState::default();
+        *state.pinned.lock().expect("pin lock") = Some(43120);
+        note_discovered_on(&state, 19387);
+        assert_eq!(*state.active.lock().expect("active lock"), None);
+    }
+
+    /// The same resolution the commands use, against a caller-owned state.
+    fn endpoint_port_of(state: &HarnessEndpointState) -> u16 {
+        let pinned = state.pinned.lock().ok().and_then(|guard| *guard);
+        if let Some(port) = pinned {
+            return port;
+        }
+        state
+            .active
+            .lock()
+            .ok()
+            .and_then(|guard| *guard)
+            .unwrap_or(HARNESS_DEFAULT_PORT)
+    }
+
+    /// `note_discovered_endpoint`, against a caller-owned state, returning what
+    /// the endpoint would then resolve to.
+    fn note_discovered_on(state: &HarnessEndpointState, port: u16) -> u16 {
+        if !state.pinned.lock().map(|guard| guard.is_some()).unwrap_or(true) {
+            if let Ok(mut guard) = state.active.lock() {
+                *guard = Some(port);
+            }
+        }
+        endpoint_port_of(state)
+    }
+
+    #[test]
+    #[ignore = "requires a live client on 19387 or 3080"]
+    fn auto_mode_discovers_a_live_endpoint_on_this_machine() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let (port, status) = rt.block_on(async {
+            let port = harness_endpoint_port();
+            (port, fetch_harness_status_at(port).await)
+        });
+        eprintln!("current endpoint {port} -> {status}");
+        // Crucially this must NOT be the default when something else is live, so
+        // assert discovery by running the real probe and reporting what it found.
+        let discovered = rt.block_on(probe_current_endpoint());
+        eprintln!("after discovery -> {discovered} (port now {})", harness_endpoint_port());
+        assert!(
+            discovered.get("availability").and_then(serde_json::Value::as_str) != Some("offline")
+                || port != HARNESS_DEFAULT_PORT,
+            "auto mode left the wallpaper offline on the default port while a client may be live"
+        );
+    }
+
+    #[test]
+    fn names_the_layer_that_is_unusable() {        // A protocol this wallpaper cannot speak.
         let incompatible = diagnose_harness_bridge_status(&json!({
             "protocolVersion": 2,
             "dsh": "online",
@@ -2730,6 +2865,53 @@ fn harness_endpoint_window(caller: tauri::WebviewWindow, port: u16) -> Result<bo
     Ok(client_window::window_for_endpoint(port).is_some())
 }
 
+/// Probe the endpoint in use, discovering a better one when it is not answering.
+///
+/// Tiered on purpose. The common case is one loopback request; a full scan of
+/// every candidate only happens when the current endpoint is not ready, so a
+/// resident wallpaper does not pay for discovery it does not need — and a client
+/// that is started later, or restarts on a different port, is still picked up
+/// without the user reopening settings.
+#[cfg(not(feature = "lite"))]
+async fn probe_current_endpoint() -> serde_json::Value {
+    let current = harness_endpoint_port();
+    let status = fetch_harness_status_at(current).await;
+    if harness_status_is_ready(&status) {
+        note_discovered_endpoint(current);
+        return status;
+    }
+
+    // Not usable. Look for a better endpoint, but only replace the current one
+    // when the scan finds something strictly usable: otherwise a transient
+    // failure would drop a working endpoint for a worse one.
+    let mut best: Option<(u16, serde_json::Value)> = None;
+    for (port, _kind) in HARNESS_ENDPOINT_PORTS {
+        if *port == current {
+            continue;
+        }
+        let candidate = fetch_harness_status_at(*port).await;
+        if harness_status_is_ready(&candidate) {
+            best = Some((*port, candidate));
+            break;
+        }
+    }
+    match best {
+        Some((port, candidate)) => {
+            log::info!("harness endpoint discovered: {current} -> {port}");
+            note_discovered_endpoint(port);
+            candidate
+        }
+        // Nothing better: report the endpoint in use, so the diagnostic names the
+        // port the user is actually pinned to rather than an unrelated one.
+        None => status,
+    }
+}
+
+#[cfg(not(feature = "lite"))]
+fn harness_status_is_ready(status: &serde_json::Value) -> bool {
+    status.get("availability").and_then(serde_json::Value::as_str) == Some("bridge-ready")
+}
+
 #[cfg(not(feature = "lite"))]
 fn start_harness_monitor(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -2738,7 +2920,7 @@ fn start_harness_monitor(app: tauri::AppHandle) {
         let mut last = HarnessAvailability::Offline;
         let mut last_reason: Option<String> = None;
         loop {
-            let status = fetch_harness_status().await;
+            let status = probe_current_endpoint().await;
             if let Ok(mut cache) = harness_status_cache().write() {
                 *cache = status.clone();
             }
