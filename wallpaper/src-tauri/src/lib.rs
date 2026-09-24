@@ -1901,7 +1901,12 @@ async fn connect_harness(
     model: Option<String>,
 ) -> Result<String, String> {
     require_background(&caller)?;
-    chat::harness_connect(app, state, resume_session_id, connection_id, model).await
+    // The session follows the endpoint selected in settings, resolved here rather
+    // than trusted from the caller: the renderer cannot name an arbitrary port,
+    // and the monitor reads the same value, so status and sessions cannot
+    // disagree about which client is in use.
+    let endpoint_port = Some(harness_endpoint_port());
+    chat::harness_connect(app, state, resume_session_id, connection_id, model, endpoint_port).await
 }
 
 #[tauri::command]

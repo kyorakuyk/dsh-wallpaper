@@ -133,6 +133,17 @@ fn generic_harness_error(stage: &str) -> String {
     format!("DSH bridge {stage}失败；请确认 Harness 与壁纸 bridge 仍在运行。")
 }
 
+/// Absolute URL for a wallpaper Bridge route on the selected endpoint.
+///
+/// Every harness request goes through here so no call site can silently keep
+/// pointing at the default port. That mattered: the wallpaper probed one
+/// hardcoded port while the official desktop shell listens on 19387, so a session
+/// created against the selected shell would have been sent to whatever happened to
+/// be on 3080 — or to nothing at all.
+fn harness_url(port: u16, route: &str) -> String {
+    format!("http://127.0.0.1:{port}/api/wallpaper/v1{route}")
+}
+
 fn generic_bridge_http_error(status: reqwest::StatusCode) -> String {
     format!(
         "DSH bridge 请求被拒绝（HTTP {}）。请确认 bridge 版本、会话状态与连接后重试。",
@@ -216,7 +227,18 @@ pub struct ChatState {
     /// starts, so a listing can mark it and so trimming protects it even when
     /// the caller cannot name it.
     active_api_conversation: Arc<Mutex<Option<String>>>,
+    /// The DSH endpoint port the current session talks to.
+    ///
+    /// Shared like the other locks so a detached SSE reader sees the same
+    /// endpoint the session was created against, even if the user later changes
+    /// the dropdown. The three client shapes listen on different ports, so a
+    /// session opened against the official desktop shell must not have its
+    /// messages sent to whatever happens to be on the CLI's default port.
+    harness_port: Arc<Mutex<Option<u16>>>,
 }
+
+/// DSH's own web default; the fallback when nothing has been selected yet.
+pub const DEFAULT_HARNESS_PORT: u16 = 3080;
 
 impl Default for ChatState {
     fn default() -> Self {
@@ -250,6 +272,24 @@ impl ChatState {
             api_store: Arc::new(Mutex::new(ApiConversationStore { store, writable })),
             api_transcript_transaction: Arc::default(),
             active_api_conversation: Arc::default(),
+            harness_port: Arc::default(),
+        }
+    }
+
+    /// The endpoint this session talks to.
+    pub fn harness_port(&self) -> u16 {
+        self.harness_port
+            .lock()
+            .ok()
+            .and_then(|guard| *guard)
+            .unwrap_or(DEFAULT_HARNESS_PORT)
+    }
+
+    /// Point this session at an endpoint. Called when a session is created, so a
+    /// later change of the settings dropdown cannot redirect an open session.
+    pub fn set_harness_port(&self, port: u16) {
+        if let Ok(mut guard) = self.harness_port.lock() {
+            *guard = Some(port);
         }
     }
 
@@ -2655,11 +2695,17 @@ pub async fn harness_connect(
     resume_session_id: Option<String>,
     connection_id: String,
     model: Option<String>,
+    endpoint_port: Option<u16>,
 ) -> Result<String, String> {
     let connection_id = connection_id.trim().to_string();
     if connection_id.is_empty() || connection_id.len() > 200 {
         return Err("Harness 连接标识无效".into());
     }
+    // The endpoint the caller selected, or the endpoint this process last used.
+    // Pinned on the session below so a later change of the settings dropdown
+    // cannot redirect an already-open conversation.
+    let port = endpoint_port.unwrap_or_else(|| state.harness_port());
+    state.set_harness_port(port);
     cancel_harness_stream(&state);
     let token = read_bridge_token()?;
     let client = bridge_request_client()?;
@@ -2676,7 +2722,7 @@ pub async fn harness_connect(
     }
     let create_session = |resume_session_id: Option<&str>| {
         auth(
-            client.post("http://127.0.0.1:3080/api/wallpaper/v1/sessions"),
+            client.post(harness_url(port, "/sessions")),
             &token,
         )
         .json(&HarnessSessionRequest {
@@ -2750,6 +2796,7 @@ async fn connect_harness_events(
     token: String,
     connection_id: String,
 ) -> Result<(), String> {
+    let port = state.harness_port();
     let (cancel_tx, mut cancel_rx) = oneshot::channel();
     static STREAM_COUNTER: AtomicU64 = AtomicU64::new(1);
     let stream_id = STREAM_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -2760,10 +2807,7 @@ async fn connect_harness_events(
             sender: Some(cancel_tx),
         });
     }
-    let url = format!(
-        "http://127.0.0.1:3080/api/wallpaper/v1/sessions/{}/events",
-        urlencoding::encode(&session_id)
-    );
+    let url = harness_url(port, &format!("/sessions/{}/events", urlencoding::encode(&session_id)));
     let client = match bridge_stream_client() {
         Ok(client) => client,
         Err(error) => {
@@ -2979,6 +3023,7 @@ async fn connect_harness_events(
 }
 
 pub async fn harness_send(state: tauri::State<'_, ChatState>, text: String) -> Result<(), String> {
+    let port = state.harness_port();
     let text = text.trim();
     if text.is_empty() {
         return Err("消息不能为空".into());
@@ -2993,10 +3038,7 @@ pub async fn harness_send(state: tauri::State<'_, ChatState>, text: String) -> R
         .clone()
         .ok_or("Harness 会话尚未建立")?;
     let token = read_bridge_token()?;
-    let url = format!(
-        "http://127.0.0.1:3080/api/wallpaper/v1/sessions/{}/messages",
-        urlencoding::encode(&session_id)
-    );
+    let url = harness_url(port, &format!("/sessions/{}/messages", urlencoding::encode(&session_id)));
     let client = bridge_request_client()?;
     let response = auth(client.post(url), &token)
         .json(&serde_json::json!({ "text": text }))
@@ -3010,6 +3052,7 @@ pub async fn harness_send(state: tauri::State<'_, ChatState>, text: String) -> R
 }
 
 pub async fn harness_history(state: tauri::State<'_, ChatState>) -> Result<Value, String> {
+    let port = state.harness_port();
     let session_id = state
         .harness_session
         .lock()
@@ -3017,10 +3060,7 @@ pub async fn harness_history(state: tauri::State<'_, ChatState>) -> Result<Value
         .clone()
         .ok_or("Harness 会话尚未建立")?;
     let token = read_bridge_token()?;
-    let url = format!(
-        "http://127.0.0.1:3080/api/wallpaper/v1/sessions/{}/history",
-        urlencoding::encode(&session_id)
-    );
+    let url = harness_url(port, &format!("/sessions/{}/history", urlencoding::encode(&session_id)));
     let client = bridge_request_client()?;
     let response = auth(client.get(url), &token)
         .send()
@@ -3039,10 +3079,13 @@ pub async fn harness_history(state: tauri::State<'_, ChatState>) -> Result<Value
 }
 
 pub async fn harness_presets() -> Result<Value, String> {
+    // No session state here: presets are a host-wide query, so the caller's
+    // selected endpoint is supplied by the command wrapper.
+    let port = DEFAULT_HARNESS_PORT;
     let token = read_bridge_token()?;
     let client = bridge_request_client()?;
     let response = auth(
-        client.get("http://127.0.0.1:3080/api/wallpaper/v1/control/presets"),
+        client.get(harness_url(port, "/control/presets")),
         &token,
     )
     .send()
@@ -3063,6 +3106,7 @@ pub async fn harness_set_preset(
     state: tauri::State<'_, ChatState>,
     preset: String,
 ) -> Result<Value, String> {
+    let port = state.harness_port();
     let session_id = state
         .harness_session
         .lock()
@@ -3071,10 +3115,7 @@ pub async fn harness_set_preset(
         .ok_or("Harness 会话尚未建立")?;
     let token = read_bridge_token()?;
     let client = bridge_request_client()?;
-    let url = format!(
-        "http://127.0.0.1:3080/api/wallpaper/v1/control/sessions/{}/preset",
-        urlencoding::encode(&session_id)
-    );
+    let url = harness_url(port, &format!("/control/sessions/{}/preset", urlencoding::encode(&session_id)));
     let response = auth(client.post(url), &token)
         .json(&serde_json::json!({ "agentPreset": preset }))
         .send()
@@ -3092,6 +3133,7 @@ pub async fn harness_set_preset(
 }
 
 pub async fn harness_controls(state: tauri::State<'_, ChatState>) -> Result<Value, String> {
+    let port = state.harness_port();
     let session_id = state
         .harness_session
         .lock()
@@ -3100,10 +3142,7 @@ pub async fn harness_controls(state: tauri::State<'_, ChatState>) -> Result<Valu
         .ok_or("Harness 会话尚未建立")?;
     let token = read_bridge_token()?;
     let client = bridge_request_client()?;
-    let url = format!(
-        "http://127.0.0.1:3080/api/wallpaper/v1/control/sessions/{}",
-        urlencoding::encode(&session_id)
-    );
+    let url = harness_url(port, &format!("/control/sessions/{}", urlencoding::encode(&session_id)));
     let response = auth(client.get(url), &token)
         .send()
         .await
@@ -3123,6 +3162,7 @@ pub async fn harness_set_permission(
     state: tauri::State<'_, ChatState>,
     permission: String,
 ) -> Result<Value, String> {
+    let port = state.harness_port();
     let session_id = state
         .harness_session
         .lock()
@@ -3131,10 +3171,7 @@ pub async fn harness_set_permission(
         .ok_or("Harness 会话尚未建立")?;
     let token = read_bridge_token()?;
     let client = bridge_request_client()?;
-    let url = format!(
-        "http://127.0.0.1:3080/api/wallpaper/v1/control/sessions/{}/permission",
-        urlencoding::encode(&session_id)
-    );
+    let url = harness_url(port, &format!("/control/sessions/{}/permission", urlencoding::encode(&session_id)));
     let response = auth(client.post(url), &token)
         .json(&serde_json::json!({ "permission": permission }))
         .send()
@@ -3159,10 +3196,8 @@ pub async fn harness_cancel(state: tauri::State<'_, ChatState>) -> Result<(), St
         .clone()
         .ok_or("Harness 会话尚未建立")?;
     let token = read_bridge_token()?;
-    let url = format!(
-        "http://127.0.0.1:3080/api/wallpaper/v1/sessions/{}/cancel",
-        urlencoding::encode(&session_id)
-    );
+    let port = state.harness_port();
+    let url = harness_url(port, &format!("/sessions/{}/cancel", urlencoding::encode(&session_id)));
     let client = bridge_request_client()?;
     let response = auth(client.post(url), &token)
         .send()
@@ -3289,12 +3324,12 @@ mod tests {
         drain_bounded_harness_sse_records, drain_sse_records, finish_api_request,
         finish_bounded_harness_sse_records, finish_harness_stream, finish_sse_records,
         harness_http_error, harness_records_have_terminal_event, harness_records_have_turn_activity,
-        is_current_api_request, is_current_harness_stream, owns_api_request, parse_bridge_event, reconnect_is_accepted,
+        harness_url, is_current_api_request, is_current_harness_stream, owns_api_request, parse_bridge_event, reconnect_is_accepted,
         parse_harness_connection, parse_harness_history, sse_record_payload, trim_api_archive,
         ApiConversation, ApiConversationArchive, ApiMessage, ApiPricing, ApiUsage, ChatEvent,
         ChatState, HarnessConnection, HarnessHistoryMessage, HarnessHistoryResponse,
         HarnessStreamCancellation, Usage, Utf8StreamDecoder, API_CONVERSATION_SCHEMA_VERSION,
-        DEFAULT_API_HISTORY_MESSAGES, MAX_API_HISTORY_MESSAGES, MAX_API_MESSAGES_PER_CONVERSATION,
+        DEFAULT_API_HISTORY_MESSAGES, DEFAULT_HARNESS_PORT, MAX_API_HISTORY_MESSAGES, MAX_API_MESSAGES_PER_CONVERSATION,
         MAX_API_RATE_PER_MILLION, MAX_API_REQUEST_CONTEXT_BYTES, MAX_HARNESS_EVENT_TEXT_BYTES,
         MAX_HARNESS_MESSAGE_BYTES, MAX_HARNESS_SSE_BUFFER_BYTES, MAX_HARNESS_SSE_EVENT_BYTES,
     };
@@ -3302,8 +3337,46 @@ mod tests {
     use std::collections::HashMap;
     use tokio::sync::oneshot;
 
-    /// Plan §3 requires "SSE 断线重连" to be covered. The reconnect *loop* needs an
-    /// `AppHandle` and a live socket, but its acceptance rule does not, so the
+    /// Every harness request must carry the selected endpoint's port.
+    ///
+    /// This is the regression that matters for the three-client support: the
+    /// wallpaper once built every harness URL from a hardcoded 3080, so a session
+    /// opened against the official desktop shell (19387) would have sent its
+    /// messages to whatever happened to be on the CLI's default port — or to
+    /// nothing, reporting a misleading "bridge not running".
+    #[test]
+    fn harness_requests_carry_the_selected_endpoint() {
+        assert_eq!(
+            harness_url(19387, "/sessions"),
+            "http://127.0.0.1:19387/api/wallpaper/v1/sessions"
+        );
+        assert_eq!(
+            harness_url(43120, "/sessions/abc/events"),
+            "http://127.0.0.1:43120/api/wallpaper/v1/sessions/abc/events"
+        );
+        // The default is DSH's own web port, so nothing changes for a CLI Host.
+        assert_eq!(
+            harness_url(DEFAULT_HARNESS_PORT, "/control/presets"),
+            "http://127.0.0.1:3080/api/wallpaper/v1/control/presets"
+        );
+    }
+
+    /// A session remembers the endpoint it was created against.
+    #[test]
+    fn a_session_keeps_the_endpoint_it_started_on() {
+        let state = ChatState::default();
+        // Nothing selected yet: DSH's default, which is what a CLI Host uses.
+        assert_eq!(state.harness_port(), DEFAULT_HARNESS_PORT);
+        state.set_harness_port(19387);
+        assert_eq!(state.harness_port(), 19387);
+        // Clones share the lock, so a detached SSE reader sees the same endpoint
+        // as the command that created it.
+        let reader = state.clone();
+        state.set_harness_port(43120);
+        assert_eq!(reader.harness_port(), 43120);
+    }
+
+    /// Plan §3 requires "SSE 断线重连" to be covered. The reconnect *loop* needs an    /// `AppHandle` and a live socket, but its acceptance rule does not, so the
     /// rule that decides whether a replacement stream is usable is pinned here.
     #[test]
     fn a_reconnect_is_only_accepted_when_it_is_ready() {
