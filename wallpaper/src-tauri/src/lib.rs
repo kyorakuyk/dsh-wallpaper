@@ -6,6 +6,7 @@ mod appearance;
 #[cfg(not(feature = "lite"))]
 mod chat;
 mod client_window;
+pub mod desktop_repair;
 #[cfg(not(feature = "lite"))]
 mod deepseek_web;
 #[cfg(not(feature = "lite"))]
@@ -3346,6 +3347,13 @@ fn shutdown_native_state(app: &tauri::AppHandle) {
         // 4. Release native session/notification resources owned by this
         //    process so a restart does not inherit a stale registration.
         windows_integration::unregister_session_events(app);
+
+        // 5. Last, record that the desktop was released. The repair helper reads
+        //    this marker after this process is gone: its presence means the
+        //    mutations above were undone, its absence means this process died
+        //    early and the desktop still needs repairing. Writing it any earlier
+        //    would let the helper skip a repair for work that had not happened yet.
+        desktop_repair::mark_clean_exit();
 
         log::info!("dsh-wallpaper native state restored on exit");
     });

@@ -52,9 +52,9 @@ use windows::{
     System::UserProfile::{LockScreen, UserProfilePersonalizationSettings},
     Win32::{
         Foundation::{
-            APPMODEL_ERROR_NO_PACKAGE, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER,
-            ERROR_MORE_DATA, ERROR_SUCCESS, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM,
-            LRESULT, POINT, RECT, WAIT_ABANDONED, WAIT_OBJECT_0, WPARAM,
+            GetLastError, APPMODEL_ERROR_NO_PACKAGE, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND,
+            ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, ERROR_SUCCESS, HWND, LPARAM, LRESULT,
+            POINT, RECT, WAIT_ABANDONED, WAIT_OBJECT_0, WPARAM,
         },
         Graphics::{
             Dwm::{
@@ -80,17 +80,17 @@ use windows::{
         },
         UI::WindowsAndMessaging::{
             EnumWindows, FindWindowExW, FindWindowW, GetClassNameW, GetClientRect, GetCursorPos,
-            GetDesktopWindow, GetForegroundWindow, GetParent, GetWindowLongPtrW, GetWindowRect,
-            IsWindow, IsWindowVisible, SendMessageTimeoutW, SetParent, SetWindowLongPtrW,
-            SetWindowPos, ShowWindow, WindowFromPoint, GWL_EXSTYLE, GWL_STYLE, HTTRANSPARENT,
+            GetDesktopWindow, GetForegroundWindow, GetParent, GetWindow, GetWindowLongPtrW,
+            GetWindowRect, IsWindow, IsWindowVisible, SendMessageTimeoutW, SetParent,
+            SetWindowLongPtrW, SetWindowPos, ShowWindow, WindowFromPoint, GWL_EXSTYLE, GWL_STYLE,
+            GW_HWNDNEXT, GW_HWNDPREV, HTTRANSPARENT, HWND_TOP, MONITORINFOF_PRIMARY,
             PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SEND_MESSAGE_TIMEOUT_FLAGS, SMTO_NORMAL,
             SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-            SW_HIDE, SW_SHOWNA, WM_ACTIVATE, WM_NCACTIVATE, WM_NCDESTROY, WM_NCHITTEST,
-            MONITORINFOF_PRIMARY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_POWERBROADCAST,
-            WM_WTSSESSION_CHANGE, WS_BORDER, WS_CAPTION, WS_CHILD, WS_DLGFRAME,
-            WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE, WS_EX_TOOLWINDOW,
-            WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
-            WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
+            SW_HIDE, SW_SHOWNA, WM_ACTIVATE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_NCACTIVATE,
+            WM_NCDESTROY, WM_NCHITTEST, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WS_BORDER,
+            WS_CAPTION, WS_CHILD, WS_DLGFRAME, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME,
+            WS_EX_STATICEDGE, WS_EX_TOOLWINDOW, WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
+            WS_POPUP, WS_SYSMENU, WS_THICKFRAME, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
         },
         UI::{
             Accessibility::{CUIAutomation, IUIAutomation, UIA_ListItemControlTypeId},
@@ -113,8 +113,7 @@ const WORKERW_RETRY_WINDOW: Duration = Duration::from_millis(1_500);
 /// still allowing the normal per-package single-instance plugin to handle
 /// duplicate launches within one edition.
 #[cfg(windows)]
-const WALLPAPER_HOST_MUTEX_NAME: windows::core::PCWSTR =
-    w!("Local\\DSHWallpaper.DesktopHost.v1");
+const WALLPAPER_HOST_MUTEX_NAME: windows::core::PCWSTR = w!("Local\\DSHWallpaper.DesktopHost.v1");
 
 #[cfg(windows)]
 // Store only the raw value in the static: the windows crate's HANDLE wraps a
@@ -253,7 +252,6 @@ pub struct DesktopLayoutMetrics {
     pub taskbar_visible: bool,
 }
 
-
 /// A monitor rectangle is expressed in the virtual desktop's physical pixel
 /// coordinate space. The frontend normalizes these rectangles against the
 /// virtual bounds, so a left/top monitor with negative coordinates remains
@@ -320,18 +318,12 @@ unsafe extern "system" fn enumerate_desktop_display(
     }
     let mut dpi_x = 96u32;
     let mut dpi_y = 96u32;
-    let scale_factor = if GetDpiForMonitor(
-        monitor,
-        MDT_EFFECTIVE_DPI,
-        &mut dpi_x,
-        &mut dpi_y,
-    )
-    .is_ok()
-    {
-        ((dpi_x.max(1) as f64) / 96.0).clamp(0.5, 8.0)
-    } else {
-        1.0
-    };
+    let scale_factor =
+        if GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y).is_ok() {
+            ((dpi_x.max(1) as f64) / 96.0).clamp(0.5, 8.0)
+        } else {
+            1.0
+        };
     let bounds = desktop_rect(info.monitorInfo.rcMonitor);
     let work_area = desktop_rect(info.monitorInfo.rcWork);
     if bounds.width <= 0 || bounds.height <= 0 {
@@ -397,7 +389,10 @@ pub fn desktop_displays() -> Result<Vec<DesktopDisplayInfo>, String> {
     }])
 }
 
-pub fn desktop_layout_metrics(window: &WebviewWindow, display_id: Option<&str>) -> DesktopLayoutMetrics {
+pub fn desktop_layout_metrics(
+    window: &WebviewWindow,
+    display_id: Option<&str>,
+) -> DesktopLayoutMetrics {
     #[cfg(windows)]
     {
         let scale = window
@@ -417,7 +412,9 @@ pub fn desktop_layout_metrics(window: &WebviewWindow, display_id: Option<&str>) 
                 let bottom_gap = bottom.saturating_sub(work_bottom);
                 if bottom_gap > 0 && top_gap == 0 {
                     let logical_height = bottom_gap as f64
-                        / display.scale_factor.clamp(MIN_SCALE_FACTOR, MAX_SCALE_FACTOR);
+                        / display
+                            .scale_factor
+                            .clamp(MIN_SCALE_FACTOR, MAX_SCALE_FACTOR);
                     if logical_height >= 12.0 {
                         return DesktopLayoutMetrics {
                             expanded_bottom_inset: logical_height * 2.0,
@@ -984,6 +981,67 @@ pub fn restore_desktop_icons() {
     }
 }
 
+/// Undo every desktop mutation this process may have left behind, from a process
+/// that did not make them.
+///
+/// `restore_desktop_icons` is enough when the caller is the wallpaper itself: it
+/// also clears this process's own inner-workspace flag, and its own WebView would
+/// hide the icons again immediately anyway. A separate repair helper has neither
+/// concern, so it must additionally repaint the desktop host — killing a process
+/// that had taken over the desktop's own input can leave the host showing a stale
+/// frame with no icons and an unresponsive hit test until something invalidates
+/// it. Redrawing is what makes the desktop usable again without a sign-out.
+///
+/// Idempotent by construction: showing an already-visible window and invalidating
+/// an already-valid one are both no-ops that cannot fail into a loop. That is the
+/// property this whole repair path depends on.
+#[cfg(windows)]
+pub fn repair_desktop_after_abnormal_exit() -> Vec<String> {
+    let mut notes = Vec::new();
+
+    // 1. The icon layer the wallpaper hides while the inner workspace is active.
+    match set_desktop_icons_visible(true) {
+        Ok(()) => notes.push("icons-restored".into()),
+        Err(error) => notes.push(format!("icons-failed:{error}")),
+    }
+
+    // 2. Force the desktop host to repaint, so a stale composited frame cannot
+    //    keep hiding the icons or an outdated hit test cannot keep eating input.
+    use windows::Win32::Graphics::Gdi::{
+        RedrawWindow, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW,
+    };
+    unsafe {
+        let desktop = GetDesktopWindow();
+        if !desktop.is_invalid() {
+            let _ = RedrawWindow(
+                Some(desktop),
+                None,
+                None,
+                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASE,
+            );
+            notes.push("desktop-repainted".into());
+        } else {
+            notes.push("desktop-handle-missing".into());
+        }
+
+        // Progman owns the desktop background and the icon view in the degraded
+        // host mode this machine uses, so it needs the invalidation explicitly.
+        if let Ok(program_manager) = FindWindowW(w!("Progman"), None) {
+            if !program_manager.is_invalid() {
+                let _ = RedrawWindow(
+                    Some(program_manager),
+                    None,
+                    None,
+                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASE,
+                );
+                notes.push("progman-repainted".into());
+            }
+        }
+    }
+
+    notes
+}
+
 #[cfg(windows)]
 pub(crate) fn request_wallpaper_worker() -> Result<HWND, String> {
     let progman = unsafe { FindWindowW(windows::core::w!("Progman"), PCWSTR::null()) }
@@ -1048,6 +1106,41 @@ fn window_class(hwnd: HWND) -> Option<String> {
 }
 
 #[cfg(windows)]
+fn window_neighbor_class(
+    hwnd: HWND,
+    command: windows::Win32::UI::WindowsAndMessaging::GET_WINDOW_CMD,
+) -> String {
+    unsafe { GetWindow(hwnd, command).ok() }
+        .filter(|neighbor| !neighbor.0.is_null())
+        .and_then(window_class)
+        .unwrap_or_else(|| "none".into())
+}
+
+#[cfg(windows)]
+fn record_wallpaper_window_state(name: &str, hwnd: HWND) {
+    let parent = unsafe { GetParent(hwnd).ok() }
+        .and_then(window_class)
+        .unwrap_or_else(|| "none".into());
+    let mut client = RECT::default();
+    let size = if unsafe { GetClientRect(hwnd, &mut client).is_ok() } {
+        format!(
+            "{}x{}",
+            client.right - client.left,
+            client.bottom - client.top
+        )
+    } else {
+        "unavailable".into()
+    };
+    let previous = window_neighbor_class(hwnd, GW_HWNDPREV);
+    let next = window_neighbor_class(hwnd, GW_HWNDNEXT);
+    let visible = unsafe { IsWindowVisible(hwnd).as_bool() };
+    crate::native_bootstrap::record_startup_diagnostic(&format!(
+        "event=window-state layer={} parent={} size={} visible={} prev={} next={}",
+        name, parent, size, visible, previous, next
+    ));
+}
+
+#[cfg(windows)]
 fn resize_wallpaper_to_parent(background: HWND, worker: HWND) -> Result<(), String> {
     let mut bounds = RECT::default();
     unsafe { GetClientRect(worker, &mut bounds) }
@@ -1065,7 +1158,7 @@ fn resize_wallpaper_to_parent(background: HWND, worker: HWND) -> Result<(), Stri
             0,
             width,
             height,
-            SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW,
+            SWP_NOACTIVATE | SWP_NOZORDER,
         )
         .map_err(|error| format!("无法调整 WorkerW 子窗口尺寸：{error}"))?;
 
@@ -1107,35 +1200,51 @@ fn resize_wallpaper_to_parent(background: HWND, worker: HWND) -> Result<(), Stri
 }
 
 #[cfg(windows)]
-fn place_wallpaper_behind_desktop_icons(background: HWND, parent: HWND) -> Result<(), String> {
-    if window_class(parent).as_deref() != Some("Progman") {
+fn place_wallpaper_layers(background: HWND, parent: HWND) -> Result<(), String> {
+    let cover = crate::native_bootstrap::window_handle()
+        .filter(|hwnd| unsafe { GetParent(*hwnd).ok() } == Some(parent));
+    let flags = SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE;
+
+    if window_class(parent).as_deref() == Some("Progman") {
+        let icon_view = unsafe {
+            FindWindowExW(
+                Some(parent),
+                None,
+                windows::core::w!("SHELLDLL_DefView"),
+                PCWSTR::null(),
+            )
+        }
+        .ok()
+        .filter(|hwnd| !hwnd.0.is_null())
+        .ok_or("Progman 中缺少 SHELLDLL_DefView")?;
+        unsafe {
+            if let Some(cover) = cover {
+                // Child Z order is front-to-back. Keep Explorer's icon view
+                // above the native hand-off cover, and the live WebView below
+                // the cover. This places both application surfaces inside the
+                // shell wallpaper stack rather than over icons or other apps.
+                SetWindowPos(cover, Some(icon_view), 0, 0, 0, 0, flags)
+                    .map_err(|error| format!("无法将原生首帧层放到桌面图标下方：{error}"))?;
+                SetWindowPos(background, Some(cover), 0, 0, 0, 0, flags)
+                    .map_err(|error| format!("无法将背景 WebView 放到原生首帧层下方：{error}"))?;
+            } else {
+                SetWindowPos(background, Some(icon_view), 0, 0, 0, 0, flags)
+                    .map_err(|error| format!("无法将壁纸放到桌面图标层后方：{error}"))?;
+            }
+        }
         return Ok(());
     }
-    let icon_view = unsafe {
-        FindWindowExW(
-            Some(parent),
-            None,
-            windows::core::w!("SHELLDLL_DefView"),
-            PCWSTR::null(),
-        )
-    }
-    .ok()
-    .filter(|hwnd| !hwnd.0.is_null())
-    .ok_or("Progman 中缺少 SHELLDLL_DefView")?;
-    unsafe {
-        // hWndInsertAfter places the wallpaper immediately behind the icon
-        // view in the child Z-order, while remaining above Progman's painted
-        // system wallpaper background.
-        SetWindowPos(
-            background,
-            Some(icon_view),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
-        )
-        .map_err(|error| format!("无法将壁纸放到桌面图标层后方：{error}"))?;
+
+    if let Some(cover) = cover {
+        unsafe {
+            // A WorkerW is already behind the icon host. Put the cover at the
+            // front of this wallpaper child stack, then the live WebView
+            // directly behind it.
+            SetWindowPos(cover, Some(HWND_TOP), 0, 0, 0, 0, flags)
+                .map_err(|error| format!("无法将原生首帧层置于壁纸宿主前方：{error}"))?;
+            SetWindowPos(background, Some(cover), 0, 0, 0, 0, flags)
+                .map_err(|error| format!("无法将背景 WebView 放到原生首帧层下方：{error}"))?;
+        }
     }
     Ok(())
 }
@@ -1143,6 +1252,19 @@ fn place_wallpaper_behind_desktop_icons(background: HWND, parent: HWND) -> Resul
 #[cfg(windows)]
 fn attach_hwnd_to_workerw(background: HWND) -> Result<HWND, String> {
     let worker = request_wallpaper_worker()?;
+    let worker_class = window_class(worker).unwrap_or_else(|| "unknown".into());
+    crate::native_bootstrap::record_startup_diagnostic(&format!(
+        "event=webview-attach-start parent={}",
+        worker_class
+    ));
+    // Move the still-visible native cover first when Explorer has upgraded
+    // from Progman to WorkerW. The WebView remains in its old host until the
+    // cover is ready in the new one.
+    if native_bootstrap::window_handle().is_some() {
+        native_bootstrap::reattach_to_workerw().map_err(|error| {
+            format!("原生首帧层无法先挂载到新的桌面宿主，暂缓移动 WebView：{error}")
+        })?;
+    }
     unsafe {
         let exstyle = GetWindowLongPtrW(background, GWL_EXSTYLE);
         SetWindowLongPtrW(
@@ -1206,10 +1328,15 @@ fn attach_hwnd_to_workerw(background: HWND) -> Result<HWND, String> {
         .map_err(|error| format!("无法刷新壁纸子窗口样式：{error}"))?;
     }
     resize_wallpaper_to_parent(background, worker)?;
-    place_wallpaper_behind_desktop_icons(background, worker)?;
+    place_wallpaper_layers(background, worker)?;
     unsafe {
         let _ = ShowWindow(background, SW_SHOWNA);
     }
+    record_wallpaper_window_state("background", background);
+    if let Some(cover) = native_bootstrap::window_handle() {
+        record_wallpaper_window_state("native-cover", cover);
+    }
+    crate::native_bootstrap::record_startup_diagnostic("event=webview-attached-and-visible");
     log::info!(
         "background 0x{:X} attached to WorkerW 0x{:X}",
         background.0 as usize,
@@ -1285,7 +1412,7 @@ fn inspect_wallpaper_host(window: Option<&WebviewWindow>) -> (WallpaperHostActio
 
 #[cfg(windows)]
 fn create_background_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
-    WebviewWindowBuilder::new(
+    let window = WebviewWindowBuilder::new(
         app,
         "background",
         WebviewUrl::App("index.html?surface=combined".into()),
@@ -1298,11 +1425,16 @@ fn create_background_window(app: &tauri::AppHandle) -> Result<WebviewWindow, Str
     .skip_taskbar(true)
     .visible(false)
     .build()
-    .map_err(|error| format!("无法重建背景 WebView：{error}"))
+    .map_err(|error| format!("无法重建背景 WebView：{error}"))?;
+    crate::native_bootstrap::record_startup_diagnostic(
+        "event=background-webview-created visible=false",
+    );
+    Ok(window)
 }
 
 #[cfg(windows)]
 fn recover_wallpaper_host(app: &tauri::AppHandle) -> Result<(), String> {
+    let previous_handoff_generation = native_bootstrap::generation();
     let existing = app.get_webview_window("background");
     let (action, parent) = inspect_wallpaper_host(existing.as_ref());
     if action != WallpaperHostAction::None {
@@ -1329,6 +1461,16 @@ fn recover_wallpaper_host(app: &tauri::AppHandle) -> Result<(), String> {
             Ok(())
         }
     };
+    if result.is_ok() && action != WallpaperHostAction::None {
+        let _ = native_bootstrap::invalidate_pending_handoff();
+    }
+    let current_handoff_generation = native_bootstrap::generation();
+    if current_handoff_generation != previous_handoff_generation {
+        native_bootstrap::record_startup_diagnostic(&format!(
+            "event=handoff-generation-published generation={current_handoff_generation} reason=wallpaper-host-recovered"
+        ));
+        emit_to_background(app, "native-handoff-generation", current_handoff_generation);
+    }
     match &result {
         Ok(()) => {
             if let Some(window) = app.get_webview_window("background") {
@@ -1360,10 +1502,22 @@ fn recover_wallpaper_host(app: &tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(windows)]
 pub fn start_wallpaper_host(app: tauri::AppHandle) -> Result<(), String> {
+    crate::native_bootstrap::record_startup_diagnostic(&format!(
+        "event=wallpaper-host-start existing_background={}",
+        app.get_webview_window("background").is_some()
+    ));
     // A force-quit during the inner workspace must never leave Explorer's
     // desktop layer hidden on the next startup.
     restore_desktop_icons();
+    // Arm the crash net for *this* run: drop any marker an earlier clean exit
+    // left, then spawn the helper that outlives this process and repairs the
+    // desktop if it dies badly. Order matters — clearing after spawning could let
+    // the helper observe a stale marker and wrongly conclude this run exited
+    // cleanly.
+    crate::desktop_repair::clear_clean_exit_marker();
+    crate::desktop_repair::spawn_repair_helper();
     recover_wallpaper_host(&app)?;
+    crate::native_bootstrap::record_startup_diagnostic("event=wallpaper-host-attached");
     if let Err(error) = native_bootstrap::reattach_to_workerw() {
         log::warn!("native bootstrap initial reattach failed: {error}");
     }
@@ -1374,6 +1528,7 @@ pub fn start_wallpaper_host(app: tauri::AppHandle) -> Result<(), String> {
         }
         let recovery_app = app.clone();
         if let Err(error) = app.run_on_main_thread(move || {
+            let previous_handoff_generation = native_bootstrap::generation();
             let (action, _) =
                 inspect_wallpaper_host(recovery_app.get_webview_window("background").as_ref());
             if action != WallpaperHostAction::None {
@@ -1381,8 +1536,23 @@ pub fn start_wallpaper_host(app: tauri::AppHandle) -> Result<(), String> {
                     log::error!("wallpaper host recovery failed: {error}");
                 }
             }
-            if let Err(error) = native_bootstrap::reattach_to_workerw() {
-                log::warn!("native bootstrap reattach failed: {error}");
+            match native_bootstrap::reattach_to_workerw() {
+                Ok(true) if action == WallpaperHostAction::None => {
+                    let _ = native_bootstrap::invalidate_pending_handoff();
+                }
+                Ok(_) => {}
+                Err(error) => log::warn!("native bootstrap reattach failed: {error}"),
+            }
+            let current_handoff_generation = native_bootstrap::generation();
+            if current_handoff_generation != previous_handoff_generation {
+                native_bootstrap::record_startup_diagnostic(&format!(
+                    "event=handoff-generation-published generation={current_handoff_generation} reason=wallpaper-host-recovery-loop"
+                ));
+                emit_to_background(
+                    &recovery_app,
+                    "native-handoff-generation",
+                    current_handoff_generation,
+                );
             }
             WALLPAPER_RECOVERY_QUEUED.store(false, Ordering::Release);
         }) {
@@ -1457,11 +1627,21 @@ unsafe extern "system" fn session_subclass_proc(
         WM_WTSSESSION_CHANGE => match wparam.0 as u32 {
             WTS_SESSION_LOCK => {
                 let _ = native_bootstrap::show_sleep();
+                emit_to_background(
+                    app,
+                    "native-handoff-generation",
+                    native_bootstrap::generation(),
+                );
                 dispatch_system_action(app, AppAction::Lock);
                 emit_to_background(app, "system-session", "locked");
             }
             WTS_SESSION_UNLOCK => {
                 let _ = native_bootstrap::start_wake();
+                emit_to_background(
+                    app,
+                    "native-handoff-generation",
+                    native_bootstrap::generation(),
+                );
                 dispatch_system_action(app, AppAction::Unlock { play_wake: true });
                 emit_to_background(app, "system-session", "unlocked");
             }
@@ -1470,11 +1650,21 @@ unsafe extern "system" fn session_subclass_proc(
         WM_POWERBROADCAST => match wparam.0 as u32 {
             PBT_APMSUSPEND => {
                 let _ = native_bootstrap::show_sleep();
+                emit_to_background(
+                    app,
+                    "native-handoff-generation",
+                    native_bootstrap::generation(),
+                );
                 dispatch_system_action(app, AppAction::Lock);
                 emit_to_background(app, "system-session", "suspend");
             }
             PBT_APMRESUMEAUTOMATIC => {
                 let _ = native_bootstrap::start_wake();
+                emit_to_background(
+                    app,
+                    "native-handoff-generation",
+                    native_bootstrap::generation(),
+                );
                 dispatch_system_action(app, AppAction::Unlock { play_wake: true });
                 emit_to_background(app, "system-session", "resume");
             }
