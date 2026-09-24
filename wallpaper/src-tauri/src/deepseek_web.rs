@@ -846,6 +846,50 @@ const TRIGGER_SEND_SCRIPT: &str = r#"
     || node?.getAttribute?.('data-disabled') === 'true'
     || /(?:^|[\s_-])disabled(?:$|[\s_-])/i.test(typeof node?.className === 'string' ? node.className : '');
   const labelOf = (node) => [node?.getAttribute?.('aria-label') || '', node?.getAttribute?.('title') || '', node?.getAttribute?.('data-testid') || '', node?.innerText || ''].join(' ').toLowerCase();
+  /**
+   * Click a control the way a user does.
+   *
+   * A bare `.click()` reaches a listener only if the page attached one to
+   * `click` itself. Controls built as `div[role=button]` — which is what this page
+   * renders today — commonly act on the pointer sequence instead, so a synthetic
+   * click can be accepted by the DOM and ignored by the component. Dispatching the
+   * whole sequence is strictly a superset of the old behaviour, so it cannot break
+   * a control that a plain click already worked for.
+   */
+  const clickLikeUser = (node) => {
+    const point = node.getBoundingClientRect();
+    const options = {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: point.left + point.width / 2,
+      clientY: point.top + point.height / 2,
+      button: 0,
+    };
+    const pointer = { ...options, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    try { node.dispatchEvent(new PointerEvent('pointerover', pointer)); } catch (_) {}
+    try { node.dispatchEvent(new PointerEvent('pointerenter', pointer)); } catch (_) {}
+    try { node.dispatchEvent(new PointerEvent('pointerdown', pointer)); } catch (_) {}
+    try { node.dispatchEvent(new MouseEvent('mousedown', options)); } catch (_) {}
+    try { node.focus?.(); } catch (_) {}
+    try { node.dispatchEvent(new PointerEvent('pointerup', pointer)); } catch (_) {}
+    try { node.dispatchEvent(new MouseEvent('mouseup', options)); } catch (_) {}
+    try { node.dispatchEvent(new MouseEvent('click', options)); } catch (_) {}
+  };
+  /**
+   * Whether the page accepted the message, judged by the composer it owns.
+   *
+   * The composer is cleared when the page commits the draft. Reading it from the
+   * same node the draft was written to avoids depending on class names or on any
+   * new markup, and it is the only signal available without trusting that a
+   * dispatched event had an effect.
+   */
+  const composerCleared = () => {
+    try {
+      const current = input.value ?? input.textContent ?? '';
+      return current.length === 0;
+    } catch (_) {
+      return false;
+    }
+  };
   const input = query(adapterConfig.composerSelectors)
     .find((node) => visible(node) && !disabled(node) && !node.readOnly);
   if (!input) return { ok: false, reason: 'composer-not-found' };
@@ -872,15 +916,26 @@ const TRIGGER_SEND_SCRIPT: &str = r#"
     }
   }
   if (action && !disabled(action)) {
-    action.click();
-    return { ok: true, reason: 'clicked-primary-control' };
+    clickLikeUser(action);
+    // A programmatic `.click()` is not proof that a control acted. The page's
+    // send control is now a `div[role=button]`, and such a node can ignore a
+    // synthetic click entirely — the script then reported success while nothing
+    // was submitted, so the wallpaper waited on a turn that had never started.
+    // The composer clearing itself is the observable proof that the page accepted
+    // the message, so success is now conditional on it.
+    if (composerCleared()) return { ok: true, reason: 'clicked-primary-control' };
+    return { ok: false, reason: 'click-ignored' };
   }
   const buttons = [...document.querySelectorAll('button,[role="button"]')];
   const send = buttons.find((node) => visible(node) && !disabled(node) && hasToken(labelOf(node), adapterConfig.sendTokens))
     || [...document.querySelectorAll('[data-testid*="send"],[data-testid*="submit"]')].find((node) => visible(node) && !disabled(node));
-  if (send) { send.click(); return { ok: true, reason: 'sent' }; }
+  if (send) {
+    clickLikeUser(send);
+    if (composerCleared()) return { ok: true, reason: 'sent' };
+    return { ok: false, reason: 'click-ignored' };
+  }
   const form = input.closest('form');
-  if (form?.requestSubmit) { form.requestSubmit(); return { ok: true, reason: 'submitted-form' }; }
+  if (form?.requestSubmit) { form.requestSubmit(); if (composerCleared()) return { ok: true, reason: 'submitted-form' }; }
   input.dispatchEvent(new KeyboardEvent('keydown', {
     key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
     bubbles: true, cancelable: true, composed: true,
@@ -1571,6 +1626,38 @@ mod tests {
         assert!(
             super::TRIGGER_SEND_SCRIPT.contains("functionRowRightColumn")
                 || super::TRIGGER_SEND_SCRIPT.contains("clicked-primary-control")
+        );
+    }
+
+    /// The send control is a `div[role=button]` that can ignore a synthetic click.
+    ///
+    /// The regression this pins: the script dispatched a bare `.click()` and then
+    /// reported success unconditionally. When the page ignored it, the wallpaper
+    /// entered "sending" and waited on a turn that had never started, while the
+    /// web client recorded no new message — the reported symptom. Two properties
+    /// prevent that now: the click is a full pointer sequence, and success is
+    /// conditional on the page visibly accepting the draft.
+    #[cfg(windows)]
+    #[test]
+    fn sending_uses_a_real_pointer_sequence_and_verifies_the_page_accepted_it() {
+        let script = super::TRIGGER_SEND_SCRIPT;
+        for event in ["pointerdown", "mousedown", "pointerup", "mouseup", "click"] {
+            assert!(
+                script.contains(event),
+                "the send click must dispatch {event}, not only a synthetic click",
+            );
+        }
+        assert!(
+            script.contains("clickLikeUser"),
+            "the pointer sequence must be shared by every send path",
+        );
+        // Success is earned, not assumed: a click that the page ignored has to
+        // report failure so the retry loop can try again instead of stalling.
+        assert!(script.contains("click-ignored"));
+        assert!(script.contains("composerCleared"));
+        assert!(
+            !script.contains("action.click()"),
+            "a bare click() no longer proves the control acted",
         );
     }
 
