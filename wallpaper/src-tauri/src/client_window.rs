@@ -453,4 +453,72 @@ mod tests {
         assert_eq!(json["outcome"], "no-window");
         assert_eq!(json["raised"], false);
     }
+
+    /// Every port with nothing on it must resolve to no window and no listener.
+    ///
+    /// Uses an ephemeral port that is bound and released, so this asserts the
+    /// "absent" path of the real Windows code rather than a mock.
+    #[test]
+    fn a_free_port_has_neither_listener_nor_window() {
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
+            let port = listener.local_addr().expect("addr").port();
+            drop(listener);
+            port
+        };
+        assert!(!super::endpoint_is_listening(port));
+        assert!(super::window_for_endpoint(port).is_none());
+        // And the full action reports "not running" rather than "windowless",
+        // because those need different wording in the UI.
+        assert_eq!(super::raise_client_window(port).outcome, "not-running");
+    }
+
+    /// A port that is genuinely listening but owns no window reports `no-window`.
+    ///
+    /// This is the CLI/webui shape, and it is the case that must not be confused
+    /// with "the client is not running". The listener here is this test process,
+    /// which owns no visible top-level window.
+    #[test]
+    fn a_windowless_listener_reports_no_window() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
+        let port = listener.local_addr().expect("addr").port();
+        assert!(super::endpoint_is_listening(port));
+        assert!(super::window_for_endpoint(port).is_none());
+        assert_eq!(super::raise_client_window(port).outcome, "no-window");
+        drop(listener);
+    }
+
+    /// The success path, against whatever official-shell endpoint is live.
+    ///
+    /// This is the case that found the original defect: the process that listens
+    /// (19387) owns no window, and the UI belongs to a parent process of the same
+    /// executable. The assertion therefore checks that *a* window is resolved,
+    /// not which process it belongs to.
+    ///
+    /// `#[ignore]` because it requires a running official desktop shell, so it is
+    /// meaningless on a CI machine. Run it deliberately:
+    /// `cargo test --lib client_window -- --ignored`.
+    #[test]
+    #[ignore = "requires a running DSH desktop client on 19387"]
+    fn a_live_desktop_client_resolves_to_a_window() {
+        const OFFICIAL_DESKTOP_PORT: u16 = 19387;
+        if !super::endpoint_is_listening(OFFICIAL_DESKTOP_PORT) {
+            eprintln!("skipped: nothing listening on {OFFICIAL_DESKTOP_PORT}");
+            return;
+        }
+        let window = super::window_for_endpoint(OFFICIAL_DESKTOP_PORT);
+        assert!(
+            window.is_some(),
+            "port {OFFICIAL_DESKTOP_PORT} is listening but no visible window was resolved; \
+             the ancestor walk is not reaching the process that owns the UI"
+        );
+        // A resolved window means the action must not report the two failure
+        // codes — it either raised it or Windows declined, and both mean a window
+        // was found.
+        let outcome = super::raise_client_window(OFFICIAL_DESKTOP_PORT).outcome;
+        assert!(
+            outcome == "raised" || outcome == "raise-refused",
+            "expected a window to be found, got {outcome}"
+        );
+    }
 }
