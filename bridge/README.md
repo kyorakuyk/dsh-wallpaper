@@ -28,3 +28,99 @@ server is bound to the exact loopback address `127.0.0.1`. Every new session is
 attached to the dedicated desktop workspace, and `resumeSessionId` is accepted
 only for a session already owned by that workspace; unknown or foreign IDs
 return the same `resume-unavailable` response without disclosing ownership.
+
+## Version boundaries
+
+Two independent versions meet here, and confusing them is what previously made
+an installed copy impossible to identify:
+
+| Value | Meaning | Where it comes from |
+| --- | --- | --- |
+| `protocolVersion` (`1`) | the wallpaper↔Bridge REST/SSE contract | `BRIDGE_PROTOCOL_VERSION` |
+| `bridgeVersion` | this Bridge's release | `bridge/package.json` |
+| `bridgeBuild` | non-sensitive build provenance (`dev` for a local build) | `DSH_WALLPAPER_BRIDGE_BUILD` |
+| `hostVersion` / `hostVerified` | the DSH release the host reports, and whether it is in the verified set | `DSH_VERSION` |
+
+`protocolVersion` is the only value the wallpaper gates on. A wallpaper built
+against protocol 1 keeps working with any newer Bridge; a breaking change needs
+`/api/wallpaper/v2` so v1 has a compatibility window. `bridgeVersion` and
+`bridgeBuild` exist so support can tell a stale profile copy from a current one
+without reading `node_modules`.
+
+## DSH compatibility matrix
+
+| DSH host | Compiled against | Verified at runtime | Notes |
+| --- | --- | --- | --- |
+| `0.1.0-rc.5` | rc.6 type definitions | **yes** — `bridge/tests/realDshSmoke.spec.ts` | The version installed on the development machine. All seven services compose, `state` is `bridge-ready`, and create/resume/history/cancel/SSE were exercised over HTTP. |
+| `0.1.0-rc.6` | yes | **no** | No rc.6 host is installed on the development machine, so nothing was measured. The declared peer range admits it, and the code is typechecked against its definitions, but that is not a runtime result. |
+
+`peerDependencies` declares `^0.1.0-rc.5` for the DSH packages. That range is
+deliberately wider than what the compiler sees (rc.6): under semver prerelease
+rules `^0.1.0-rc.6` does **not** admit `0.1.0-rc.5`, so the previous declaration
+excluded the one host this Bridge is proven to run on. Do not narrow it back
+without first re-running the smoke test against the version being excluded, and
+do not add a row to the matrix above that no test has measured.
+
+### Re-verifying after a DSH update
+
+1. `pnpm -C bridge build` and `pnpm -C bridge typecheck` against the new
+   definitions.
+2. `pnpm -C bridge exec vitest run tests/realDshSmoke.spec.ts` with
+   `DSH_WALLPAPER_SMOKE_DSH_ROOT` (and optionally
+   `DSH_WALLPAPER_SMOKE_PROFILE`) pointed at the new checkout. The test clones
+   the profile into a throwaway `DSH_HOME`, so it does not touch the real
+   profile, sessions, or credentials.
+3. Only then add the measured version to the matrix and, if appropriate, widen
+   the peer range.
+
+## Host adapter
+
+All host access goes through `bridge/src/host.ts`. It validates the consumed
+service surface once, when the scope composes, and every route handler receives
+the validated adapter instead of re-asserting service shapes with `unknown as`.
+A host missing a member the Bridge drives yields
+`state: "bridge-incompatible"`, `reasonCode: "host-shape-mismatch"` on
+`/status`, naming the member; the status route stays mounted so the condition is
+diagnosable, and no session route is announced for a host that cannot serve one.
+
+Two details are deliberate and easy to get wrong:
+
+- **Event subscription** happens through `ctx.on` inside `apply()`, not through
+  the adapter. `apply()` runs before any service scope exists, and subscribing
+  there is what lets the Bridge observe sessions a host creates outside these
+  routes.
+- **`inject` is documentation, not the gate.** This module has a default export
+  (the `apply` function). The Cordis loader unwraps `exports.default ?? exports`
+  before reading `plugin.inject`, so the module-level `inject` list never
+  reaches the fiber; `apply()` gates its own work with explicit `ctx.inject`
+  calls instead. That is also what allows the public `/status` route to mount
+  before the session services are composed, which is how the wallpaper observes
+  `state: "bridge-loading"` instead of "no Bridge".
+
+## Updating the installed Bridge
+
+A copy under a DSH profile's `node_modules` is a **copy**, not a link to this
+repository (the desktop profile uses pnpm's hoisted linker), so editing
+`bridge/src` does not change what a running DSH loads. After changing this
+package, refresh the profile:
+
+```powershell
+dsh plugin --profile desktop install   # or the profile you run
+```
+
+Then confirm from the status response that `bridgeVersion`/`bridgeBuild` changed
+rather than trusting the local build output. The wallpaper never runs package
+management on its own; updating a profile is a user action.
+
+## Status states
+
+| `state` | Meaning | User action |
+| --- | --- | --- |
+| `bridge-ready` | every required route is mounted and the token is available | none |
+| `bridge-loading` | the Bridge is mounted, its session services are still composing | wait |
+| `bridge-auth-unavailable` | the Bridge is mounted but its bearer token is unavailable | restart the wallpaper; check token directory ACLs |
+| `bridge-incompatible` | protocol version, capability set, or host shape does not match | update DSH or the Bridge |
+
+`capabilities` lists only routes that are actually registered, so
+`bridge-ready` implies `POST /sessions` will not 404. `resume` appears only when
+the host exposes session persistence.

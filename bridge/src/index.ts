@@ -13,9 +13,30 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { API_PREFIX, BRIDGE_BUILD, BRIDGE_PROTOCOL_VERSION, BRIDGE_VERSION, bearerAuthorized, contentText, errorReference, isSafeSessionId, isVisibleWallpaperMessage, mapSessionEvent, parseSessionRoute, type BridgeEvent, type BridgeQuestion, type BridgeQuestionOption } from './protocol.ts'
+import {
+  createHostAdapter,
+  HOST_ADAPTER_SERVICES,
+  HostIncompatibleError,
+  VERIFIED_HOST_VERSIONS,
+  type AgentPresetDirectory,
+  type CommandDescriptor,
+  type DesktopWorkspace,
+  type HostAdapter,
+} from './host.ts'
 
 export const name = 'wallpaper-bridge'
-export const inject = ['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry', 'permissionPresets', 'commands']
+/**
+ * Declared dependencies, taken from the same list the host adapter validates so
+ * the two cannot drift apart.
+ *
+ * Note for host authors: because this module also has a default export (the
+ * `apply` function), the Cordis loader reads `plugin.inject` off the *unwrapped*
+ * value, so this export documents the dependency set for tooling rather than
+ * gating `apply`. The gating is done explicitly by the `ctx.inject(...)` calls
+ * inside `apply`, which is also what lets the public `/status` route mount
+ * before the session services are composed. See `bridge/README.md`.
+ */
+export const inject = HOST_ADAPTER_SERVICES
 
 /**
  * Owns asynchronous work that outlives the call which started it, so plugin
@@ -140,39 +161,13 @@ interface DefaultModelSelection {
   currentSelection(): { provider: string; model: string }
 }
 
-interface DesktopWorkspace {
-  readonly title: string
-  readonly path: string
-  readonly sessionIds: readonly SessionId[]
-  attachSession(sessionId: SessionId): Promise<void>
-  detachSession(sessionId: SessionId): Promise<void>
-}
-
-interface WorkspaceRegistry {
-  list(): readonly DesktopWorkspace[]
-  create(path: string, title?: string): Promise<DesktopWorkspace>
-}
-
-interface AgentPresetDirectory {
-  readonly id: string
-  readonly name?: string
-  readonly description?: string
-  readonly trust: 'system' | 'user'
-  readonly broken?: string
-}
-
-interface AgentPresets {
-  readonly defaultId: string
-  list(): Promise<readonly AgentPresetDirectory[]>
-  mount(agentContext: Context, preset?: string): Promise<unknown>
-  recompose(agentContext: Context, preset: string): Promise<AgentPresetDirectory>
-}
-
-interface PermissionPresets { readonly names: readonly string[]; current(session: Session): string; set(session: Session, name: string): void }
-interface Commands {
-  list(agent: { id: unknown }): readonly { name: string; description: string; input?: { hint: string } }[]
-  execute(agent: { id: unknown }, text: string, signal: AbortSignal): Promise<unknown>
-}
+// The host surface is declared and validated once in `./host.ts`. The scoped
+// views below are what each route group receives, so a handler cannot reach a
+// service the adapter did not verify. `DesktopWorkspace`,
+// `AgentPresetDirectory` and `CommandDescriptor` come from the adapter itself.
+type PermissionPresets = Pick<HostAdapter, 'permissionNames' | 'currentPermission' | 'setPermission'>
+type Commands = Pick<HostAdapter, 'commandsFor' | 'executeCommand'>
+type AgentPresets = Pick<HostAdapter, 'defaultPresetId' | 'presetDirectory' | 'mountPreset' | 'recomposePreset'>
 
 // This is an HTTP boundary, so measure the actual UTF-8 payload rather than
 // JavaScript UTF-16 code units. Keep it in lockstep with the native client.
@@ -281,14 +276,14 @@ function desktopPermission(config: Config): string {
 }
 
 function desktopAgentSetup(
-  host: { agentPresets: AgentPresets },
+  host: HostAdapter,
   preset: string,
   cwd: string,
   workspaceTitle: string,
   permission: string,
 ): (agentContext: Context) => Promise<void> {
   return async (agentContext) => {
-    await host.agentPresets.mount(agentContext, preset)
+    await host.mountPreset(agentContext, preset)
     agentContext.systemPrompt.context({
       name: DESKTOP_ENTRY_CONTEXT_NAME,
       order: -90,
@@ -306,13 +301,13 @@ function recoveredDailyWallpaperSessionId(sessionId: string): string {
   return `${sessionId}-recovered`
 }
 
-async function ensureDesktopWorkspace(registry: WorkspaceRegistry, config: Config): Promise<DesktopWorkspace> {
+async function ensureDesktopWorkspace(registry: HostAdapter, config: Config): Promise<DesktopWorkspace> {
   const title = desktopWorkspaceTitle(config)
-  const existing = registry.list().find((workspace) => workspace.title === title)
+  const existing = registry.workspaces().find((workspace) => workspace.title === title)
   if (existing) return existing
   const path = desktopWorkspacePath(config)
   await mkdir(path, { recursive: true })
-  return registry.create(path, title)
+  return registry.createWorkspace(path, title)
 }
 
 function validateToken(token: string): string {
@@ -949,10 +944,23 @@ export function apply(ctx: Context, config: Config = {}): void {
   const statusDispose = { current: undefined as (() => void) | undefined }
   const controlDispose = { current: undefined as (() => void) | undefined }
   const sessionRoutesDispose = { current: undefined as (() => void) | undefined }
+  /**
+   * Set when the composed host does not expose the shape the adapter validates.
+   * Reported instead of `bridge-loading`, because waiting cannot fix it and the
+   * user's action is to update DSH or the Bridge.
+   */
+  let hostIncompatibility: { code: string; detail: string } | undefined
+  /**
+   * The DSH release this host reports, when it reports one. Used only for the
+   * `/status` compatibility fields: an unknown version is reported as unknown
+   * rather than guessed, and never blocks a working host.
+   */
+  let observedHostVersion: string | undefined
 
   /** Capabilities the mounted route table can actually honour today. */
   const liveCapabilities = (): string[] => {
     const capabilities = ['status']
+    if (hostIncompatibility) return capabilities
     if (registered.control) capabilities.push('control')
     if (registered.sessions) {
       capabilities.push('sessions', 'history', 'sse', 'cancel', 'approval-handoff')
@@ -966,13 +974,17 @@ export function apply(ctx: Context, config: Config = {}): void {
 
   /**
    * State the wallpaper renders. `bridge-loading` is a first-class answer, not
-   * a failure: it means "this Bridge exists, wait for it".
+   * a failure: it means "this Bridge exists, wait for it". An incompatible host
+   * is a different answer, because no amount of waiting changes it.
    */
   const bridgeState = (): { state: string; reasonCode: string } => {
     if (tokenFailure !== undefined) return { state: 'bridge-auth-unavailable', reasonCode: 'token-unavailable' }
+    if (hostIncompatibility) return { state: 'bridge-incompatible', reasonCode: hostIncompatibility.code }
     if (registered.control && registered.sessions) return { state: 'bridge-ready', reasonCode: 'ready' }
     return { state: 'bridge-loading', reasonCode: 'services-pending' }
   }
+
+  // Status must not depend on optional session-control services.  A Web
   // profile may take longer to compose commands, presets, or workspaces than
   // its HTTP listener; reporting the bridge as missing during that interval
   // makes the wallpaper's route toggle misleading.  The mutating routes
@@ -993,6 +1005,14 @@ export function apply(ctx: Context, config: Config = {}): void {
           bridgeBuild: BRIDGE_BUILD,
           protocolVersion: BRIDGE_PROTOCOL_VERSION,
           dsh: 'online',
+          // What this Bridge was actually validated against, so a support
+          // question can be answered from the response instead of from the
+          // profile's node_modules. Non-sensitive: a version string and whether
+          // it is in the verified set.
+          supportedDshVersions: [...VERIFIED_HOST_VERSIONS],
+          ...(observedHostVersion === undefined ? {} : { hostVersion: observedHostVersion }),
+          hostVerified: observedHostVersion !== undefined
+            && (VERIFIED_HOST_VERSIONS as readonly string[]).includes(observedHostVersion),
           state,
           reasonCode,
           // Only what the mounted route table can honour right now.
@@ -1013,8 +1033,32 @@ export function apply(ctx: Context, config: Config = {}): void {
   // services in this child scope explicitly: a test mock that happens to
   // expose `agents` next to `webServer` must not hide a real Cordis scope
   // where only the declared dependencies are available.
-  ctx.inject(['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry', 'permissionPresets', 'commands'], (wctx) => {
+  ctx.inject([...HOST_ADAPTER_SERVICES], (wctx) => {
     if (!isLoopbackWebServerHost(wctx.webServer.host)) return
+    /**
+     * Build the validated host adapter once for this scope.
+     *
+     * A host that does not expose the shape the Bridge drives throws
+     * `HostIncompatibleError` here, before any route is registered. That is
+     * deliberate: the status route stays mounted and reports
+     * `bridge-incompatible`, instead of the wallpaper sending a session request
+     * into a handler that will fail on an unexpected host shape mid-creation.
+     */
+    let host: HostAdapter
+    try {
+      host = createHostAdapter(wctx as unknown as Context)
+    } catch (error) {
+      const detail = error instanceof HostIncompatibleError ? error.detail : 'unknown'
+      hostIncompatibility = { code: 'host-shape-mismatch', detail }
+      // Surfaced for diagnosis (non-sensitive: the member name only), so a
+      // support report names the service that did not match.
+      wctx.logger.error?.(`wallpaper bridge host is incompatible (${detail})`)
+      return
+    }
+    // Cleared by `rollbackRegistrations()` when this scope unloads, so an
+    // incompatibility cannot outlive the host that caused it.
+    hostIncompatibility = undefined
+    observedHostVersion = host.hostVersion === 'unknown' ? undefined : host.hostVersion
     /**
      * Register both route groups as one unit. If the second registration
      * throws, the first is rolled back before the error propagates: a
@@ -1029,6 +1073,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     const rollbackRegistrations = (): void => {
       registered.control = false
       registered.sessions = false
+      observedHostVersion = undefined
       controlDispose.current?.()
       controlDispose.current = undefined
       sessionRoutesDispose.current?.()
@@ -1051,9 +1096,9 @@ export function apply(ctx: Context, config: Config = {}): void {
         if (!bearerAuthorized(req.headers.authorization, token)) return json(res, 401, { error: 'unauthorized' })
         const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname
         try {
-          const host = wctx as unknown as { agentPresets: AgentPresets; permissionPresets: PermissionPresets; commands: Commands }
           if (pathname === `${API_PREFIX}/control/presets` && req.method === 'GET') {
-          const presets = await host.agentPresets.list()
+          const presets = await host.presetDirectory()
+          const defaultPresetId = host.defaultPresetId()
           // Preset composition paths are host-private. Expose only the
           // metadata needed to render a picker and explain unavailable rows.
           return json(res, 200, {
@@ -1063,7 +1108,7 @@ export function apply(ctx: Context, config: Config = {}): void {
               ...(preset.description ? { description: preset.description } : {}),
               trust: preset.trust,
               ...(preset.broken ? { broken: preset.broken } : {}),
-              isDefault: preset.id === host.agentPresets.defaultId,
+              isDefault: preset.id === defaultPresetId,
             })),
           })
           }
@@ -1075,16 +1120,14 @@ export function apply(ctx: Context, config: Config = {}): void {
             const entry = live.get(sessionId)
             if (!entry) return json(res, 404, { error: 'session-not-live' })
             return json(res, 200, {
-              // DSH's permission service derives its display value from the
-              // durable event stream.  Keep this narrow structural view here:
-              // a few pre-release package builds exposed an older declaration
-              // accepting Session while the runtime already expects events.
+              // DSH derives this display value from the durable event stream, so
+              // the adapter takes events rather than the Session object. Hosts
+              // that expect a Session are handled inside the adapter.
               permission: {
-                current: (host.permissionPresets as unknown as { current(events: readonly SessionEvent[]): string })
-                  .current(entry.handle.agent.session.events),
-                options: host.permissionPresets.names,
+                current: host.currentPermission(entry.handle.agent.session.events),
+                options: host.permissionNames(),
               },
-              commands: host.commands.list(entry.handle.agent).map((command) => ({ name: command.name, description: command.description, ...(command.input ? { input: command.input } : {}) })),
+              commands: host.commandsFor(entry.handle.agent).map((command) => ({ name: command.name, description: command.description, ...(command.input ? { input: command.input } : {}) })),
             })
           }
           const permissionSwitch = pathname.match(new RegExp(`^${API_PREFIX}/control/sessions/([^/]+)/permission$`))
@@ -1095,8 +1138,8 @@ export function apply(ctx: Context, config: Config = {}): void {
             if (!entry) return json(res, 404, { error: 'session-not-live' })
             const body = await readJson(req)
             const permission = typeof body.permission === 'string' ? body.permission.trim() : ''
-            if (!host.permissionPresets.names.includes(permission)) return json(res, 400, { error: 'unknown-permission-preset' })
-            host.permissionPresets.set(entry.handle.agent.session, permission)
+            if (!host.permissionNames().includes(permission)) return json(res, 400, { error: 'unknown-permission-preset' })
+            host.setPermission(entry.handle.agent.session, permission)
             return json(res, 200, { sessionId, permission })
           }
           if (!presetSwitch || req.method !== 'POST') return json(res, 404, { error: 'not-found' })
@@ -1110,10 +1153,10 @@ export function apply(ctx: Context, config: Config = {}): void {
           const body = await readJson(req)
           const preset = typeof body.agentPreset === 'string' ? body.agentPreset.trim() : ''
           if (!preset) return json(res, 400, { error: 'agent-preset-required' })
-          const selected = (await host.agentPresets.list()).find((candidate) => candidate.id === preset)
+          const selected = (await host.presetDirectory()).find((candidate) => candidate.id === preset)
           if (!selected) return json(res, 400, { error: 'unknown-agent-preset' })
           if (selected.broken) return json(res, 409, { error: 'agent-preset-unavailable' })
-          await host.agentPresets.recompose(entry.handle.agent.ctx, preset)
+          await host.recomposePreset(entry.handle.agent.ctx, preset)
           ;(entry.handle.agent.session.append as (...args: unknown[]) => unknown)(
             'agent-preset/selected',
             { agentPreset: preset },
@@ -1134,7 +1177,6 @@ export function apply(ctx: Context, config: Config = {}): void {
       kind: 'prefix',
       path: `${API_PREFIX}/sessions`,
       handler: async (req, res) => {
-        const host = wctx as unknown as { commands: Commands }
         await tokenReady
         if (tokenFailure !== undefined) return json(res, 503, { error: 'bridge-token-unavailable', reference: tokenFailure })
         if (!bearerAuthorized(req.headers.authorization, token)) return json(res, 401, { error: 'unauthorized' })
@@ -1159,10 +1201,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             // desktop workspace. Apart from keeping the cwd boundary
             // consistent, this gives resumeSessionId a durable ownership
             // check instead of accepting any well-shaped DSH session ID.
-            const workspace = await ensureDesktopWorkspace(
-              (wctx as unknown as { workspaceRegistry: WorkspaceRegistry }).workspaceRegistry,
-              config,
-            )
+            const workspace = await ensureDesktopWorkspace(host, config)
             stage = 'session-identity'
             const dailyId = localDailyWallpaperSessionId()
             const recoveredDailyId = recoveredDailyWallpaperSessionId(dailyId)
@@ -1199,28 +1238,22 @@ export function apply(ctx: Context, config: Config = {}): void {
             requireCapacity(creating.size < MAX_PENDING_CREATIONS, 429, 'too-many-pending-sessions')
             const provider = typeof body.provider === 'string' && body.provider.trim() ? body.provider.trim() : undefined
             const model = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : undefined
-            // `ctx.agents.create()` is intentionally low-level: unlike the
+            // `agents.create()` is intentionally low-level: unlike the
             // Web API gateway it does not apply the host's default model on
             // behalf of a caller. A blank provider/model would therefore let
             // a session start and only fail later when `{{model}}` is rendered
             // in the deployment persona. Read the host-owned selection here;
             // request values remain an explicit override for future clients.
-            const host = wctx as unknown as {
-              agentDefaultModel: DefaultModelSelection
-              agentPresets: AgentPresets
-              permissionPresets: PermissionPresets
-            }
-            const defaults = host
-              .agentDefaultModel.currentSelection()
+            const defaults = host.defaultModel()
             const preset = typeof body.agentPreset === 'string' && body.agentPreset.trim()
               ? body.agentPreset.trim()
-              : host.agentPresets.defaultId
-            const availablePresets = await host.agentPresets.list()
+              : host.defaultPresetId()
+            const availablePresets = await host.presetDirectory()
             const selectedPreset = availablePresets.find((candidate) => candidate.id === preset)
             if (!selectedPreset) return json(res, 400, { error: 'unknown-agent-preset' })
             if (selectedPreset.broken) return json(res, 409, { error: 'agent-preset-unavailable' })
             const permission = desktopPermission(config)
-            if (!host.permissionPresets.names.includes(permission)) {
+            if (!host.permissionNames().includes(permission)) {
               return json(res, 409, { error: 'desktop-permission-unavailable', permission })
             }
             const agentOptions = {
@@ -1247,9 +1280,10 @@ export function apply(ctx: Context, config: Config = {}): void {
                 if (resume) {
                   try {
                     stage = 'resume'
-                    handle = await wctx.agents.resume({
+                    handle = await host.resumeAgent({
                       resumeSessionId: SessionId(id),
-                      agentOptions,
+                      provider: agentOptions.provider,
+                      model: agentOptions.model,
                       setup: desktopAgentSetup(host, preset, cwd, workspaceTitle, permission),
                     })
                   } catch (error) {
@@ -1264,19 +1298,23 @@ export function apply(ctx: Context, config: Config = {}): void {
                     void error
                     await workspace.detachSession(SessionId(id))
                     effectiveId = recoveredDailyWallpaperSessionId(dailyId)
-                    handle = await wctx.agents.create({
+                    handle = await host.createAgent({
                       sessionId: SessionId(effectiveId),
-                      meta: { cwd, agentPreset: preset },
-                      agentOptions,
+                      cwd,
+                      agentPreset: preset,
+                      provider: agentOptions.provider,
+                      model: agentOptions.model,
                       setup: desktopAgentSetup(host, preset, cwd, workspaceTitle, permission),
                     })
                   }
                 } else {
                   stage = 'create'
-                  handle = await wctx.agents.create({
+                  handle = await host.createAgent({
                     sessionId: SessionId(effectiveId),
-                    meta: { cwd, agentPreset: preset },
-                    agentOptions,
+                    cwd,
+                    agentPreset: preset,
+                    provider: agentOptions.provider,
+                    model: agentOptions.model,
                     setup: desktopAgentSetup(host, preset, cwd, workspaceTitle, permission),
                   })
                 }
@@ -1286,7 +1324,7 @@ export function apply(ctx: Context, config: Config = {}): void {
                 if (!resume || effectiveId !== id) {
                   stage = 'permission'
                   try {
-                    host.permissionPresets.set(handle.agent.session, permission)
+                    host.setPermission(handle.agent.session, permission)
                   } catch (error) {
                     await handle.dispose().catch(() => undefined)
                     throw error
@@ -1389,7 +1427,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             // ordinary prose remains a model followup. The wallpaper never
             // interprets command names itself.
             if (text.startsWith('/')) {
-              await host.commands.execute(entry.handle.agent, text, new AbortController().signal)
+              await host.executeCommand(entry.handle.agent, text, new AbortController().signal)
             } else {
               entry.handle.agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
             }

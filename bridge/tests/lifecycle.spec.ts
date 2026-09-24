@@ -223,7 +223,7 @@ async function createLifecycleHarness(): Promise<LifecycleHarness> {
     workspaceRegistry: { list: () => [], create: vi.fn() },
     permissionPresets: { names: ['workspace-write'], current: () => 'workspace-write', set: vi.fn() },
     commands: { list: () => [], execute: vi.fn() },
-    logger: { warn: vi.fn() },
+    logger: { warn: vi.fn(), error: vi.fn() },
     effect: (callback: () => unknown) => { effects.push(callback) },
   }
   const context = {

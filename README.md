@@ -73,6 +73,49 @@ pnpm desktop:build   # 构建安装包
 - 右下角圆点 / 托盘图标：打开设置面板
 - 兼容的 Wallpaper Bridge 连续就绪时，待机界面出现「切换到 Harness」询问条；仅 3080 根页面可访问时只显示诊断，不可切换
 
+## DSH 连接与状态诊断
+
+壁纸只通过本机 loopback 上的 Wallpaper Bridge 访问 DSH。探测结果分六态，界面文案与
+reason 码由 `wallpaper/src/connect/harnessLabels.ts` 统一定义，只有 `bridge-ready`
+允许发送消息，任何状态都不会自动切到付费的 DeepSeek API：
+
+| 状态 | 含义 | 用户可做的事 |
+| --- | --- | --- |
+| `offline` | 3080 上没有可识别的服务 | 按需启动 DSH |
+| `web-only` | 有 HTTP 服务但不是 Wallpaper Bridge | 安装/更新 Bridge 插件 |
+| `bridge-loading` | Bridge 已挂载，会话服务仍在装载 | 等待 |
+| `bridge-auth-unavailable` | Bridge 已挂载但本机令牌不可用 | 重启壁纸应用；检查令牌目录权限 |
+| `bridge-incompatible` | 协议版本、能力集合或宿主形状不匹配 | 更新 DSH 或 Bridge |
+| `bridge-ready` | 所需路由全部挂载且令牌可用 | 无 |
+
+`bridge-ready` 的判定依据是 Bridge 实际注册了哪些路由，而不是它声明"支持"什么，
+因此它不会在 `POST /sessions` 还会 404 的时候出现。
+
+### 「随壁纸启动 DSH」
+
+设置中心「DeepSeek Harness 启动」卡片提供该开关，默认关闭，每个壁纸进程最多发起一次：
+
+- 它只在**壁纸启动时**触发。**登录后自动生效还需要壁纸自身开机自启**；壁纸自启未开启、
+  被用户在任务管理器中禁用或被策略禁用时，卡片会明确说明，并且不会改动你的系统自启设置。
+- 已在 3080 运行的外部 DSH 不会被接管、重启或停止，只会转入 Bridge 状态探测。
+- 无人值守时不会执行你填写的自定义「启动命令」，除非你在同一张卡片中明确允许；
+  手动「启动」按钮始终使用该命令。
+- 根目录无效、找不到 Node/pnpm、profile 非法、进程启动失败分别给出不同原因，不做无限重试。
+
+### 更新已安装的 Bridge
+
+DSH profile 里的 Bridge 是**拷贝**而非指向本仓库的链接（desktop profile 使用 pnpm 的
+hoisted 模式），因此改完 `bridge/src` 后必须刷新 profile，运行中的 DSH 才会加载新代码：
+
+```powershell
+dsh plugin --profile desktop install   # 换成你实际使用的 profile
+```
+
+刷新后请从 `/api/wallpaper/v1/status` 的 `bridgeVersion` / `bridgeBuild` 确认已生效，
+而不要只看本地构建输出。壁纸自身不会在后台执行包管理、下载代码或改写 DSH profile。
+版本矩阵、协议版本与包版本的区别、宿主适配层边界见
+[`bridge/README.md`](bridge/README.md)。
+
 ## GitHub Actions
 
 - `.github/workflows/ci.yml`：在 `master`、`codex/**` 的推送和面向 `master` 的 PR 上运行 Windows x64 类型检查、前端/Bridge 测试、Rust 全目标测试与前端构建。

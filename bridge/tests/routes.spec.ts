@@ -144,7 +144,7 @@ async function createHarness(
     agent.session.id = options.sessionId
     return { agent, dispose: async () => undefined }
   })
-  const logger = { warn: vi.fn() }
+  const logger = { warn: vi.fn(), error: vi.fn() }
   const persistence = { enabled: persistenceEnabled }
   let workspaceCreated = false
   const workspace = {
@@ -197,9 +197,17 @@ async function createHarness(
           defaultId: 'standard',
           list: async () => [{ id: 'standard', trust: 'system' as const }],
           mount: async () => undefined,
+          // The host adapter validates the whole consumed surface, so a fixture
+          // that omits a member the routes use is now rejected at mount time
+          // (as `bridge-incompatible`) instead of failing inside a request.
+          recompose: async () => ({ id: 'standard', trust: 'system' as const }),
         },
         workspaceRegistry,
-        permissionPresets: { names: ['workspace-write', 'danger-full-access'], current: () => 'workspace-write', set: vi.fn() },
+        permissionPresets: {
+          names: ['workspace-write', 'danger-full-access'],
+          current: () => 'workspace-write',
+          set: vi.fn(),
+        },
         commands: { list: () => [], execute: vi.fn(async () => undefined) },
         logger,
         effect: (callback: () => unknown) => { effects.push({ scope: kind, run: callback }) },
