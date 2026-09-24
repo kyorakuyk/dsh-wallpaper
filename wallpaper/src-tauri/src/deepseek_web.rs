@@ -914,7 +914,15 @@ const TRIGGER_SEND_SCRIPT: &str = r#"
     if (!node) return false;
     const tag = (node.tagName || '').toLowerCase();
     if (tag === 'input' && (node.getAttribute('type') || '').toLowerCase() === 'file') return true;
-    try { if (node.querySelector?.('input[type="file"]')) return true; } catch (_) {}
+    try {
+      if (node.querySelector?.('input[type="file"]')) return true;
+      // Sibling, not only descendant: the common shape is a wrapper holding an
+      // icon-only button beside a hidden file input, so the button carries no
+      // marker of its own. Being icon-only is exactly why the label test below
+      // could not catch it.
+      if (node.parentElement?.querySelector?.('input[type="file"]')) return true;
+      if (node.closest?.('label')?.querySelector?.('input[type="file"]')) return true;
+    } catch (_) {}
     const label = labelOf(node);
     return /upload|attach|attachment|file|附件|上传|添加文件/.test(label);
   };
@@ -941,6 +949,7 @@ const TRIGGER_SEND_SCRIPT: &str = r#"
     .filter((node) => !isFilePicker(node))
     .filter((node) => visible(node));
   let action;
+
   const semantic = candidatesIn(document).filter((node) => !disabled(node)
     && (hasToken(labelOf(node), adapterConfig.sendTokens)
       || /send|submit|continue/i.test(node.getAttribute('data-testid') || '')));
@@ -969,14 +978,16 @@ const TRIGGER_SEND_SCRIPT: &str = r#"
     // The composer clearing itself is the observable proof that the page accepted
     // the message, so success is now conditional on it.
     if (composerCleared()) return { ok: true, reason: 'clicked-primary-control' };
-    return { ok: false, reason: 'click-ignored' };
+    // Which control was actually clicked, when the outcome says it was wrong. An
+    // icon-only attachment button carries no label, so the only reliable way to
+    // identify it is to report what the candidate rule picked.
+    return { ok: false, reason: 'click-ignored:' + describe(action) };
   }
   const buttons = [...document.querySelectorAll('button,[role="button"]')].filter((node) => !isFilePicker(node));
   const send = buttons.find((node) => visible(node) && !disabled(node) && hasToken(labelOf(node), adapterConfig.sendTokens))
     || [...document.querySelectorAll('[data-testid*="send"],[data-testid*="submit"]')].find((node) => visible(node) && !disabled(node));
   if (send) {
-    clickLikeUser(send);
-    if (composerCleared()) return { ok: true, reason: 'sent' };
+    clickLikeUser(send);    if (composerCleared()) return { ok: true, reason: 'sent' };
     return { ok: false, reason: 'click-ignored' };
   }
   const form = input.closest('form');
