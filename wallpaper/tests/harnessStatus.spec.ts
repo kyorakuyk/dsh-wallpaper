@@ -106,6 +106,38 @@ describe('Harness bridge status contract', () => {
     })
   })
 
+  it('forwards the specific host member instead of discarding it', () => {
+    // The Bridge names the member that did not match, and the native layer
+    // forwards it. The renderer is the layer the desktop displays, so it must
+    // not be the one that throws the detail away — that would make the Rust-side
+    // forwarding pointless.
+    const named = { ...validBridgeStatus(), state: 'bridge-incompatible', reasonCode: 'host-shape-mismatch:agentPresets.recompose', capabilities: ['status'] }
+    expect(interpretHarnessBridgeStatus(named)).toMatchObject({
+      availability: 'bridge-incompatible',
+      reasonCode: 'host-shape-mismatch:agentPresets.recompose',
+    })
+
+    // A `waiting:` reason describes a wait, so it must not be rendered as the
+    // explanation for an incompatibility...
+    const misleading = { ...named, reasonCode: 'waiting:workspaceRegistry' }
+    expect(interpretHarnessBridgeStatus(misleading)).toMatchObject({
+      availability: 'bridge-incompatible',
+      reasonCode: 'capabilities-missing',
+    })
+    // ...and neither may a stale `ready` left over from an earlier status.
+    expect(interpretHarnessBridgeStatus({ ...named, reasonCode: 'ready' })).toMatchObject({
+      reasonCode: 'capabilities-missing',
+    })
+
+    // A shape mismatch arriving while the Bridge says it is loading is still a
+    // load, so the loading vocabulary applies rather than the incompatible one.
+    const duringLoad = { ...named, state: 'bridge-loading' }
+    expect(interpretHarnessBridgeStatus(duringLoad)).toMatchObject({
+      availability: 'bridge-loading',
+      reasonCode: 'services-pending',
+    })
+  })
+
   it('treats a malformed capability list as not a Bridge', () => {
     expect(interpretHarnessBridgeStatus({ ...validBridgeStatus(), capabilities: [...validBridgeStatus().capabilities as string[], 7] }))
       .toMatchObject({ availability: 'bridge-incompatible', reasonCode: 'capabilities-missing' })

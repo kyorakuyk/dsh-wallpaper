@@ -2945,7 +2945,10 @@ async fn connect_harness_events(
                 Ok(next) => {
                     emit_stream_error(
                         "HARNESS_DISCONNECTED",
-                        generic_bridge_http_error(next.status()),
+                        // Use the same specific mapping as the first connect, so a
+                        // reconnect that fails with a 404 on the event stream names
+                        // the stale-Bridge cause instead of the generic wording.
+                        harness_http_error(next.status(), "events"),
                     );
                     break;
                 }

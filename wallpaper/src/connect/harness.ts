@@ -100,8 +100,10 @@ export function interpretHarnessBridgeStatus(data: unknown): HarnessStatus | und
   // document without them is some other service answering on the same port.
   if (typeof document.protocolVersion !== 'number' || document.dsh !== 'online') return undefined
 
-  // The Bridge names its own state when it can. Accepting it keeps the two
-  // sides' reason codes identical instead of re-deriving them here.
+  // The Bridge names its own state when it can. The declared value selects which
+  // closed reason vocabulary is acceptable below; a specific reason is forwarded
+  // only when it belongs to that vocabulary, so a stale field can never describe
+  // the wrong condition.
   const declared = optionalString(document, 'state')
   const capabilities = document.capabilities
   const capabilityList = Array.isArray(capabilities)
@@ -151,9 +153,14 @@ export function interpretHarnessBridgeStatus(data: unknown): HarnessStatus | und
       reasonCode: waitingReasonCode(optionalString(document, 'reasonCode')),
     }, document)
   }
+  // A host whose *shape* did not match names the member after the colon. That is
+  // the actionable part, and the native layer deliberately forwards it, so this
+  // layer must not be the one that throws it away: the renderer is what the
+  // desktop actually displays. Anything else keeps the consumer's own code,
+  // because a `waiting:` reason would misdescribe a condition waiting cannot fix.
   return withIdentity({
     availability: 'bridge-incompatible',
-    reasonCode: 'capabilities-missing',
+    reasonCode: hostShapeReasonCode(optionalString(document, 'reasonCode')),
   }, document)
 }
 
@@ -166,6 +173,12 @@ export function interpretHarnessBridgeStatus(data: unknown): HarnessStatus | und
 function waitingReasonCode(candidate: string | undefined): string {
   if (candidate === 'services-pending' || candidate?.startsWith('waiting:')) return candidate
   return 'services-pending'
+}
+
+/** The shape-mismatch vocabulary: a fixed prefix plus a compile-time member name. */
+function hostShapeReasonCode(candidate: string | undefined): string {
+  if (candidate?.startsWith('host-shape-mismatch:')) return candidate
+  return 'capabilities-missing'
 }
 
 /**

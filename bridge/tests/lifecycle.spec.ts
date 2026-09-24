@@ -340,6 +340,22 @@ describe('bridge request gate and teardown ordering', () => {
     expect(gateIndex).toBeGreaterThan(-1)
     expect(authIndex).toBeGreaterThan(-1)
     expect(gateIndex).toBeGreaterThan(authIndex)
+    // ...and it must precede everything that could touch a session. Checking
+    // position is what makes this a gate rather than a late failure: after the
+    // gate the handler parses the route, reads the body, and can create or
+    // resume an agent, all of which are wrong once teardown has begun. The
+    // search is anchored to the `/sessions` registration, because the control
+    // scope also parses bodies and an unanchored match would find that one.
+    const sessionsStart = source.indexOf(`path: \`\${API_PREFIX}/sessions\``)
+    expect(sessionsStart, 'the sessions route must be registered').toBeGreaterThan(-1)
+    const sessionsHandler = source.slice(sessionsStart)
+    const gateInSessions = sessionsHandler.indexOf("if (stopping) return json(res, 503, { error: 'bridge-shutting-down' })")
+    expect(gateInSessions).toBeGreaterThan(-1)
+    for (const later of ['parseSessionRoute(url.pathname)', 'const body = await readJson(req)', 'agent.followup(', 'executeCommand(']) {
+      const index = sessionsHandler.indexOf(later)
+      if (index === -1) continue
+      expect(index, `${later} must run after the shutdown gate`).toBeGreaterThan(gateInSessions)
+    }
   })
 
   it('makes teardown await bootstrap work through one idempotent path', async () => {

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -6,6 +6,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { API_PREFIX } from '../src/protocol.ts'
 import { apply, desktopEntryPrompt, historyOf, isLoopbackWebServerHost, tokenFileForRoot, windowsTokenAclCommands, windowsTokenDirectoryAclCommands, LIVE_SESSION_IDLE_TTL_MS, LIVE_SESSION_SWEEP_INTERVAL_MS, MAX_HISTORY_BYTES, MAX_HISTORY_MESSAGES, MAX_LIVE_SESSIONS, MAX_PENDING_CREATIONS, MAX_SSE_CLIENTS_PER_SESSION } from '../src/index.ts'
+
+/**
+ * Mirrors the bridge's private constant. A file placed here makes token
+ * provisioning fail the way an ACL or permission problem does.
+ */
+const TOKEN_DIRECTORY_NAME_FOR_TEST = 'wallpaper'
 
 interface CapturedResponse {
   status: number
@@ -121,7 +127,7 @@ async function createHarness(
   persistenceEnabled = false,
   prepareTokenRoot?: (tokenRoot: string) => Promise<void>,
   webServerHost: string = '127.0.0.1',
-  options: { withhold?: string } = {},
+  options: { withhold?: string; breakTokenRoot?: boolean; deferSessionScope?: boolean } = {},
 ): Promise<RouteHarness> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-wallpaper-bridge-'))
   const tokenRoot = join(root, 'host-owned-dsh-root')
@@ -181,8 +187,14 @@ async function createHarness(
   let injectedDependencies: string[] | undefined
   /** The mutating session scope's declared dependencies, if it was composed. */
   let routeDependencies: string[] | undefined
-  /** The session scope callback, so a test can re-compose it on demand. */
+  /** The session scope callback, so a test can compose it on demand. */
   let composeSessionScope: (() => void) | undefined
+  /**
+   * Model a host whose session services arrive *after* the status route. Cordis
+   * invokes an `inject` callback only once its dependencies are live, so this is
+   * a real startup ordering, not a synthetic state.
+   */
+  let deferSessionScope = options.deferSessionScope === true
   const context = {
     on: (event: string, listener: (...args: never[]) => unknown) => {
       listeners.set(event, listener)
@@ -229,13 +241,25 @@ async function createHarness(
         }
       }
       const compose = () => callback(scope)
-      if (kind === 'routes') composeSessionScope = compose
+      if (kind === 'routes') {
+        composeSessionScope = compose
+        // Hold the session scope back to model late-arriving services.
+        if (deferSessionScope) return
+      }
       compose()
     },
   } as unknown as Context
   // This is deliberately a host-owned root, not a token path. The bridge can
   // only touch its dedicated `wallpaper` child beneath it.
   const tokenFile = tokenFileForRoot(tokenRoot)
+  if (options.breakTokenRoot) {
+    // Make provisioning fail for a reason the bridge can only report: a file
+    // where its token directory must go. This is how a real ACL or permission
+    // failure presents itself, and it is the only way to reach the 503 paths
+    // (`bridge-token-unavailable`) behaviourally instead of by reading source.
+    await mkdir(tokenRoot, { recursive: true })
+    await writeFile(join(tokenRoot, TOKEN_DIRECTORY_NAME_FOR_TEST), 'not a directory')
+  }
   await prepareTokenRoot?.(tokenRoot)
   apply(context, { tokenRoot })
   /** Run the disposers of one scope, the way Cordis unloads a fiber. */
@@ -618,6 +642,93 @@ describe('wallpaper bridge HTTP routes', () => {
       sessionId: 'host-owned-cwd',
       meta: { cwd: harness.workspace.path, agentPreset: 'standard' },
     }))
+  })
+
+  it('turns from loading to ready when the session services arrive late', async () => {
+    // Plan §3 requires "status 先于完整服务" and "服务迟到后转 ready". The
+    // literal first state is unreachable in this architecture (the status route
+    // mounts from `webServer` alone while the session scope waits for seven
+    // services), so this models the reachable ordering: the status route answers
+    // first, the session scope composes later.
+    const harness = await createHarness(true, undefined, '127.0.0.1', { deferSessionScope: true })
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+    expect(harness.routes.has(`${API_PREFIX}/sessions`)).toBe(false)
+
+    const loading = JSON.parse((await call(statusRoute, request('GET', `${API_PREFIX}/status`))).body) as {
+      state: string
+      reasonCode: string
+      capabilities: string[]
+      authentication: string
+    }
+    expect(loading.state).toBe('bridge-loading')
+    expect(loading.reasonCode).toBe('services-pending')
+    expect(loading.capabilities).toEqual(['status'])
+    // The token is provisioned even while the session services are pending, so
+    // `authentication` must not be what makes the Bridge unusable here.
+    expect(loading.authentication).toBe('ready')
+
+    // The services arrive: nothing else changes.
+    harness.composeSessionScope()
+    const ready = JSON.parse((await call(statusRoute, request('GET', `${API_PREFIX}/status`))).body) as {
+      state: string
+      reasonCode: string
+      capabilities: string[]
+    }
+    expect(ready.state).toBe('bridge-ready')
+    expect(ready.reasonCode).toBe('ready')
+    expect(ready.capabilities).toContain('sessions')
+    // ...and the session route really exists now, so the flip is not cosmetic.
+    expect(harness.routes.has(`${API_PREFIX}/sessions`)).toBe(true)
+  })
+
+  it('answers 503 for an unusable token and never exposes why', async () => {
+    // Plan §3 requires "创建会话 404/409/503" to be covered behaviourally. The
+    // 503 paths previously had only a source-text assertion, which proves the
+    // gate exists but not that a client receives it.
+    const harness = await createHarness(true, undefined, '127.0.0.1', { breakTokenRoot: true })
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+    const sessionsRoute = harness.routes.get(`${API_PREFIX}/sessions`)
+    const controlRoute = harness.routes.get(`${API_PREFIX}/control`)
+
+    const status = await call(statusRoute, request('GET', `${API_PREFIX}/status`))
+    const statusBody = JSON.parse(status.body) as { authentication: string; state: string; reasonCode: string }
+    expect(status.status).toBe(200)
+    expect(statusBody.authentication).toBe('unavailable')
+    expect(statusBody.state).toBe('bridge-auth-unavailable')
+    expect(statusBody.reasonCode).toBe('token-unavailable')
+    // The reference is a non-sensitive digest, and the status route is public.
+    expect(status.body).not.toContain(TOKEN_DIRECTORY_NAME_FOR_TEST + '\\')
+    expect(status.body).not.toMatch(/[A-Za-z]:\\/)
+
+    // The session routes answer 503 rather than creating anything. No token can
+    // exist here, so this also proves the token gate runs before route work.
+    const created = await call(sessionsRoute, request('POST', `${API_PREFIX}/sessions`, {}))
+    expect(created.status).toBe(503)
+    const body = JSON.parse(created.body) as { error: string; reference?: string }
+    expect(body.error).toBe('bridge-token-unavailable')
+    expect(body.reference).toMatch(/^[a-f0-9]{12}$/)
+    // The failure reason stays out of the response, and so does the path.
+    expect(created.body).not.toMatch(/[A-Za-z]:\\/)
+    expect(created.body).not.toContain('not a directory')
+
+    const listed = await call(controlRoute, request('GET', `${API_PREFIX}/control/presets`))
+    expect(listed.status).toBe(503)
+    expect(JSON.parse(listed.body).error).toBe('bridge-token-unavailable')
+
+    // The routes ARE mounted here: the difference from an incompatible host is
+    // that a token problem is recoverable, so the routes stay registered and
+    // refuse per request. That is also why `/status` reports
+    // `bridge-auth-unavailable` rather than `bridge-loading`.
+    expect(harness.routes.has(`${API_PREFIX}/sessions`)).toBe(true)
+
+    // `capabilities` describes what is *mounted*, not what is safe to use, so it
+    // may still list `sessions` here. The property that must hold is that the
+    // same document cannot be read as ready: a consumer that checks
+    // `authentication` first, as both the Rust and renderer interpreters do,
+    // must reach `bridge-auth-unavailable` and refuse to send.
+    const announced = JSON.parse(status.body) as { capabilities: string[]; authentication: string; state: string }
+    expect(announced.authentication).toBe('unavailable')
+    expect(announced.state).not.toBe('bridge-ready')
   })
 
   it('distinguishes a wrong method from a missing route across the whole interface', async () => {
