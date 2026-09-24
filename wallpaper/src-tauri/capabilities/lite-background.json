@@ -7,6 +7,7 @@
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "allow-get-app-snapshot",
+    "allow-native-bootstrap-generation",
     "allow-dispatch-app-action",
     "allow-release-native-bootstrap",
     "allow-lite-settings-get",

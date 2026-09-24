@@ -17,6 +17,7 @@
     "allow-autostart-status",
     "allow-scan-dsh-paths",
     "allow-scan-harness-endpoints-command",
+    "allow-set-harness-endpoint",
     "allow-launch-dsh",
     "allow-managed-dsh-status",
     "allow-stop-managed-dsh",

@@ -35,6 +35,7 @@
     "allow-clear-api-history",
     "allow-probe-harness",
     "allow-scan-harness-endpoints-command",
+    "allow-set-harness-endpoint",
     "allow-launch-dsh",
     "allow-autostart-managed-dsh",
     "allow-managed-dsh-autostart-status",

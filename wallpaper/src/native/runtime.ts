@@ -127,6 +127,8 @@ export interface NativeRuntime {
   clearApiHistory(): Promise<number>
   listenTray(listener: (event: { type: 'backend'; backend: BackendMode }) => void): Promise<() => void>
   probeHarness(): Promise<HarnessStatus>
+  /** Pin the native monitor's endpoint (`null` clears it back to auto). */
+  setHarnessEndpoint(port: number | null): Promise<number | null>
   /** Which local ports host a wallpaper Bridge, in the native layer's order. */
   scanHarnessEndpoints(extraPorts?: readonly number[]): Promise<HarnessEndpointScan[]>
   desktopDisplays(): Promise<DesktopDisplayInfo[]>
@@ -375,6 +377,18 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) return { availability: 'offline' }
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<HarnessStatus>('probe_harness')
+  },
+  /**
+   * Pin the endpoint the native monitor probes, or clear the pin with `null`.
+   *
+   * The monitor owns the probe loop, so the choice must reach native state: a
+   * per-request port would leave the rendered status coming from the default port
+   * while the settings card implied otherwise.
+   */
+  async setHarnessEndpoint(port: number | null) {
+    if (!await tauriAvailable()) return null
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<number | null>('set_harness_endpoint', { port })
   },
   /**
    * Ask the native side which local ports host a wallpaper Bridge.

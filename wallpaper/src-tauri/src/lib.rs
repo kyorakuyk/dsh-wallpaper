@@ -1986,6 +1986,28 @@ const HARNESS_ENDPOINT_PORTS: &[(u16, &str)] =
 #[cfg(not(feature = "lite"))]
 const HARNESS_DEFAULT_PORT: u16 = 3080;
 
+/// The endpoint the user pinned in settings, if any.
+///
+/// The monitor owns the probe loop, so the choice has to reach native state
+/// rather than being passed per request: otherwise the status the desktop renders
+/// would keep coming from the default port while the settings card claimed a
+/// different endpoint was selected.
+#[cfg(not(feature = "lite"))]
+#[derive(Default)]
+struct HarnessEndpointState(Mutex<Option<u16>>);
+
+#[cfg(not(feature = "lite"))]
+static HARNESS_ENDPOINT_STATE: OnceLock<HarnessEndpointState> = OnceLock::new();
+
+/// The pinned port, or DSH's default when nothing is pinned.
+#[cfg(not(feature = "lite"))]
+fn harness_endpoint_port() -> u16 {
+    HARNESS_ENDPOINT_STATE
+        .get()
+        .and_then(|state| state.0.lock().ok().and_then(|guard| *guard))
+        .unwrap_or(HARNESS_DEFAULT_PORT)
+}
+
 
 #[cfg(not(feature = "lite"))]
 fn harness_status_cache() -> &'static RwLock<serde_json::Value> {
@@ -2233,7 +2255,29 @@ async fn scan_harness_endpoints(extra_ports: Vec<u16>) -> serde_json::Value {
 
 #[cfg(not(feature = "lite"))]
 async fn fetch_harness_status() -> serde_json::Value {
-    fetch_harness_status_at(HARNESS_DEFAULT_PORT).await
+    fetch_harness_status_at(harness_endpoint_port()).await
+}
+
+/// Pin the endpoint the monitor probes, or clear the pin with `None`.
+///
+/// Both surfaces may call it: the settings window after the user picks, and the
+/// background surface when it receives the broadcast. Validation is deliberately
+/// strict — a port outside the TCP range is rejected rather than silently
+/// falling back, so a bad value is visible instead of looking like "no Bridge".
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+fn set_harness_endpoint(
+    caller: tauri::WebviewWindow,
+    port: Option<u16>,
+) -> Result<Option<u16>, String> {
+    require_wallpaper_surface(&caller)?;
+    if port == Some(0) {
+        return Err("接入端点端口必须在 1-65535 之间".into());
+    }
+    let state = HARNESS_ENDPOINT_STATE.get_or_init(HarnessEndpointState::default);
+    let mut guard = state.0.lock().map_err(|_| "接入端点状态不可用".to_string())?;
+    *guard = port;
+    Ok(*guard)
 }
 
 /// A root-page response is diagnostic only. It is deliberately not part of
@@ -2786,6 +2830,7 @@ macro_rules! register_edition_commands {
             clear_api_history,
             probe_harness,
             scan_harness_endpoints_command,
+            set_harness_endpoint,
             appearance::commands::appearance_get_state,
             appearance::commands::appearance_list_themes,
             appearance::commands::appearance_list_assets,

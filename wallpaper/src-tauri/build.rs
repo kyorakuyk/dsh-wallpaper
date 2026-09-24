@@ -63,6 +63,7 @@ fn main() {
             "clear_api_history",
             "probe_harness",
             "scan_harness_endpoints_command",
+            "set_harness_endpoint",
             "appearance_get_state",
             "appearance_list_themes",
             "appearance_list_assets",

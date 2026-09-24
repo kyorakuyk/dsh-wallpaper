@@ -6,7 +6,8 @@ import type { ChatAdapter } from './chat/adapter.ts'
 import { ConversationBubble } from './chat/ConversationBubble.tsx'
 import type { BackendMode, ChatMessage, ChatQuestion, RuntimeState, TokenUsage } from './domain/types.ts'
 import { personaIdFor, resolveModelTier } from './domain/modelTier.ts'
-import { isHarnessReady, monitorHarness } from './connect/harness.ts'
+import { isHarnessReady } from './connect/harness.ts'
+import { monitorHarnessEndpoint } from './connect/harnessEndpoint.ts'
 import { HARNESS_STATE_DETAILS } from './connect/harnessLabels.ts'
 import { PersonaRegistry } from './persona/registry.ts'
 import { IdleScene } from './scenes/IdleScene.tsx'
@@ -1041,13 +1042,22 @@ export function App({ surface = 'combined' }: AppProps) {
     // through AppSnapshot. Starting a second browser-side monitor here would duplicate every
     // 3080 probe for each WebView.
     if (appCoreClient.native) return
-    const monitor = monitorHarness((status) => {
-      patchRuntime({ harness: status.availability, model: status.model ?? runtimeRef.current.model, provider: status.provider ?? runtimeRef.current.provider, reasoningEffort: status.reasoningEffort })
-      if (isHarnessReady(status.availability) && runtimeRef.current.backend !== 'harness') {
-        if (canAutoSelectHarness(status.availability, runtimeRef.current.backend, settings.autoSwitchHarness)) changeBackend('harness')
-      }
-      const disconnected = harnessAvailabilityPatch(runtimeRef.current.backend, status.availability, runtimeRef.current.error)
-      if (disconnected) patchRuntime(disconnected)
+    // Browser preview has no native probe cache, so it discovers the endpoint
+    // itself. Same priority order and same strict identification as the native
+    // scan, so the two cannot disagree about which client is being used.
+    const monitor = monitorHarnessEndpoint({
+      // Read through the live state rather than a captured value, so changing the
+      // dropdown takes effect on the next poll instead of requiring a reload.
+      chosenPort: () => settings.dshLaunch.endpointPort,
+      extraPorts: () => settings.dshLaunch.extraEndpointPorts ?? [],
+      onChange: ({ status }) => {
+        patchRuntime({ harness: status.availability, model: status.model ?? runtimeRef.current.model, provider: status.provider ?? runtimeRef.current.provider, reasoningEffort: status.reasoningEffort })
+        if (isHarnessReady(status.availability) && runtimeRef.current.backend !== 'harness') {
+          if (canAutoSelectHarness(status.availability, runtimeRef.current.backend, settings.autoSwitchHarness)) changeBackend('harness')
+        }
+        const disconnected = harnessAvailabilityPatch(runtimeRef.current.backend, status.availability, runtimeRef.current.error)
+        if (disconnected) patchRuntime(disconnected)
+      },
     })
     return () => monitor.stop()
   }, [settings.autoSwitchHarness])

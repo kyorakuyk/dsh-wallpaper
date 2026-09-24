@@ -74,6 +74,10 @@ export function SettingsWindow() {
     settingsRef.current = next
     setSettings(next)
     saveSettings(next)
+    // The native monitor owns the probe loop, so an endpoint change has to be
+    // pushed explicitly; publishing settings alone would leave the rendered
+    // status coming from the previous port.
+    void nativeRuntime.setHarnessEndpoint(next.dshLaunch.endpointPort ?? null).catch(() => null)
     // Every Tauri WebView owns an isolated browser storage partition. Route
     // settings through Rust so this renderer cannot emit to arbitrary Tauri
     // event targets; Rust delivers the snapshot only to the background host.
@@ -158,6 +162,10 @@ export function SettingsWindow() {
       if (!mountedRef.current) return
       setEndpointScan(found)
       setEndpointScanDone(true)
+      // Pushing the current choice to the native monitor is what makes the
+      // dropdown affect the status the desktop renders, rather than only the
+      // label in this card.
+      await nativeRuntime.setHarnessEndpoint(settingsRef.current.dshLaunch.endpointPort ?? null).catch(() => null)
       const bridges = found.filter((item) => item.bridgeFound)
       if (bridges.length === 0) {
         setNotice('未发现可接入的 Harness。请先启动任一个客户端（官方桌面 / 第三方桌面 / 官方 Web）后重新扫描。')
