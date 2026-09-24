@@ -123,21 +123,21 @@ dsh plugin --profile desktop install   # 换成你实际使用的 profile
 版本矩阵、协议版本与包版本的区别、宿主适配层边界见
 [`bridge/README.md`](bridge/README.md)。
 
-### 当前真机验收状态（勿当作已通过）
+### 当前真机验收状态
 
-写这份文档时实测：
+2026-09-25 实测。**已通过的项目也有实测记录，未通过的如实标注。**
 
 | 环节 | 状态 |
 | --- | --- |
 | 壁纸自启项 | ✅ `HKCU\...\Run` 的 `dsh-wallpaper` 存在，指向已安装 `0.2.0.71` |
-| 已安装包是否含本功能 | ❌ `0.2.0.71`（构建于 2026-09-17）**不含**「随壁纸启动 DSH」，也不含本轮 Bridge 就绪/适配层改动 |
-| 开发版是否含本功能 | ✅ `target\debug\dsh-wallpaper.exe` 含 `autostart_managed_dsh`、`managed_dsh_autostart_status`，前端包含设置项与卡片文案 |
-| 已安装 Bridge | ❌ profile 内仍是 8/26 副本；本轮源码构建摘要不同 |
-
-因此：**「登录后自动启动 DSH」这条验收尚未成立**，必须先出一个含本功能的签名测试包并
-安装，再按「安装包版本 / 实际 exe 路径 / Windows 启动来源 / 壁纸与 DSH 启动时间 /
-Bridge ready 时间 / 关机重登后进程数」逐项记录。开发版通过 `pnpm desktop:dev` 只能证明
-手动启动路径。
+| **profile 内 Bridge 已刷新** | ✅ 已按文档更新:`remove` + `add` 后 profile 内 `lib/index.js` 摘要 **等于源码构建**(普通 `install` 不生效,因为 lockfile 对 `type: directory` 依赖无完整性校验,pnpm 认为已满足)。profile 的依赖集合与版本未变,只有 peer 范围随 Bridge 声明从 rc.6 落到 rc.5;改动前已备份 `package.json`/`pnpm-lock.yaml` |
+| **真实链路(创建→消息→回复→取消)** | ✅ 用真实 profile 启动的 DSH 上实测:未鉴权 401;`POST /sessions` 201;`POST /messages` 202;约 5 秒后 `GET /history` 返回 2 条 —— **`[user] say PONG` / `[assistant] PONG`**;`POST /cancel` 202。这需要你 profile 里的真实凭据,是本轮唯一能证明"模型真的回了"的证据 |
+| **`/status` 新契约** | ✅ 真实 profile 的实时响应含 `state: bridge-ready`、`reasonCode: ready`、`bridgeBuild`、`authoredAgainst: ^0.1.0-rc.5`,能力集含 `control`/`sessions`/`resume` 等 |
+| 设置迁移已在真实环境生效 | ✅ 你机器上的设置文档已是 `version: 10`(`defaultBackend`/`autostart`/`sleepHotkey` 等既有配置保留),说明存储迁移在真实使用中跑通 |
+| 已安装包是否含本功能 | ❌ `0.2.0.71`(构建于 2026-09-17)**不含**「随壁纸启动 DSH」,也不含本轮 Bridge 就绪/适配层改动;二进制字面量搜索确认相关标识全不存在 |
+| 开发版是否含本功能 | ✅ `target\debug\dsh-wallpaper.exe` 含 `autostart_managed_dsh`、`managed_dsh_autostart_status`,前端产物含设置项与卡片文案 |
+| **单飞(重启两次各一个受管进程)** | ⏳ **未实测**。「每个进程最多一次」有原生记录 + 渲染层模块标记 + 回归测试,但"重启壁纸两次数进程数"需要从设置中心打开开关后重启应用,本轮未执行 |
+| **登录后自动启动** | ❌ **尚未成立**,必须先出含本功能的签名测试包并安装,再按「安装包版本 / 实际 exe 路径 / Windows 启动来源 / 壁纸与 DSH 启动时间 / Bridge ready 时间 / 关机重登后进程数」逐项记录 |
 
 ## GitHub Actions
 
