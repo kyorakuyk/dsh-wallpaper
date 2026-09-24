@@ -972,7 +972,16 @@ export function apply(ctx: Context, config: Config = {}): void {
    */
   const bridgeState = (): { state: string; reasonCode: string } => {
     if (tokenFailure !== undefined) return { state: 'bridge-auth-unavailable', reasonCode: 'token-unavailable' }
-    if (hostIncompatibility) return { state: 'bridge-incompatible', reasonCode: hostIncompatibility.code }
+    // The specific member is part of the reason code on purpose: it is the only
+    // actionable part, and it is a compile-time identifier, never host data.
+    // Collapsing it to a bare `host-shape-mismatch` would leave the wallpaper
+    // able to say "incompatible" but not which service to report.
+    if (hostIncompatibility) {
+      return {
+        state: 'bridge-incompatible',
+        reasonCode: `${hostIncompatibility.code}:${hostIncompatibility.detail}`,
+      }
+    }
     if (registered.control && registered.sessions) return { state: 'bridge-ready', reasonCode: 'ready' }
     return { state: 'bridge-loading', reasonCode: 'services-pending' }
   }

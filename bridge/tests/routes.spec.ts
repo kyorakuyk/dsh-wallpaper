@@ -413,7 +413,10 @@ describe('wallpaper bridge HTTP routes', () => {
       capabilities: string[]
     }
     expect(incompatible.state).toBe('bridge-incompatible')
-    expect(incompatible.reasonCode).toBe('host-shape-mismatch')
+    // The reason code names the exact member, because that is the only
+    // actionable part: a bare `host-shape-mismatch` would let the wallpaper say
+    // "incompatible" without saying which service to report.
+    expect(incompatible.reasonCode).toBe('host-shape-mismatch:agentPresets.recompose')
     // Only the diagnostic surface survives; nothing claims to be driveable.
     expect(incompatible.capabilities).toEqual(['status'])
     expect(harness.routes.has(`${API_PREFIX}/sessions`)).toBe(false)

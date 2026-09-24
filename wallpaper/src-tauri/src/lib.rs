@@ -2118,7 +2118,15 @@ fn diagnose_harness_bridge_status(data: &serde_json::Value) -> Option<serde_json
             .unwrap_or_else(|| "services-pending".into());
         set_state(&mut status, "bridge-loading", &reason);
     } else {
-        set_state(&mut status, "bridge-incompatible", "capabilities-missing");
+        // A host whose *shape* did not match carries the member name after the
+        // colon, and it is worth forwarding: it tells the user which DSH service
+        // to report, and it is a compile-time identifier rather than host data.
+        // Any other reason is not forwarded, because the rest of the vocabulary
+        // is about waiting and would be misleading here.
+        let reason = optional_string("reasonCode")
+            .filter(|value| value.starts_with("host-shape-mismatch:"))
+            .unwrap_or_else(|| "capabilities-missing".into());
+        set_state(&mut status, "bridge-incompatible", &reason);
     }
     Some(serde_json::Value::Object(status))
 }
@@ -2376,6 +2384,36 @@ mod harness_status_tests {
         assert!(status.get("model").is_none());
         assert!(status.get("provider").is_none());
         assert!(status.get("reasoningEffort").is_none());
+    }
+
+    #[test]
+    fn forwards_the_specific_host_member_but_not_a_misleading_reason() {
+        // A shape mismatch names the member after the colon; forwarding it is
+        // what makes the diagnostic actionable.
+        let named = diagnose_harness_bridge_status(&json!({
+            "protocolVersion": 1,
+            "dsh": "online",
+            "state": "bridge-incompatible",
+            "reasonCode": "host-shape-mismatch:agentPresets.recompose",
+            "capabilities": ["status"],
+            "authentication": "ready"
+        }))
+        .expect("diagnosis");
+        assert_eq!(named["availability"], "bridge-incompatible");
+        assert_eq!(named["reasonCode"], "host-shape-mismatch:agentPresets.recompose");
+
+        // A `waiting:` reason describes a wait, so it must not be rendered as the
+        // explanation for an incompatibility.
+        let misleading = diagnose_harness_bridge_status(&json!({
+            "protocolVersion": 1,
+            "dsh": "online",
+            "state": "bridge-incompatible",
+            "reasonCode": "waiting:workspaceRegistry",
+            "capabilities": ["status"],
+            "authentication": "ready"
+        }))
+        .expect("diagnosis");
+        assert_eq!(misleading["reasonCode"], "capabilities-missing");
     }
 
     #[test]
