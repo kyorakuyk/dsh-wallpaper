@@ -95,7 +95,7 @@ use windows::{
         UI::{
             Accessibility::{CUIAutomation, IUIAutomation, UIA_ListItemControlTypeId},
             HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
-            Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON},
+            Input::KeyboardAndMouse::{GetAsyncKeyState, SetFocus, VK_LBUTTON},
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         },
     },
@@ -1789,6 +1789,12 @@ pub fn start_foreground_monitor(app: tauri::AppHandle) {
                 })
                 .unwrap_or(true);
             if changed {
+                // Returning to the desktop leaves the WebView without a keyboard channel, and
+                // nothing else can give it back: the window is non-activating, so a click cannot,
+                // and a DOM focus request is refused. Do it on the one transition that matters.
+                if desktop_foreground {
+                    restore_desktop_keyboard_focus(&app);
+                }
                 let snapshot =
                     core.dispatch(AppAction::DesktopForegroundChanged(desktop_foreground));
                 // Foreground changes are informative only.  Re-showing or
@@ -1803,6 +1809,45 @@ pub fn start_foreground_monitor(app: tauri::AppHandle) {
             break;
         }
     });
+}
+
+/// Hand the keyboard back to the wallpaper's WebView.
+///
+/// A desktop wallpaper must not activate itself, so when focus goes to another window
+/// the WebView loses its keyboard channel and neither a click nor a DOM `focus()` can
+/// take it back — a click cannot activate a non-activating window, and a DOM focus
+/// request is refused for the same reason. Rebuilding the input (what the double-click
+/// desktop switch does) only rebuilds the DOM; it does not restore the channel either.
+///
+/// The desktop switch works because changing the desktop's own window state makes
+/// Windows renegotiate keyboard focus for the desktop's children. This does that
+/// directly, and only from the wallpaper's main thread: `SetFocus` fails for a window
+/// owned by another thread, and the background window belongs to the main thread.
+///
+/// `SetForegroundWindow` is deliberately not called. Giving the keyboard back is not the
+/// same as stealing the foreground, and stealing it is exactly what the non-activating
+/// design exists to prevent.
+#[cfg(windows)]
+fn restore_desktop_keyboard_focus(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let dispatched = app.run_on_main_thread(move || {
+        let Some(window) = handle.get_webview_window("background") else {
+            return;
+        };
+        let Ok(hwnd) = window.hwnd() else {
+            log::warn!("desktop focus restore: background window has no handle");
+            return;
+        };
+        match unsafe { SetFocus(Some(HWND(hwnd.0))) } {
+            Ok(_) => log::info!("desktop focus restored to the wallpaper WebView"),
+            // Not fatal - the desktop may not be foreground yet - but reported rather
+            // than swallowed, since a silent failure here is what made this hard to find.
+            Err(error) => log::warn!("desktop focus restore: SetFocus failed: {error}"),
+        }
+    });
+    if dispatched.is_err() {
+        log::warn!("desktop focus restore: could not reach the main thread");
+    }
 }
 
 /// Uses UI Automation, rather than ListView messages with a pointer owned by
