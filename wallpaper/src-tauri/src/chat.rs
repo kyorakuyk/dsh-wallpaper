@@ -1587,11 +1587,26 @@ struct BridgeErrorResponse {
     error: Option<String>,
 }
 
+/// The Bridge's history envelope.
+///
+/// Deliberately **not** `deny_unknown_fields`, and that is a bug fix rather than a
+/// relaxation. The Bridge answers with `sessionId`, `messages`, `truncated` and
+/// `limits`; rejecting the two fields this struct does not name made the whole
+/// deserialization fail, so *every* history read errored and the wallpaper showed
+/// an empty transcript while DSH held a full one. Adding a field to a response is
+/// backward-compatible exactly when the client ignores what it does not model, so
+/// a newer Bridge must not be able to break an older wallpaper this way.
+///
+/// `truncated` is modelled because it is information the reader needs: the Bridge
+/// caps how much history it returns, and without this the UI cannot tell "this is
+/// the whole conversation" from "older turns were dropped".
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct HarnessHistoryResponse {
     session_id: String,
     messages: Vec<HarnessHistoryMessage>,
+    #[serde(default)]
+    truncated: bool,
 }
 
 #[derive(Deserialize)]
@@ -1705,6 +1720,10 @@ fn parse_harness_history(
     Ok(serde_json::json!({
         "sessionId": expected_session_id,
         "messages": messages,
+        // Surfaced so the reader can tell a whole conversation from a capped one.
+        // The Bridge bounds how much history it returns; silently presenting a
+        // truncated transcript as complete is the failure this prevents.
+        "truncated": history.truncated,
     }))
 }
 
@@ -3073,6 +3092,10 @@ pub async fn harness_history(state: tauri::State<'_, ChatState>) -> Result<Value
     if !response.status().is_success() {
         return Err(harness_http_error(response.status(), "history"));
     }
+    // The envelope is read tolerantly on purpose: the Bridge adds fields over time
+    // (`truncated`, `limits`) and a client that rejects what it does not model
+    // breaks every read the moment the host is upgraded. The per-message shape
+    // stays strict, because those fields are shown verbatim.
     let history = bounded_bridge_json::<HarnessHistoryResponse>(
         response,
         MAX_HARNESS_HISTORY_RESPONSE_BYTES,
@@ -3635,6 +3658,7 @@ mod tests {
 
         let valid = HarnessHistoryResponse {
             session_id: "wallpaper-session".into(),
+            truncated: false,
             messages: vec![HarnessHistoryMessage {
                 id: "message-1".into(),
                 role: "assistant".into(),
@@ -3647,6 +3671,7 @@ mod tests {
             "wallpaper-session",
             HarnessHistoryResponse {
                 session_id: "other-session".into(),
+                truncated: false,
                 messages: vec![],
             },
         )
@@ -3655,6 +3680,7 @@ mod tests {
             "wallpaper-session",
             HarnessHistoryResponse {
                 session_id: "wallpaper-session".into(),
+                truncated: false,
                 messages: vec![HarnessHistoryMessage {
                     id: "message-1".into(),
                     role: "system".into(),
@@ -3789,6 +3815,77 @@ mod tests {
         ] {
             assert!(api_completion_url(unsafe_url).is_err(), "{unsafe_url}");
         }
+    }
+
+    /// A newer Bridge may add fields to the history envelope.
+    ///
+    /// The regression this pins: the envelope used `deny_unknown_fields` while the
+    /// Bridge answered with `truncated` and `limits`, so deserialization failed for
+    /// *every* read. The wallpaper then showed an empty transcript while DSH held a
+    /// full one — the reported "past messages disappear after switching clients" —
+    /// because the chat bootstrap aborts before it can publish any history.
+    #[test]
+    fn history_accepts_the_envelope_a_newer_bridge_sends() {
+        // Exactly the shape the Bridge produces, including the field the client
+        // does not model.
+        let document = serde_json::json!({
+            "sessionId": "wallpaper-2026-09-25",
+            "truncated": false,
+            "limits": { "maxMessages": 256, "maxBytes": 4 * 1024 * 1024 },
+            "messages": [
+                { "id": "c0799136-b1f9-4804-a088-f66bd328be48", "role": "user", "content": "你好？" },
+                { "id": "366b919d-500a-4864-85a5-7ba151557509", "role": "assistant", "content": "我在。" },
+            ],
+        });
+        let envelope: super::HarnessHistoryResponse =
+            serde_json::from_value(document).expect("an added field must not break the read");
+        let parsed = super::parse_harness_history("wallpaper-2026-09-25", envelope)
+            .expect("a valid envelope parses");
+        assert_eq!(parsed["messages"].as_array().map(Vec::len), Some(2));
+        // The truncation flag reaches the caller instead of being dropped.
+        assert_eq!(parsed["truncated"], serde_json::json!(false));
+    }
+
+    /// A capped read must be reportable, not silently presented as complete.
+    #[test]
+    fn history_surfaces_that_a_read_was_capped() {
+        let document = serde_json::json!({
+            "sessionId": "wallpaper-2026-09-25",
+            "truncated": true,
+            "limits": { "maxMessages": 256, "maxBytes": 4 * 1024 * 1024 },
+            "messages": [
+                { "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "role": "assistant", "content": "tail" },
+            ],
+        });
+        let envelope: super::HarnessHistoryResponse = serde_json::from_value(document).expect("parses");
+        let parsed = super::parse_harness_history("wallpaper-2026-09-25", envelope).expect("parses");
+        assert_eq!(parsed["truncated"], serde_json::json!(true));
+    }
+
+    /// An absent `truncated` stays false, so an older Bridge still works.
+    #[test]
+    fn history_defaults_an_absent_truncation_flag() {
+        let document = serde_json::json!({
+            "sessionId": "wallpaper-2026-09-25",
+            "messages": [],
+        });
+        let envelope: super::HarnessHistoryResponse = serde_json::from_value(document).expect("parses");
+        assert!(!envelope.truncated);
+    }
+
+    /// Strictness stays where it protects the transcript.
+    ///
+    /// The envelope tolerates added fields; an individual message must not, because
+    /// its fields are presented verbatim.
+    #[test]
+    fn an_unknown_message_field_is_still_rejected() {
+        let document = serde_json::json!({
+            "sessionId": "wallpaper-2026-09-25",
+            "messages": [
+                { "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "role": "user", "content": "x", "extra": 1 },
+            ],
+        });
+        assert!(serde_json::from_value::<super::HarnessHistoryResponse>(document).is_err());
     }
 
     #[test]
