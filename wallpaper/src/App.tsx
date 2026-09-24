@@ -16,7 +16,7 @@ import { SleepScene } from './scenes/SleepScene.tsx'
 import { WakeScene } from './scenes/WakeScene.tsx'
 import { INITIAL_RUNTIME_STATE, reduceRuntime } from './scenes/stateMachine.ts'
 import { BACKGROUND_OPTIONS, applyBubbleOverrides, assetUrl, loadSettings, localCalendarDay, normalizeReceivedSettings, resumeConversationId, saveConversationPointer, type WallpaperSettings } from './settings/store.ts'
-import { nativeRuntime, type DesktopDisplayInfo, type NativeSendOptions } from './native/runtime.ts'
+import { nativeRuntime, type DesktopDisplayInfo, type ManagedDshAutostart, type NativeSendOptions } from './native/runtime.ts'
 import { reportNativeBootstrapReady } from './native/bootstrapHandoff.ts'
 import { listen } from '@tauri-apps/api/event'
 import type { AppSurface } from './surface.ts'
@@ -93,6 +93,66 @@ export { HARNESS_STATE_DETAILS, harnessStateLabel } from './connect/harnessLabel
 
 export function harnessSelectionUnavailableError(availability: RuntimeState['harness']): string {
   return `${HARNESS_DISCONNECTED_ERROR_PREFIX}${HARNESS_STATE_DETAILS[availability]} Harness 模式只能在兼容 Bridge 就绪后切换。`
+}
+
+/**
+ * Actionable text for a failed automatic DSH start.
+ *
+ * Each code names the concrete thing the user must fix, and `null` means there
+ * is nothing to report (the launch is in progress, or the process was started).
+ * No entry may include a path from the OS, a token, or an exception body.
+ */
+export function dshAutostartNotice(result: ManagedDshAutostart): string | null {
+  switch (result.outcome) {
+    case 'started':
+    case 'already-attempted':
+    case 'port-occupied-external':
+      return null
+    case 'root-path-missing':
+      return '已开启「随壁纸启动 DSH」，但尚未配置 DSH 根目录；请在设置中心填写或扫描后重试。'
+    case 'root-path-invalid':
+      return '已开启「随壁纸启动 DSH」，但配置的根目录不是可识别的 DSH 项目；请在设置中心修正。'
+    case 'launcher-missing':
+      return '已开启「随壁纸启动 DSH」，但未找到 Node.js 或 pnpm。请在设置中心填写启动命令的完整路径，或安装后重试。'
+    case 'profile-invalid':
+      return '已开启「随壁纸启动 DSH」，但配置的 profile 名称无效（只能包含字母、数字、连字符或下划线）。请在设置中心修正。'
+    case 'command-not-confirmed':
+      return '「随壁纸启动 DSH」不会在无人值守时执行自定义启动命令。请在设置中心确认使用该命令，或清空它改用内建启动器。'
+    default:
+      return '已开启「随壁纸启动 DSH」，但进程启动失败。请在设置中心检查根目录与启动命令。'
+  }
+}
+
+/**
+ * Reconcile an in-flight automatic (or manual) launch with what the Bridge
+ * reports. Kept pure and exported so the reason a user sees is decided by one
+ * tested function rather than by nested conditions inside an interval.
+ *
+ * Returns `null` while the launch is still legitimately pending.
+ */
+export function harnessLaunchOutcome(
+  status: { availability: RuntimeState['harness']; reasonCode?: string },
+  elapsedMs: number,
+  managed: { managed: boolean; running: boolean },
+  timeoutMs = 45_000,
+): { message: string } | null {
+  if (status.availability === 'bridge-ready') return null
+  if (!managed.managed || !managed.running) {
+    return { message: 'DSH 启动后立即退出；请检查 DSH 配置或启动日志。' }
+  }
+  if (elapsedMs <= timeoutMs) return null
+  // Past the deadline the most specific available cause wins: a Bridge that
+  // answered but cannot be used is a different fix from one that never appeared.
+  if (status.availability === 'bridge-auth-unavailable') {
+    return { message: 'DSH 已启动，但 Bridge 本机令牌不可用；请重启壁纸应用或检查令牌目录权限。' }
+  }
+  if (status.availability === 'bridge-incompatible') {
+    return { message: 'DSH 已启动，但 Bridge 版本或能力不兼容；请更新 Bridge 后重试。' }
+  }
+  if (status.availability === 'bridge-loading') {
+    return { message: 'DSH 已启动，Bridge 仍在装载会话服务；若长期停留，请检查 DSH 日志。' }
+  }
+  return { message: 'DSH 启动超时；进程仍在运行但 Bridge 尚未上线。' }
 }
 
 /**
@@ -322,6 +382,15 @@ export function App({ surface = 'combined' }: AppProps) {
     return () => { disposed = true }
   }, [runtime.phase])
   const appSnapshotRevisionRef = useRef(-1)
+  /**
+   * `autoStartWithWallpaper` is a wallpaper-start trigger, so it must fire from
+   * the background host exactly once. The native side owns the real guarantee
+   * (it remembers the attempt for the process lifetime); this ref only prevents
+   * a pointless IPC round trip on every remount. It is a module-free ref, so a
+   * React re-mount of this component in the same process still sees `true` via
+   * the native status query below.
+   */
+  const dshAutostartRequestedRef = useRef(false)
   /**
    * Streaming text arrives one delta per model chunk. Committing each of them
    * as its own React update (and its own auto-scroll) is what made a long
@@ -610,19 +679,16 @@ export function App({ surface = 'combined' }: AppProps) {
       try {
         const managed = await nativeRuntime.managedDshStatus()
         if (disposed || !harnessLaunchPendingRef.current) return
-        if (!managed.managed || !managed.running) {
-          harnessLaunchPendingRef.current = false
-          harnessLaunchStartedAtRef.current = undefined
-          setHarnessStarting(false)
-          patchRuntime({ error: 'DSH 启动后立即退出；请检查 DSH 配置或启动日志。' })
-          return
-        }
-        if (Date.now() - (harnessLaunchStartedAtRef.current ?? Date.now()) > 45_000) {
-          harnessLaunchPendingRef.current = false
-          harnessLaunchStartedAtRef.current = undefined
-          setHarnessStarting(false)
-          patchRuntime({ error: 'DSH 启动超时；进程仍在运行但 Bridge 尚未上线。' })
-        }
+        const outcome = harnessLaunchOutcome(
+          { availability: runtime.harness, reasonCode: runtime.harnessReasonCode },
+          Date.now() - (harnessLaunchStartedAtRef.current ?? Date.now()),
+          managed,
+        )
+        if (!outcome) return
+        harnessLaunchPendingRef.current = false
+        harnessLaunchStartedAtRef.current = undefined
+        setHarnessStarting(false)
+        patchRuntime({ error: outcome.message })
       } catch (error) {
         if (!disposed) patchRuntime({ error: String(error) })
       }
@@ -631,6 +697,62 @@ export function App({ surface = 'combined' }: AppProps) {
     const timer = window.setInterval(() => { void check() }, 1000)
     return () => { disposed = true; window.clearInterval(timer) }
   }, [harnessStarting, runtime.harness])
+
+  /**
+   * Start the configured DSH once, when `autoStartWithWallpaper` is on.
+   *
+   * Deliberately narrow:
+   *  - the background wallpaper surface is the only initiator, so opening or
+   *    saving the settings window cannot spawn a second resident DSH;
+   *  - the request is made once per process and the native side refuses a
+   *    repeat, so a remount, an unlock, or an HMR pass cannot add another;
+   *  - it runs from an effect and resolves asynchronously, so the native first
+   *    frame and the WorkerW attach are never blocked by a process spawn;
+   *  - an external DSH already on 3080 is reported as `external` and left
+   *    running: this feature never takes over or stops someone else's service.
+   */
+  useEffect(() => {
+    if (!nativeRuntime.isNative) return
+    if (!settings.dshLaunch.autoStartWithWallpaper) return
+    if (dshAutostartRequestedRef.current) return
+    dshAutostartRequestedRef.current = true
+    let disposed = false
+    void (async () => {
+      try {
+        const result = await nativeRuntime.autostartManagedDsh({
+          rootPath: settings.dshLaunch.rootPath,
+          profile: settings.dshLaunch.profile,
+          command: settings.dshLaunch.command,
+          trustedCommand: settings.dshLaunch.trustedCommandForAutoStart,
+        })
+        if (disposed) return
+        if (result.outcome === 'started') {
+          // Reuse the manual launch's readiness window, so the same 45-second
+          // supervision, timeout message and exit detection apply.
+          harnessLaunchStartedAtRef.current = Date.now()
+          harnessLaunchPendingRef.current = true
+          setHarnessStarting(true)
+          return
+        }
+        if (result.outcome === 'port-occupied-external') {
+          // Someone else's DSH already serves 3080. Probe it and stay quiet:
+          // there is no failure here for the user to act on.
+          const status = await nativeRuntime.probeHarness().catch(() => undefined)
+          if (!disposed && status) patchRuntime({ harness: status.availability, harnessReasonCode: status.reasonCode })
+          return
+        }
+        const notice = dshAutostartNotice(result)
+        if (notice && !disposed) patchRuntime({ error: notice })
+      } catch (error) {
+        if (!disposed) patchRuntime({ error: `自动启动 DSH 失败：${String(error)}` })
+      }
+    })()
+    return () => { disposed = true }
+    // Keyed to the setting alone on purpose: editing rootPath/profile after a
+    // launch must not spawn a second DSH in the same process. The corrected
+    // configuration takes effect on the next wallpaper start.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.dshLaunch.autoStartWithWallpaper])
 
   /**
    * The expanded bottom inset depends on the taskbar and display topology, not

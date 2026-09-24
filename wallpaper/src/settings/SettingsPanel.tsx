@@ -8,6 +8,7 @@ import type { AppearanceSlot } from '../appearance/theme/index.ts'
 import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, LockScreenDiagnostics, ManagedDshStatus, ApiConversationListing } from '../native/runtime.ts'
 import { preferredDisplayId } from '../runtime/displayLayout.ts'
 import { harnessStateLabel } from '../connect/harnessLabels.ts'
+import type { AutostartStatus } from '../native/runtime.ts'
 import { OfficialPersonaCards } from '../persona/OfficialPersonaCards.tsx'
 import './SettingsPanel.css'
 
@@ -40,6 +41,12 @@ export interface SettingsPanelProps {
   onLaunchTranslucentTb: () => void
   onInstallTranslucentTb: () => void
   dshCandidates: Array<{ rootPath: string; source: string }>
+  /**
+   * Actual Windows autostart state. The "start DSH with the wallpaper" setting
+   * is only a wallpaper-start trigger, so the card must say so rather than
+   * implying a login-time guarantee.
+   */
+  autostart: AutostartStatus
   onScanDsh: () => void
   dshScanBusy: boolean
   onAdoptDsh: (rootPath: string) => void
@@ -252,7 +259,38 @@ export function SettingsPanel(props: SettingsPanelProps) {
           {props.dshCandidates.map((candidate) => <Field key={candidate.rootPath} title={candidate.rootPath} detail={candidate.source}><button className="settings-action secondary" onClick={() => props.onAdoptDsh(candidate.rootPath)}>采用</button></Field>)}
           <Field title="DSH 根目录"><input value={settings.dshLaunch.rootPath ?? ''} placeholder="自动扫描或手动填写 dsh 项目目录" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, rootPath: e.target.value || undefined } })} /></Field>
           <Field title="Profile"><input value={settings.dshLaunch.profile} placeholder="desktop" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, profile: e.target.value || 'desktop' } })} /></Field>
-          <Field title="启动命令"><input value={settings.dshLaunch.command ?? ''} placeholder="留空时优先使用已构建 CLI，找不到时回退 pnpm dsh" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, command: e.target.value || undefined } })} /></Field>
+          <Field title="启动命令"><input value={settings.dshLaunch.command ?? ''} placeholder="留空时优先使用已构建 CLI，找不到时回退 pnpm dsh" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, command: e.target.value || undefined, trustedCommandForAutoStart: e.target.value ? settings.dshLaunch.trustedCommandForAutoStart : false } })} /></Field>
+          <Field
+            title="随壁纸启动 DSH"
+            detail="壁纸每次启动时尝试启动 DSH。登录后生效还需要壁纸自身开机自启；这里不会修改你的系统自启设置。每个壁纸进程最多启动一次，已在 3080 运行的外部 DSH 不会被接管或停止。"
+          >
+            <Toggle
+              label="随壁纸启动 DSH"
+              checked={settings.dshLaunch.autoStartWithWallpaper}
+              onChange={(value) => set({ dshLaunch: { ...settings.dshLaunch, autoStartWithWallpaper: value } })}
+            />
+          </Field>
+          {settings.dshLaunch.autoStartWithWallpaper && !props.autostart.enabled && (
+            <Field title="壁纸开机自启未生效" detail="开机后自动启动 DSH 依赖壁纸自身的开机自启。">{
+              props.autostart.source === 'disabled-by-user'
+                ? 'Windows 任务管理器已禁用本应用的自启项，因此「随壁纸启动 DSH」只会在你手动打开壁纸后生效。'
+                : props.autostart.source === 'disabled-by-policy'
+                  ? '系统策略禁用了本应用的自启项，因此「随壁纸启动 DSH」只会在你手动打开壁纸后生效。'
+                  : '壁纸自身尚未设置开机自启，因此「随壁纸启动 DSH」只会在你手动打开壁纸后生效。请在「常规」中开启壁纸自启。'
+            }</Field>
+          )}
+          {settings.dshLaunch.command && settings.dshLaunch.autoStartWithWallpaper && (
+            <Field
+              title="自动启动不使用自定义命令"
+              detail="无人值守时自动执行自定义启动命令需要你明确同意。手动「启动」始终使用该命令。"
+            >
+              <Toggle
+                label="允许自动启动使用该命令"
+                checked={settings.dshLaunch.trustedCommandForAutoStart}
+                onChange={(value) => set({ dshLaunch: { ...settings.dshLaunch, trustedCommandForAutoStart: value } })}
+              />
+            </Field>
+          )}
           <Field title="启动 DSH" detail="仅启动此处配置的 profile，不会接管已有 3080 服务。"><button className="settings-action" disabled={!settings.dshLaunch.rootPath || props.managedDsh.running} onClick={props.onLaunchDsh}>{props.managedDsh.running ? `运行中 · PID ${props.managedDsh.pid}` : '启动'}</button></Field>
           <Field title="受管进程" detail={props.managedDsh.managed ? `${props.managedDsh.rootPath} · profile ${props.managedDsh.profile}` : '未由本应用启动 DSH；外部 DSH 不会被停止。'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshManagedDsh}>刷新</button><button className="settings-action secondary" disabled={!props.managedDsh.running} onClick={props.onStopManagedDsh}>停止本应用启动的 DSH</button></span></Field>
         </Card>

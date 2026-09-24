@@ -249,6 +249,12 @@
           "markdownDescription": "Enables the appearance_set_override command without any pre-configured scope."
         },
         {
+          "description": "Enables the autostart_managed_dsh command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-autostart-managed-dsh",
+          "markdownDescription": "Enables the autostart_managed_dsh command without any pre-configured scope."
+        },
+        {
           "description": "Enables the autostart_status command without any pre-configured scope.",
           "type": "string",
           "const": "allow-autostart-status",
@@ -429,10 +435,22 @@
           "markdownDescription": "Enables the lite_settings_save command without any pre-configured scope."
         },
         {
+          "description": "Enables the managed_dsh_autostart_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-managed-dsh-autostart-status",
+          "markdownDescription": "Enables the managed_dsh_autostart_status command without any pre-configured scope."
+        },
+        {
           "description": "Enables the managed_dsh_status command without any pre-configured scope.",
           "type": "string",
           "const": "allow-managed-dsh-status",
           "markdownDescription": "Enables the managed_dsh_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the native_bootstrap_generation command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-native-bootstrap-generation",
+          "markdownDescription": "Enables the native_bootstrap_generation command without any pre-configured scope."
         },
         {
           "description": "Enables the notify_appearance_changed command without any pre-configured scope.",
@@ -639,6 +657,12 @@
           "markdownDescription": "Denies the appearance_set_override command without any pre-configured scope."
         },
         {
+          "description": "Denies the autostart_managed_dsh command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-autostart-managed-dsh",
+          "markdownDescription": "Denies the autostart_managed_dsh command without any pre-configured scope."
+        },
+        {
           "description": "Denies the autostart_status command without any pre-configured scope.",
           "type": "string",
           "const": "deny-autostart-status",
@@ -819,10 +843,22 @@
           "markdownDescription": "Denies the lite_settings_save command without any pre-configured scope."
         },
         {
+          "description": "Denies the managed_dsh_autostart_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-managed-dsh-autostart-status",
+          "markdownDescription": "Denies the managed_dsh_autostart_status command without any pre-configured scope."
+        },
+        {
           "description": "Denies the managed_dsh_status command without any pre-configured scope.",
           "type": "string",
           "const": "deny-managed-dsh-status",
           "markdownDescription": "Denies the managed_dsh_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the native_bootstrap_generation command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-native-bootstrap-generation",
+          "markdownDescription": "Denies the native_bootstrap_generation command without any pre-configured scope."
         },
         {
           "description": "Denies the notify_appearance_changed command without any pre-configured scope.",

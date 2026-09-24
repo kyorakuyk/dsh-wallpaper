@@ -32,6 +32,13 @@ export function SettingsWindow() {
   const [desktopDisplays, setDesktopDisplays] = useState<DesktopDisplayInfo[]>([])
   const [lockScreenBusy, setLockScreenBusy] = useState(false)
   const [autostartBusy, setAutostartBusy] = useState(false)
+  /**
+   * The real Windows autostart state, kept separately from the boolean the user
+   * toggles. "Start DSH with the wallpaper" is only a wallpaper-start trigger,
+   * so the card needs the actual source (`none`, disabled by the user, disabled
+   * by policy) to say whether a login-time start will really happen.
+   */
+  const [autostartState, setAutostartState] = useState<AutostartStatus>({ enabled: false, source: 'none' })
   const [dshScanBusy, setDshScanBusy] = useState(false)
   const [notice, setNotice] = useState<string>()
   const [appearanceAssets, setAppearanceAssets] = useState<AppearanceAssetSummary[]>([])
@@ -137,6 +144,7 @@ export function SettingsWindow() {
       const status: AutostartStatus = await nativeRuntime.autostartStatus()
       const current = settingsRef.current
       if (!mountedRef.current) return
+      setAutostartState(status)
       if (current.autostart !== status.enabled) {
         const next = { ...current, autostart: status.enabled }
         settingsRef.current = next
@@ -391,6 +399,7 @@ export function SettingsWindow() {
       void nativeRuntime.setAutostart(next.autostart)
         .then((status) => {
           const current = settingsRef.current
+          if (mountedRef.current) setAutostartState(status)
           commitSettings({ ...current, autostart: status.enabled })
           if (status.enabled !== next.autostart) setNotice('Windows 没有接受这次开机自启变更，请检查系统启动应用权限。')
         })
@@ -436,6 +445,7 @@ export function SettingsWindow() {
       harnessStatus={harness}
       translucentTb={translucentTb}
       dshCandidates={dshCandidates}
+      autostart={autostartState}
       onScanDsh={() => { void scanDsh(true) }}
       dshScanBusy={dshScanBusy}
       onAdoptDsh={(rootPath) => change({ ...settingsRef.current, dshLaunch: { ...settingsRef.current.dshLaunch, rootPath } })}

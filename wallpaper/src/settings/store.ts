@@ -8,7 +8,7 @@ export { assetUrl }
 
 export type InteractionLayout = 'floating' | 'taskbar-docked'
 
-export const SETTINGS_VERSION = 9
+export const SETTINGS_VERSION = 10
 /** Keep renderer validation aligned with the native request boundary. A value
  * beyond this ceiling is almost certainly a unit/configuration error and must
  * not be presented as a configured price when Rust deliberately ignores it. */
@@ -51,6 +51,22 @@ export interface DshLaunchSettings {
   rootPath?: string
   profile: string
   command?: string
+  /**
+   * Start the configured DSH once, every time the wallpaper starts.
+   *
+   * This is a wallpaper-start trigger, not a login trigger: it is only useful
+   * together with the wallpaper's own Windows autostart, which the settings
+   * card says explicitly.
+   */
+  autoStartWithWallpaper: boolean
+  /**
+   * Explicit confirmation that `command` may be used by the *automatic* path.
+   *
+   * The manual "启动" button always honours `command`. Executing an arbitrary
+   * configured program unattended at every wallpaper start is a different
+   * trust decision, so it stays off until the user confirms it in settings.
+   */
+  trustedCommandForAutoStart: boolean
 }
 
 export interface WallpaperSettings {
@@ -115,10 +131,39 @@ export const DEFAULT_SETTINGS: WallpaperSettings = {
   conversationBlur: 19,
   multiScreen: { enabled: false, backgrounds: {} },
   deepseekApi: { baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
-  dshLaunch: { profile: 'desktop' },
+  dshLaunch: { profile: 'desktop', autoStartWithWallpaper: false, trustedCommandForAutoStart: false },
 }
 
-const KEY = 'dsh-wallpaper:settings:v9'
+const KEY = 'dsh-wallpaper:settings:v10'
+
+/**
+ * Keys read during migration, newest first. Renaming the key must never drop an
+ * existing configuration, so every previous key stays readable and the first
+ * one present wins. `v9` is listed explicitly: the chain below used to jump
+ * straight from v8 to v7, which would have silently reset every setting for a
+ * user who was on v9.
+ */
+const LEGACY_SETTINGS_KEYS = [
+  KEY,
+  'dsh-wallpaper:settings:v9',
+  'dsh-wallpaper:settings:v8',
+  'dsh-wallpaper:settings:v7',
+  'dsh-wallpaper:settings:v6',
+  'dsh-wallpaper:settings:v5',
+  'dsh-wallpaper:settings:v4',
+  'dsh-wallpaper:settings:v3',
+  'dsh-wallpaper:settings:v2',
+  'dsh-wallpaper:settings',
+]
+
+/** The most recent stored document, including the migrated `v8`/`v7` era. */
+export function readStoredSettingsDocument(): string | null {
+  for (const candidate of LEGACY_SETTINGS_KEYS) {
+    const raw = localStorage.getItem(candidate)
+    if (raw !== null) return raw
+  }
+  return null
+}
 
 /** Renderer-side length ceilings. They bound what one settings payload can
  * push into storage, the native publish channel, and the request boundary. */
@@ -291,6 +336,10 @@ function normalizeDshLaunchSettings(raw: unknown): DshLaunchSettings {
     profile: profile.length > 0 && profile.length <= MAX_SETTINGS_SHORT_STRING ? profile : DEFAULT_SETTINGS.dshLaunch.profile,
     rootPath: optionalText(value.rootPath),
     command: optionalText(value.command),
+    // Both new flags default to `false` for an upgraded profile. Auto-starting a
+    // resident service is opt-in, and so is trusting a custom launcher with it.
+    autoStartWithWallpaper: value.autoStartWithWallpaper === true,
+    trustedCommandForAutoStart: value.trustedCommandForAutoStart === true,
   }
 }
 
@@ -353,7 +402,7 @@ function normalizeApiSettings(value: unknown): ApiSettings {
 
 export function loadSettings(): WallpaperSettings {
   try {
-    const raw = localStorage.getItem(KEY) ?? localStorage.getItem('dsh-wallpaper:settings:v8') ?? localStorage.getItem('dsh-wallpaper:settings:v7') ?? localStorage.getItem('dsh-wallpaper:settings:v6') ?? localStorage.getItem('dsh-wallpaper:settings:v5') ?? localStorage.getItem('dsh-wallpaper:settings:v4') ?? localStorage.getItem('dsh-wallpaper:settings:v3') ?? localStorage.getItem('dsh-wallpaper:settings:v2') ?? localStorage.getItem('dsh-wallpaper:settings')
+    const raw = readStoredSettingsDocument()
     if (raw) return normalizeSettings(JSON.parse(raw))
   } catch {
     /* 忽略损坏的配置 */

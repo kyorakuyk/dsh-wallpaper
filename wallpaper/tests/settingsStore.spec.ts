@@ -20,7 +20,7 @@ vi.stubGlobal('localStorage', {
 })
 
 const wallpaperRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const KEY = 'dsh-wallpaper:settings:v9'
+const KEY = 'dsh-wallpaper:settings:v10'
 
 /** A complete, valid settings object as the settings window would publish it. */
 const VALID: WallpaperSettings = {
@@ -54,7 +54,13 @@ const VALID: WallpaperSettings = {
     portraitDisplayId: 'DISPLAY1',
   },
   deepseekApi: { baseUrl: 'https://proxy.example.test/v1', model: 'deepseek-reasoner', priceInputPerMillion: 3, priceOutputPerMillion: 4 },
-  dshLaunch: { profile: 'desktop', rootPath: 'D:\\Family\\DeepSeekHarness', command: 'node bin.js' },
+  dshLaunch: {
+    profile: 'desktop',
+    rootPath: 'D:\\Family\\DeepSeekHarness',
+    command: 'node bin.js',
+    autoStartWithWallpaper: true,
+    trustedCommandForAutoStart: true,
+  },
 }
 
 afterEach(() => storage.clear())
@@ -161,6 +167,63 @@ describe('settings normalization boundary', () => {
     saveSettings({ ...VALID, animationSpeed: 'fast' as never })
     const stored = JSON.parse(storage.get(KEY) ?? '{}') as { animationSpeed?: unknown }
     expect(stored.animationSpeed).toBe(DEFAULT_SETTINGS.animationSpeed)
+  })
+
+  /**
+   * The version bump is the highest-risk part of adding a setting: a renamed
+   * storage key that is not back-read silently resets everything the user
+   * configured. These two tests pin the migration contract.
+   */
+  it('reads a v9 profile without losing the user configuration', () => {
+    const previous: Partial<WallpaperSettings> = {
+      ...VALID,
+      version: 9,
+      dshLaunch: { profile: 'work', rootPath: 'D:\\DSH', command: 'node custom.js' },
+    }
+    // Deliberately write the *old* key, as an upgraded install would have.
+    storage.set('dsh-wallpaper:settings:v9', JSON.stringify(previous))
+
+    const settings = loadSettings()
+    expect(settings.version).toBe(SETTINGS_VERSION)
+    // Everything the user had is preserved...
+    expect(settings.defaultBackend).toBe('deepseek-api')
+    expect(settings.modelTierRules).toEqual(VALID.modelTierRules)
+    expect(settings.bubbleOverrides).toEqual(VALID.bubbleOverrides)
+    expect(settings.multiScreen).toEqual(VALID.multiScreen)
+    expect(settings.dshLaunch.profile).toBe('work')
+    expect(settings.dshLaunch.rootPath).toBe('D:\\DSH')
+    expect(settings.dshLaunch.command).toBe('node custom.js')
+    // ...and the new flags arrive off, because starting a resident DSH
+    // unattended, and trusting a custom launcher with it, are both opt-in.
+    expect(settings.dshLaunch.autoStartWithWallpaper).toBe(false)
+    expect(settings.dshLaunch.trustedCommandForAutoStart).toBe(false)
+  })
+
+  it('migrates every historical storage key, newest first', () => {
+    // One representative setting per generation, so a key dropped from the
+    // migration chain shows up as a lost field rather than a passing test.
+    const generations: Array<[string, Partial<WallpaperSettings>]> = [
+      ['dsh-wallpaper:settings', { sleepHotkey: 'Ctrl+Alt+1' }],
+      ['dsh-wallpaper:settings:v2', { sleepHotkey: 'Ctrl+Alt+2' }],
+      ['dsh-wallpaper:settings:v3', { sleepHotkey: 'Ctrl+Alt+3' }],
+      ['dsh-wallpaper:settings:v4', { sleepHotkey: 'Ctrl+Alt+4' }],
+      ['dsh-wallpaper:settings:v5', { sleepHotkey: 'Ctrl+Alt+5' }],
+      ['dsh-wallpaper:settings:v6', { sleepHotkey: 'Ctrl+Alt+6' }],
+      ['dsh-wallpaper:settings:v7', { sleepHotkey: 'Ctrl+Alt+7' }],
+      ['dsh-wallpaper:settings:v8', { sleepHotkey: 'Ctrl+Alt+8' }],
+      ['dsh-wallpaper:settings:v9', { sleepHotkey: 'Ctrl+Alt+9' }],
+      [KEY, { sleepHotkey: 'Ctrl+Alt+10' }],
+    ]
+    for (const [key, patch] of generations) {
+      storage.clear()
+      storage.set(key, JSON.stringify({ ...DEFAULT_SETTINGS, ...patch }))
+      expect(loadSettings().sleepHotkey, `key ${key}`).toBe(patch.sleepHotkey)
+    }
+    // When several keys are present the newest one wins.
+    storage.clear()
+    storage.set('dsh-wallpaper:settings:v7', JSON.stringify({ ...DEFAULT_SETTINGS, sleepHotkey: 'Ctrl+Alt+old' }))
+    storage.set('dsh-wallpaper:settings:v9', JSON.stringify({ ...DEFAULT_SETTINGS, sleepHotkey: 'Ctrl+Alt:new' }))
+    expect(loadSettings().sleepHotkey).toBe('Ctrl+Alt:new')
   })
 })
 

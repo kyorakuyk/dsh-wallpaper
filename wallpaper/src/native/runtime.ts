@@ -16,6 +16,17 @@ export interface NativeSendOptions {
 export interface TranslucentTbStatus { installed: boolean; running: boolean; source?: string }
 export interface LockScreenDiagnostics { supported: boolean; packageIdentity: boolean; takeoverAvailable: boolean; originalImageUri?: string; backupExists: boolean; backupValid: boolean; staleBackup: boolean; managedImageReady: boolean; managedImageActive: boolean; developmentBuild: boolean; warnings: string[] }
 export interface ManagedDshStatus { managed: boolean; running: boolean; pid?: number; rootPath?: string; profile?: string }
+/**
+ * Outcome of the one automatic DSH start this process is allowed to attempt.
+ * `outcome` is a closed, non-sensitive code; `external` means port 3080 was
+ * already owned by someone else's DSH and was deliberately left alone.
+ */
+export interface ManagedDshAutostart {
+  outcome: 'started' | 'already-attempted' | 'root-path-missing' | 'root-path-invalid'
+    | 'launcher-missing' | 'profile-invalid' | 'port-occupied-external' | 'command-not-confirmed' | 'spawn-failed'
+  pid?: number
+  external: boolean
+}
 export interface AutostartStatus { enabled: boolean; source: 'startup-task' | 'run' | 'none' | 'disabled-by-user' | 'disabled-by-policy' | 'unsupported' }
 export interface DeepSeekWebStatus { state: 'loading' | 'logged-out' | 'ready' | 'generating' | 'unsupported'; conversationId?: string; model?: string; signature: string }
 export interface DeepSeekWebHistory { messages: ChatMessage[]; conversationId?: string; model?: string; state: DeepSeekWebStatus['state'] | 'loading' }
@@ -79,7 +90,8 @@ export interface NativeRuntime {
    */
   promptForApiKeyCredential(): Promise<boolean>
   requestDeepSeekLogin(): Promise<void>
-  releaseNativeBootstrap(): Promise<void>
+  nativeBootstrapGeneration(): Promise<number>
+  releaseNativeBootstrap(generation: number): Promise<boolean>
   ensureDeepSeekWeb(conversationId?: string, newConversation?: boolean): Promise<void>
   deepseekWebStatus(): Promise<DeepSeekWebStatus>
   deepseekWebHistory(conversationId?: string, newConversation?: boolean): Promise<DeepSeekWebHistory>
@@ -107,6 +119,17 @@ export interface NativeRuntime {
   desktopLayoutMetrics(displayId?: string): Promise<{ expandedBottomInset: number; taskbarVisible: boolean }>
   scanDshPaths(hintPath?: string, deepScan?: boolean): Promise<Array<{ rootPath: string; source: string }>>
   launchDsh(rootPath: string, profile: string, command?: string): Promise<number>
+  /**
+   * One automatic start attempt per process, with the outcome remembered even
+   * when it fails so a bad configuration cannot become a retry loop.
+   */
+  autostartManagedDsh(options: {
+    rootPath?: string
+    profile: string
+    command?: string
+    trustedCommand?: boolean
+  }): Promise<ManagedDshAutostart>
+  managedDshAutostartStatus(): Promise<ManagedDshAutostart | null>
   managedDshStatus(): Promise<ManagedDshStatus>
   stopManagedDsh(): Promise<void>
 }
@@ -172,10 +195,15 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('show_deepseek_login')
   },
-  async releaseNativeBootstrap() {
-    if (!await tauriAvailable()) return
+  async nativeBootstrapGeneration() {
+    if (!await tauriAvailable()) return 0
     const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('release_native_bootstrap')
+    return invoke<number>('native_bootstrap_generation')
+  },
+  async releaseNativeBootstrap(generation) {
+    if (!await tauriAvailable()) return true
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<boolean>('release_native_bootstrap', { generation })
   },
   async ensureDeepSeekWeb(conversationId, newConversation = false) {
     if (!await tauriAvailable()) return
@@ -351,6 +379,33 @@ export const nativeRuntime: NativeRuntime = {
   async launchDsh(rootPath, profile, command) {
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<number>('launch_dsh', { rootPath, profile, command })
+  },
+  /**
+   * Ask the native side to start the configured DSH once per process.
+   *
+   * Native state is the single-flight authority: the caller may be a remounted
+   * React tree, a second WebView, or an unlock broadcast, and all of them must
+   * observe the same first-and-only attempt. A `false` gate here is a shortcut,
+   * not the guarantee.
+   */
+  async autostartManagedDsh(options) {
+    if (!await tauriAvailable()) {
+      // A browser preview has no native shell to own the process. Report a
+      // terminal outcome instead of throwing into a boot path.
+      return { outcome: 'spawn-failed' as const, external: false }
+    }
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<ManagedDshAutostart>('autostart_managed_dsh', {
+      rootPath: options.rootPath,
+      profile: options.profile,
+      command: options.command,
+      trustedCommand: options.trustedCommand,
+    })
+  },
+  async managedDshAutostartStatus() {
+    if (!await tauriAvailable()) return null
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<ManagedDshAutostart | null>('managed_dsh_autostart_status')
   },
   async managedDshStatus() {
     const { invoke } = await import('@tauri-apps/api/core')

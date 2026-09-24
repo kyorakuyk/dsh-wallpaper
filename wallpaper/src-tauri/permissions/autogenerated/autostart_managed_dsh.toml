@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-autostart-managed-dsh"
+description = "Enables the autostart_managed_dsh command without any pre-configured scope."
+commands.allow = ["autostart_managed_dsh"]
+
+[[permission]]
+identifier = "deny-autostart-managed-dsh"
+description = "Denies the autostart_managed_dsh command without any pre-configured scope."
+commands.deny = ["autostart_managed_dsh"]

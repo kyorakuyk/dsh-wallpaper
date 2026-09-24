@@ -224,6 +224,35 @@ struct ManagedDshProcess {
 #[cfg(not(feature = "lite"))]
 struct ManagedDshState(Mutex<Option<ManagedDshProcess>>);
 
+/// Records the one automatic launch attempt this process is allowed to make.
+///
+/// The single-flight guarantee has to live here rather than in the renderer: a
+/// React remount, a `settings-changed` broadcast, an unlock, HMR, or a second
+/// WebView would each be a fresh caller, and only the process-wide state can
+/// enforce "start DSH at most once per wallpaper launch".
+#[cfg(not(feature = "lite"))]
+#[derive(Default)]
+struct ManagedDshAutostartState(Mutex<Option<ManagedDshAutostart>>);
+
+#[cfg(not(feature = "lite"))]
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedDshAutostart {
+    /// Stable, non-sensitive outcome code; never an exception body.
+    outcome: String,
+    /// Present only when this process actually spawned the child.
+    pid: Option<u32>,
+    /// True when an external DSH already owned 3080 and was left alone.
+    external: bool,
+}
+
+#[cfg(not(feature = "lite"))]
+impl ManagedDshAutostart {
+    fn new(outcome: &str) -> Self {
+        Self { outcome: outcome.into(), pid: None, external: false }
+    }
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg(not(feature = "lite"))]
@@ -284,6 +313,123 @@ fn launch_dsh(
     // action. Both declared surfaces may request a launch; process ownership
     // and all executable/profile validation remain native below.
     require_wallpaper_surface(&caller)?;
+    spawn_managed_dsh(state.inner(), &root_path, &profile, command.as_deref())
+}
+
+/// Launch DSH at most once per wallpaper process, for the
+/// `autoStartWithWallpaper` setting.
+///
+/// The outcome is remembered even when it is a failure, so a bad path or a
+/// missing Node install is reported once instead of being retried on every
+/// remount, broadcast, or unlock. DSH is a resident service: the user's next
+/// action is to fix the configuration in settings, not to watch the wallpaper
+/// spawn processes in a loop.
+///
+/// The automatic path deliberately refuses a user-supplied `command` unless the
+/// caller confirmed it: silently executing an arbitrary configured program at
+/// every login is a different trust decision from a button the user pressed.
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+fn autostart_managed_dsh(
+    caller: tauri::WebviewWindow,
+    state: tauri::State<'_, ManagedDshState>,
+    autostart: tauri::State<'_, ManagedDshAutostartState>,
+    root_path: Option<String>,
+    profile: String,
+    command: Option<String>,
+    trusted_command: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    require_background(&caller)?;
+    let mut record = autostart
+        .0
+        .lock()
+        .map_err(|_| "DSH 自动启动状态不可用".to_string())?;
+    if let Some(previous) = record.as_ref() {
+        // Already attempted in this process. Report the same outcome rather
+        // than trying again.
+        return Ok(serde_json::to_value(previous).unwrap_or_else(|_| serde_json::json!({ "outcome": "already-attempted" })));
+    }
+
+    let configured = command.as_deref().map(str::trim).filter(|value| !value.is_empty());
+    if configured.is_some() && trusted_command != Some(true) {
+        // Never silently run a custom launcher. The manual "启动" button keeps
+        // working; the automatic path needs an explicit confirmation.
+        let outcome = ManagedDshAutostart::new("command-not-confirmed");
+        *record = Some(outcome.clone());
+        return Ok(serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null));
+    }
+
+    // An external DSH on 3080 belongs to the user. Do not start a second one,
+    // do not take it over, and do not stop it: fall through to Bridge probing.
+    if dsh_port_is_occupied() {
+        let outcome = ManagedDshAutostart { outcome: "port-occupied-external".into(), pid: None, external: true };
+        *record = Some(outcome.clone());
+        return Ok(serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null));
+    }
+
+    let Some(root_path) = root_path.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) else {
+        let outcome = ManagedDshAutostart::new("root-path-missing");
+        *record = Some(outcome.clone());
+        return Ok(serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null));
+    };
+
+    let outcome = match spawn_managed_dsh(state.inner(), &root_path, &profile, configured) {
+        Ok(pid) => ManagedDshAutostart { outcome: "started".into(), pid: Some(pid), external: false },
+        Err(error) => {
+            log::warn!("wallpaper DSH autostart failed: {error}");
+            ManagedDshAutostart::new(&classify_dsh_launch_failure(&error))
+        }
+    };
+    *record = Some(outcome.clone());
+    Ok(serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null))
+}
+
+/// The only automatic-launch state a caller may observe later without
+/// triggering another attempt.
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+fn managed_dsh_autostart_status(
+    caller: tauri::WebviewWindow,
+    autostart: tauri::State<'_, ManagedDshAutostartState>,
+) -> Result<Option<serde_json::Value>, String> {
+    require_wallpaper_surface(&caller)?;
+    let record = autostart
+        .0
+        .lock()
+        .map_err(|_| "DSH 自动启动状态不可用".to_string())?;
+    Ok(record
+        .as_ref()
+        .and_then(|outcome| serde_json::to_value(outcome).ok()))
+}
+
+/// Map a launch failure to a stable code. The message may name a missing
+/// executable or an invalid directory, which the settings view needs in order
+/// to be actionable, but it must never carry a token or exception body.
+#[cfg(not(feature = "lite"))]
+fn classify_dsh_launch_failure(error: &str) -> String {
+    if error.contains("根目录") {
+        "root-path-invalid".into()
+    } else if error.contains("Node") || error.contains("pnpm") {
+        "launcher-missing".into()
+    } else if error.contains("profile") {
+        "profile-invalid".into()
+    } else if error.contains("3080") {
+        "port-occupied-external".into()
+    } else {
+        "spawn-failed".into()
+    }
+}
+
+/// Shared, validated launch path for the manual button and the autostart
+/// setting. Both callers get identical validation, ownership tracking and
+/// single-instance behaviour because there is only one implementation.
+#[cfg(not(feature = "lite"))]
+fn spawn_managed_dsh(
+    state: &ManagedDshState,
+    root_path: &str,
+    profile: &str,
+    command: Option<&str>,
+) -> Result<u32, String> {
     let root = std::fs::canonicalize(root_path.trim())
         .map_err(|_| "DSH 根目录不存在或不可访问".to_string())?;
     if !root.join("package.json").is_file() || !root.join("apps").join("cli").is_dir() {
@@ -297,10 +443,7 @@ fn launch_dsh(
     {
         return Err("DSH profile 只能包含字母、数字、连字符或下划线".into());
     }
-    let configured_launcher = command
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
+    let configured_launcher = command.map(str::trim).filter(|value| !value.is_empty());
     let bundled_cli = root.join("apps").join("cli").join("lib").join("bin.js");
     let use_bundled_cli = configured_launcher.is_none() && bundled_cli.is_file();
     let launcher = configured_launcher.unwrap_or(if use_bundled_cli {
@@ -2372,6 +2515,8 @@ macro_rules! register_edition_commands {
             autostart_status,
             scan_dsh_paths,
             launch_dsh,
+            autostart_managed_dsh,
+            managed_dsh_autostart_status,
             managed_dsh_status,
             stop_managed_dsh,
             translucent_tb_status,
@@ -2474,7 +2619,8 @@ fn run_with_edition(lite: bool) {
             ))
             .manage(chat::ChatState::default())
             .manage(deepseek_web::DeepSeekWebState::default())
-            .manage(ManagedDshState::default());
+            .manage(ManagedDshState::default())
+            .manage(ManagedDshAutostartState::default());
     }
 
     register_edition_commands!(builder)
