@@ -67,6 +67,7 @@ fn main() {
             "raise_client_window",
             "open_client_in_browser",
             "harness_endpoint_listening",
+            "harness_endpoint_window",
             "appearance_get_state",
             "appearance_list_themes",
             "appearance_list_assets",

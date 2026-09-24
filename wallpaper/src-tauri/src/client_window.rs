@@ -198,21 +198,21 @@ unsafe extern "system" fn find_top_level(hwnd: HWND, param: LPARAM) -> BOOL {
 pub fn raise_client_window(port: u16) -> RaiseOutcome {
     #[cfg(windows)]
     {
-        let Some(pid) = listener_pid(port) else {
-            return RaiseOutcome::not_running();
-        };
-        let mut search = TopLevelSearch { pid, found: None };
-        unsafe {
-            let _ = EnumWindows(Some(find_top_level), LPARAM(&mut search as *mut _ as isize));
-        }
-        let Some(hwnd) = search.found else {
-            return RaiseOutcome::no_window();
+        let Some(window) = window_for_endpoint(port) else {
+            // Distinguish "nothing there" from "there, but windowless": the two
+            // need different wording, and the second is the normal shape of the
+            // CLI/webui client.
+            return if endpoint_is_listening(port) {
+                RaiseOutcome::no_window()
+            } else {
+                RaiseOutcome::not_running()
+            };
         };
         unsafe {
             // A minimised client is restored before it is raised, otherwise
             // "bring it forward" visibly does nothing.
-            let _ = ShowWindow(hwnd, SW_RESTORE);
-            if SetForegroundWindow(hwnd).as_bool() {
+            let _ = ShowWindow(window, SW_RESTORE);
+            if SetForegroundWindow(window).as_bool() {
                 RaiseOutcome::raised()
             } else {
                 // Windows refuses foreground changes from a process that is not
@@ -228,6 +228,140 @@ pub fn raise_client_window(port: u16) -> RaiseOutcome {
         let _ = port;
         RaiseOutcome::no_window()
     }
+}
+
+/// The visible top-level window belonging to the client behind `port`.
+///
+/// Walks the owning process and its ancestors, because the process that *listens*
+/// is not always the process that *owns the window*. Measured on this machine: the
+/// official desktop shell's listener (pid 16720) and both of its children reported
+/// zero visible top-level windows while the shell's UI was up, so assuming the
+/// listener owns the window would have refused to raise a window that exists.
+///
+/// Search order is nearest-first: the owning process, then its parent chain. The
+/// listener is the most precise answer, and an ancestor is only a fallback for
+/// this split-process shape.
+pub fn window_for_endpoint(port: u16) -> Option<HWND> {
+    #[cfg(windows)]
+    {
+        let Some(pid) = listener_pid(port) else {
+            return None;
+        };
+        for candidate in ancestor_chain(pid, MAX_ANCESTOR_DEPTH) {
+            if let Some(window) = first_visible_window(candidate) {
+                return Some(window);
+            }
+        }
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = port;
+        None
+    }
+}
+
+/// How far up the process tree to look. A desktop client's UI is at most a couple
+/// of levels above the process holding the socket; a deeper walk would risk
+/// raising an unrelated window from a shared launcher.
+const MAX_ANCESTOR_DEPTH: usize = 4;
+
+/// The process itself, then each ancestor, bounded by `max_depth`.
+///
+/// An ancestor is only followed while its executable name matches the process we
+/// started from. Measured on this machine, the official shell's window belongs to
+/// a parent process *of the same executable*; without the same-name rule the walk
+/// reaches `explorer.exe` two levels up and could raise the desktop's own window —
+/// a shared launcher is an ancestor of many processes, so following it is not
+/// evidence that it belongs to this client.
+#[cfg(windows)]
+fn ancestor_chain(pid: u32, max_depth: usize) -> Vec<u32> {
+    let mut chain = vec![pid];
+    let Some(original_name) = process_name(pid) else {
+        return chain;
+    };
+    let mut current = pid;
+    for _ in 0..max_depth {
+        let Some(parent) = parent_pid(current) else { break };
+        // A zero parent means the root, and a cycle must not loop forever.
+        if parent == 0 || chain.contains(&parent) {
+            break;
+        }
+        // Stop at a different executable: it is not this client.
+        if process_name(parent).as_deref() != Some(original_name.as_str()) {
+            break;
+        }
+        chain.push(parent);
+        current = parent;
+    }
+    chain
+}
+
+/// The executable's file name, lower-cased so the comparison is case-insensitive
+/// and so the same product installed under two directories still matches.
+#[cfg(windows)]
+fn process_name(pid: u32) -> Option<String> {
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buffer = [0u16; 260];
+        let mut size = buffer.len() as u32;
+        let result = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_FORMAT(0),
+            windows::core::PWSTR(buffer.as_mut_ptr()),
+            &mut size,
+        );
+        let _ = windows::Win32::Foundation::CloseHandle(handle);
+        result.ok()?;
+        let path = String::from_utf16_lossy(&buffer[..size as usize]);
+        Some(
+            std::path::Path::new(&path)
+                .file_name()
+                .map(|name| name.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_else(|| path.to_ascii_lowercase()),
+        )
+    }
+}
+
+#[cfg(windows)]
+fn parent_pid(pid: u32) -> Option<u32> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut result = None;
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                if entry.th32ProcessID == pid {
+                    result = Some(entry.th32ParentProcessID);
+                    break;
+                }
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = windows::Win32::Foundation::CloseHandle(snapshot);
+        result
+    }
+}
+
+#[cfg(windows)]
+fn first_visible_window(pid: u32) -> Option<HWND> {
+    let mut search = TopLevelSearch { pid, found: None };
+    unsafe {
+        let _ = EnumWindows(Some(find_top_level), LPARAM(&mut search as *mut _ as isize));
+    }
+    search.found
 }
 
 /// Whether anything is listening on the port at all, without resolving a window.

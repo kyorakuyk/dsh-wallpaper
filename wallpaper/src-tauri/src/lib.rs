@@ -2717,6 +2717,19 @@ fn harness_endpoint_listening(caller: tauri::WebviewWindow, port: u16) -> Result
     Ok(client_window::endpoint_is_listening(port))
 }
 
+/// Whether an endpoint has a window that *could* be raised.
+///
+/// Separate from raising so the UI can label the action honestly before the user
+/// presses it, and so this machine's split-process shape can be checked without
+/// disturbing whatever window is on screen. Measured here: the process that
+/// listens is not always the process that owns the window.
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+fn harness_endpoint_window(caller: tauri::WebviewWindow, port: u16) -> Result<bool, String> {
+    require_wallpaper_surface(&caller)?;
+    Ok(client_window::window_for_endpoint(port).is_some())
+}
+
 #[cfg(not(feature = "lite"))]
 fn start_harness_monitor(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -2892,6 +2905,7 @@ macro_rules! register_edition_commands {
             raise_client_window,
             open_client_in_browser,
             harness_endpoint_listening,
+            harness_endpoint_window,
             appearance::commands::appearance_get_state,
             appearance::commands::appearance_list_themes,
             appearance::commands::appearance_list_assets,

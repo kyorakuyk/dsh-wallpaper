@@ -369,6 +369,12 @@
           "markdownDescription": "Enables the harness_endpoint_listening command without any pre-configured scope."
         },
         {
+          "description": "Enables the harness_endpoint_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-harness-endpoint-window",
+          "markdownDescription": "Enables the harness_endpoint_window command without any pre-configured scope."
+        },
+        {
           "description": "Enables the harness_history command without any pre-configured scope.",
           "type": "string",
           "const": "allow-harness-history",
@@ -805,6 +811,12 @@
           "type": "string",
           "const": "deny-harness-endpoint-listening",
           "markdownDescription": "Denies the harness_endpoint_listening command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the harness_endpoint_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-harness-endpoint-window",
+          "markdownDescription": "Denies the harness_endpoint_window command without any pre-configured scope."
         },
         {
           "description": "Denies the harness_history command without any pre-configured scope.",

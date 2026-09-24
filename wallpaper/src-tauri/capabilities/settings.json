@@ -21,6 +21,7 @@
     "allow-raise-client-window",
     "allow-open-client-in-browser",
     "allow-harness-endpoint-listening",
+    "allow-harness-endpoint-window",
     "allow-launch-dsh",
     "allow-managed-dsh-status",
     "allow-stop-managed-dsh",
