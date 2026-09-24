@@ -124,16 +124,35 @@ Then confirm from the status response that `bridgeVersion`/`bridgeBuild` changed
 rather than trusting the local build output. The wallpaper never runs package
 management on its own; updating a profile is a user action.
 
-The procedure was verified end to end in a throwaway profile: after
-`dsh plugin --profile desktop install`, the profile's
-`node_modules/dsh-wallpaper-bridge/lib/index.js` SHA-256 matched the source build
-exactly, and it remains a real copy rather than a link. Two things that will bite
-an automated run:
+The procedure was verified end to end in a throwaway profile, and the result was
+then confirmed against a real running DSH rather than only by hashing files: with
+the refreshed profile, `/api/wallpaper/v1/status` returned the new contract —
+
+```json
+{"bridgeVersion":"0.1.1","bridgeBuild":"dev","protocolVersion":1,"dsh":"online",
+ "authoredAgainst":"^0.1.0-rc.5","state":"bridge-ready","reasonCode":"ready",
+ "capabilities":["status","control","sessions","history","sse","cancel",
+                 "approval-handoff","resume"],"authentication":"ready"}
+```
+
+Before the refresh that same endpoint returned only
+`bridgeVersion/protocolVersion/dsh/capabilities/authentication` — no `state`, no
+`reasonCode`, no `authoredAgainst`, and a `bridgeVersion` of `1.1.0`. So the
+refresh is what makes the new diagnostics observable, and it is also how a stale
+copy is told apart from a current one.
+
+Three things that will bite an automated or relocated attempt:
 
 - **pnpm aborts without a TTY.** If pnpm decides the modules directory must be
   recreated it fails with
   `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`. Run it in a terminal, or set
   `CI=true` for the command.
+- **A plain install may not refresh the copy.** When the `file:` resolution has
+  not changed, pnpm considers the dependency satisfied and leaves the installed
+  copy alone — measured: the first attempt left the old hash in place. Use
+  `pnpm install --force` (or `pnpm update dsh-wallpaper-bridge`) when the profile
+  copy must actually move to the current build, then confirm the hash or the
+  status response changed rather than assuming it did.
 - **`file:` dependencies resolve relative to `$DSH_HOME\profiles`, not to the
   profile.** This profile's spec is `file:C:/DeepSeekHarness/plugins/...`, an
   absolute path that also works as a relative one from `$DSH_HOME\profiles`.
