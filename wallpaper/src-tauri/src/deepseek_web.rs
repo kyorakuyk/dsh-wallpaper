@@ -1417,7 +1417,17 @@ pub async fn send(
             if attempt > 0 {
                 tokio::time::sleep(Duration::from_millis(80)).await;
             }
-            action = eval_json(&window, &configured_script(TRIGGER_SEND_SCRIPT, &config)?).await?;
+            // Split, so a failure names itself instead of vanishing into `?`:
+            // both calls sit between the prepare log and the attempt log, and an
+            // early return there looked like "the send silently did nothing".
+            let trigger_script = match configured_script(TRIGGER_SEND_SCRIPT, &config) {
+                Ok(script) => script,
+                Err(error) => { log::warn!("deepseek web trigger script build failed: {error}"); return Err(error); }
+            };
+            action = match eval_json(&window, &trigger_script).await {
+                Ok(value) => value,
+                Err(error) => { log::warn!("deepseek web trigger eval failed: {error}"); return Err(error); }
+            };
             // Every attempt is recorded, not only the successful one: a control the
             // page ignores must be visible as a failing attempt.
             log::info!("deepseek web trigger attempt {}: ok={} reason={}", attempt, action.ok, action.reason);
