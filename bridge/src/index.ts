@@ -1080,7 +1080,8 @@ export function apply(ctx: Context, config: Config = {}): void {
         if (!bearerAuthorized(req.headers.authorization, token)) return json(res, 401, { error: 'unauthorized' })
         const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname
         try {
-          if (pathname === `${API_PREFIX}/control/presets` && req.method === 'GET') {
+          if (pathname === `${API_PREFIX}/control/presets`) {
+          if (req.method !== 'GET') return json(res, 405, { error: 'method-not-allowed' })
           const presets = await host.presetDirectory()
           const defaultPresetId = host.defaultPresetId()
           // Preset composition paths are host-private. Expose only the
@@ -1098,7 +1099,11 @@ export function apply(ctx: Context, config: Config = {}): void {
           }
           const presetSwitch = pathname.match(new RegExp(`^${API_PREFIX}/control/sessions/([^/]+)/preset$`))
           const sessionControls = pathname.match(new RegExp(`^${API_PREFIX}/control/sessions/([^/]+)$`))
-          if (sessionControls && req.method === 'GET') {
+          if (sessionControls) {
+            // A known path with the wrong verb is a client error (405), not a
+            // missing route (404). The session scope already answered this way,
+            // so the two halves of the same interface must agree.
+            if (req.method !== 'GET') return json(res, 405, { error: 'method-not-allowed' })
             const sessionId = decodeURIComponent(sessionControls[1] ?? '')
             if (!isSafeSessionId(sessionId)) return json(res, 400, { error: 'invalid-session-id' })
             const entry = live.get(sessionId)
@@ -1115,7 +1120,8 @@ export function apply(ctx: Context, config: Config = {}): void {
             })
           }
           const permissionSwitch = pathname.match(new RegExp(`^${API_PREFIX}/control/sessions/([^/]+)/permission$`))
-          if (permissionSwitch && req.method === 'POST') {
+          if (permissionSwitch) {
+            if (req.method !== 'POST') return json(res, 405, { error: 'method-not-allowed' })
             const sessionId = decodeURIComponent(permissionSwitch[1] ?? '')
             if (!isSafeSessionId(sessionId)) return json(res, 400, { error: 'invalid-session-id' })
             const entry = live.get(sessionId)
@@ -1126,7 +1132,8 @@ export function apply(ctx: Context, config: Config = {}): void {
             host.setPermission(entry.handle.agent.session, permission)
             return json(res, 200, { sessionId, permission })
           }
-          if (!presetSwitch || req.method !== 'POST') return json(res, 404, { error: 'not-found' })
+          if (!presetSwitch) return json(res, 404, { error: 'not-found' })
+          if (req.method !== 'POST') return json(res, 405, { error: 'method-not-allowed' })
           const sessionId = decodeURIComponent(presetSwitch[1] ?? '')
           if (!isSafeSessionId(sessionId)) return json(res, 400, { error: 'invalid-session-id' })
           const entry = live.get(sessionId)

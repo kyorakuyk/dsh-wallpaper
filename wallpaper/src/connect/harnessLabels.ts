@@ -16,7 +16,11 @@ export const HARNESS_STATE_DETAILS: Record<HarnessAvailability, string> = {
   'web-only': '检测到 DSH 服务，但壁纸 Bridge 未安装、未启动或不兼容。',
   'bridge-loading': 'DSH 壁纸 Bridge 已启动，正在装载会话服务。',
   'bridge-auth-unavailable': 'DSH 壁纸 Bridge 已启动，但本机访问令牌不可用，请重启壁纸应用。',
-  'bridge-incompatible': 'DSH 壁纸 Bridge 的版本或能力与本壁纸不兼容，请更新 Bridge 后重试。',
+  // A Bridge that is present but answers an older or narrower contract lands
+  // here, which is the common "stale copy in the profile" case rather than a
+  // hypothetical future version. Name the installation, not just "version
+  // mismatch", so the user knows the fix is to update the Bridge plugin.
+  'bridge-incompatible': 'DSH 壁纸 Bridge 的版本或能力与本壁纸不兼容（profile 内可能是过旧的副本），请更新 Bridge 后重试。',
   'bridge-ready': '',
 }
 

@@ -285,6 +285,20 @@ async function call(
   return captured
 }
 
+/**
+ * Drive one status request so token provisioning completes, then read the token.
+ * The status route `await`s the provisioning task, which is why it is the
+ * supported way to get a token without duplicating the fixture's setup.
+ */
+async function provisionToken(
+  tokenFile: string,
+  statusRoute: ((req: IncomingMessage, res: ServerResponse) => void | Promise<void>) | undefined,
+): Promise<string> {
+  const status = await call(statusRoute, request('GET', `${API_PREFIX}/status`))
+  expect(status.status).toBe(200)
+  return (await readFile(tokenFile, 'utf8')).trim()
+}
+
 describe('wallpaper bridge HTTP routes', () => {
   it('describes the desktop entry and its default capability boundary to DSH', () => {
     const prompt = desktopEntryPrompt('C:\\workspace\\dsh-wallpaper-desktop', '桌面会话', 'workspace-write')
@@ -601,6 +615,36 @@ describe('wallpaper bridge HTTP routes', () => {
       sessionId: 'host-owned-cwd',
       meta: { cwd: harness.workspace.path, agentPreset: 'standard' },
     }))
+  })
+
+  it('distinguishes a wrong method from a missing route across the whole interface', async () => {
+    // The session scope answered 405 for a known path with the wrong verb while
+    // the control scope answered 404, so the same client mistake produced two
+    // different codes depending on which half of `/control` vs `/sessions` it
+    // hit. Both halves must agree: 404 means "no such route", 405 means "not
+    // with that verb".
+    const harness = await createHarness(true)
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+    const token = await provisionToken(harness.tokenFile, statusRoute)
+    const auth = `Bearer ${token}`
+
+    const cases: Array<[string, ReturnType<typeof request>, string, number]> = [
+      // Known session routes, wrong verb -> 405.
+      ['sessions collection', request('GET', `${API_PREFIX}/sessions`, undefined, auth), `${API_PREFIX}/sessions`, 405],
+      // Known control routes, wrong verb -> 405.
+      ['presets', request('POST', `${API_PREFIX}/control/presets`, {}, auth), `${API_PREFIX}/control`, 405],
+      // Unknown paths under a registered prefix -> 404.
+      ['unknown control path', request('GET', `${API_PREFIX}/control/nope`, undefined, auth), `${API_PREFIX}/control`, 404],
+      ['unknown session path', request('GET', `${API_PREFIX}/sessions/abc/unknown`, undefined, auth), `${API_PREFIX}/sessions`, 404],
+      // A live session's knowable routes, wrong verb -> 405 rather than 404.
+      ['session preset', request('GET', `${API_PREFIX}/control/sessions/wallpaper-test/preset`, undefined, auth), `${API_PREFIX}/control`, 405],
+      ['session permission', request('GET', `${API_PREFIX}/control/sessions/wallpaper-test/permission`, undefined, auth), `${API_PREFIX}/control`, 405],
+    ]
+    for (const [label, req, path, expected] of cases) {
+      const response = await call(harness.routes.get(path), req)
+      expect(response.status, `${label}: ${response.body}`).toBe(expected)
+      expect(JSON.parse(response.body).error, label).toBe(expected === 405 ? 'method-not-allowed' : 'not-found')
+    }
   })
 
   it('single-flights concurrent creation of the same live session', async () => {

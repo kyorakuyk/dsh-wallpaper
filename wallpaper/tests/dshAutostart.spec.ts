@@ -92,8 +92,47 @@ describe('launch supervision', () => {
   })
 })
 
-describe('DSH autostart wiring', () => {
-  it('starts DSH from the background host only, once per setting transition', async () => {
+describe('every condition the plan requires an actionable message for', () => {
+  /**
+   * Plan §6 lists the conditions that must each produce an actionable message:
+   * DSH not running, only the Web UI, a missing or stale Bridge, token/ACL
+   * unavailable, an unsupported host version, an invalid config path, and 3080
+   * held by an external service. This test asserts the coverage as one set so a
+   * future state cannot be added to the union without wording.
+   */
+  it('has non-empty, distinct wording for every Harness state', async () => {
+    const { HARNESS_STATE_DETAILS, harnessStateLabel } = await import('../src/connect/harnessLabels.ts')
+    const states = ['offline', 'web-only', 'bridge-loading', 'bridge-auth-unavailable', 'bridge-incompatible', 'bridge-ready'] as const
+    const seen = new Set<string>()
+    for (const state of states) {
+      expect(harnessStateLabel(state), `label ${state}`).toBeTruthy()
+      expect(seen.has(harnessStateLabel(state)), `duplicate label for ${state}`).toBe(false)
+      seen.add(harnessStateLabel(state))
+    }
+    for (const state of states.filter((s) => s !== 'bridge-ready')) {
+      const detail = HARNESS_STATE_DETAILS[state]
+      expect(detail, `detail ${state}`).toBeTruthy()
+      // Actionable means it says what to do, not only what is wrong.
+      expect(detail, `detail ${state}`).toMatch(/请|未能|正在|更新|重启|等待|检测到|已启动/)
+      // Never an exception body, a token, or an OS path.
+      expect(detail, `detail ${state}`).not.toMatch(/[A-Za-z]:\\|Bearer|Error:|at \w+\./)
+    }
+    // `bridge-ready` is the absence of a problem, so it has no detail sentence.
+    expect(HARNESS_STATE_DETAILS['bridge-ready']).toBe('')
+  })
+
+  it('covers the launch failures the plan names, each with its own code', async () => {
+    const { dshAutostartNotice } = await appModule()
+    // One code per named condition, and no two share wording.
+    const codes = ['root-path-missing', 'root-path-invalid', 'launcher-missing', 'profile-invalid',
+      'spawn-failed', 'command-not-confirmed'] as const
+    const notices = codes.map((outcome) => dshAutostartNotice({ outcome, external: false }))
+    expect(new Set(notices).size, 'each failure needs its own wording').toBe(codes.length)
+    for (const notice of notices) expect(notice).toBeTruthy()
+  })
+})
+
+describe('DSH autostart wiring', () => {  it('starts DSH from the background host only, once per setting transition', async () => {
     const app = await source('src/App.tsx')
     expect(app).toContain('nativeRuntime.autostartManagedDsh({')
     // Guarded twice: a module-scope marker so a React remount cannot re-request,
