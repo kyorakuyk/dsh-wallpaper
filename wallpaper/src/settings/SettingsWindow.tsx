@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { appCoreClient } from '../runtime/appCoreClient.ts'
 import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
 import { loadSettings, saveSettings, type WallpaperSettings } from './store.ts'
-import { SettingsPanel } from './SettingsPanel.tsx'
+import { SettingsPanel, type SettingsPanelHarnessStatus } from './SettingsPanel.tsx'
 import {
   createProbeScheduler,
   createSettingsProbeController,
@@ -23,7 +23,7 @@ import './SettingsWindow.css'
 export function SettingsWindow() {
   const [settings, setSettings] = useState<WallpaperSettings>(() => loadSettings())
   const [page, setPage] = useState<SettingsPage>('general')
-  const [harness, setHarness] = useState<'offline' | 'web-only' | 'bridge-ready'>('offline')
+  const [harness, setHarness] = useState<SettingsPanelHarnessStatus>('offline')
   const [interactionEnabled, setInteractionEnabled] = useState(true)
   const [translucentTb, setTranslucentTb] = useState<TranslucentTbStatus>({ installed: false, running: false })
   const [dshCandidates, setDshCandidates] = useState<Array<{ rootPath: string; source: string }>>([])

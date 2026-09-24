@@ -1,6 +1,13 @@
 import type { Activity, BackendMode, SystemPhase } from '../domain/types.ts'
+import type { HarnessAvailability } from '../connect/harness.ts'
 
-export type HarnessAvailability = 'offline' | 'web-only' | 'bridge-ready'
+/**
+ * The snapshot carries the same Harness state the probe produces. Re-exported
+ * rather than redeclared: two independent unions previously drifted here (this
+ * file knew only three of the states), which is how "the Bridge answered but is
+ * not usable" kept collapsing into a single misleading label.
+ */
+export type { HarnessAvailability }
 
 export interface InteractionSnapshot {
   enabled: boolean
@@ -23,6 +30,8 @@ export interface AppSnapshot {
   backend: BackendMode
   activity: Activity
   harness: HarnessAvailability
+  /** Stable, non-sensitive reason for a non-ready Harness state. */
+  harnessReasonCode?: string
   wallpaperHost: WallpaperHostSnapshot
   interaction: InteractionSnapshot
   privacyScreen: boolean

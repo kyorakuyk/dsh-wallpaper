@@ -7,6 +7,7 @@ import { ConversationBubble } from './chat/ConversationBubble.tsx'
 import type { BackendMode, ChatMessage, ChatQuestion, RuntimeState, TokenUsage } from './domain/types.ts'
 import { personaIdFor, resolveModelTier } from './domain/modelTier.ts'
 import { isHarnessReady, monitorHarness } from './connect/harness.ts'
+import { HARNESS_STATE_DETAILS } from './connect/harnessLabels.ts'
 import { PersonaRegistry } from './persona/registry.ts'
 import { IdleScene } from './scenes/IdleScene.tsx'
 import { MultiScreenIdleScene } from './scenes/MultiScreenIdleScene.tsx'
@@ -16,6 +17,7 @@ import { WakeScene } from './scenes/WakeScene.tsx'
 import { INITIAL_RUNTIME_STATE, reduceRuntime } from './scenes/stateMachine.ts'
 import { BACKGROUND_OPTIONS, applyBubbleOverrides, assetUrl, loadSettings, localCalendarDay, normalizeReceivedSettings, resumeConversationId, saveConversationPointer, type WallpaperSettings } from './settings/store.ts'
 import { nativeRuntime, type DesktopDisplayInfo, type NativeSendOptions } from './native/runtime.ts'
+import { reportNativeBootstrapReady } from './native/bootstrapHandoff.ts'
 import { listen } from '@tauri-apps/api/event'
 import type { AppSurface } from './surface.ts'
 import { beginInteractionRegionSession, collectInteractionRegions, publishInteractionRegions } from './runtime/interactionRegions.ts'
@@ -82,11 +84,15 @@ export function canSelectBackend(
   return backend !== 'harness' || isHarnessReady(availability)
 }
 
+/**
+ * One sentence per Harness state, so the composer notice and the bubble badge
+ * cannot describe the same condition differently. Defined in
+ * `connect/harnessLabels.ts`; re-exported here for existing importers.
+ */
+export { HARNESS_STATE_DETAILS, harnessStateLabel } from './connect/harnessLabels.ts'
+
 export function harnessSelectionUnavailableError(availability: RuntimeState['harness']): string {
-  const detail = availability === 'web-only'
-    ? '检测到 DSH 服务，但壁纸 Bridge 未安装、未启动或不兼容。'
-    : '未能连接到本机的 DSH 壁纸 Bridge。'
-  return `${HARNESS_DISCONNECTED_ERROR_PREFIX}${detail} Harness 模式只能在兼容 Bridge 就绪后切换。`
+  return `${HARNESS_DISCONNECTED_ERROR_PREFIX}${HARNESS_STATE_DETAILS[availability]} Harness 模式只能在兼容 Bridge 就绪后切换。`
 }
 
 /**
@@ -234,12 +240,9 @@ export function harnessAvailabilityPatch(
   }
   if (currentError?.startsWith(HARNESS_DISCONNECTED_ERROR_PREFIX)) return undefined
 
-  const detail = availability === 'web-only'
-    ? '检测到 DSH 服务，但壁纸 Bridge 未安装、未启动或不兼容。'
-    : '未能连接到本机的 DSH 壁纸 Bridge。'
   return {
     activity: 'idle',
-    error: `${HARNESS_DISCONNECTED_ERROR_PREFIX}${detail} 已保留当前 Harness 会话和对话记录；Bridge 恢复后可继续，或由你手动切换后端。`,
+    error: `${HARNESS_DISCONNECTED_ERROR_PREFIX}${HARNESS_STATE_DETAILS[availability]} 已保留当前 Harness 会话和对话记录；Bridge 恢复后可继续，或由你手动切换后端。`,
   }
 }
 
@@ -266,6 +269,7 @@ export function App({ surface = 'combined' }: AppProps) {
   const [selectedPreset, setSelectedPreset] = useState<string>()
   const [harnessControls, setHarnessControls] = useState<{ permission: { current: string; options: string[] }; commands: Array<{ name: string; description: string; input?: { hint: string } }> }>()
   const [harnessStarting, setHarnessStarting] = useState(false)
+  const [nativeHandoffGeneration, setNativeHandoffGeneration] = useState<number>()
   const harnessLaunchPendingRef = useRef(false)
   const harnessLaunchStartedAtRef = useRef<number>()
   const adapterRef = useRef<ChatAdapter>(new PreviewAdapter(settings.defaultBackend))
@@ -292,6 +296,31 @@ export function App({ surface = 'combined' }: AppProps) {
   activeBackendRef.current = runtime.backend
   const runtimeRef = useRef(runtime)
   runtimeRef.current = runtime
+
+  useEffect(() => {
+    if (!nativeRuntime.isNative) return
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void listen<number>('native-handoff-generation', (event) => {
+      setNativeHandoffGeneration((current) => Math.max(current ?? 0, event.payload))
+    }).then((dispose) => {
+      if (disposed) dispose()
+      else unlisten = dispose
+    }).catch((error) => console.warn('native hand-off generation listener failed', error))
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!nativeRuntime.isNative) return
+    let disposed = false
+    void nativeRuntime.nativeBootstrapGeneration().then((generation) => {
+      if (!disposed) setNativeHandoffGeneration((current) => Math.max(current ?? 0, generation))
+    }).catch((error) => console.warn('native hand-off generation query failed', error))
+    return () => { disposed = true }
+  }, [runtime.phase])
   const appSnapshotRevisionRef = useRef(-1)
   /**
    * Streaming text arrives one delta per model chunk. Committing each of them
@@ -423,23 +452,19 @@ export function App({ surface = 'combined' }: AppProps) {
     }
   }
 
-  // Keep the native hand-off layer alive while the unlock animation is
-  // starting. It is hidden only after the renderer paints the matching first
-  // wake frame, or after a no-animation boot settles into idle.
+  // The native cover is released only when the active idle scene's images
+  // decode and Rust confirms the current WebView/cover host, geometry, and Z
+  // order. A stale phase or host generation is discarded.
   useEffect(() => {
-    if (!nativeRuntime.isNative || runtime.phase !== 'idle') return
-    let firstFrame = 0
-    let secondFrame = 0
-    firstFrame = requestAnimationFrame(() => {
-      secondFrame = requestAnimationFrame(() => {
-        void nativeRuntime.releaseNativeBootstrap().catch((error) => patchRuntime({ error: String(error) }))
+    if (!nativeRuntime.isNative || runtime.phase !== 'idle' || nativeHandoffGeneration === undefined) return
+    const controller = new AbortController()
+    void reportNativeBootstrapReady(nativeHandoffGeneration, { signal: controller.signal })
+      .then((released) => {
+        if (!released && !controller.signal.aborted) console.warn('native hand-off remains covered until its host or renderer is ready')
       })
-    })
-    return () => {
-      cancelAnimationFrame(firstFrame)
-      cancelAnimationFrame(secondFrame)
-    }
-  }, [runtime.phase])
+      .catch((error) => console.warn('native hand-off readiness check failed', error))
+    return () => controller.abort()
+  }, [nativeHandoffGeneration, runtime.phase])
 
   useEffect(() => {
     if (!appCoreClient.native) {
@@ -935,9 +960,10 @@ export function App({ surface = 'combined' }: AppProps) {
       const wakeProps = {
         persona,
         startIndex: 1,
+        handoffGeneration: nativeHandoffGeneration,
         enabled: settings.animationsEnabled && !settings.skipWakeAnimation,
         speed: settings.animationSpeed,
-        onFirstWakeFrame: () => { void nativeRuntime.releaseNativeBootstrap().catch((error) => patchRuntime({ error: String(error) })) },
+        onFirstWakeFrame: (generation: number) => reportNativeBootstrapReady(generation, { verifySceneImages: false }),
         onWakeDone: () => { baseDispatch({ type: 'WAKE_DONE' }); dispatchCore('wake-done') },
       }
       return multiScreenActive

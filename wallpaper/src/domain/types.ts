@@ -12,6 +12,12 @@ export type ModelTier = 'flash' | 'pro' | 'unknown'
 export type Activity = 'idle' | 'sending' | 'thinking' | 'streaming' | 'tool' | 'done'
 export type ConversationPolicy = 'resume-last' | 'new-on-unlock' | 'daily'
 
+/**
+ * Re-exported so domain consumers do not need to reach into `connect/harness`.
+ * The definition, the reason codes and the status interpreter all live there.
+ */
+export type { HarnessAvailability } from '../connect/harness.ts'
+
 export interface TokenUsage {
   input: number
   output: number
@@ -85,6 +91,8 @@ export interface RuntimeState {
   provider?: string
   reasoningEffort?: string
   historyExpanded: boolean
-  harness: 'offline' | 'web-only' | 'bridge-ready'
+  harness: import('../connect/harness.ts').HarnessAvailability
+  /** Stable, non-sensitive reason for a non-ready Harness state. */
+  harnessReasonCode?: string
   error?: string
 }

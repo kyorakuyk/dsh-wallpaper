@@ -1,7 +1,6 @@
 #[cfg(not(feature = "lite"))]
 mod api_persistence;
 mod app_core;
-mod desktop_fallback;
 #[cfg(not(feature = "lite"))]
 mod appearance;
 #[cfg(not(feature = "lite"))]
@@ -10,13 +9,15 @@ mod chat;
 mod deepseek_web;
 #[cfg(not(feature = "lite"))]
 mod deepseek_web_config;
+mod desktop_fallback;
 mod lock_screen_backup;
 mod native_bootstrap;
+mod native_handoff;
 mod windows_integration;
 
-use app_core::{Activity, AppAction, AppCore, AppSnapshot, HarnessAvailability};
 #[cfg(not(feature = "lite"))]
 use app_core::BackendMode;
+use app_core::{Activity, AppAction, AppCore, AppSnapshot, HarnessAvailability};
 #[cfg(not(feature = "lite"))]
 use std::collections::{HashSet, VecDeque};
 #[cfg(not(feature = "lite"))]
@@ -56,11 +57,7 @@ fn is_dsh_root(path: &Path) -> bool {
 }
 
 #[cfg(not(feature = "lite"))]
-fn enqueue_dsh_scan_root(
-    queue: &mut VecDeque<(PathBuf, u8, String)>,
-    path: PathBuf,
-    source: &str,
-) {
+fn enqueue_dsh_scan_root(queue: &mut VecDeque<(PathBuf, u8, String)>, path: PathBuf, source: &str) {
     if !path.as_os_str().is_empty() && path.is_dir() {
         queue.push_back((path, 0, source.to_string()));
     }
@@ -153,7 +150,10 @@ fn scan_dsh_paths_blocking(hint_path: Option<String>, deep_scan: bool) -> Vec<Ds
         };
         for entry in entries.flatten() {
             let child = entry.path();
-            if entry.file_type().map(|value| value.is_dir()).unwrap_or(false)
+            if entry
+                .file_type()
+                .map(|value| value.is_dir())
+                .unwrap_or(false)
                 && !should_skip_dsh_scan_directory(&child)
             {
                 queue.push_back((child, depth.saturating_add(1), source.clone()));
@@ -181,8 +181,14 @@ fn resolve_dsh_launcher(value: &str) -> Option<PathBuf> {
     #[cfg(windows)]
     {
         for candidate in [
-            std::env::var_os("ProgramFiles").map(|root| PathBuf::from(root).join("nodejs").join(value)),
-            std::env::var_os("LOCALAPPDATA").map(|root| PathBuf::from(root).join("Programs").join("nodejs").join(value)),
+            std::env::var_os("ProgramFiles")
+                .map(|root| PathBuf::from(root).join("nodejs").join(value)),
+            std::env::var_os("LOCALAPPDATA").map(|root| {
+                PathBuf::from(root)
+                    .join("Programs")
+                    .join("nodejs")
+                    .join(value)
+            }),
             std::env::var_os("APPDATA").map(|root| PathBuf::from(root).join("npm").join(value)),
         ]
         .into_iter()
@@ -260,8 +266,8 @@ async fn scan_dsh_paths(
     tauri::async_runtime::spawn_blocking(move || {
         scan_dsh_paths_blocking(hint_path, deep_scan.unwrap_or(false))
     })
-        .await
-        .map_err(|error| format!("扫描 DSH 未完成：{error}"))
+    .await
+    .map_err(|error| format!("扫描 DSH 未完成：{error}"))
 }
 
 #[tauri::command]
@@ -324,9 +330,7 @@ fn launch_dsh(
         }
     }
     if dsh_port_is_occupied() {
-        return Err(
-            "本机 3080 端口已被其他进程占用；请先关闭已有 DSH，再启动配置的 DSH。".into(),
-        );
+        return Err("本机 3080 端口已被其他进程占用；请先关闭已有 DSH，再启动配置的 DSH。".into());
     }
     let mut launch = std::process::Command::new(launcher_path);
     if use_bundled_cli {
@@ -598,9 +602,20 @@ fn open_settings_window(caller: tauri::WebviewWindow, app: tauri::AppHandle) -> 
 }
 
 #[tauri::command]
-fn release_native_bootstrap(caller: tauri::WebviewWindow) -> Result<(), String> {
+fn native_bootstrap_generation(caller: tauri::WebviewWindow) -> Result<u64, String> {
     require_background(&caller)?;
-    native_bootstrap::release()
+    let generation = native_bootstrap::generation();
+    native_bootstrap::record_startup_diagnostic(&format!(
+        "event=handoff-generation-query generation={generation}"
+    ));
+    Ok(generation)
+}
+
+#[tauri::command]
+fn release_native_bootstrap(caller: tauri::WebviewWindow, generation: u64) -> Result<bool, String> {
+    require_background(&caller)?;
+    let raw = caller.hwnd().map_err(|error| error.to_string())?;
+    native_bootstrap::release(generation, raw.0 as isize)
 }
 
 #[tauri::command]
@@ -709,6 +724,9 @@ fn dispatch_app_action(
         "set-harness" => AppAction::SetHarnessAvailability(match value.as_deref() {
             Some("offline") => HarnessAvailability::Offline,
             Some("web-only") => HarnessAvailability::WebOnly,
+            Some("bridge-loading") => HarnessAvailability::BridgeLoading,
+            Some("bridge-auth-unavailable") => HarnessAvailability::BridgeAuthUnavailable,
+            Some("bridge-incompatible") => HarnessAvailability::BridgeIncompatible,
             Some("bridge-ready") => HarnessAvailability::BridgeReady,
             _ => return Err("invalid harness availability".into()),
         }),
@@ -881,13 +899,13 @@ fn lite_image_import(
 ) -> Result<(), String> {
     require_settings(&caller)?;
     let slot = lite_image_slot_name(slot.trim())?;
-    let source = std::fs::canonicalize(path.trim())
-        .map_err(|error| format!("无法读取所选图片：{error}"))?;
+    let source =
+        std::fs::canonicalize(path.trim()).map_err(|error| format!("无法读取所选图片：{error}"))?;
     if !source.is_file() {
         return Err("所选路径不是图片文件。".into());
     }
-    let metadata = std::fs::metadata(&source)
-        .map_err(|error| format!("无法读取图片大小：{error}"))?;
+    let metadata =
+        std::fs::metadata(&source).map_err(|error| format!("无法读取图片大小：{error}"))?;
     if metadata.len() > 32 * 1024 * 1024 {
         return Err("图片不能超过 32 MB。".into());
     }
@@ -898,8 +916,7 @@ fn lite_image_import(
     let backup = directory.join(format!(".{slot}-{}.bak", std::process::id()));
     let _ = std::fs::remove_file(&temporary);
     let _ = std::fs::remove_file(&backup);
-    std::fs::copy(&source, &temporary)
-        .map_err(|error| format!("无法导入图片：{error}"))?;
+    std::fs::copy(&source, &temporary).map_err(|error| format!("无法导入图片：{error}"))?;
     // Remove only the old, known slot files after the new copy has completed;
     // a failed copy therefore leaves the previous valid asset untouched.
     for old_extension in ["png", "jpg", "webp"] {
@@ -993,8 +1010,14 @@ mod lite_asset_tests {
 
     #[test]
     fn accepts_only_supported_lite_image_extensions() {
-        assert_eq!(lite_image_extension(std::path::Path::new("wallpaper.PNG")), Ok("png"));
-        assert_eq!(lite_image_extension(std::path::Path::new("portrait.jpeg")), Ok("jpg"));
+        assert_eq!(
+            lite_image_extension(std::path::Path::new("wallpaper.PNG")),
+            Ok("png")
+        );
+        assert_eq!(
+            lite_image_extension(std::path::Path::new("portrait.jpeg")),
+            Ok("jpg")
+        );
         assert!(lite_image_extension(std::path::Path::new("payload.exe")).is_err());
     }
 
@@ -1524,9 +1547,7 @@ fn hide_settings_window(caller: tauri::WebviewWindow, app: tauri::AppHandle) -> 
         .get_webview_window(SETTINGS_WINDOW_LABEL)
         .ok_or_else(|| "settings window missing".to_string())?;
     if is_lite_edition() {
-        window
-            .destroy()
-            .map_err(|error| error.to_string())
+        window.destroy().map_err(|error| error.to_string())
     } else {
         window.hide().map_err(|error| error.to_string())
     }
@@ -1559,7 +1580,10 @@ fn desktop_layout_metrics(
     display_id: Option<String>,
 ) -> Result<windows_integration::DesktopLayoutMetrics, String> {
     require_background(&caller)?;
-    Ok(windows_integration::desktop_layout_metrics(&caller, display_id.as_deref()))
+    Ok(windows_integration::desktop_layout_metrics(
+        &caller,
+        display_id.as_deref(),
+    ))
 }
 
 #[tauri::command]
@@ -1581,18 +1605,16 @@ async fn send_chat(
 ) -> Result<Option<String>, String> {
     require_background(&caller)?;
     match mode.as_str() {
-        "deepseek-web" => {
-            deepseek_web::send(
-                app,
-                web_state.inner(),
-                text,
-                conversation_id,
-                request_id,
-                new_conversation.unwrap_or(false),
-            )
-            .await
-            .map(Some)
-        }
+        "deepseek-web" => deepseek_web::send(
+            app,
+            web_state.inner(),
+            text,
+            conversation_id,
+            request_id,
+            new_conversation.unwrap_or(false),
+        )
+        .await
+        .map(Some),
         "deepseek-api" => chat::send_api(
             app,
             state,
@@ -1801,54 +1823,129 @@ fn harness_probe_client() -> Option<&'static reqwest::Client> {
 /// optional DSH persistence feature and cannot be required for a new session.
 #[cfg(not(feature = "lite"))]
 fn compatible_harness_bridge_status(data: &serde_json::Value) -> Option<serde_json::Value> {
+    let status = diagnose_harness_bridge_status(data)?;
+    if status
+        .get("availability")
+        .and_then(serde_json::Value::as_str)
+        == Some("bridge-ready")
+    {
+        Some(status)
+    } else {
+        None
+    }
+}
+
+/// Interpret one Bridge `/status` document into a diagnostic state.
+///
+/// This is the native mirror of the renderer's `interpretHarnessBridgeStatus`
+/// and must agree with it: both sides exist (the renderer needs a browser
+/// preview fallback) and a divergence would show the user two different
+/// explanations of one failure.
+///
+/// Returns `None` only when the document is not a Bridge status at all, which
+/// is what lets the caller fall back to the root-page probe. A Bridge that
+/// answers but is unusable yields a *state*, never `None`: "the Bridge is still
+/// loading", "its token is unavailable" and "it is not the Bridge we expect"
+/// need three different user actions, and the previous boolean answer collapsed
+/// all of them into `web-only`.
+#[cfg(not(feature = "lite"))]
+fn diagnose_harness_bridge_status(data: &serde_json::Value) -> Option<serde_json::Value> {
     let protocol_version = data
         .get("protocolVersion")
         .and_then(serde_json::Value::as_u64)?;
-    if protocol_version != HARNESS_BRIDGE_PROTOCOL_VERSION {
-        return None;
-    }
     if data.get("dsh").and_then(serde_json::Value::as_str) != Some("online") {
         return None;
+    }
+
+    let optional_string = |field: &str| -> Option<String> {
+        data.get(field)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+
+    let mut status = serde_json::Map::new();
+    // These are informational only.  Do not let malformed optional metadata
+    // make a diagnostic unusable, or expose non-string JSON to the UI.
+    for field in [
+        "bridgeVersion",
+        "bridgeBuild",
+        "model",
+        "provider",
+        "reasoningEffort",
+    ] {
+        if let Some(value) = optional_string(field) {
+            status.insert(field.into(), serde_json::Value::String(value));
+        }
+    }
+    status.insert("protocolVersion".into(), serde_json::json!(protocol_version));
+
+    let set_state = |status: &mut serde_json::Map<String, serde_json::Value>,
+                     availability: &str,
+                     reason_code: &str| {
+        status.insert(
+            "availability".into(),
+            serde_json::Value::String(availability.into()),
+        );
+        status.insert(
+            "reasonCode".into(),
+            serde_json::Value::String(reason_code.into()),
+        );
+    };
+
+    if protocol_version != HARNESS_BRIDGE_PROTOCOL_VERSION {
+        set_state(&mut status, "bridge-incompatible", "protocol-version-mismatch");
+        return Some(serde_json::Value::Object(status));
     }
     if data
         .get("authentication")
         .and_then(serde_json::Value::as_str)
         != Some("ready")
     {
-        return None;
+        // The reason vocabulary belongs to the consumer, not to the payload: a
+        // Bridge reporting `state: bridge-ready` while its token is missing must
+        // not have that stale `reasonCode` describe the failure.
+        set_state(&mut status, "bridge-auth-unavailable", "token-unavailable");
+        return Some(serde_json::Value::Object(status));
     }
 
-    let capabilities = data
+    // A malformed or absent capability list is unsafe to read as "no
+    // capabilities". The document identified itself as a Bridge, so the honest
+    // answer is that it is incompatible, not that it does not exist.
+    let capability_list: Option<Vec<&str>> = data
         .get("capabilities")
-        .and_then(serde_json::Value::as_array)?;
-    // A malformed capability list must not accidentally pass because it has a
-    // few expected string values mixed with arbitrary JSON.
-    if !capabilities.iter().all(serde_json::Value::is_string) {
-        return None;
-    }
-    if !REQUIRED_HARNESS_BRIDGE_CAPABILITIES.iter().all(|required| {
-        capabilities
-            .iter()
-            .any(|capability| capability.as_str() == Some(*required))
-    }) {
-        return None;
+        .and_then(serde_json::Value::as_array)
+        .filter(|capabilities| capabilities.iter().all(serde_json::Value::is_string))
+        .map(|capabilities| capabilities.iter().filter_map(|v| v.as_str()).collect());
+    let Some(capability_list) = capability_list else {
+        set_state(&mut status, "bridge-incompatible", "capabilities-missing");
+        return Some(serde_json::Value::Object(status));
+    };
+    let has_every_capability = REQUIRED_HARNESS_BRIDGE_CAPABILITIES
+        .iter()
+        .all(|required| capability_list.contains(required));
+    if has_every_capability {
+        status.insert(
+            "availability".into(),
+            serde_json::Value::String("bridge-ready".into()),
+        );
+        return Some(serde_json::Value::Object(status));
     }
 
-    let mut status = serde_json::Map::new();
-    status.insert(
-        "availability".into(),
-        serde_json::Value::String("bridge-ready".into()),
-    );
-    // These are informational only.  Do not let malformed optional metadata
-    // make a compatible bridge unusable, or expose non-string JSON to the UI.
-    for field in ["bridgeVersion", "model", "provider", "reasoningEffort"] {
-        if let Some(value) = data
-            .get(field)
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-        {
-            status.insert(field.into(), serde_json::Value::String(value.into()));
-        }
+    // A Bridge that names itself as still composing its service set is loading;
+    // waiting is the right action. Anything else that lacks a required
+    // capability cannot be fixed by waiting, so it is incompatible.
+    if optional_string("state").as_deref() == Some("bridge-loading") {
+        // The loading reason vocabulary is closed and owned by the consumer, so
+        // a stale payload reason (for example `ready` from an earlier status)
+        // can never be rendered as the explanation for a wait.
+        let reason = optional_string("reasonCode")
+            .filter(|value| value == "services-pending" || value.starts_with("waiting:"))
+            .unwrap_or_else(|| "services-pending".into());
+        set_state(&mut status, "bridge-loading", &reason);
+    } else {
+        set_state(&mut status, "bridge-incompatible", "capabilities-missing");
     }
     Some(serde_json::Value::Object(status))
 }
@@ -1865,7 +1962,9 @@ async fn fetch_harness_status() -> serde_json::Value {
     {
         if response.status().is_success() {
             if let Ok(data) = response.json::<serde_json::Value>().await {
-                if let Some(status) = compatible_harness_bridge_status(&data) {
+                // Keep the Bridge's own diagnosis: it is strictly more
+                // specific than a root-page guess, so never downgrade it.
+                if let Some(status) = diagnose_harness_bridge_status(&data) {
                     return status;
                 }
             }
@@ -1882,10 +1981,11 @@ async fn fetch_harness_status() -> serde_json::Value {
         // successful request. Authentication failures and error pages must
         // not turn an unrelated process on 3080 into a misleading “DSH
         // online” state.
-        HarnessAvailability::WebOnly => serde_json::json!({ "availability": "web-only" }),
-        HarnessAvailability::Offline | HarnessAvailability::BridgeReady => {
-            serde_json::json!({ "availability": "offline" })
-        }
+        HarnessAvailability::WebOnly => serde_json::json!({
+            "availability": "web-only",
+            "reasonCode": "bridge-status-missing",
+        }),
+        _ => serde_json::json!({ "availability": "offline" }),
     }
 }
 
@@ -1904,16 +2004,21 @@ fn root_probe_availability(status: Option<reqwest::StatusCode>) -> HarnessAvaila
 #[cfg(test)]
 #[cfg(not(feature = "lite"))]
 mod harness_status_tests {
-    use super::{compatible_harness_bridge_status, root_probe_availability};
+    use super::{compatible_harness_bridge_status, diagnose_harness_bridge_status, root_probe_availability};
     use crate::app_core::HarnessAvailability;
     use serde_json::json;
 
     fn valid_status() -> serde_json::Value {
         json!({
-            "bridgeVersion": "1.0.0",
+            "bridgeVersion": "0.1.1",
+            "bridgeBuild": "dev",
             "protocolVersion": 1,
             "dsh": "online",
+            "state": "bridge-ready",
+            "reasonCode": "ready",
             "capabilities": [
+                "status",
+                "control",
                 "sessions",
                 "resume",
                 "history",
@@ -1933,7 +2038,8 @@ mod harness_status_tests {
     fn accepts_only_a_ready_compatible_bridge() {
         let status = compatible_harness_bridge_status(&valid_status()).expect("compatible status");
         assert_eq!(status["availability"], "bridge-ready");
-        assert_eq!(status["bridgeVersion"], "1.0.0");
+        assert_eq!(status["bridgeVersion"], "0.1.1");
+        assert_eq!(status["bridgeBuild"], "dev");
         assert_eq!(status["provider"], "deepseek");
         assert_eq!(status["model"], "deepseek-chat");
         assert_eq!(status["reasoningEffort"], "high");
@@ -1950,52 +2056,140 @@ mod harness_status_tests {
     }
 
     #[test]
-    fn rejects_incompatible_or_unready_status_documents() {
-        let invalid_statuses = [
+    fn a_document_without_a_bridge_identity_is_not_a_bridge() {
+        // These must stay `None` so the caller falls back to the root probe.
+        // Reporting a Bridge state for an unrelated service on 3080 would be a
+        // wrong diagnosis, not a conservative one.
+        for document in [
             json!({}),
-            json!({
-                "protocolVersion": 2,
-                "dsh": "online",
-                "capabilities": ["sessions", "resume", "history", "sse", "cancel", "approval-handoff"],
-                "authentication": "ready"
-            }),
-            json!({
-                "protocolVersion": "1",
-                "dsh": "online",
-                "capabilities": ["sessions", "resume", "history", "sse", "cancel", "approval-handoff"],
-                "authentication": "ready"
-            }),
-            json!({
-                "protocolVersion": 1,
-                "dsh": "offline",
-                "capabilities": ["sessions", "resume", "history", "sse", "cancel", "approval-handoff"],
-                "authentication": "ready"
-            }),
-            json!({
-                "protocolVersion": 1,
-                "dsh": "online",
-                "capabilities": ["sessions", "resume", "history", "sse", "cancel"],
-                "authentication": "ready"
-            }),
-            json!({
-                "protocolVersion": 1,
-                "dsh": "online",
-                "capabilities": ["sessions", "resume", "history", "sse", "cancel", "approval-handoff", 3],
-                "authentication": "ready"
-            }),
-            json!({
-                "protocolVersion": 1,
-                "dsh": "online",
-                "capabilities": ["sessions", "resume", "history", "sse", "cancel", "approval-handoff"],
-                "authentication": "unavailable"
-            }),
-        ];
-
-        for document in invalid_statuses {
+            json!({ "status": "unrelated-service" }),
+            json!({ "protocolVersion": 1 }),
+            json!({ "dsh": "online" }),
+            json!({ "protocolVersion": "1", "dsh": "online", "capabilities": [], "authentication": "ready" }),
+            json!({ "protocolVersion": 1, "dsh": "offline", "capabilities": [], "authentication": "ready" }),
+        ] {
             assert!(
-                compatible_harness_bridge_status(&document).is_none(),
-                "unexpected compatible status: {document}"
+                diagnose_harness_bridge_status(&document).is_none(),
+                "unexpected diagnosis: {document}"
             );
+            assert!(compatible_harness_bridge_status(&document).is_none());
+        }
+    }
+
+    #[test]
+    fn names_the_layer_that_is_unusable() {
+        // A protocol this wallpaper cannot speak.
+        let incompatible = diagnose_harness_bridge_status(&json!({
+            "protocolVersion": 2,
+            "dsh": "online",
+            "capabilities": ["sessions", "history", "sse", "cancel", "approval-handoff"],
+            "authentication": "ready"
+        }))
+        .expect("diagnosis");
+        assert_eq!(incompatible["availability"], "bridge-incompatible");
+        assert_eq!(incompatible["reasonCode"], "protocol-version-mismatch");
+
+        // Mounted, but its token is unavailable. The payload's stale
+        // `reasonCode` must not describe this failure.
+        let auth = diagnose_harness_bridge_status(&json!({
+            "protocolVersion": 1,
+            "dsh": "online",
+            "state": "bridge-ready",
+            "reasonCode": "ready",
+            "capabilities": ["sessions", "history", "sse", "cancel", "approval-handoff"],
+            "authentication": "unavailable"
+        }))
+        .expect("diagnosis");
+        assert_eq!(auth["availability"], "bridge-auth-unavailable");
+        assert_eq!(auth["reasonCode"], "token-unavailable");
+
+        // Still composing: waiting is the right action.
+        let loading = diagnose_harness_bridge_status(&json!({
+            "protocolVersion": 1,
+            "dsh": "online",
+            "state": "bridge-loading",
+            "reasonCode": "services-pending",
+            "capabilities": ["status"],
+            "authentication": "ready"
+        }))
+        .expect("diagnosis");
+        assert_eq!(loading["availability"], "bridge-loading");
+        assert_eq!(loading["reasonCode"], "services-pending");
+
+        // A capability set that will never satisfy the wallpaper, and no
+        // promise that it is still growing.
+        let missing = diagnose_harness_bridge_status(&json!({
+            "protocolVersion": 1,
+            "dsh": "online",
+            "state": "bridge-ready",
+            "capabilities": ["sessions", "history", "sse", "cancel"],
+            "authentication": "ready"
+        }))
+        .expect("diagnosis");
+        assert_eq!(missing["availability"], "bridge-incompatible");
+        assert_eq!(missing["reasonCode"], "capabilities-missing");
+    }
+
+    #[test]
+    fn a_loading_reason_is_only_accepted_from_the_closed_vocabulary() {
+        // A stale `ready` left over from an earlier status must not be rendered
+        // as the explanation for a wait.
+        let stale = diagnose_harness_bridge_status(&json!({
+            "protocolVersion": 1,
+            "dsh": "online",
+            "state": "bridge-loading",
+            "reasonCode": "ready",
+            "capabilities": ["status"],
+            "authentication": "ready"
+        }))
+        .expect("diagnosis");
+        assert_eq!(stale["reasonCode"], "services-pending");
+
+        // A specific waiting reason from the same vocabulary is preserved.
+        let specific = diagnose_harness_bridge_status(&json!({
+            "protocolVersion": 1,
+            "dsh": "online",
+            "state": "bridge-loading",
+            "reasonCode": "waiting:workspaceRegistry",
+            "capabilities": ["status"],
+            "authentication": "ready"
+        }))
+        .expect("diagnosis");
+        assert_eq!(specific["reasonCode"], "waiting:workspaceRegistry");
+    }
+
+    #[test]
+    fn reads_a_legacy_bridge_that_predates_the_state_field() {
+        // An older installed copy announces neither `state` nor `reasonCode`.
+        let mut legacy = valid_status();
+        legacy.as_object_mut().expect("object").remove("state");
+        legacy.as_object_mut().expect("object").remove("reasonCode");
+        legacy.as_object_mut().expect("object").remove("bridgeBuild");
+        let status = compatible_harness_bridge_status(&legacy).expect("legacy bridge is usable");
+        assert_eq!(status["availability"], "bridge-ready");
+        assert!(status.get("bridgeBuild").is_none());
+
+        // An incomplete legacy capability set is incompatible rather than
+        // "loading", because nothing in the document says it intends to finish.
+        let mut legacy_partial = legacy.clone();
+        legacy_partial["capabilities"] = json!(["sessions"]);
+        let partial = diagnose_harness_bridge_status(&legacy_partial).expect("diagnosis");
+        assert_eq!(partial["availability"], "bridge-incompatible");
+        assert_eq!(partial["reasonCode"], "capabilities-missing");
+    }
+
+    #[test]
+    fn a_malformed_capability_list_is_incompatible_not_absent() {
+        // The document identified itself as a Bridge, so the honest answer is
+        // that it is unusable rather than that it does not exist.
+        for capabilities in [json!(["sessions", 3]), json!("sessions"), json!(null)] {
+            let mut document = valid_status();
+            document["capabilities"] = capabilities.clone();
+            let diagnosis = diagnose_harness_bridge_status(&document)
+                .unwrap_or_else(|| panic!("expected a diagnosis for {capabilities}"));
+            assert_eq!(diagnosis["availability"], "bridge-incompatible");
+            assert_eq!(diagnosis["reasonCode"], "capabilities-missing");
+            assert!(compatible_harness_bridge_status(&document).is_none());
         }
     }
 
@@ -2051,52 +2245,67 @@ fn start_harness_monitor(app: tauri::AppHandle) {
         let mut consecutive_successes = 0u8;
         let mut consecutive_failures = 0u8;
         let mut last = HarnessAvailability::Offline;
+        let mut last_reason: Option<String> = None;
         loop {
             let status = fetch_harness_status().await;
             if let Ok(mut cache) = harness_status_cache().write() {
                 *cache = status.clone();
             }
+            // Keep the reason code with the state: a diagnostic without its
+            // cause is not actionable, and publishing them separately would let
+            // a stale reason describe a newer state.
+            let reason = status
+                .get("reasonCode")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
             let observed = match status
                 .get("availability")
                 .and_then(serde_json::Value::as_str)
             {
                 Some("bridge-ready") => HarnessAvailability::BridgeReady,
+                Some("bridge-loading") => HarnessAvailability::BridgeLoading,
+                Some("bridge-auth-unavailable") => HarnessAvailability::BridgeAuthUnavailable,
+                Some("bridge-incompatible") => HarnessAvailability::BridgeIncompatible,
                 Some("web-only") => HarnessAvailability::WebOnly,
                 _ => HarnessAvailability::Offline,
             };
-            // A compatible Bridge is the only successful probe. `web-only`
-            // remains useful diagnostic information, but must settle through
-            // the same failure path as offline so a stale ready state cannot
-            // keep Harness selectable after the bridge disappears.
+            // A compatible Bridge is the only successful probe. Every other
+            // state, including `web-only` and `bridge-loading`, remains useful
+            // diagnostic information but must settle through the same failure
+            // path so a stale ready state cannot keep Harness selectable after
+            // the bridge disappears.
             let bridge_ready = observed == HarnessAvailability::BridgeReady;
-            if bridge_ready {
+            let changed = last != observed || last_reason != reason;
+            let settled = if bridge_ready {
                 consecutive_successes = consecutive_successes.saturating_add(1);
                 consecutive_failures = 0;
-                if consecutive_successes >= 2 && last != observed {
-                    log::info!("harness availability changed: {:?} -> {:?}", last, observed);
-                    last = observed;
-                    if let Some(core) = app.try_state::<AppCore>() {
-                        let snapshot = core.dispatch(AppAction::SetHarnessAvailability(observed));
-                        emit_app_snapshot(&app, &snapshot);
-                    }
-                }
+                consecutive_successes >= 2
             } else {
                 consecutive_failures = consecutive_failures.saturating_add(1);
                 consecutive_successes = 0;
-                if consecutive_failures >= 3 && last != observed {
-                    log::info!("harness availability changed: {:?} -> {:?}", last, observed);
-                    last = observed;
-                    if let Some(core) = app.try_state::<AppCore>() {
-                        let snapshot = core.dispatch(AppAction::SetHarnessAvailability(observed));
-                        emit_app_snapshot(&app, &snapshot);
-                    }
+                consecutive_failures >= 3
+            };
+            if changed && settled {
+                log::info!(
+                    "harness availability changed: {:?} -> {:?} (reason {:?})",
+                    last,
+                    observed,
+                    reason
+                );
+                last = observed;
+                last_reason = reason.clone();
+                if let Some(core) = app.try_state::<AppCore>() {
+                    let snapshot = core.dispatch(AppAction::SetHarnessDiagnostic {
+                        availability: observed,
+                        reason_code: reason,
+                    });
+                    emit_app_snapshot(&app, &snapshot);
                 }
             }
-            // An offline machine does not need a tight retry loop. The old
-            // two-second cadence made a resident wallpaper open two timed-out
-            // loopback requests repeatedly and filled the Trace-level log.
-            let delay = if !bridge_ready { 5 } else { 5 };
-            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            // A resident wallpaper must not hammer a dead loopback port. A
+            // single cadence also keeps the two stabilisation thresholds
+            // comparable in wall-clock time.
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
     });
 }
@@ -2137,6 +2346,7 @@ macro_rules! register_edition_commands {
             launch_translucent_tb,
             open_translucent_tb_install,
             open_windows_lock_screen_settings,
+            native_bootstrap_generation,
             release_native_bootstrap,
             start_settings_drag,
             hide_settings_window
@@ -2170,6 +2380,7 @@ macro_rules! register_edition_commands {
             open_windows_lock_screen_settings,
             prompt_for_api_key,
             show_deepseek_login,
+            native_bootstrap_generation,
             release_native_bootstrap,
             deepseek_web_ensure,
             deepseek_web_status,
@@ -2242,8 +2453,8 @@ fn run_with_edition(lite: bool) {
     // capability files do not grant them to either Lite WebView.
     #[cfg(not(feature = "lite"))]
     {
-        let appearance_paths = appearance::AppearancePaths::from_local_app_data()
-            .expect("local app data unavailable");
+        let appearance_paths =
+            appearance::AppearancePaths::from_local_app_data().expect("local app data unavailable");
         appearance_paths
             .create()
             .expect("failed to create appearance directories");
@@ -2268,7 +2479,7 @@ fn run_with_edition(lite: bool) {
 
     register_edition_commands!(builder)
         .setup(move |app| {
-            native_bootstrap::report_ready();
+            native_bootstrap::report_tauri_ready();
             if let Err(error) = windows_integration::start_wallpaper_host(app.handle().clone()) {
                 log::error!("WorkerW wallpaper host failed: {error}");
             }
@@ -2326,7 +2537,11 @@ fn run_with_edition(lite: bool) {
             };
             let mut tray = TrayIconBuilder::with_id("dsh-wallpaper")
                 .menu(&menu)
-                .tooltip(if lite { "DSH Wallpaper Lite" } else { "DSH Wallpaper" })
+                .tooltip(if lite {
+                    "DSH Wallpaper Lite"
+                } else {
+                    "DSH Wallpaper"
+                })
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => {
@@ -2392,7 +2607,10 @@ fn run_with_edition(lite: bool) {
         .build(tauri::generate_context!())
         .expect("failed to build dsh-wallpaper")
         .run(|app, event| {
-            if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
                 shutdown_native_state(app);
             }
         });
@@ -2423,6 +2641,7 @@ fn shutdown_native_state(app: &tauri::AppHandle) {
 
         // 3. Stop only the DSH child this process launched. An external DSH on
         //    3080 belongs to the user and is never touched.
+        #[cfg(not(feature = "lite"))]
         if let Some(state) = app.try_state::<ManagedDshState>() {
             if let Ok(mut managed) = state.0.lock() {
                 if let Some(mut process) = managed.take() {

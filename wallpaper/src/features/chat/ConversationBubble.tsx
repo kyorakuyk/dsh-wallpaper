@@ -3,6 +3,7 @@ import type { Activity, BackendMode, ChatMessage, RuntimeState, TokenUsage } fro
 import { Button, Glass, Icon } from '../../ui/primitives/index.ts'
 import { BACKEND_PRESENTATION, composerPlaceholder, formatCost, isBusyActivity, sessionCostSummary, turnUsageSummary } from './conversationViewModel.ts'
 import { growHistoryWindow, historyWindow, HISTORY_RENDER_WINDOW } from './streamRender.ts'
+import { harnessStateLabel } from '../../connect/harnessLabels.ts'
 import './ConversationBubble.css'
 
 /** Optional speaker labels for themes that want explicit attribution. */
@@ -90,12 +91,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const turnUsage = turnUsageSummary(props.usage, props.backend, Boolean(props.apiPricingConfigured))
   const harnessAvailability = props.harnessAvailability ?? 'offline'
   const harnessReady = harnessAvailability === 'bridge-ready'
-  const harnessLabel = props.harnessStarting ? 'DSH 正在启动'
-    : harnessAvailability === 'bridge-ready'
-    ? 'DSH Bridge 已连接'
-    : harnessAvailability === 'web-only'
-      ? 'DSH 在线，缺少壁纸 Bridge'
-      : 'DSH Bridge 离线'
+  const harnessLabel = props.harnessStarting ? 'DSH 正在启动' : harnessStateLabel(harnessAvailability)
   const showHistory = props.historyExpanded
   const today = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(new Date())
   const historyView = useMemo(() => historyWindow(props.messages.length, historyLimit), [props.messages.length, historyLimit])

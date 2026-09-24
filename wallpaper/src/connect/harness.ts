@@ -1,20 +1,61 @@
-export type HarnessAvailability = 'offline' | 'web-only' | 'bridge-ready'
-export interface HarnessStatus { availability: HarnessAvailability; bridgeVersion?: string; model?: string; provider?: string; reasoningEffort?: string }
+/**
+ * The single definition of "is this Bridge response usable?".
+ *
+ * Historically this file answered a boolean question, so every imperfect answer
+ * collapsed into the same two states (`web-only` / `offline`). When the Bridge
+ * reported itself ready before its session routes were mounted, a user saw
+ * "DSH online, missing Bridge" for what was actually a loading race, and a
+ * broken revision looked identical to a Bridge that was never installed.
+ *
+ * The interpreter below returns a *diagnostic* state instead. `bridge-ready`
+ * keeps its exact old meaning (the only state that may send a message), and
+ * every other outcome now names the layer that is not usable yet.
+ */
+
+export type HarnessAvailability =
+  | 'offline'
+  | 'web-only'
+  | 'bridge-loading'
+  | 'bridge-auth-unavailable'
+  | 'bridge-incompatible'
+  | 'bridge-ready'
+
+export interface HarnessStatus {
+  availability: HarnessAvailability
+  /** Stable, non-sensitive reason for a non-ready state. */
+  reasonCode?: string
+  bridgeVersion?: string
+  /** Non-sensitive build identifier, so an old installed Bridge is identifiable. */
+  bridgeBuild?: string
+  protocolVersion?: number
+  model?: string
+  provider?: string
+  reasoningEffort?: string
+}
 
 /**
- * A process listening on 3080 is not sufficient to create a wallpaper
- * session.  Keep this small predicate as the single browser-side definition
- * of Harness usability so prompts, automatic selection, and probe settling
- * cannot accidentally disagree.
+ * A process listening on 3080 is not sufficient to create a wallpaper session.
+ * Keep this small predicate as the single browser-side definition of Harness
+ * usability so prompts, automatic selection, and probe settling cannot
+ * accidentally disagree.
  */
 export function isHarnessReady(availability: HarnessAvailability): boolean {
   return availability === 'bridge-ready'
 }
 
-// Keep this browser-preview fallback aligned with the native monitor. A local
-// HTTP 200 is not enough to enable Harness: port 3080 may be DSH's regular
-// web UI, an older bridge, or an unrelated local service.
+/** True for any state where a Bridge process answered but is not usable yet. */
+export function isHarnessBridgePresent(availability: HarnessAvailability): boolean {
+  return availability !== 'offline' && availability !== 'web-only'
+}
+
 const HARNESS_BRIDGE_PROTOCOL_VERSION = 1
+
+/**
+ * Capabilities required before the desktop may create or drive a session.
+ * `resume` is deliberately optional: DSH only exposes it when its optional
+ * session-persistence service is installed, and its absence must not make an
+ * otherwise usable Harness mode disappear.
+ */
 const REQUIRED_HARNESS_BRIDGE_CAPABILITIES = [
   'sessions',
   'history',
@@ -29,37 +70,121 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined
 }
 
+function optionalString(document: Record<string, unknown>, field: string): string | undefined {
+  const value = document[field]
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+function withIdentity(status: HarnessStatus, document: Record<string, unknown>): HarnessStatus {
+  const identity: HarnessStatus = { ...status }
+  for (const field of ['bridgeVersion', 'bridgeBuild', 'model', 'provider', 'reasoningEffort'] as const) {
+    const value = optionalString(document, field)
+    if (value) identity[field] = value
+  }
+  if (typeof document.protocolVersion === 'number') identity.protocolVersion = document.protocolVersion
+  return identity
+}
+
 /**
- * Accept only the versioned bridge contract required to create a fresh native
- * Harness session. `resume` is deliberately optional: DSH only exposes it
- * when its optional session-persistence service is installed, and absence of
- * that service must not make otherwise usable Harness mode disappear.
+ * Interpret one `/api/wallpaper/v1/status` body.
+ *
+ * Returns `undefined` when the document is not a Bridge status at all (wrong
+ * shape), which is what lets the caller fall back to the root-page probe.
+ * A Bridge that answers but is unusable returns a *state*, never `undefined`:
+ * "the Bridge is loading" and "there is no Bridge" need different user action.
+ */
+export function interpretHarnessBridgeStatus(data: unknown): HarnessStatus | undefined {
+  const document = asRecord(data)
+  if (!document) return undefined
+  // `protocolVersion` and `dsh` are the minimum identity of this endpoint. A
+  // document without them is some other service answering on the same port.
+  if (typeof document.protocolVersion !== 'number' || document.dsh !== 'online') return undefined
+
+  // The Bridge names its own state when it can. Accepting it keeps the two
+  // sides' reason codes identical instead of re-deriving them here.
+  const declared = optionalString(document, 'state')
+  const capabilities = document.capabilities
+  const capabilityList = Array.isArray(capabilities)
+    && capabilities.every((capability) => typeof capability === 'string')
+    ? capabilities as string[]
+    : undefined
+  const authentication = optionalString(document, 'authentication')
+
+  if (document.protocolVersion !== HARNESS_BRIDGE_PROTOCOL_VERSION) {
+    return withIdentity({
+      availability: 'bridge-incompatible',
+      reasonCode: 'protocol-version-mismatch',
+    }, document)
+  }
+  if (authentication !== 'ready') {
+    // The reason vocabulary belongs to the consumer, not to the payload: a
+    // Bridge that reports `state: bridge-ready` while its token is missing must
+    // not have that stale `reasonCode` describe the failure.
+    return withIdentity({
+      availability: 'bridge-auth-unavailable',
+      reasonCode: 'token-unavailable',
+    }, document)
+  }
+  if (capabilityList === undefined) {
+    // The document identifies itself as a Bridge but its capability list is
+    // unusable. Treating that as "no capabilities" is the safe reading: the
+    // wallpaper must not send into a route table it cannot verify.
+    return withIdentity({
+      availability: 'bridge-incompatible',
+      reasonCode: 'capabilities-missing',
+    }, document)
+  }
+
+  const hasEveryCapability = REQUIRED_HARNESS_BRIDGE_CAPABILITIES
+    .every((required) => capabilityList.includes(required))
+  if (hasEveryCapability) {
+    return withIdentity({ availability: 'bridge-ready' }, document)
+  }
+
+  // A Bridge that explicitly says it is still composing its service set is
+  // loading, and it may name the specific service it waits for. Anything else
+  // that lacks a required capability cannot be fixed by waiting, so it is
+  // reported as incompatible.
+  if (declared === 'bridge-loading') {
+    return withIdentity({
+      availability: 'bridge-loading',
+      reasonCode: waitingReasonCode(optionalString(document, 'reasonCode')),
+    }, document)
+  }
+  return withIdentity({
+    availability: 'bridge-incompatible',
+    reasonCode: 'capabilities-missing',
+  }, document)
+}
+
+/**
+ * The loading reason vocabulary is closed and owned by the consumer. A payload's
+ * `reasonCode` is only accepted when it is already in that vocabulary, so a
+ * stale field (for example `ready` left over from an earlier status) can never
+ * be rendered as the explanation for a wait.
+ */
+function waitingReasonCode(candidate: string | undefined): string {
+  if (candidate === 'services-pending' || candidate?.startsWith('waiting:')) return candidate
+  return 'services-pending'
+}
+
+/**
+ * Backwards-compatible wrapper. Existing callers that only ask "is this
+ * response a usable Bridge?" keep working, and callers that need the reason
+ * should use `interpretHarnessBridgeStatus` directly.
  */
 export function compatibleHarnessBridgeStatus(data: unknown): HarnessStatus | undefined {
-  const document = asRecord(data)
-  const capabilities = document?.capabilities
-  if (
-    document?.protocolVersion !== HARNESS_BRIDGE_PROTOCOL_VERSION
-    || document.dsh !== 'online'
-    || document.authentication !== 'ready'
-    || !Array.isArray(capabilities)
-    || !capabilities.every((capability) => typeof capability === 'string')
-    || !REQUIRED_HARNESS_BRIDGE_CAPABILITIES.every((required) => capabilities.includes(required))
-  ) return undefined
-
-  const status: HarnessStatus = { availability: 'bridge-ready' }
-  for (const field of ['bridgeVersion', 'model', 'provider', 'reasoningEffort'] as const) {
-    const value = document[field]
-    if (typeof value === 'string' && value.trim()) status[field] = value
-  }
-  return status
+  const status = interpretHarnessBridgeStatus(data)
+  return status && isHarnessReady(status.availability) ? status : undefined
 }
 
 export async function fetchHarnessStatus(baseUrl = 'http://127.0.0.1:3080'): Promise<HarnessStatus> {
   try {
     const response = await fetch(`${baseUrl}/api/wallpaper/v1/status`, { signal: AbortSignal.timeout(1200), headers: { Accept: 'application/json' } })
     if (response.ok) {
-      const status = compatibleHarnessBridgeStatus(await response.json())
+      const status = interpretHarnessBridgeStatus(await response.json())
+      // A Bridge that answered with a diagnostic state is the most specific
+      // information available; do not downgrade it to a root-page guess.
       if (status) return status
     }
   } catch { /* fall through */ }
@@ -70,7 +195,7 @@ export async function fetchHarnessStatus(baseUrl = 'http://127.0.0.1:3080'): Pro
     // direct Rust loopback probe instead; this fallback is intentionally
     // conservative when the browser cannot inspect a cross-origin response.
     const response = await fetch(baseUrl, { signal: AbortSignal.timeout(900) })
-    return response.ok ? { availability: 'web-only' } : { availability: 'offline' }
+    return response.ok ? { availability: 'web-only', reasonCode: 'bridge-status-missing' } : { availability: 'offline' }
   } catch { return { availability: 'offline' } }
 }
 
@@ -95,9 +220,9 @@ export function monitorHarness(onChange: (status: HarnessStatus) => void, probe:
       inFlight = false
     }
     // Mirror the native monitor: only a compatible Bridge is a success.
-    // `web-only` is useful diagnostic state, but it is a failed Harness
-    // probe and therefore needs three consecutive observations before it can
-    // replace a previously ready Bridge.
+    // Every other state is a failed Harness probe and therefore needs three
+    // consecutive observations before it can replace a previously ready
+    // Bridge, so a single slow probe cannot flicker the mode switch.
     if (isHarnessReady(status.availability)) {
       successes += 1; failures = 0
       if (successes >= 2 && current !== status.availability) { current = status.availability; onChange(status) }

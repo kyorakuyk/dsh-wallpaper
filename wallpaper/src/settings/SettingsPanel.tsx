@@ -7,10 +7,18 @@ import type { AppearanceAssetSummary } from '../features/appearance/appearanceVi
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
 import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, LockScreenDiagnostics, ManagedDshStatus, ApiConversationListing } from '../native/runtime.ts'
 import { preferredDisplayId } from '../runtime/displayLayout.ts'
+import { harnessStateLabel } from '../connect/harnessLabels.ts'
 import { OfficialPersonaCards } from '../persona/OfficialPersonaCards.tsx'
 import './SettingsPanel.css'
 
 type Page = SettingsPage
+
+/**
+ * The settings sidebar renders the same diagnostic states the wallpaper probe
+ * produces. Re-exported from the probe so a new state cannot be added on one
+ * side only.
+ */
+export type SettingsPanelHarnessStatus = import('../connect/harness.ts').HarnessAvailability
 
 export interface SettingsPanelProps {
   settings: WallpaperSettings
@@ -20,7 +28,7 @@ export interface SettingsPanelProps {
    */
   page: Page
   onPageChange: (page: Page) => void
-  harnessStatus: 'offline' | 'web-only' | 'bridge-ready'
+  harnessStatus: SettingsPanelHarnessStatus
   onChange: (settings: WallpaperSettings) => void
   onRequestDeepSeekLogin: () => void
   onConfigureApiKey: () => void
@@ -200,7 +208,10 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
     <aside className="settings-sidebar">
       <nav>{pages.map((item) => <button key={item.id} className={page === item.id ? 'is-active' : ''} onClick={() => props.onPageChange(item.id)}><span className="settings-nav__icon">{item.icon}</span><span><strong>{item.label}</strong><small>{item.hint}</small></span></button>)}</nav>
-      <div className="settings-sidebar__status"><i className={harnessStatus === 'bridge-ready' ? 'is-online' : ''} /><span>{harnessStatus === 'bridge-ready' ? 'DSH Bridge 已连接' : harnessStatus === 'web-only' ? 'DSH 在线，缺少 Bridge' : 'DSH 当前离线'}</span></div>
+      <div className="settings-sidebar__status">
+        <i className={harnessStatus === 'bridge-ready' ? 'is-online' : harnessStatus === 'offline' ? '' : 'is-pending'} />
+        <span>{harnessStateLabel(harnessStatus)}</span>
+      </div>
     </aside>
 
     <main className="settings-content">

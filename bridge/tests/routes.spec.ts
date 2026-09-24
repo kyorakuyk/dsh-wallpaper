@@ -40,6 +40,12 @@ interface RouteHarness {
   routeDependencies: string[] | undefined
   workspace: { title: string; path: string; sessionIds: string[]; attachSession: ReturnType<typeof vi.fn> }
   workspaceRegistry: { list: () => unknown[]; create: ReturnType<typeof vi.fn> }
+  /** Run the session/control scope's disposers, as Cordis does on unprovide. */
+  disposeSessionScope(): Promise<void>
+  /** Re-compose the session/control scope, as Cordis does on reprovide. */
+  composeSessionScope(): void
+  /** Make the next `/sessions` registration throw once. */
+  failNextSessionRegistration(): void
 }
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => {
@@ -116,9 +122,17 @@ async function createHarness(
 ): Promise<RouteHarness> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-wallpaper-bridge-'))
   const tokenRoot = join(root, 'host-owned-dsh-root')
-  const effects: Array<() => unknown> = []
+  /**
+   * Effect bodies tagged with the scope that registered them. Cordis disposes
+   * one scope at a time when a providing service disappears, so a test that
+   * wants to model "the session routes were unmounted" must be able to run
+   * exactly that scope's disposers.
+   */
+  const effects: Array<{ scope: 'lifecycle' | 'status' | 'routes'; run: () => unknown }> = []
   const routes = new Map<string, (req: IncomingMessage, res: ServerResponse) => void | Promise<void>>()
   const listeners = new Map<string, (...args: never[]) => unknown>()
+  /** When set, the next `/sessions` registration throws once. */
+  let failNextSessionRegistration = false
   const agent = {
     session: { id: '', deriveMessages: () => [] as [] },
     status: 'idle' as const,
@@ -151,6 +165,10 @@ async function createHarness(
   const webServer = {
     host: webServerHost,
     register: (route: { path: string; handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void> }) => {
+      if (failNextSessionRegistration && route.path === `${API_PREFIX}/sessions`) {
+        failNextSessionRegistration = false
+        throw new Error('simulated sessions registration failure')
+      }
       routes.set(route.path, route.handler)
       return () => { routes.delete(route.path) }
     },
@@ -158,17 +176,20 @@ async function createHarness(
   let injectedDependencies: string[] | undefined
   /** The mutating session scope's declared dependencies, if it was composed. */
   let routeDependencies: string[] | undefined
+  /** The session scope callback, so a test can re-compose it on demand. */
+  let composeSessionScope: (() => void) | undefined
   const context = {
     on: (event: string, listener: (...args: never[]) => unknown) => {
       listeners.set(event, listener)
       return () => { listeners.delete(event) }
     },
-    effect: (callback: () => unknown) => { effects.push(callback) },
+    effect: (callback: () => unknown) => { effects.push({ scope: 'lifecycle', run: callback }) },
     get: (name: string) => name === 'sessionPersistence' && persistence.enabled ? {} : undefined,
     inject: (dependencies: string[], callback: (scope: unknown) => void) => {
       injectedDependencies = dependencies
-      if (dependencies.includes('agents')) routeDependencies = dependencies
-      callback({
+      const kind = dependencies.includes('agents') ? 'routes' : 'status'
+      if (kind === 'routes') routeDependencies = dependencies
+      const scope = {
         webServer,
         agents: { create, resume: create },
         agentDefaultModel: { currentSelection: () => ({ provider: 'default-provider', model: 'default-model' }) },
@@ -181,8 +202,11 @@ async function createHarness(
         permissionPresets: { names: ['workspace-write', 'danger-full-access'], current: () => 'workspace-write', set: vi.fn() },
         commands: { list: () => [], execute: vi.fn(async () => undefined) },
         logger,
-        effect: (callback: () => unknown) => { effects.push(callback) },
-      })
+        effect: (callback: () => unknown) => { effects.push({ scope: kind, run: callback }) },
+      }
+      const compose = () => callback(scope)
+      if (kind === 'routes') composeSessionScope = compose
+      compose()
     },
   } as unknown as Context
   // This is deliberately a host-owned root, not a token path. The bridge can
@@ -190,14 +214,18 @@ async function createHarness(
   const tokenFile = tokenFileForRoot(tokenRoot)
   await prepareTokenRoot?.(tokenRoot)
   apply(context, { tokenRoot })
+  /** Run the disposers of one scope, the way Cordis unloads a fiber. */
+  const disposeScope = async (scope: 'lifecycle' | 'status' | 'routes'): Promise<void> => {
+    for (const effect of effects.filter((entry) => entry.scope === scope)) {
+      const disposer = effect.run()
+      if (typeof disposer === 'function') await (disposer as () => unknown)()
+    }
+  }
   cleanups.push(async () => {
     // Token provisioning starts before the first HTTP request. Run the Cordis
     // effect disposers before removing the fixture root so whoami/icacls and
     // the idle sweep cannot still hold a handle below it.
-    for (const effect of effects) {
-      const disposer = effect()
-      if (typeof disposer === 'function') await (disposer as () => unknown)()
-    }
+    for (const scope of ['routes', 'status', 'lifecycle'] as const) await disposeScope(scope)
     await rm(root, { recursive: true, force: true })
   })
   return {
@@ -214,6 +242,9 @@ async function createHarness(
     // would capture whichever scope happened to compose last.
     get injectedDependencies() { return injectedDependencies },
     get routeDependencies() { return routeDependencies },
+    disposeSessionScope: () => disposeScope('routes'),
+    composeSessionScope: () => composeSessionScope?.(),
+    failNextSessionRegistration: () => { failNextSessionRegistration = true },
     workspace,
     workspaceRegistry,
   }
@@ -292,6 +323,67 @@ describe('wallpaper bridge HTTP routes', () => {
     ])
   })
 
+  it('withholds session capabilities whenever the session routes are not mounted', async () => {
+    // Cordis never invokes an `inject` callback partially, so the reachable
+    // "loading" window is one where the session scope has been *unmounted*
+    // again (a providing service disappeared or was replaced). Drive that
+    // transition by running the host's own disposers, which is exactly what
+    // Cordis does on unprovide.
+    const harness = await createHarness(true)
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+
+    const ready = JSON.parse((await call(statusRoute, request('GET', `${API_PREFIX}/status`))).body) as {
+      state: string
+      capabilities: string[]
+    }
+    expect(ready.state).toBe('bridge-ready')
+    for (const capability of ['sessions', 'history', 'sse', 'cancel', 'approval-handoff', 'control']) {
+      expect(ready.capabilities).toContain(capability)
+    }
+
+    harness.disposeSessionScope()
+
+    const loading = JSON.parse((await call(statusRoute, request('GET', `${API_PREFIX}/status`))).body) as {
+      state: string
+      reasonCode: string
+      capabilities: string[]
+    }
+    // The Bridge still answers and still identifies itself, so the user learns
+    // it exists and is not ready — instead of seeing a missing Bridge.
+    expect(loading.state).toBe('bridge-loading')
+    expect(loading.reasonCode).toBe('services-pending')
+    expect(loading.capabilities).toContain('status')
+    for (const capability of ['sessions', 'history', 'sse', 'cancel', 'approval-handoff', 'control']) {
+      expect(loading.capabilities).not.toContain(capability)
+    }
+    // The session endpoints really are gone, so the withheld capability is
+    // truthful rather than merely conservative.
+    expect(harness.routes.has(`${API_PREFIX}/sessions`)).toBe(false)
+    expect(harness.routes.has(`${API_PREFIX}/control`)).toBe(false)
+  })
+
+  it('never announces capabilities for a partially registered route table', async () => {
+    // The second registration throws. The first must be rolled back, otherwise
+    // the status endpoint would advertise `control` for a route table that
+    // failed to compose.
+    const harness = await createHarness(true)
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+    harness.failNextSessionRegistration()
+
+    // Re-composing the scope is what the host does when its service set is
+    // replaced; the second `/sessions` registration is the one that fails.
+    expect(() => harness.composeSessionScope()).toThrow(/simulated sessions registration failure/)
+
+    const body = JSON.parse((await call(statusRoute, request('GET', `${API_PREFIX}/status`))).body) as {
+      state: string
+      capabilities: string[]
+    }
+    expect(body.state).toBe('bridge-loading')
+    expect(body.capabilities).not.toContain('control')
+    expect(body.capabilities).not.toContain('sessions')
+    expect(harness.routes.has(`${API_PREFIX}/control`)).toBe(false)
+  })
+
   it('keeps status public while protecting standard session operations with the generated token', async () => {
     const harness = await createHarness(true)
     const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
@@ -300,11 +392,17 @@ describe('wallpaper bridge HTTP routes', () => {
     const status = await call(statusRoute, request('GET', `${API_PREFIX}/status`))
     expect(status.status).toBe(200)
     expect(JSON.parse(status.body)).toMatchObject({
-      bridgeVersion: '1.1.0',
+      // The Bridge's own release version, not a separate hardcoded contract
+      // number. `protocolVersion` below is the stable v1 boundary.
+      bridgeVersion: '0.1.1',
       protocolVersion: 1,
       dsh: 'online',
       authentication: 'ready',
+      state: 'bridge-ready',
+      reasonCode: 'ready',
       capabilities: expect.arrayContaining([
+        'status',
+        'control',
         'sessions',
         'resume',
         'history',

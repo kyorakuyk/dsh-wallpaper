@@ -41,7 +41,19 @@ pub enum Activity {
 pub enum HarnessAvailability {
     #[default]
     Offline,
+    /// Something answers on 3080 but it is not a wallpaper Bridge.
     WebOnly,
+    /// A Bridge answered and is still composing its service set. Waiting is the
+    /// correct user action, so this must not look like a missing Bridge.
+    BridgeLoading,
+    /// The Bridge is mounted but its bearer token is unavailable, usually an
+    /// ACL or Credential problem. Restarting the wallpaper may fix it; nothing
+    /// the user can do in Harness mode will.
+    BridgeAuthUnavailable,
+    /// The Bridge answered with a contract this wallpaper cannot use (protocol
+    /// version or capability set). Updating or reinstalling the Bridge is the
+    /// fix, and retrying will not help.
+    BridgeIncompatible,
     BridgeReady,
 }
 
@@ -98,6 +110,9 @@ pub struct AppSnapshot {
     pub backend: BackendMode,
     pub activity: Activity,
     pub harness: HarnessAvailability,
+    /// Stable, non-sensitive reason for a non-ready Harness state. It never
+    /// carries an exception body, a path, or a token.
+    pub harness_reason_code: Option<String>,
     pub wallpaper_host: WallpaperHostStatus,
     pub interaction: InteractionState,
     /// When true, message content must not be rendered by either WebView.
@@ -113,6 +128,7 @@ impl Default for AppSnapshot {
             backend: BackendMode::DeepseekWeb,
             activity: Activity::Idle,
             harness: HarnessAvailability::Offline,
+            harness_reason_code: None,
             wallpaper_host: WallpaperHostStatus::default(),
             interaction: InteractionState::default(),
             privacy_screen: false,
@@ -137,6 +153,9 @@ pub enum AppAction {
     SelectBackend(BackendMode),
     SetActivity(Activity),
     SetHarnessAvailability(HarnessAvailability),
+    /// Sets the availability and its reason code together, so a diagnostic can
+    /// never be published without the state it explains.
+    SetHarnessDiagnostic { availability: HarnessAvailability, reason_code: Option<String> },
     SetWallpaperHost(WallpaperHostStatus),
     AuthRequired,
     AuthReady,
@@ -219,7 +238,14 @@ impl AppCore {
             }
             AppAction::SelectBackend(backend) => state.backend = backend,
             AppAction::SetActivity(activity) => state.activity = activity,
-            AppAction::SetHarnessAvailability(availability) => state.harness = availability,
+            AppAction::SetHarnessAvailability(availability) => {
+                state.harness = availability;
+                state.harness_reason_code = None;
+            }
+            AppAction::SetHarnessDiagnostic { availability, reason_code } => {
+                state.harness = availability;
+                state.harness_reason_code = reason_code;
+            }
             AppAction::SetWallpaperHost(status) => state.wallpaper_host = status,
             AppAction::AuthRequired => {
                 state.phase = SystemPhase::AuthRequired;

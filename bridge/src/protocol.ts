@@ -1,7 +1,30 @@
 import type { Message, TokenUsage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
-export const BRIDGE_VERSION = '1.1.0'
+/**
+ * The wallpaper↔Bridge REST/SSE contract version. It is bumped only for a
+ * breaking change to `/api/wallpaper/v1` field meanings, and is deliberately
+ * *not* the Bridge package version: the wallpaper depends on this stable
+ * boundary, while the Bridge's own release is free to move independently
+ * (field added: `bridgeVersion` now reports the package version instead of a
+ * second hardcoded number, which is what made an installed copy impossible to
+ * identify).
+ */
+export const BRIDGE_PROTOCOL_VERSION = 1
+/**
+ * Release version of this Bridge build. Keep it equal to `package.json`. The
+ * status endpoint reports it so a stale copy installed in a DSH profile can be
+ * recognised without reading the profile's `node_modules`.
+ */
+export const BRIDGE_VERSION = '0.1.1'
+/**
+ * Non-sensitive build provenance. `DSH_WALLPAPER_BRIDGE_BUILD` is set by the
+ * release build; `dev` is the honest answer for a local build, and it is never
+ * used to decide compatibility.
+ */
+export const BRIDGE_BUILD = typeof process !== 'undefined' && process.env?.DSH_WALLPAPER_BRIDGE_BUILD
+  ? String(process.env.DSH_WALLPAPER_BRIDGE_BUILD).slice(0, 40)
+  : 'dev'
 export const API_PREFIX = '/api/wallpaper/v1'
 
 export interface BridgeQuestionOption {

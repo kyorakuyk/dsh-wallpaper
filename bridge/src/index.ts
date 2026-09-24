@@ -12,7 +12,7 @@ import { promisify } from 'node:util'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { API_PREFIX, BRIDGE_VERSION, bearerAuthorized, contentText, errorReference, isSafeSessionId, isVisibleWallpaperMessage, mapSessionEvent, parseSessionRoute, type BridgeEvent, type BridgeQuestion, type BridgeQuestionOption } from './protocol.ts'
+import { API_PREFIX, BRIDGE_BUILD, BRIDGE_PROTOCOL_VERSION, BRIDGE_VERSION, bearerAuthorized, contentText, errorReference, isSafeSessionId, isVisibleWallpaperMessage, mapSessionEvent, parseSessionRoute, type BridgeEvent, type BridgeQuestion, type BridgeQuestionOption } from './protocol.ts'
 
 export const name = 'wallpaper-bridge'
 export const inject = ['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry', 'permissionPresets', 'commands']
@@ -931,7 +931,48 @@ export function apply(ctx: Context, config: Config = {}): void {
 
   ctx.effect(() => teardownOnce)
 
-  // Status must not depend on optional session-control services.  A Web
+  /**
+   * What the route table actually contains, as opposed to what this Bridge is
+   * capable of in principle.
+   *
+   * `/status` is mounted by the `['webServer']` scope, while every session and
+   * control route lives in the seven-service scope below. A host whose services
+   * arrive late, or that is missing one of them, therefore has a perfectly
+   * reachable status endpoint and no usable session routes. The old status
+   * response announced `sessions`/`history`/`sse`/`cancel`/`approval-handoff`
+   * unconditionally, so a wallpaper could see `bridge-ready` and then get a 404
+   * on its first `POST /sessions`.
+   *
+   * Capabilities are now derived from this record after registration succeeds.
+   */
+  const registered = { control: false, sessions: false }
+  const statusDispose = { current: undefined as (() => void) | undefined }
+  const controlDispose = { current: undefined as (() => void) | undefined }
+  const sessionRoutesDispose = { current: undefined as (() => void) | undefined }
+
+  /** Capabilities the mounted route table can actually honour today. */
+  const liveCapabilities = (): string[] => {
+    const capabilities = ['status']
+    if (registered.control) capabilities.push('control')
+    if (registered.sessions) {
+      capabilities.push('sessions', 'history', 'sse', 'cancel', 'approval-handoff')
+      // DSH exposes session persistence as an optional service. Announcing
+      // `resume` without it would make the wallpaper offer a resume that can
+      // only fail with `resume-unavailable`.
+      if (canResume()) capabilities.push('resume')
+    }
+    return capabilities
+  }
+
+  /**
+   * State the wallpaper renders. `bridge-loading` is a first-class answer, not
+   * a failure: it means "this Bridge exists, wait for it".
+   */
+  const bridgeState = (): { state: string; reasonCode: string } => {
+    if (tokenFailure !== undefined) return { state: 'bridge-auth-unavailable', reasonCode: 'token-unavailable' }
+    if (registered.control && registered.sessions) return { state: 'bridge-ready', reasonCode: 'ready' }
+    return { state: 'bridge-loading', reasonCode: 'services-pending' }
+  }
   // profile may take longer to compose commands, presets, or workspaces than
   // its HTTP listener; reporting the bridge as missing during that interval
   // makes the wallpaper's route toggle misleading.  The mutating routes
@@ -943,24 +984,29 @@ export function apply(ctx: Context, config: Config = {}): void {
       path: `${API_PREFIX}/status`,
       handler: async (_req, res) => {
         await tokenReady
+        const { state, reasonCode } = bridgeState()
         json(res, 200, {
+          // The Bridge's own release version. This used to report a separate
+          // hardcoded contract number, so the status of an installed copy could
+          // not be matched against its package version or build output.
           bridgeVersion: BRIDGE_VERSION,
-          protocolVersion: 1,
+          bridgeBuild: BRIDGE_BUILD,
+          protocolVersion: BRIDGE_PROTOCOL_VERSION,
           dsh: 'online',
-          capabilities: [
-            'sessions',
-            ...(canResume() ? ['resume'] : []),
-            'history',
-            'sse',
-            'cancel',
-            'approval-handoff',
-          ],
+          state,
+          reasonCode,
+          // Only what the mounted route table can honour right now.
+          capabilities: liveCapabilities(),
           authentication: tokenFailure === undefined ? 'ready' : 'unavailable',
           ...(tokenFailure === undefined ? {} : { tokenReference: tokenFailure }),
         })
       },
     })
-    statusContext.effect(() => () => { dispose() })
+    statusDispose.current = dispose
+    statusContext.effect(() => () => {
+      statusDispose.current = undefined
+      dispose()
+    })
   })
 
   // The HTTP handlers create and resume standard DSH agents.  Keep both
@@ -969,7 +1015,34 @@ export function apply(ctx: Context, config: Config = {}): void {
   // where only the declared dependencies are available.
   ctx.inject(['agentDefaultModel', 'agentPresets', 'agents', 'webServer', 'workspaceRegistry', 'permissionPresets', 'commands'], (wctx) => {
     if (!isLoopbackWebServerHost(wctx.webServer.host)) return
-    const controlDispose = wctx.webServer.register({
+    /**
+     * Register both route groups as one unit. If the second registration
+     * throws, the first is rolled back before the error propagates: a
+     * half-registered bridge that already announced `control` would be worse
+     * than one that announces nothing, because the wallpaper would drive a
+     * route table it cannot rely on.
+     *
+     * The scope body stays synchronous up to this point so a registration
+     * failure surfaces as a thrown error in the fiber, which Cordis reports,
+     * rather than as a dangling route.
+     */
+    const rollbackRegistrations = (): void => {
+      registered.control = false
+      registered.sessions = false
+      controlDispose.current?.()
+      controlDispose.current = undefined
+      sessionRoutesDispose.current?.()
+      sessionRoutesDispose.current = undefined
+    }
+    /**
+     * A route-registration failure is not fatal to the Bridge: the status route
+     * stays mounted so the wallpaper can still diagnose "the Bridge is here but
+     * unusable" instead of seeing an unresponsive port. But a *partial*
+     * registration must not be announced, so a failure rolls back whatever
+     * already registered before the error leaves this scope.
+     */
+    try {
+    const controlDisposeFn = wctx.webServer.register({
       kind: 'prefix',
       path: `${API_PREFIX}/control`,
       handler: async (req, res) => {
@@ -1054,9 +1127,13 @@ export function apply(ctx: Context, config: Config = {}): void {
       },
     })
 
-    const sessionsDispose = wctx.webServer.register({
+    controlDispose.current = controlDisposeFn
+    registered.control = true
+
+    const sessionsDisposeFn = wctx.webServer.register({
       kind: 'prefix',
-      path: `${API_PREFIX}/sessions`,      handler: async (req, res) => {
+      path: `${API_PREFIX}/sessions`,
+      handler: async (req, res) => {
         const host = wctx as unknown as { commands: Commands }
         await tokenReady
         if (tokenFailure !== undefined) return json(res, 503, { error: 'bridge-token-unavailable', reference: tokenFailure })
@@ -1338,6 +1415,16 @@ export function apply(ctx: Context, config: Config = {}): void {
         }
       },
     })
+    sessionRoutesDispose.current = sessionsDisposeFn
+    registered.sessions = true
+    } catch (error) {
+      // Registration failed part-way. Revoke everything and rethrow: the scope
+      // is then consistently "not mounted", and Cordis reports the failure
+      // while the status route keeps answering `bridge-loading`.
+      rollbackRegistrations()
+      throw error
+    }
+
     wctx.effect(() => {
       // Release live agent handles nobody is watching. This is a background
       // timer with a bounded per-tick cost (it only walks `live`, never a
@@ -1347,8 +1434,10 @@ export function apply(ctx: Context, config: Config = {}): void {
       return () => {
         clearInterval(sweepTimer)
         sweepTimer = undefined
-        controlDispose()
-        sessionsDispose()
+        // Revoke the announcement before the routes disappear, so a status
+        // request racing this teardown cannot be told about capabilities that
+        // are already gone.
+        rollbackRegistrations()
       }
     })
   })
