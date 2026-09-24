@@ -916,12 +916,6 @@ const TRIGGER_SEND_SCRIPT: &str = r#"
     if (tag === 'input' && (node.getAttribute('type') || '').toLowerCase() === 'file') return true;
     try {
       if (node.querySelector?.('input[type="file"]')) return true;
-      // Sibling, not only descendant: the common shape is a wrapper holding an
-      // icon-only button beside a hidden file input, so the button carries no
-      // marker of its own. Being icon-only is exactly why the label test below
-      // could not catch it.
-      if (node.parentElement?.querySelector?.('input[type="file"]')) return true;
-      if (node.closest?.('label')?.querySelector?.('input[type="file"]')) return true;
     } catch (_) {}
     const label = labelOf(node);
     return /upload|attach|attachment|file|附件|上传|添加文件/.test(label);
