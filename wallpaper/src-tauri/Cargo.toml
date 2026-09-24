@@ -82,7 +82,13 @@ windows = { version = "0.61", features = [
   "Win32_UI_HiDpi",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_Shell",
-  "Win32_UI_WindowsAndMessaging"
+  "Win32_UI_WindowsAndMessaging",
+  # Needed to map a listening TCP port back to the process that owns it, so the
+  # wallpaper can raise the window of whichever DSH client the user selected
+  # instead of guessing from a stored executable path.
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_UI_Shell_Common",
+  "Win32_Networking_WinSock"
 ] }
 
 [profile.release]

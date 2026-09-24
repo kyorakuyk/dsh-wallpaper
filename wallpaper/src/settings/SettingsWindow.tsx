@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { appCoreClient } from '../runtime/appCoreClient.ts'
 import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type HarnessEndpointScan, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
 import { loadSettings, saveSettings, type WallpaperSettings } from './store.ts'
+import { clientRaiseAction, endpointKindLabel, raiseOutcomeNotice, type HarnessClientKind } from '../connect/endpoints.ts'
 import { SettingsPanel, type SettingsPanelHarnessStatus } from './SettingsPanel.tsx'
 import {
   createProbeScheduler,
@@ -47,6 +48,7 @@ export function SettingsWindow() {
   const [endpointScan, setEndpointScan] = useState<HarnessEndpointScan[]>([])
   const [endpointScanBusy, setEndpointScanBusy] = useState(false)
   const [endpointScanDone, setEndpointScanDone] = useState(false)
+  const [reachBusy, setReachBusy] = useState(false)
   const [dshScanBusy, setDshScanBusy] = useState(false)
   const [notice, setNotice] = useState<string>()
   const [appearanceAssets, setAppearanceAssets] = useState<AppearanceAssetSummary[]>([])
@@ -62,6 +64,19 @@ export function SettingsWindow() {
   const settingsRef = useRef(settings)
   const lockScreenOperationRef = useRef(false)
   const autostartOperationRef = useRef(false)
+  /**
+   * The endpoint the reach action will act on.
+   *
+   * An explicit choice wins; otherwise the highest-priority discovered Bridge is
+   * used, matching what the monitor would select. Deliberately not read from the
+   * scan list alone: a user who pinned a port that is not currently ready still
+   * gets that port acted on, because silently reaching a *different* client would
+   * be the wrong answer.
+   */
+  const reachPort = settings.dshLaunch.endpointPort
+    ?? endpointScan.find((item) => item.bridgeFound && item.status.availability === 'bridge-ready')?.port
+    ?? endpointScan.find((item) => item.bridgeFound)?.port
+  const reachKind: HarnessClientKind = endpointScan.find((item) => item.port === reachPort)?.kind ?? 'official-web'
   const dshScanOperationRef = useRef(false)
   const lockScreenDiagnosticsRequestRef = useRef(0)
   const apiHistoryOperationRef = useRef(false)
@@ -178,6 +193,46 @@ export function SettingsWindow() {
       setNotice(`扫描接入端点失败：${String(error)}`)
     } finally {
       if (mountedRef.current) setEndpointScanBusy(false)
+    }
+  }
+
+  /**
+   * Reach the selected client's interface.
+   *
+   * Split by client shape, because the shapes genuinely differ and guessing would
+   * be wrong either way: a desktop client owns a window that can be raised, while
+   * the CLI/webui shape has no window and its interface is the browser at the
+   * endpoint it listens on. Raising never launches anything, so "not running" is
+   * reported rather than silently starting a client.
+   */
+  const reachClient = async () => {
+    const current = settingsRef.current.dshLaunch
+    const port = current.endpointPort ?? reachPort
+    if (port === undefined) {
+      setNotice('请先扫描并选定一个接入端点。')
+      return
+    }
+    const kind = endpointScan.find((item) => item.port === port)?.kind ?? 'official-web'
+    setReachBusy(true)
+    try {
+      if (clientRaiseAction(kind) === 'browser') {
+        // No window exists for this shape; the browser is its interface.
+        if (!await nativeRuntime.harnessEndpointListening(port)) {
+          setNotice(`${endpointKindLabel(kind)} 未在运行（127.0.0.1:${port} 无监听）。请先启动它，然后重新扫描。`)
+          return
+        }
+        await nativeRuntime.openClientInBrowser(port)
+        setNotice(`已在默认浏览器中打开 127.0.0.1:${port}。`)
+        return
+      }
+      const result = await nativeRuntime.raiseClientWindow(port)
+      const notice = raiseOutcomeNotice(result.outcome, kind)
+      if (notice) setNotice(notice)
+      else if (result.raised) setNotice(`已把 ${endpointKindLabel(kind)} 的窗口拉到前台。`)
+    } catch (error) {
+      setNotice(`打开客户端界面失败：${String(error)}`)
+    } finally {
+      if (mountedRef.current) setReachBusy(false)
     }
   }
 
@@ -492,6 +547,10 @@ export function SettingsWindow() {
       endpointScanDone={endpointScanDone}
       onScanEndpoints={() => { void scanEndpoints() }}
       onClearEndpoints={() => { setEndpointScan([]); setEndpointScanDone(false) }}
+      onReachClient={() => { void reachClient() }}
+      reachBusy={reachBusy}
+      reachAction={clientRaiseAction(reachKind)}
+      reachPort={reachPort}
       autostart={autostartState}
       onScanDsh={() => { void scanDsh(true) }}
       dshScanBusy={dshScanBusy}

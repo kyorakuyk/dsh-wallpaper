@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-harness-endpoint-listening"
+description = "Enables the harness_endpoint_listening command without any pre-configured scope."
+commands.allow = ["harness_endpoint_listening"]
+
+[[permission]]
+identifier = "deny-harness-endpoint-listening"
+description = "Denies the harness_endpoint_listening command without any pre-configured scope."
+commands.deny = ["harness_endpoint_listening"]

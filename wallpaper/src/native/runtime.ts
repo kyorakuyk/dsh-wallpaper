@@ -40,6 +40,20 @@ export interface HarnessEndpointScan {
   bridgeFound: boolean
   status: HarnessStatus
 }
+
+/**
+ * Result of asking for a client's own Windows window.
+ *
+ * `raised` is the only success. `no-window` means something is listening on that
+ * endpoint but owns no visible window — the CLI/webui shape, whose interface is a
+ * browser URL instead — and `raise-refused` means Windows declined the foreground
+ * change, which is normal for a desktop wallpaper and not a failure to report as
+ * one. The codes are a contract with the wording table below.
+ */
+export interface RaiseClientOutcome {
+  outcome: 'raised' | 'no-window' | 'not-running' | 'raise-refused'
+  raised: boolean
+}
 export interface DeepSeekWebStatus { state: 'loading' | 'logged-out' | 'ready' | 'generating' | 'unsupported'; conversationId?: string; model?: string; signature: string }
 export interface DeepSeekWebHistory { messages: ChatMessage[]; conversationId?: string; model?: string; state: DeepSeekWebStatus['state'] | 'loading' }
 export interface DeepSeekWebAdapterConfigStatus { schemaVersion: number; adapterVersion: string; source: 'builtin' | 'local'; path: string; warning?: string }
@@ -131,6 +145,18 @@ export interface NativeRuntime {
   setHarnessEndpoint(port: number | null): Promise<number | null>
   /** Which local ports host a wallpaper Bridge, in the native layer's order. */
   scanHarnessEndpoints(extraPorts?: readonly number[]): Promise<HarnessEndpointScan[]>
+  /**
+   * Bring a desktop client's own window forward. Never launches anything, so a
+   * client that is not running reports `not-running` rather than starting up.
+   */
+  raiseClientWindow(port: number): Promise<RaiseClientOutcome>
+  /**
+   * Open a windowless client's web UI in the default browser. Only a loopback
+   * endpoint is accepted, so this cannot open an arbitrary destination.
+   */
+  openClientInBrowser(port: number, path?: string): Promise<void>
+  /** Whether anything is listening, without raising it. */
+  harnessEndpointListening(port: number): Promise<boolean>
   desktopDisplays(): Promise<DesktopDisplayInfo[]>
   desktopLayoutMetrics(displayId?: string): Promise<{ expandedBottomInset: number; taskbarVisible: boolean }>
   scanDshPaths(hintPath?: string, deepScan?: boolean): Promise<Array<{ rootPath: string; source: string }>>
@@ -389,6 +415,32 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) return null
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<number | null>('set_harness_endpoint', { port })
+  },
+  /**
+   * Ask the native side to bring a desktop client's window forward.
+   *
+   * Native resolution matters here: the window is found from the port the
+   * wallpaper is connected to, so it is the same client whose session the user is
+   * talking to, and no stored executable path can go stale.
+   */
+  async raiseClientWindow(port: number) {
+    if (!await tauriAvailable()) return { outcome: 'not-running' as const, raised: false }
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<RaiseClientOutcome>('raise_client_window', { port })
+  },
+  /**
+   * Open a windowless client's web UI in the default browser. Used only for the
+   * CLI/webui shape, which has no Windows window to raise.
+   */
+  async openClientInBrowser(port: number, path = '/') {
+    if (!await tauriAvailable()) return
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('open_client_in_browser', { port, path })
+  },
+  async harnessEndpointListening(port: number) {
+    if (!await tauriAvailable()) return false
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<boolean>('harness_endpoint_listening', { port })
   },
   /**
    * Ask the native side which local ports host a wallpaper Bridge.

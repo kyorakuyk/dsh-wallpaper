@@ -5,6 +5,7 @@ mod app_core;
 mod appearance;
 #[cfg(not(feature = "lite"))]
 mod chat;
+mod client_window;
 #[cfg(not(feature = "lite"))]
 mod deepseek_web;
 #[cfg(not(feature = "lite"))]
@@ -2664,6 +2665,58 @@ async fn scan_harness_endpoints_command(
     Ok(scan_harness_endpoints(extra_ports.unwrap_or_default()).await)
 }
 
+/// Bring the running DSH client's own Windows window forward.
+///
+/// The rule splits by client shape: a windowless client (CLI / webui on 3080) is
+/// opened in the default browser by the renderer, while the two desktop clients
+/// are raised here. Doing the desktop half natively means the window raised is
+/// resolved from the port the wallpaper is actually connected to, so it is the
+/// same client whose session the user is talking to — and no stored executable
+/// path can go stale.
+///
+/// This never launches anything. Starting a client is a separate, heavier action
+/// with its own single-flight and trust decisions; raising must not become a back
+/// door that spawns processes.
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+fn raise_client_window(
+    caller: tauri::WebviewWindow,
+    port: u16,
+) -> Result<client_window::RaiseOutcome, String> {
+    require_wallpaper_surface(&caller)?;
+    if port == 0 {
+        return Err("接入端点端口无效".into());
+    }
+    Ok(client_window::raise_client_window(port))
+}
+
+/// Open the windowless client's web UI in the user's default browser.
+///
+/// The rule splits by client shape: the CLI / webui shape has no Windows window to
+/// raise, so its interface is the browser at the endpoint it listens on (3080 by
+/// default). The two desktop clients never take this path.
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+fn open_client_in_browser(
+    caller: tauri::WebviewWindow,
+    port: u16,
+    path: Option<String>,
+) -> Result<(), String> {
+    require_wallpaper_surface(&caller)?;
+    client_window::open_loopback_url(port, path.as_deref().unwrap_or("/"))
+}
+
+/// Report whether anything is listening on an endpoint, without raising it.
+///
+/// Lets the UI tell "client not running" from "client running but has no window",
+/// which need different wording and different recovery.
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+fn harness_endpoint_listening(caller: tauri::WebviewWindow, port: u16) -> Result<bool, String> {
+    require_wallpaper_surface(&caller)?;
+    Ok(client_window::endpoint_is_listening(port))
+}
+
 #[cfg(not(feature = "lite"))]
 fn start_harness_monitor(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -2836,6 +2889,9 @@ macro_rules! register_edition_commands {
             probe_harness,
             scan_harness_endpoints_command,
             set_harness_endpoint,
+            raise_client_window,
+            open_client_in_browser,
+            harness_endpoint_listening,
             appearance::commands::appearance_get_state,
             appearance::commands::appearance_list_themes,
             appearance::commands::appearance_list_assets,

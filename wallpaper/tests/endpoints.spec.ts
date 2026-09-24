@@ -1,8 +1,10 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import {
   DEFAULT_ENDPOINT_PORTS,
+  clientRaiseAction,
   endpointPriority,
   orderCandidates,
+  raiseOutcomeNotice,
   scanSummary,
   selectEndpoint,
   scanEndpoints,
@@ -24,6 +26,44 @@ function candidate(
 }
 
 afterEach(() => vi.unstubAllGlobals())
+
+describe('reaching a client interface', () => {
+  it('opens a browser only for the windowless CLI/webui shape', () => {
+    // The two desktop clients own Windows windows; the CLI/webui shape has none,
+    // and its interface is the browser at the port it listens on. Getting this
+    // backwards would try to raise a window that does not exist, or open a
+    // browser for a client that already has a window.
+    expect(clientRaiseAction('official-web')).toBe('browser')
+    expect(clientRaiseAction('official-desktop')).toBe('window')
+    expect(clientRaiseAction('community-desktop')).toBe('window')
+    // The windowless shape is the one on DSH's own default port.
+    expect(DEFAULT_ENDPOINT_PORTS.find((entry) => entry.port === 3080)?.kind).toBe('official-web')
+  })
+
+  it('stays silent on success and on a refused foreground change', () => {
+    // `raise-refused` means Windows declined the foreground change, which is the
+    // normal situation for a desktop wallpaper. The window was still restored, so
+    // reporting an error would be noise on a working path.
+    expect(raiseOutcomeNotice('raised', 'official-desktop')).toBeNull()
+    expect(raiseOutcomeNotice('raise-refused', 'official-desktop')).toBeNull()
+  })
+
+  it('names the client and the next step for the two real failures', () => {
+    const noWindow = raiseOutcomeNotice('no-window', 'official-desktop')
+    expect(noWindow).toContain('官方桌面客户端')
+    expect(noWindow).toContain('浏览器')
+
+    const notRunning = raiseOutcomeNotice('not-running', 'community-desktop')
+    expect(notRunning).toContain('第三方桌面客户端')
+    // Not-running must say to start it, not imply the wallpaper will.
+    expect(notRunning).toContain('请先启动')
+
+    for (const notice of [noWindow, notRunning]) {
+      expect(notice).not.toMatch(/[A-Za-z]:\\/)
+      expect(notice).not.toMatch(/Bearer|token/i)
+    }
+  })
+})
 
 describe('endpoint priority', () => {
   it('ships the official desktop first, then community desktop, then web/CLI', () => {

@@ -60,6 +60,17 @@ export interface SettingsPanelProps {
   endpointScanDone: boolean
   onScanEndpoints: () => void
   onClearEndpoints: () => void
+  /**
+   * Reach the selected client's own interface. The action differs by client
+   * shape: a desktop client's window is raised, while the windowless CLI/webui
+   * shape is opened in the default browser at the endpoint it listens on.
+   */
+  onReachClient: () => void
+  reachBusy: boolean
+  /** Which action the current selection takes, for the button label. */
+  reachAction: 'browser' | 'window'
+  /** The endpoint the action will act on, when one is selected. */
+  reachPort?: number
   onAdoptDsh: (rootPath: string) => void
   onLaunchDsh: () => void
   managedDsh: ManagedDshStatus
@@ -335,6 +346,24 @@ export function SettingsPanel(props: SettingsPanelProps) {
                 <button className="settings-action secondary" onClick={props.onClearEndpoints}>清除扫描结果</button>
               )}
             </span>
+          </Field>
+          <Field
+            title="打开客户端界面"
+            detail={props.reachPort === undefined
+              ? '先在上面选定一个接入端点，这里才能拉起它的界面。'
+              : props.reachAction === 'browser'
+                ? `将以默认浏览器打开 127.0.0.1:${props.reachPort}（该客户端没有自己的窗口）。`
+                : `将把 ${props.reachPort} 上那个客户端自己的窗口拉到前台；它没在运行时会如实提示，不会替你启动它。`}
+          >
+            <button
+              className="settings-action"
+              disabled={props.reachPort === undefined || props.reachBusy}
+              onClick={props.onReachClient}
+            >
+              {props.reachBusy
+                ? '处理中…'
+                : props.reachAction === 'browser' ? '在浏览器中打开' : '拉起窗口'}
+            </button>
           </Field>
           <Field title="Profile"><input value={settings.dshLaunch.profile} placeholder="desktop" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, profile: e.target.value || 'desktop' } })} /></Field>
           <Field title="启动命令" detail="填写启动器可执行文件的路径（不接受带参数的整条命令行，也不会经 shell 执行）。留空时优先使用已构建 CLI，找不到时回退 pnpm dsh；node.exe / pnpm 无需额外确认。" ><input value={settings.dshLaunch.command ?? ''} placeholder="留空时优先使用已构建 CLI，找不到时回退 pnpm dsh" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, command: e.target.value || undefined, trustedCommandForAutoStart: e.target.value ? settings.dshLaunch.trustedCommandForAutoStart : false } })} /></Field>

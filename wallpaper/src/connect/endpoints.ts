@@ -130,6 +130,43 @@ export function selectEndpoint(
 const PROBE_TIMEOUT_MS = 1200
 
 /**
+ * How the wallpaper reaches a client's interface.
+ *
+ * The rule is by client shape, because they genuinely differ: the CLI / webui
+ * shape has no Windows window (its interface *is* a browser URL on the port it
+ * listens on), while the two desktop clients own windows that can be raised.
+ * Getting this backwards would open a browser for a client that has a window, or
+ * try to raise a window that does not exist.
+ */
+export type ClientRaiseAction = 'browser' | 'window'
+
+export function clientRaiseAction(kind: HarnessClientKind): ClientRaiseAction {
+  return kind === 'official-web' ? 'browser' : 'window'
+}
+
+/**
+ * Wording for a raise outcome, or `null` when nothing needs saying.
+ *
+ * `raise-refused` is deliberately silent: Windows refuses foreground changes from
+ * a process that is not itself foreground, which is the normal situation for a
+ * desktop wallpaper. The window was still restored, so the user's next click
+ * reaches it — reporting that as an error would be noise on a working path.
+ */
+export function raiseOutcomeNotice(outcome: string, kind: HarnessClientKind): string | null {
+  switch (outcome) {
+    case 'raised':
+    case 'raise-refused':
+      return null
+    case 'no-window':
+      return `${endpointKindLabel(kind)} 没有可拉起的窗口；它的界面可能在浏览器里，请改用「在浏览器中打开」。`
+    case 'not-running':
+      return `${endpointKindLabel(kind)} 未在运行。请先启动它，然后重新扫描。`
+    default:
+      return null
+  }
+}
+
+/**
  * Probe one port for a wallpaper Bridge.
  *
  * Identification is deliberately strict: anything that answers without the

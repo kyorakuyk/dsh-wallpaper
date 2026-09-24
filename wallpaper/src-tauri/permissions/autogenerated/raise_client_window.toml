@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-raise-client-window"
+description = "Enables the raise_client_window command without any pre-configured scope."
+commands.allow = ["raise_client_window"]
+
+[[permission]]
+identifier = "deny-raise-client-window"
+description = "Denies the raise_client_window command without any pre-configured scope."
+commands.deny = ["raise_client_window"]
