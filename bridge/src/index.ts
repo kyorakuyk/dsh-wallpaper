@@ -661,37 +661,153 @@ function closeSseClient(res: ServerResponse): void {
   if (!res.writableEnded && !res.destroyed) res.destroy?.()
 }
 
+/**
+ * Chunks held for one subscriber while its socket is backed up.
+ *
+ * `res.write()` returning false means the socket's buffer crossed the high-water
+ * mark — Node's documented signal that the caller should wait for `'drain'`, not
+ * that the peer is gone. Treating it as fatal was a real defect: the assistant
+ * message and its usage event arrive in the same tick, so the second write can
+ * cross the mark and the subscriber was then destroyed *at the exact moment the
+ * reply was being delivered*, leaving the user with a reply that exists in DSH
+ * history but never reaches the wallpaper.
+ */
+const SSE_QUEUE_MAX_CHUNKS = 1024
+const SSE_QUEUE_MAX_BYTES = 4 * 1024 * 1024
+
+interface SseQueue {
+  chunks: string[]
+  bytes: number
+  /** A `'drain'` listener is attached; further writes must be queued. */
+  waitingForDrain: boolean
+  onDrain?: () => void
+}
+
+const sseQueues = new WeakMap<ServerResponse, SseQueue>()
+
+function queueFor(res: ServerResponse): SseQueue {
+  let queue = sseQueues.get(res)
+  if (!queue) {
+    queue = { chunks: [], bytes: 0, waitingForDrain: false }
+    sseQueues.set(res, queue)
+  }
+  return queue
+}
+
+function flushSseQueue(res: ServerResponse): void {
+  const queue = queueFor(res)
+  while (queue.chunks.length > 0) {
+    if (res.writableEnded || res.destroyed) {
+      queue.chunks.length = 0
+      queue.bytes = 0
+      return
+    }
+    const chunk = queue.chunks.shift() as string
+    queue.bytes -= Buffer.byteLength(chunk, 'utf8')
+    let accepted = false
+    try {
+      accepted = res.write(chunk)
+    } catch {
+      queue.chunks.length = 0
+      queue.bytes = 0
+      closeSseClient(res)
+      return
+    }
+    if (!accepted) {
+      // Still backed up: wait for the next drain before continuing.
+      attachDrainListener(res, queue)
+      return
+    }
+  }
+  if (queue.waitingForDrain && queue.onDrain) {
+    res.off?.('drain', queue.onDrain)
+    queue.onDrain = undefined
+    queue.waitingForDrain = false
+  }
+}
+
+function attachDrainListener(res: ServerResponse, queue: SseQueue): void {
+  if (queue.waitingForDrain) return
+  if (typeof res.once !== 'function') return
+  queue.waitingForDrain = true
+  queue.onDrain = () => {
+    queue.waitingForDrain = false
+    queue.onDrain = undefined
+    flushSseQueue(res)
+  }
+  res.once('drain', queue.onDrain)
+}
+
+/**
+ * Write one SSE record, queueing it while the socket is backed up.
+ *
+ * Returns false only when the peer is genuinely gone. A full socket buffer is
+ * never a reason to drop a live subscriber.
+ */
 function writeSseRecord(res: ServerResponse, record: string): boolean {
   if (res.writableEnded || res.destroyed) return false
+  const queue = queueFor(res)
+  // Anything queued means an earlier write is still waiting for drain, so order
+  // must be preserved by queueing behind it rather than writing now.
+  if (queue.chunks.length > 0 || queue.waitingForDrain) {
+    return enqueueSseRecord(res, queue, record)
+  }
   try {
-    // A false return means Node has crossed its high-water mark. Do not keep
-    // publishing while it waits for drain: this is a one-way live stream, so
-    // disconnecting a slow client bounds memory and lets it reconnect.
     if (res.write(record)) return true
   } catch {
-    // A peer can close between the state check and write(). Treat it exactly
-    // like a slow or dead client and keep it out of the subscriber set.
+    // A peer can close between the state check and write().
+    closeSseClient(res)
+    return false
+  }
+  // Backpressure: hold the record and resume on drain.
+  return enqueueSseRecord(res, queue, record)
+}
+
+function enqueueSseRecord(res: ServerResponse, queue: SseQueue, record: string): boolean {
+  const size = Buffer.byteLength(record, 'utf8')
+  if (queue.chunks.length >= SSE_QUEUE_MAX_CHUNKS || queue.bytes + size > SSE_QUEUE_MAX_BYTES) {
+    // Bound memory rather than the connection's lifetime: drop what is queued and
+    // resynchronise from the next event. The client reconciles from `history`
+    // after a reconnect, whereas losing the subscriber loses every later turn.
+    queue.chunks.length = 0
+    queue.bytes = 0
+  }
+  queue.chunks.push(record)
+  queue.bytes += size
+  attachDrainListener(res, queue)
+  return true
+}
+
+/**
+ * Drop a subscriber and everything queued for it.
+ *
+ * Must run on every removal path: a lingering `'drain'` listener would keep a
+ * closed response alive and could flush queued records into a dead socket.
+ */
+function releaseSseClient(res: ServerResponse): void {
+  const queue = sseQueues.get(res)
+  if (queue) {
+    if (queue.onDrain) res.off?.('drain', queue.onDrain)
+    queue.chunks.length = 0
+    queue.bytes = 0
+    queue.waitingForDrain = false
+    queue.onDrain = undefined
+    sseQueues.delete(res)
   }
   closeSseClient(res)
-  return false
 }
 
 function sse(res: ServerResponse, event: BridgeEvent): boolean {
   const record = serializeSseEvent(event)
   if (record !== undefined) return writeSseRecord(res, record)
 
-  // Do not serialize, truncate, or log an oversize DSH-derived value. A
-  // bounded protocol error tells the native client why the stream ended while
-  // ensuring no further data is queued for this subscriber.
-  const failure = serializeSseEvent({
-    type: 'error',
-    code: 'HARNESS_SSE_EVENT_LIMIT',
-    recoverable: true,
-    message: 'DSH bridge 事件超过安全大小限制，连接已关闭。',
-  })
-  if (failure !== undefined) void writeSseRecord(res, failure)
-  closeSseClient(res)
-  return false
+  // `undefined` means the event cannot be represented. That is an omission, not a
+  // failure: a missing token counter, or a value outside its bound, must cost one
+  // event and never the subscriber. Closing the stream here was a real defect —
+  // the usage event follows the assistant message in the same tick, so an
+  // unrepresentable usage payload destroyed the connection that had just received
+  // the reply, and the wallpaper saw no reply at all while DSH history showed one.
+  return true
 }
 
 function heartbeatSse(res: ServerResponse): boolean {
@@ -837,8 +953,11 @@ export function apply(ctx: Context, config: Config = {}): void {
     if (!entry) return
     touch(entry)
     for (const client of [...entry.clients]) {
-      if (client.writableEnded || client.destroyed) entry.clients.delete(client)
-      else if (!sse(client, event)) entry.clients.delete(client)
+      if (client.writableEnded || client.destroyed) {
+        entry.clients.delete(client); releaseSseClient(client)
+      } else if (!sse(client, event)) {
+        entry.clients.delete(client); releaseSseClient(client)
+      }
     }
   }
 
@@ -1420,17 +1539,20 @@ export function apply(ctx: Context, config: Config = {}): void {
               }
             }
             if (!subscribed) {
-              entry.clients.delete(res)
+              entry.clients.delete(res); releaseSseClient(res)
               return
             }
             res.flushHeaders()
             const heartbeat = setInterval(() => {
               if (!heartbeatSse(res)) {
                 clearInterval(heartbeat)
-                entry.clients.delete(res)
+                entry.clients.delete(res); releaseSseClient(res)
               }
             }, 15_000)
-            req.on('close', () => { clearInterval(heartbeat); entry.clients.delete(res) })
+            req.on('close', () => {
+              clearInterval(heartbeat)
+              entry.clients.delete(res); releaseSseClient(res)
+            })
             return
           }
           if (route.kind === 'messages') {

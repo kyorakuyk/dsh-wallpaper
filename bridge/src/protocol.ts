@@ -179,6 +179,25 @@ export function usageEvent(usage: TokenUsage): BridgeEvent {
   }
 }
 
+/**
+ * Whether a usage payload can be put on the stream at all.
+ *
+ * DSH does not guarantee every token counter is present: a response can carry
+ * `inputTokens`/`outputTokens` as `undefined` (the wallpaper then renders "未提供"),
+ * and a provider can report a cache read larger than the input, which cannot be
+ * true. The stream has to survive both. Emitting an unrepresentable usage event
+ * used to take the protocol's oversize-failure path, which closed the whole SSE
+ * connection — so one missing counter destroyed the subscriber that had just been
+ * handed the assistant's reply, and every later turn was lost with it.
+ */
+export function representableUsage(usage: TokenUsage): boolean {
+  const valid = (value: unknown): boolean =>
+    typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+  if (!valid(usage.inputTokens) || !valid(usage.outputTokens)) return false
+  if (usage.cacheReadTokens === undefined) return true
+  return valid(usage.cacheReadTokens) && usage.cacheReadTokens <= usage.inputTokens
+}
+
 function questionFromToolCall(event: Extract<SessionEvent, { type: 'tool/call' }>, sessionId?: string): BridgeEvent | undefined {
   if (event.data.name !== 'ask_user_question' || !sessionId || event.data.arguments.length > 100_000) return undefined
   let payload: unknown
@@ -221,7 +240,10 @@ export function mapSessionEvent(event: SessionEvent, sessionId?: string): Bridge
     }
     case 'assistant/message': {
       const result: BridgeEvent[] = [{ type: 'message', role: 'assistant', content: contentText(event.data.message) }]
-      if (event.data.usage) result.push(usageEvent(event.data.usage))
+      // Only attach usage when it can actually be represented. An absent counter
+      // means "not provided" (the wallpaper renders 未提供), not a protocol
+      // violation, and must never close the stream that just delivered the reply.
+      if (event.data.usage && representableUsage(event.data.usage)) result.push(usageEvent(event.data.usage))
       return result
     }
     case 'user/message': {
