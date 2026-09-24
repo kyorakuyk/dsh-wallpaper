@@ -117,6 +117,24 @@ fn generic_bridge_http_error(status: reqwest::StatusCode) -> String {
     )
 }
 
+/// Explain a specific rejection instead of collapsing every status into one
+/// sentence. The 404 case is the one the compatibility work exists for: `/status`
+/// answered, so a Bridge *is* mounted, but the session route did not exist. That
+/// is what a stale or partially composed Bridge looks like from the client, and
+/// nothing the user can do inside the composer will fix it.
+fn harness_http_error(status: reqwest::StatusCode, route: &str) -> String {
+    match status.as_u16() {
+        401 => "DSH bridge 拒绝了本机令牌（HTTP 401）。请重启壁纸应用以重新生成并读取令牌。".to_string(),
+        404 if route == "sessions" => "DSH bridge 已响应，但没有会话接口（HTTP 404）。通常是 profile 内安装的 Bridge 版本过旧或与当前 DSH 不兼容；请更新 Bridge 后重试。".to_string(),
+        404 => "DSH bridge 没有该接口（HTTP 404），当前 Bridge 版本可能过旧。".to_string(),
+        409 => "DSH bridge 会话冲突（HTTP 409）；该会话可能已被其他 DSH 实例占用。".to_string(),
+        413 => "消息超出 DSH bridge 允许的大小（HTTP 413）。".to_string(),
+        429 => "DSH bridge 已达到并发上限（HTTP 429）；请关闭部分桌面会话后重试。".to_string(),
+        503 => "DSH bridge 暂不可用（HTTP 503）；可能正在关闭或令牌尚未就绪。".to_string(),
+        _ => generic_bridge_http_error(status),
+    }
+}
+
 /// What one watchdog-guarded stream read produced.
 enum StreamRead<T> {
     /// A transport event arrived (possibly the end of the stream).
@@ -2666,11 +2684,14 @@ pub async fn harness_connect(
                 .await
                 .map_err(|_| generic_harness_error("连接"))?;
         } else {
-            return Err(generic_bridge_http_error(reqwest::StatusCode::CONFLICT));
+            return Err(harness_http_error(reqwest::StatusCode::CONFLICT, "sessions"));
         }
     }
     if !response.status().is_success() {
-        return Err(generic_bridge_http_error(response.status()));
+        // `sessions` is the route the Bridge must have registered for the
+        // capability it advertised, so a 404 here is a version/installation
+        // problem rather than a transient connection failure.
+        return Err(harness_http_error(response.status(), "sessions"));
     }
     let session = parse_harness_connection(
         bounded_bridge_json::<HarnessConnection>(
@@ -2734,7 +2755,7 @@ async fn connect_harness_events(
         Ok(response) if response.status().is_success() => response,
         Ok(response) => {
             finish_harness_stream(&state, stream_id, &session_id);
-            return Err(generic_bridge_http_error(response.status()));
+            return Err(harness_http_error(response.status(), "events"));
         }
         Err(_) => {
             finish_harness_stream(&state, stream_id, &session_id);
@@ -2966,7 +2987,7 @@ pub async fn harness_send(state: tauri::State<'_, ChatState>, text: String) -> R
         .await
         .map_err(|_| "发送到 DSH bridge 失败；请确认 Harness 仍在运行。".to_string())?;
     if !response.status().is_success() {
-        return Err(generic_bridge_http_error(response.status()));
+        return Err(harness_http_error(response.status(), "messages"));
     }
     Ok(())
 }
@@ -2989,7 +3010,7 @@ pub async fn harness_history(state: tauri::State<'_, ChatState>) -> Result<Value
         .await
         .map_err(|_| generic_harness_error("历史读取"))?;
     if !response.status().is_success() {
-        return Err(generic_bridge_http_error(response.status()));
+        return Err(harness_http_error(response.status(), "history"));
     }
     let history = bounded_bridge_json::<HarnessHistoryResponse>(
         response,
@@ -3011,7 +3032,7 @@ pub async fn harness_presets() -> Result<Value, String> {
     .await
     .map_err(|_| generic_harness_error("模式目录读取"))?;
     if !response.status().is_success() {
-        return Err(generic_bridge_http_error(response.status()));
+        return Err(harness_http_error(response.status(), "presets"));
     }
     bounded_bridge_json::<Value>(
         response,
@@ -3043,7 +3064,7 @@ pub async fn harness_set_preset(
         .await
         .map_err(|_| generic_harness_error("模式切换"))?;
     if !response.status().is_success() {
-        return Err(generic_bridge_http_error(response.status()));
+        return Err(harness_http_error(response.status(), "preset"));
     }
     bounded_bridge_json::<Value>(
         response,
@@ -3071,7 +3092,7 @@ pub async fn harness_controls(state: tauri::State<'_, ChatState>) -> Result<Valu
         .await
         .map_err(|_| generic_harness_error("控制目录读取"))?;
     if !response.status().is_success() {
-        return Err(generic_bridge_http_error(response.status()));
+        return Err(harness_http_error(response.status(), "controls"));
     }
     bounded_bridge_json::<Value>(
         response,
@@ -3103,7 +3124,7 @@ pub async fn harness_set_permission(
         .await
         .map_err(|_| generic_harness_error("权限切换"))?;
     if !response.status().is_success() {
-        return Err(generic_bridge_http_error(response.status()));
+        return Err(harness_http_error(response.status(), "permission"));
     }
     bounded_bridge_json::<Value>(
         response,
@@ -3131,7 +3152,7 @@ pub async fn harness_cancel(state: tauri::State<'_, ChatState>) -> Result<(), St
         .await
         .map_err(|_| generic_harness_error("取消请求"))?;
     if !response.status().is_success() {
-        return Err(generic_bridge_http_error(response.status()));
+        return Err(harness_http_error(response.status(), "cancel"));
     }
     Ok(())
 }
@@ -3250,7 +3271,7 @@ mod tests {
         api_completion_url, api_history, api_request_messages, bridge_token_acl_is_private,
         drain_bounded_harness_sse_records, drain_sse_records, finish_api_request,
         finish_bounded_harness_sse_records, finish_harness_stream, finish_sse_records,
-        harness_records_have_terminal_event, harness_records_have_turn_activity,
+        harness_http_error, harness_records_have_terminal_event, harness_records_have_turn_activity,
         is_current_api_request, is_current_harness_stream, owns_api_request, parse_bridge_event,
         parse_harness_connection, parse_harness_history, sse_record_payload, trim_api_archive,
         ApiConversation, ApiConversationArchive, ApiMessage, ApiPricing, ApiUsage, ChatEvent,
@@ -3263,6 +3284,31 @@ mod tests {
     use crate::api_persistence::EncryptedJsonStore;
     use std::collections::HashMap;
     use tokio::sync::oneshot;
+
+    /// Each rejection must name the fix, and the 404 case must point at the
+    /// installation rather than at the connection: it is the symptom of a stale
+    /// or partially composed Bridge, which no in-composer action resolves.
+    #[test]
+    fn harness_http_errors_name_the_actual_cause() {
+        use reqwest::StatusCode;
+        let not_found_sessions = harness_http_error(StatusCode::NOT_FOUND, "sessions");
+        assert!(not_found_sessions.contains("404"));
+        assert!(not_found_sessions.contains("Bridge 版本过旧") || not_found_sessions.contains("更新 Bridge"));
+        // A 404 on a different route must not claim the same remedy.
+        assert_ne!(harness_http_error(StatusCode::NOT_FOUND, "history"), not_found_sessions);
+        assert!(harness_http_error(StatusCode::UNAUTHORIZED, "sessions").contains("令牌"));
+        assert!(harness_http_error(StatusCode::TOO_MANY_REQUESTS, "sessions").contains("并发上限"));
+        assert!(harness_http_error(StatusCode::SERVICE_UNAVAILABLE, "sessions").contains("暂不可用"));
+        assert!(harness_http_error(StatusCode::CONFLICT, "sessions").contains("冲突"));
+        // An unmapped status keeps the generic wording rather than inventing one.
+        assert!(harness_http_error(StatusCode::BAD_GATEWAY, "sessions").contains("请求被拒绝"));
+        // No message may leak a token, a path, or an exception body.
+        for status in [StatusCode::NOT_FOUND, StatusCode::UNAUTHORIZED, StatusCode::CONFLICT] {
+            let message = harness_http_error(status, "sessions");
+            assert!(!message.contains("Bearer"), "{message}");
+            assert!(!message.contains(":\\"), "{message}");
+        }
+    }
 
     fn message(id: &str, created_at: u64, content: &str) -> ApiMessage {
         ApiMessage {
