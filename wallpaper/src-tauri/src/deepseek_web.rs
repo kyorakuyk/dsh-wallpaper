@@ -1453,6 +1453,7 @@ pub async fn send(
         let mut active_assistant_key: Option<String> = None;
         let mut stable_polls = 0u8;
         let mut quiet_polls = 0u8;
+        let mut poll_count: u32 = 0;
         let mut last_observation = initial.clone();
         let mut reported_missing_body = false;
         let deadline = Instant::now() + TURN_TIMEOUT;
@@ -1485,6 +1486,17 @@ pub async fn send(
             tokio::time::sleep(POLL_INTERVAL).await;
             let current = snapshot(&window, &snapshot_script).await?;
             last_observation = current.clone();
+            // Periodic sample while a turn is in flight. Without this a stall is
+            // invisible: the only other signal is the timeout, minutes later.
+            poll_count += 1;
+            if poll_count % 8 == 0 {
+                log::info!(
+                    "deepseek web poll #{}: state={}, messages={}, assistant_count={}, assistant_len={}, busy={}, completion_hint={}, stable={}, quiet={}, started={}, out_len={}",
+                    poll_count, current.state, current.messages.len(), current.assistant_count,
+                    current.latest_assistant.as_deref().map(str::len).unwrap_or(0),
+                    current.busy, current.completion_hint, stable_polls, quiet_polls, response_started, output.len(),
+                );
+            }
             if current.state == "logged-out" {
                 let _ = show_login(&app);
                 emit_event(&app, &conversation_id, Some(&request_id), json!({ "type": "auth-required" }));
