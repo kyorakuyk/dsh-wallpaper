@@ -25,7 +25,7 @@ export interface ConversationBubbleProps {
    * re-mounting the bubble (switching backend away and back) restored typing. This
    * prop exists so returning to the desktop can make that same request.
    */
-  desktopForeground: boolean
+  desktopForeground?: boolean
   /**
    * Draft text owned by the parent.
    *
@@ -33,8 +33,8 @@ export interface ConversationBubbleProps {
    * because only a rebuild restores the WebView keyboard channel. Keeping the draft
    * above this component means that rebuild does not discard what the user typed.
    */
-  initialDraft: string
-  onDraftChange: (draft: string) => void
+  initialDraft?: string
+  onDraftChange?: (draft: string) => void
   /** Hidden by default; callers may opt into custom role names. */
   speakerLabels?: ConversationSpeakerLabels
   usage?: TokenUsage
@@ -91,8 +91,8 @@ function UsageLine({ usage }: { usage?: TokenUsage }) {  if (!usage) return null
 export function ConversationBubble(props: ConversationBubbleProps) {
   // Seeded from the parent so the deliberate rebuild that restores keyboard
   // focus does not discard a half-typed message.
-  const [draft, setDraft] = useState(() => props.initialDraft)
-  useEffect(() => { props.onDraftChange(draft) }, [draft])
+  const [draft, setDraft] = useState(() => props.initialDraft ?? '')
+  useEffect(() => { props.onDraftChange?.(draft) }, [draft])
   const [hovered, setHovered] = useState(false)
   const [focused, setFocused] = useState(false)
   const [commandMenuOpen, setCommandMenuOpen] = useState(false)
@@ -137,14 +137,14 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   }, [props.backend])
 
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
-  const previousDesktopForeground = useRef(props.desktopForeground)
+  const previousDesktopForeground = useRef(props.desktopForeground ?? true)
   // Returning to the desktop must re-request keyboard focus. The window cannot be
   // activated by a click, so nothing else gives the WebView its keyboard channel
   // back; only a programmatic focus request does, which is what re-mounting the
   // bubble used to do by accident.
   useEffect(() => {
-    const returning = !previousDesktopForeground.current && props.desktopForeground
-    previousDesktopForeground.current = props.desktopForeground
+    const returning = !previousDesktopForeground.current && (props.desktopForeground ?? true)
+    previousDesktopForeground.current = props.desktopForeground ?? true
     if (!returning || props.collapsed || props.disabled) return
     composerRef.current?.focus()
   }, [props.desktopForeground, props.collapsed, props.disabled])
