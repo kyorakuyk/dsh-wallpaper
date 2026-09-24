@@ -902,6 +902,23 @@ const TRIGGER_SEND_SCRIPT: &str = r#"
     try { node.dispatchEvent(new MouseEvent('click', options)); } catch (_) {}
   };
   /**
+   * Whether a control opens a file picker rather than sending.
+   *
+   * The send candidate is "the last enabled control in the composer scope", and the
+   * composer also holds an attachment control. Dispatching a real pointer sequence
+   * made that control act for the first time, so sending a message opened a native
+   * file dialog. A send action must never be satisfied by an upload control, so
+   * these are excluded from every candidate list.
+   */
+  const isFilePicker = (node) => {
+    if (!node) return false;
+    const tag = (node.tagName || '').toLowerCase();
+    if (tag === 'input' && (node.getAttribute('type') || '').toLowerCase() === 'file') return true;
+    try { if (node.querySelector?.('input[type="file"]')) return true; } catch (_) {}
+    const label = labelOf(node);
+    return /upload|attach|attachment|file|附件|上传|添加文件/.test(label);
+  };
+  /**
    * Whether the page accepted the message, judged by the composer it owns.
    *
    * The composer is cleared when the page commits the draft. Reading it from the
@@ -921,6 +938,7 @@ const TRIGGER_SEND_SCRIPT: &str = r#"
     .find((node) => visible(node) && !disabled(node) && !node.readOnly);
   if (!input) return { ok: false, reason: 'composer-not-found' };
   const candidatesIn = (scope) => [...scope.querySelectorAll('button,[role="button"]')]
+    .filter((node) => !isFilePicker(node))
     .filter((node) => visible(node));
   let action;
   const semantic = candidatesIn(document).filter((node) => !disabled(node)
@@ -953,7 +971,7 @@ const TRIGGER_SEND_SCRIPT: &str = r#"
     if (composerCleared()) return { ok: true, reason: 'clicked-primary-control' };
     return { ok: false, reason: 'click-ignored' };
   }
-  const buttons = [...document.querySelectorAll('button,[role="button"]')];
+  const buttons = [...document.querySelectorAll('button,[role="button"]')].filter((node) => !isFilePicker(node));
   const send = buttons.find((node) => visible(node) && !disabled(node) && hasToken(labelOf(node), adapterConfig.sendTokens))
     || [...document.querySelectorAll('[data-testid*="send"],[data-testid*="submit"]')].find((node) => visible(node) && !disabled(node));
   if (send) {
@@ -1749,6 +1767,32 @@ mod tests {
             assert_eq!(
                 super::requested_conversation_id(Some(real.to_string())).expect("accepted"),
                 Some(real.to_string()),
+            );
+        }
+    }
+
+    /// A helper defined in one injected script must not be referenced from another.
+    ///
+    /// The scripts are opaque Rust string literals, so the compiler cannot see an
+    /// undefined JavaScript identifier. A blanket edit once added `isFilePicker` to
+    /// `SNAPSHOT_SCRIPT` and `STOP_SCRIPT` while defining it only in
+    /// `TRIGGER_SEND_SCRIPT`; that would have thrown at runtime and broken every send,
+    /// with a clean build. This pins each helper to the script that owns it.
+    #[cfg(windows)]
+    #[test]
+    fn injected_helpers_are_never_referenced_outside_their_own_script() {
+        let helpers = ["isFilePicker", "clickLikeUser", "composerCleared"];
+        for helper in helpers {
+            if !super::TRIGGER_SEND_SCRIPT.contains(&format!("const {helper} =")) {
+                continue;
+            }
+            assert!(
+                !super::SNAPSHOT_SCRIPT.contains(helper),
+                "SNAPSHOT_SCRIPT must not use {helper}: it is defined only in TRIGGER_SEND_SCRIPT",
+            );
+            assert!(
+                !super::STOP_SCRIPT.contains(helper),
+                "STOP_SCRIPT must not use {helper}: it is defined only in TRIGGER_SEND_SCRIPT",
             );
         }
     }
