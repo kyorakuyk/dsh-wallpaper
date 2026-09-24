@@ -1,5 +1,30 @@
 import type { Message, TokenUsage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import packageManifest from '../package.json' with { type: 'json' }
+
+type PackageManifest = {
+  version?: string
+  peerDependencies?: Record<string, string>
+  devDependencies?: Record<string, string>
+}
+
+/**
+ * The package the Bridge is compiled against. `dsh-agent` carries the agent and
+ * session API surface the route handlers use, so its declared range is the
+ * honest answer to "which DSH API does this build expect".
+ */
+const AUTHORITATIVE_HOST_PACKAGE = '@deepseek-ai/dsh-agent'
+
+function authoredAgainst(): string {
+  const manifest = packageManifest as PackageManifest
+  const declared = manifest.peerDependencies?.[AUTHORITATIVE_HOST_PACKAGE]
+    ?? manifest.devDependencies?.[AUTHORITATIVE_HOST_PACKAGE]
+  // `*`, `latest`, and a missing entry say nothing about the expected surface,
+  // so they report `unknown` instead of implying a verified range.
+  if (typeof declared !== 'string') return 'unknown'
+  const trimmed = declared.trim()
+  return /^[\^~]?\d+\.\d+\.\d+/.test(trimmed) ? trimmed : 'unknown'
+}
 
 /**
  * The wallpaper↔Bridge REST/SSE contract version. It is bumped only for a
@@ -12,11 +37,27 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
  */
 export const BRIDGE_PROTOCOL_VERSION = 1
 /**
- * Release version of this Bridge build. Keep it equal to `package.json`. The
- * status endpoint reports it so a stale copy installed in a DSH profile can be
- * recognised without reading the profile's `node_modules`.
+ * Release version of this Bridge build, read from `package.json` so it cannot
+ * drift from the published package (it was previously a second hardcoded
+ * `1.1.0` next to a `0.1.1` manifest). The status endpoint reports it so a stale
+ * copy installed in a DSH profile can be recognised without reading the
+ * profile's `node_modules`.
  */
-export const BRIDGE_VERSION = '0.1.1'
+export const BRIDGE_VERSION: string = packageManifest.version ?? '0.0.0'
+/**
+ * The DSH release whose API definitions this Bridge build was compiled against.
+ *
+ * DSH exposes no runtime version: there is no `DSH_VERSION` environment
+ * variable and no version service, only a `--version` CLI flag. Deriving the
+ * host version from the plugin's own dependency declaration is therefore the
+ * only claim this code can actually prove, and it is the one a support report
+ * needs — it names the API surface the compiled code expects, which is also
+ * what the verified matrix in `bridge/README.md` is keyed on.
+ *
+ * Report a range or a concrete version, whichever the dependency carries. A
+ * wildcard or missing entry yields `unknown` rather than a guess.
+ */
+export const BRIDGE_AUTHORED_AGAINST: string = authoredAgainst()
 /**
  * Non-sensitive build provenance. `DSH_WALLPAPER_BRIDGE_BUILD` is set by the
  * release build; `dev` is the honest answer for a local build, and it is never

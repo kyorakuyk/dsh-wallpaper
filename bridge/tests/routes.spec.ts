@@ -400,10 +400,14 @@ describe('wallpaper bridge HTTP routes', () => {
     const status = await call(statusRoute, request('GET', `${API_PREFIX}/status`))
     expect(status.status).toBe(200)
     expect(JSON.parse(status.body)).toMatchObject({
-      // The Bridge's own release version, not a separate hardcoded contract
-      // number. `protocolVersion` below is the stable v1 boundary.
+      // The Bridge's own release version, taken from package.json rather than a
+      // second hardcoded contract number. `protocolVersion` below is the stable
+      // v1 boundary.
       bridgeVersion: '0.1.1',
       protocolVersion: 1,
+      // DSH exposes no runtime version, so this is the only version claim the
+      // Bridge can prove: the API range it was compiled against.
+      authoredAgainst: expect.stringMatching(/^\^?\d+\.\d+\.\d+/),
       dsh: 'online',
       authentication: 'ready',
       state: 'bridge-ready',
@@ -423,6 +427,15 @@ describe('wallpaper bridge HTTP routes', () => {
     const token = (await readFile(harness.tokenFile, 'utf8')).trim()
     expect(token).toHaveLength(43)
     expect(status.body).not.toContain(token)
+
+    // DSH exposes no runtime version, so the status must not claim to know one.
+    // These keys existed in an earlier draft and would always have read
+    // `unknown`; keeping them out prevents a compatibility field that never
+    // performs a check from reappearing.
+    const statusBody = JSON.parse(status.body) as Record<string, unknown>
+    expect(statusBody).not.toHaveProperty('hostVersion')
+    expect(statusBody).not.toHaveProperty('hostVerified')
+    expect(statusBody).not.toHaveProperty('supportedDshVersions')
 
     const rejected = await call(sessionsRoute, request('POST', `${API_PREFIX}/sessions`, {}))
     expect(rejected.status).toBe(401)

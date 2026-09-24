@@ -181,3 +181,32 @@ describe('single source of truth for the injected services', () => {
     expect([...index.inject]).toEqual([...HOST_ADAPTER_SERVICES])
   })
 })
+
+describe('version reporting stays factual', () => {
+  it('reads the reported release version from package.json', async () => {
+    const manifest = (await import('../package.json', { with: { type: 'json' } })).default as { version: string }
+    const protocol = await import('../src/protocol.ts')
+    // A second hardcoded version is exactly how the status endpoint ended up
+    // advertising `1.1.0` for a `0.1.1` package.
+    expect(protocol.BRIDGE_VERSION).toBe(manifest.version)
+  })
+
+  it('reports the compiled-against range instead of an unprovable host version', async () => {
+    const manifest = (await import('../package.json', { with: { type: 'json' } })).default as {
+      peerDependencies: Record<string, string>
+    }
+    const protocol = await import('../src/protocol.ts')
+    expect(protocol.BRIDGE_AUTHORED_AGAINST).toBe(manifest.peerDependencies['@deepseek-ai/dsh-agent'])
+  })
+
+  it('never reads a host version that DSH does not expose', async () => {
+    // DSH sets no `DSH_VERSION`, so reading one would silently yield `unknown`
+    // and ship a compatibility field that never performs a check.
+    const fs = await import('node:fs/promises')
+    for (const relative of ['../src/protocol.ts', '../src/host.ts', '../src/index.ts']) {
+      const text = await fs.readFile(new URL(relative, import.meta.url), 'utf8')
+      expect(text, relative).not.toMatch(/process\.env[^\n]*DSH_VERSION/)
+      expect(text, relative).not.toMatch(/env\.DSH_VERSION/)
+    }
+  })
+})

@@ -159,10 +159,13 @@ describe.skipIf(!smokeReady)('real DSH desktop profile smoke test', () => {
       expect(status.capabilities, `capabilities: ${status.capabilities.join(',')}`).toContain(capability)
     }
 
-    // Telemetry identities the wallpaper can use to detect a stale install.
+    // Telemetry identities the wallpaper can use to detect a stale install. DSH
+    // exposes no runtime version, so `authoredAgainst` reports the API range this
+    // build was compiled against rather than pretending to know the host.
     const raw = await (await fetch(STATUS_URL)).json() as Record<string, unknown>
     expect(String(raw.bridgeVersion ?? '')).toMatch(/^\d+\.\d+\.\d+/)
     expect(typeof raw.bridgeBuild).toBe('string')
+    expect(String(raw.authoredAgainst ?? '')).toMatch(/^\^?\d+\.\d+\.\d+/)
 
     // The token must never appear in the status document.
     const token = (await readFile(context.tokenFile, 'utf8')).trim()

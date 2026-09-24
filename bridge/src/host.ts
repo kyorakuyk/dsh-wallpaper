@@ -88,8 +88,6 @@ export type HostEventName = 'session/event' | 'agent/error' | 'agent/disposed' |
  * it, so a future host can satisfy the same intent differently.
  */
 export interface HostAdapter {
-  /** DSH release this adapter was validated against, for `/status`. */
-  readonly hostVersion: string
   defaultModel(): DefaultModelSelection
   presetDirectory(): Promise<readonly AgentPresetDirectory[]>
   defaultPresetId(): string
@@ -138,9 +136,14 @@ export const HOST_ADAPTER_SERVICES = [
 ] as const
 
 /**
- * Verified DSH builds. `rc.5` is the only one proven end to end against a real
- * profile; the peers in `package.json` must not claim more than this list, and
- * a host outside it is still attempted but reported honestly.
+ * DSH builds this Bridge's host surface was verified against.
+ *
+ * This is a *declaration for humans and for the README matrix*, not a runtime
+ * check: DSH exposes no version at runtime (no `DSH_VERSION`, no version
+ * service), so the Bridge cannot compare itself against a running host. Naming
+ * the verified versions here keeps the plugin's own record of what has been
+ * measured next to the code that depends on it, and `/status` reports the
+ * compiled-against range separately via `BRIDGE_AUTHORED_AGAINST`.
  */
 export const VERIFIED_HOST_VERSIONS = ['0.1.0-rc.5'] as const
 
@@ -202,8 +205,6 @@ export function createHostAdapter(ctx: Context): HostAdapter {
   }
 
   return {
-    hostVersion: typeof process !== 'undefined' ? process.env?.DSH_VERSION ?? 'unknown' : 'unknown',
-
     defaultModel: () => {
       const selection = agentDefaultModel.currentSelection()
       const record = asRecord(selection)

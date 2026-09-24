@@ -12,12 +12,11 @@ import { promisify } from 'node:util'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { API_PREFIX, BRIDGE_BUILD, BRIDGE_PROTOCOL_VERSION, BRIDGE_VERSION, bearerAuthorized, contentText, errorReference, isSafeSessionId, isVisibleWallpaperMessage, mapSessionEvent, parseSessionRoute, type BridgeEvent, type BridgeQuestion, type BridgeQuestionOption } from './protocol.ts'
+import { API_PREFIX, BRIDGE_AUTHORED_AGAINST, BRIDGE_BUILD, BRIDGE_PROTOCOL_VERSION, BRIDGE_VERSION, bearerAuthorized, contentText, errorReference, isSafeSessionId, isVisibleWallpaperMessage, mapSessionEvent, parseSessionRoute, type BridgeEvent, type BridgeQuestion, type BridgeQuestionOption } from './protocol.ts'
 import {
   createHostAdapter,
   HOST_ADAPTER_SERVICES,
   HostIncompatibleError,
-  VERIFIED_HOST_VERSIONS,
   type AgentPresetDirectory,
   type CommandDescriptor,
   type DesktopWorkspace,
@@ -950,12 +949,6 @@ export function apply(ctx: Context, config: Config = {}): void {
    * user's action is to update DSH or the Bridge.
    */
   let hostIncompatibility: { code: string; detail: string } | undefined
-  /**
-   * The DSH release this host reports, when it reports one. Used only for the
-   * `/status` compatibility fields: an unknown version is reported as unknown
-   * rather than guessed, and never blocks a working host.
-   */
-  let observedHostVersion: string | undefined
 
   /** Capabilities the mounted route table can actually honour today. */
   const liveCapabilities = (): string[] => {
@@ -1005,14 +998,11 @@ export function apply(ctx: Context, config: Config = {}): void {
           bridgeBuild: BRIDGE_BUILD,
           protocolVersion: BRIDGE_PROTOCOL_VERSION,
           dsh: 'online',
-          // What this Bridge was actually validated against, so a support
-          // question can be answered from the response instead of from the
-          // profile's node_modules. Non-sensitive: a version string and whether
-          // it is in the verified set.
-          supportedDshVersions: [...VERIFIED_HOST_VERSIONS],
-          ...(observedHostVersion === undefined ? {} : { hostVersion: observedHostVersion }),
-          hostVerified: observedHostVersion !== undefined
-            && (VERIFIED_HOST_VERSIONS as readonly string[]).includes(observedHostVersion),
+          // The DSH API surface this build was compiled against. DSH exposes no
+          // runtime version, so this is the only version claim the Bridge can
+          // actually prove; see `BRIDGE_AUTHORED_AGAINST` and the compatibility
+          // matrix in bridge/README.md.
+          authoredAgainst: BRIDGE_AUTHORED_AGAINST,
           state,
           reasonCode,
           // Only what the mounted route table can honour right now.
@@ -1058,7 +1048,6 @@ export function apply(ctx: Context, config: Config = {}): void {
     // Cleared by `rollbackRegistrations()` when this scope unloads, so an
     // incompatibility cannot outlive the host that caused it.
     hostIncompatibility = undefined
-    observedHostVersion = host.hostVersion === 'unknown' ? undefined : host.hostVersion
     /**
      * Register both route groups as one unit. If the second registration
      * throws, the first is rolled back before the error propagates: a
@@ -1073,7 +1062,6 @@ export function apply(ctx: Context, config: Config = {}): void {
     const rollbackRegistrations = (): void => {
       registered.control = false
       registered.sessions = false
-      observedHostVersion = undefined
       controlDispose.current?.()
       controlDispose.current = undefined
       sessionRoutesDispose.current?.()

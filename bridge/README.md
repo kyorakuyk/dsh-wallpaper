@@ -37,9 +37,9 @@ an installed copy impossible to identify:
 | Value | Meaning | Where it comes from |
 | --- | --- | --- |
 | `protocolVersion` (`1`) | the wallpaper↔Bridge REST/SSE contract | `BRIDGE_PROTOCOL_VERSION` |
-| `bridgeVersion` | this Bridge's release | `bridge/package.json` |
+| `bridgeVersion` | this Bridge's release | `bridge/package.json` `version` |
 | `bridgeBuild` | non-sensitive build provenance (`dev` for a local build) | `DSH_WALLPAPER_BRIDGE_BUILD` |
-| `hostVersion` / `hostVerified` | the DSH release the host reports, and whether it is in the verified set | `DSH_VERSION` |
+| `authoredAgainst` | the DSH API range this build was compiled against | `bridge/package.json` peers |
 
 `protocolVersion` is the only value the wallpaper gates on. A wallpaper built
 against protocol 1 keeps working with any newer Bridge; a breaking change needs
@@ -47,30 +47,42 @@ against protocol 1 keeps working with any newer Bridge; a breaking change needs
 `bridgeBuild` exist so support can tell a stale profile copy from a current one
 without reading `node_modules`.
 
+**There is no host-version field, on purpose.** DSH exposes no version at
+runtime — no `DSH_VERSION` environment variable and no version service, only a
+`dsh --version` CLI flag that a loaded plugin cannot read. An earlier draft of
+this status reported `hostVersion`/`hostVerified`; that would always have been
+`unknown`, so it was removed rather than shipped as a field that looks like a
+check but never performs one. `authoredAgainst` is what the code can actually
+prove, and it is the value the matrix below is keyed on.
+
 ## DSH compatibility matrix
 
 | DSH host | Compiled against | Verified at runtime | Notes |
 | --- | --- | --- | --- |
-| `0.1.0-rc.5` | rc.6 type definitions | **yes** — `bridge/tests/realDshSmoke.spec.ts` | The version installed on the development machine. All seven services compose, `state` is `bridge-ready`, and create/resume/history/cancel/SSE were exercised over HTTP. |
-| `0.1.0-rc.6` | yes | **no** | No rc.6 host is installed on the development machine, so nothing was measured. The declared peer range admits it, and the code is typechecked against its definitions, but that is not a runtime result. |
+| `0.1.0-rc.5` | satisfy the `^0.1.0-rc.5` range | **yes** — `bridge/tests/realDshSmoke.spec.ts` | The version installed on the development machine. All seven injected services compose, `state` is `bridge-ready`, and create/resume/history/cancel/SSE were exercised over HTTP. |
+| `0.1.0-rc.6` | compiled and typechecked against rc.6 definitions | **no** | No rc.6 host is installed on the development machine, so nothing was measured at runtime. The declared range admits it, but that is a range, not a result. |
 
 `peerDependencies` declares `^0.1.0-rc.5` for the DSH packages. That range is
-deliberately wider than what the compiler sees (rc.6): under semver prerelease
-rules `^0.1.0-rc.6` does **not** admit `0.1.0-rc.5`, so the previous declaration
-excluded the one host this Bridge is proven to run on. Do not narrow it back
-without first re-running the smoke test against the version being excluded, and
-do not add a row to the matrix above that no test has measured.
+deliberately wider than the definitions the compiler currently resolves (rc.6,
+the newest satisfying release): under semver prerelease rules `^0.1.0-rc.6` does
+**not** admit `0.1.0-rc.5`, so the previous declaration excluded the one host
+this Bridge is proven to run on. Do not narrow it back without first re-running
+the smoke test against the version being excluded, and do not add a row to the
+matrix above that no test has measured.
 
 ### Re-verifying after a DSH update
 
 1. `pnpm -C bridge build` and `pnpm -C bridge typecheck` against the new
    definitions.
-2. `pnpm -C bridge exec vitest run tests/realDshSmoke.spec.ts` with
+2. Confirm the compiled-against range is the one you intend: `bridgeVersion` and
+   `authoredAgainst` in the status response are read from `package.json`, so they
+   change with `pnpm install` rather than with a source edit.
+3. `pnpm -C bridge exec vitest run tests/realDshSmoke.spec.ts` with
    `DSH_WALLPAPER_SMOKE_DSH_ROOT` (and optionally
    `DSH_WALLPAPER_SMOKE_PROFILE`) pointed at the new checkout. The test clones
    the profile into a throwaway `DSH_HOME`, so it does not touch the real
    profile, sessions, or credentials.
-3. Only then add the measured version to the matrix and, if appropriate, widen
+4. Only then add the measured version to the matrix and, if appropriate, widen
    the peer range.
 
 ## Host adapter
