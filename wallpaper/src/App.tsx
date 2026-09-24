@@ -332,6 +332,11 @@ export function App({ surface = 'combined' }: AppProps) {
   const [harnessModelChoice, setHarnessModelChoice] = useState<string | undefined>()
   const [interactionState, setInteractionState] = useState<'collapsed' | 'expanded'>('collapsed')
   const [interactionEnabled, setInteractionEnabled] = useState(true)
+  // Whether the desktop (and therefore this wallpaper) holds the foreground.
+  // Tracked because returning from another window leaves the WebView without
+  // keyboard focus, and a click cannot take it back: the window is deliberately
+  // non-activating, so only a programmatic focus request restores typing.
+  const [desktopForeground, setDesktopForeground] = useState(true)
   const [workspace, setWorkspace] = useState<DesktopWorkspace>('front')
   const [innerHistoryExpanded, setInnerHistoryExpanded] = useState(false)
   const [expandedBottomInset, setExpandedBottomInset] = useState(48)
@@ -585,6 +590,7 @@ export function App({ surface = 'combined' }: AppProps) {
         error: snapshot.error,
       })
       setInteractionEnabled(snapshot.interaction.enabled)
+      setDesktopForeground(snapshot.interaction.desktopForeground)
       if (snapshot.phase === 'chatting') {
         setWorkspace((current) => current === 'front' || current === 'leaving-inner' ? 'inner' : current)
         setInteractionState('expanded')
@@ -1151,6 +1157,7 @@ export function App({ surface = 'combined' }: AppProps) {
       messages={messages}
       streamingText={streamingText}
       historyExpanded={workspace === 'front' ? runtime.historyExpanded : innerHistoryExpanded}
+      desktopForeground={desktopForeground}
       usage={usage}
       collapsed={settings.interactionLayout === 'taskbar-docked' && interactionState === 'collapsed'}
       layout={settings.interactionLayout}
