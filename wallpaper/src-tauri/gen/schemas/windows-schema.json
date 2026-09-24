@@ -519,6 +519,12 @@
           "markdownDescription": "Enables the scan_dsh_paths command without any pre-configured scope."
         },
         {
+          "description": "Enables the scan_harness_endpoints_command command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-scan-harness-endpoints-command",
+          "markdownDescription": "Enables the scan_harness_endpoints_command command without any pre-configured scope."
+        },
+        {
           "description": "Enables the select_backend command without any pre-configured scope.",
           "type": "string",
           "const": "allow-select-backend",
@@ -925,6 +931,12 @@
           "type": "string",
           "const": "deny-scan-dsh-paths",
           "markdownDescription": "Denies the scan_dsh_paths command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the scan_harness_endpoints_command command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-scan-harness-endpoints-command",
+          "markdownDescription": "Denies the scan_harness_endpoints_command command without any pre-configured scope."
         },
         {
           "description": "Denies the select_backend command without any pre-configured scope.",

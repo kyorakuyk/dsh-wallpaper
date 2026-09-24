@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import { appCoreClient } from '../runtime/appCoreClient.ts'
-import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
+import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type HarnessEndpointScan, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
 import { loadSettings, saveSettings, type WallpaperSettings } from './store.ts'
 import { SettingsPanel, type SettingsPanelHarnessStatus } from './SettingsPanel.tsx'
 import {
@@ -39,6 +39,14 @@ export function SettingsWindow() {
    * by policy) to say whether a login-time start will really happen.
    */
   const [autostartState, setAutostartState] = useState<AutostartStatus>({ enabled: false, source: 'none' })
+  /**
+   * Endpoint discovery result. `endpointScanDone` is deliberately separate from
+   * an empty list: "not scanned yet" and "scanned and found nothing" need
+   * different wording, and the user's rule is that the first scan is mandatory.
+   */
+  const [endpointScan, setEndpointScan] = useState<HarnessEndpointScan[]>([])
+  const [endpointScanBusy, setEndpointScanBusy] = useState(false)
+  const [endpointScanDone, setEndpointScanDone] = useState(false)
   const [dshScanBusy, setDshScanBusy] = useState(false)
   const [notice, setNotice] = useState<string>()
   const [appearanceAssets, setAppearanceAssets] = useState<AppearanceAssetSummary[]>([])
@@ -138,8 +146,34 @@ export function SettingsWindow() {
     }
   }
 
-  const refreshAutostartStatus = async () => {
-    if (!nativeRuntime.isNative) return
+  /**
+   * Scan every known endpoint. The user's own extra ports are passed through so
+   * a non-standard client is not silently excluded from the list.
+   */
+  const scanEndpoints = async () => {
+    if (endpointScanBusy) return
+    setEndpointScanBusy(true)
+    try {
+      const found = await nativeRuntime.scanHarnessEndpoints(settingsRef.current.dshLaunch.extraEndpointPorts ?? [])
+      if (!mountedRef.current) return
+      setEndpointScan(found)
+      setEndpointScanDone(true)
+      const bridges = found.filter((item) => item.bridgeFound)
+      if (bridges.length === 0) {
+        setNotice('未发现可接入的 Harness。请先启动任一个客户端（官方桌面 / 第三方桌面 / 官方 Web）后重新扫描。')
+      } else if (bridges.every((item) => item.status.availability !== 'bridge-ready')) {
+        setNotice(`发现 ${bridges.length} 个 Harness，但当前都不可对话；详情见端点下拉。`)
+      } else {
+        setNotice(`发现 ${bridges.length} 个可接入的 Harness。`)
+      }
+    } catch (error) {
+      setNotice(`扫描接入端点失败：${String(error)}`)
+    } finally {
+      if (mountedRef.current) setEndpointScanBusy(false)
+    }
+  }
+
+  const refreshAutostartStatus = async () => {    if (!nativeRuntime.isNative) return
     try {
       const status: AutostartStatus = await nativeRuntime.autostartStatus()
       const current = settingsRef.current
@@ -445,6 +479,11 @@ export function SettingsWindow() {
       harnessStatus={harness}
       translucentTb={translucentTb}
       dshCandidates={dshCandidates}
+      endpointScan={endpointScan}
+      endpointScanBusy={endpointScanBusy}
+      endpointScanDone={endpointScanDone}
+      onScanEndpoints={() => { void scanEndpoints() }}
+      onClearEndpoints={() => { setEndpointScan([]); setEndpointScanDone(false) }}
       autostart={autostartState}
       onScanDsh={() => { void scanDsh(true) }}
       dshScanBusy={dshScanBusy}

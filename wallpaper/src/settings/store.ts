@@ -67,6 +67,24 @@ export interface DshLaunchSettings {
    * trust decision, so it stays off until the user confirms it in settings.
    */
   trustedCommandForAutoStart: boolean
+  /**
+   * The port of the DSH endpoint to talk to, or undefined for "auto".
+   *
+   * The three client shapes listen on different ports and only some are
+   * configurable (official desktop shell 19387, community desktop 43120,
+   * CLI/core 3080, and the official web app's own default is 3080 via
+   * `ctx.webStartup.port`). Before this setting existed the wallpaper probed
+   * 3080 unconditionally, so a user running the official shell saw `offline`
+   * while a ready Bridge listened one port away.
+   *
+   * `undefined` keeps the shipped priority order (official desktop → community
+   * desktop → official web/CLI). A number pins one endpoint; it is honoured even
+   * when that endpoint is not ready, because silently switching to a different
+   * client would answer a different session than the user selected.
+   */
+  endpointPort?: number
+  /** Extra ports the user added to the scan, beyond the three known shapes. */
+  extraEndpointPorts?: number[]
 }
 
 export interface WallpaperSettings {
@@ -169,6 +187,8 @@ export function readStoredSettingsDocument(): string | null {
  * push into storage, the native publish channel, and the request boundary. */
 export const MAX_SETTINGS_STRING = 2048
 export const MAX_SETTINGS_SHORT_STRING = 128
+/** A user needs a handful of extra endpoints at most; more means a mistake. */
+export const MAX_EXTRA_ENDPOINT_PORTS = 8
 export const MAX_BUBBLE_OVERRIDE_LENGTH = 2000
 export const MAX_MODEL_TIER_RULES = 64
 export const MAX_BUBBLE_OVERRIDES = 256
@@ -340,7 +360,29 @@ function normalizeDshLaunchSettings(raw: unknown): DshLaunchSettings {
     // resident service is opt-in, and so is trusting a custom launcher with it.
     autoStartWithWallpaper: value.autoStartWithWallpaper === true,
     trustedCommandForAutoStart: value.trustedCommandForAutoStart === true,
+    // Only a usable TCP port is accepted; anything else falls back to "auto",
+    // which keeps the shipped priority order rather than pinning a bad port and
+    // reporting `offline` forever.
+    ...(validPort(value.endpointPort) ? { endpointPort: value.endpointPort as number } : {}),
+    ...(normalizeExtraPorts(value.extraEndpointPorts).length > 0
+      ? { extraEndpointPorts: normalizeExtraPorts(value.extraEndpointPorts) }
+      : {}),
   }
+}
+
+function validPort(value: unknown): boolean {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65535
+}
+
+function normalizeExtraPorts(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return []
+  const ports: number[] = []
+  for (const entry of raw) {
+    if (!validPort(entry) || ports.includes(entry as number)) continue
+    ports.push(entry as number)
+    if (ports.length >= MAX_EXTRA_ENDPOINT_PORTS) break
+  }
+  return ports
 }
 
 function validDisplayId(value: string): boolean {

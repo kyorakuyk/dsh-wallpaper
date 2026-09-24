@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-native-bootstrap-generation"
+description = "Enables the native_bootstrap_generation command without any pre-configured scope."
+commands.allow = ["native_bootstrap_generation"]
+
+[[permission]]
+identifier = "deny-native-bootstrap-generation"
+description = "Denies the native_bootstrap_generation command without any pre-configured scope."
+commands.deny = ["native_bootstrap_generation"]

@@ -62,6 +62,7 @@ fn main() {
             "delete_api_conversation",
             "clear_api_history",
             "probe_harness",
+            "scan_harness_endpoints_command",
             "appearance_get_state",
             "appearance_list_themes",
             "appearance_list_assets",

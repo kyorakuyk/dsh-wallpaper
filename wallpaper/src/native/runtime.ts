@@ -28,6 +28,18 @@ export interface ManagedDshAutostart {
   external: boolean
 }
 export interface AutostartStatus { enabled: boolean; source: 'startup-task' | 'run' | 'none' | 'disabled-by-user' | 'disabled-by-policy' | 'unsupported' }
+/**
+ * One endpoint from the native scan. `kind` is the expected client shape for a
+ * known port; `bridgeFound` is true only when a wallpaper Bridge answered, so a
+ * port hosting some other HTTP service is not offered as an endpoint.
+ */
+export interface HarnessEndpointScan {
+  port: number
+  kind: 'official-desktop' | 'community-desktop' | 'official-web'
+  source: 'default' | 'user'
+  bridgeFound: boolean
+  status: HarnessStatus
+}
 export interface DeepSeekWebStatus { state: 'loading' | 'logged-out' | 'ready' | 'generating' | 'unsupported'; conversationId?: string; model?: string; signature: string }
 export interface DeepSeekWebHistory { messages: ChatMessage[]; conversationId?: string; model?: string; state: DeepSeekWebStatus['state'] | 'loading' }
 export interface DeepSeekWebAdapterConfigStatus { schemaVersion: number; adapterVersion: string; source: 'builtin' | 'local'; path: string; warning?: string }
@@ -115,6 +127,8 @@ export interface NativeRuntime {
   clearApiHistory(): Promise<number>
   listenTray(listener: (event: { type: 'backend'; backend: BackendMode }) => void): Promise<() => void>
   probeHarness(): Promise<HarnessStatus>
+  /** Which local ports host a wallpaper Bridge, in the native layer's order. */
+  scanHarnessEndpoints(extraPorts?: readonly number[]): Promise<HarnessEndpointScan[]>
   desktopDisplays(): Promise<DesktopDisplayInfo[]>
   desktopLayoutMetrics(displayId?: string): Promise<{ expandedBottomInset: number; taskbarVisible: boolean }>
   scanDshPaths(hintPath?: string, deepScan?: boolean): Promise<Array<{ rootPath: string; source: string }>>
@@ -361,6 +375,18 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) return { availability: 'offline' }
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<HarnessStatus>('probe_harness')
+  },
+  /**
+   * Ask the native side which local ports host a wallpaper Bridge.
+   *
+   * The renderer can scan too, but the status the desktop actually renders comes
+   * from this process, so the native scan is the authoritative one. `extraPorts`
+   * carries the user's own additions on top of the three known client shapes.
+   */
+  async scanHarnessEndpoints(extraPorts: readonly number[] = []) {
+    if (!await tauriAvailable()) return []
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<HarnessEndpointScan[]>('scan_harness_endpoints_command', { extraPorts: [...extraPorts] })
   },
   async desktopDisplays() {
     if (!await tauriAvailable()) return [{ id: 'preview', name: '预览屏幕', bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1080 }, scaleFactor: 1, primary: true }]

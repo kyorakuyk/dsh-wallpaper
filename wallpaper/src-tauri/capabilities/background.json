@@ -34,6 +34,7 @@
     "allow-delete-api-conversation",
     "allow-clear-api-history",
     "allow-probe-harness",
+    "allow-scan-harness-endpoints-command",
     "allow-launch-dsh",
     "allow-autostart-managed-dsh",
     "allow-managed-dsh-autostart-status",

@@ -1968,6 +1968,25 @@ const HARNESS_BRIDGE_PROTOCOL_VERSION: u64 = 1;
 const REQUIRED_HARNESS_BRIDGE_CAPABILITIES: &[&str] =
     &["sessions", "history", "sse", "cancel", "approval-handoff"];
 
+/// The three DSH client shapes listen on different ports, and only some of them
+/// are configurable, so probing one hardcoded port means "only ever connect to
+/// the CLI shape". The official desktop shell compiles 19387 into its asar; the
+/// community desktop defaults to 43120; the CLI and the official web app both
+/// default to 3080 (`ctx.webStartup.port ?? 3080`).
+///
+/// Order is the shipped priority: official desktop, then community desktop, then
+/// plain web/CLI. The renderer applies the same order, and
+/// `wallpaper/src/connect/endpoints.ts` documents it.
+#[cfg(not(feature = "lite"))]
+const HARNESS_ENDPOINT_PORTS: &[(u16, &str)] =
+    &[(19387, "official-desktop"), (43120, "community-desktop"), (3080, "official-web")];
+
+/// Port used when a caller does not name one. Matches DSH's own web default, so a
+/// CLI-started Host is found without configuration.
+#[cfg(not(feature = "lite"))]
+const HARNESS_DEFAULT_PORT: u16 = 3080;
+
+
 #[cfg(not(feature = "lite"))]
 fn harness_status_cache() -> &'static RwLock<serde_json::Value> {
     HARNESS_STATUS_CACHE
@@ -2132,12 +2151,14 @@ fn diagnose_harness_bridge_status(data: &serde_json::Value) -> Option<serde_json
 }
 
 #[cfg(not(feature = "lite"))]
-async fn fetch_harness_status() -> serde_json::Value {
+async fn fetch_harness_status_at(port: u16) -> serde_json::Value {
     let Some(client) = harness_probe_client() else {
         return serde_json::json!({ "availability": "offline" });
     };
     if let Ok(response) = client
-        .get("http://127.0.0.1:3080/api/wallpaper/v1/status")
+        .get(format!(
+            "http://127.0.0.1:{port}/api/wallpaper/v1/status"
+        ))
         .send()
         .await
     {
@@ -2152,7 +2173,7 @@ async fn fetch_harness_status() -> serde_json::Value {
         }
     }
     let root_status = client
-        .get("http://127.0.0.1:3080/")
+        .get(format!("http://127.0.0.1:{port}/"))
         .send()
         .await
         .ok()
@@ -2160,7 +2181,7 @@ async fn fetch_harness_status() -> serde_json::Value {
     match root_probe_availability(root_status) {
         // A root endpoint proves only that an HTTP service accepted a
         // successful request. Authentication failures and error pages must
-        // not turn an unrelated process on 3080 into a misleading “DSH
+        // not turn an unrelated process on this port into a misleading “DSH
         // online” state.
         HarnessAvailability::WebOnly => serde_json::json!({
             "availability": "web-only",
@@ -2168,6 +2189,51 @@ async fn fetch_harness_status() -> serde_json::Value {
         }),
         _ => serde_json::json!({ "availability": "offline" }),
     }
+}
+
+/// Probe every known endpoint and report which ones host a Bridge.
+///
+/// The native side scans independently of the renderer because the probe cache
+/// the wallpaper actually renders from is native: without this, a Bridge on
+/// 19387 would still be invisible to the status the desktop shows.
+#[cfg(not(feature = "lite"))]
+async fn scan_harness_endpoints(extra_ports: Vec<u16>) -> serde_json::Value {
+    let mut plan: Vec<(u16, &str, &str)> = HARNESS_ENDPOINT_PORTS
+        .iter()
+        .map(|(port, kind)| (*port, *kind, "default"))
+        .collect();
+    for port in extra_ports {
+        if port == 0 || plan.iter().any(|(known, _, _)| *known == port) {
+            continue;
+        }
+        plan.push((port, "official-web", "user"));
+    }
+
+    let mut found = Vec::new();
+    for (port, kind, source) in plan {
+        let status = fetch_harness_status_at(port).await;
+        let availability = status
+            .get("availability")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("offline");
+        // `web-only`/`offline` mean no Bridge answered, so they are not offered
+        // as endpoints. They are still reported so the UI can say why a port was
+        // skipped.
+        let bridge_found = availability != "offline" && availability != "web-only";
+        found.push(serde_json::json!({
+            "port": port,
+            "kind": kind,
+            "source": source,
+            "bridgeFound": bridge_found,
+            "status": status,
+        }));
+    }
+    serde_json::Value::Array(found)
+}
+
+#[cfg(not(feature = "lite"))]
+async fn fetch_harness_status() -> serde_json::Value {
+    fetch_harness_status_at(HARNESS_DEFAULT_PORT).await
 }
 
 /// A root-page response is diagnostic only. It is deliberately not part of
@@ -2533,6 +2599,22 @@ fn probe_harness(caller: tauri::WebviewWindow) -> Result<serde_json::Value, Stri
         .unwrap_or_else(|_| serde_json::json!({ "availability": "offline" })))
 }
 
+/// Scan every known DSH endpoint and report what answered.
+///
+/// Both surfaces may ask: the settings window renders the picker, and the
+/// background surface shows the currently selected client. The scan only reads
+/// each endpoint's public `/status` and root page, so it never touches a
+/// credential and never mutates another client's state.
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+async fn scan_harness_endpoints_command(
+    caller: tauri::WebviewWindow,
+    extra_ports: Option<Vec<u16>>,
+) -> Result<serde_json::Value, String> {
+    require_wallpaper_surface(&caller)?;
+    Ok(scan_harness_endpoints(extra_ports.unwrap_or_default()).await)
+}
+
 #[cfg(not(feature = "lite"))]
 fn start_harness_monitor(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -2703,6 +2785,7 @@ macro_rules! register_edition_commands {
             delete_api_conversation,
             clear_api_history,
             probe_harness,
+            scan_harness_endpoints_command,
             appearance::commands::appearance_get_state,
             appearance::commands::appearance_list_themes,
             appearance::commands::appearance_list_assets,

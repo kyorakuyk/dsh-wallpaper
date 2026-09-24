@@ -191,7 +191,19 @@ export function compatibleHarnessBridgeStatus(data: unknown): HarnessStatus | un
   return status && isHarnessReady(status.availability) ? status : undefined
 }
 
-export async function fetchHarnessStatus(baseUrl = 'http://127.0.0.1:3080'): Promise<HarnessStatus> {
+/**
+ * Loopback base URL for a DSH endpoint.
+ *
+ * The port is a parameter rather than a constant because the three client shapes
+ * listen on different ports (official desktop shell 19387, community desktop
+ * 43120, CLI/core 3080) and only some of them are configurable. See
+ * `connect/endpoints.ts` for discovery and the priority order.
+ */
+export function harnessBaseUrl(port = 3080): string {
+  return `http://127.0.0.1:${port}`
+}
+
+export async function fetchHarnessStatus(baseUrl = harnessBaseUrl()): Promise<HarnessStatus> {
   try {
     const response = await fetch(`${baseUrl}/api/wallpaper/v1/status`, { signal: AbortSignal.timeout(1200), headers: { Accept: 'application/json' } })
     if (response.ok) {
