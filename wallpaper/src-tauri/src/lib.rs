@@ -2184,6 +2184,89 @@ fn root_probe_availability(status: Option<reqwest::StatusCode>) -> HarnessAvaila
 
 #[cfg(test)]
 #[cfg(not(feature = "lite"))]
+mod dsh_autostart_tests {
+    use super::{
+        classify_dsh_launch_failure, is_allowlisted_auto_start_launcher, resolve_dsh_launcher,
+    };
+
+    /// The automatic path may only use a launcher it knows, unless the user has
+    /// confirmed a custom one. This is a trust boundary, so each case is pinned:
+    /// a bare name is allowlisted, an absolute path to the same binary is
+    /// allowlisted, and anything else is not.
+    #[test]
+    fn only_known_launchers_are_allowed_without_confirmation() {
+        // No command configured: the built-in launcher is chosen further down and
+        // validated by `spawn_managed_dsh`.
+        assert!(is_allowlisted_auto_start_launcher(None));
+        assert!(is_allowlisted_auto_start_launcher(Some("   ")));
+
+        for allowed in [
+            "node.exe",
+            "node",
+            "pnpm.cmd",
+            "pnpm",
+            "NODE.EXE",
+            r"C:\Program Files\nodejs\node.exe",
+            r"D:\tools\pnpm.cmd",
+            "/usr/bin/node",
+        ] {
+            assert!(is_allowlisted_auto_start_launcher(Some(allowed)), "{allowed}");
+        }
+
+        // A different program, or one that merely mentions an allowed name, must
+        // not slip through: the comparison is on the file name, not a substring.
+        for rejected in [
+            "powershell.exe",
+            "cmd.exe",
+            r"C:\tools\mynode.exe",
+            "node-wrapper.exe",
+            "python.exe",
+            "evil-node.exe.bat",
+        ] {
+            assert!(!is_allowlisted_auto_start_launcher(Some(rejected)), "{rejected}");
+        }
+    }
+
+    /// Every launch failure must map to the code whose message tells the user
+    /// what to fix. The substrings are the ones the error strings actually carry.
+    #[test]
+    fn launch_failures_map_to_their_stable_codes() {
+        assert_eq!(classify_dsh_launch_failure("DSH 根目录不存在或不可访问"), "root-path-invalid");
+        assert_eq!(
+            classify_dsh_launch_failure("选择的目录不是可识别的 DSH 项目根目录"),
+            "root-path-invalid"
+        );
+        assert_eq!(classify_dsh_launch_failure("未找到 Node.js。请确认 node.exe 已加入系统 PATH"), "launcher-missing");
+        assert_eq!(classify_dsh_launch_failure("未找到 pnpm。请确认 pnpm.cmd 已加入系统 PATH"), "launcher-missing");
+        assert_eq!(classify_dsh_launch_failure("DSH profile 只能包含字母、数字、连字符或下划线"), "profile-invalid");
+        assert_eq!(classify_dsh_launch_failure("本机 3080 端口已被其他进程占用"), "port-occupied-external");
+        // Anything unrecognised still yields a code rather than leaking the text.
+        let other = classify_dsh_launch_failure("something unexpected: 0x80070005");
+        assert_eq!(other, "spawn-failed");
+        assert!(!other.contains("0x80070005"));
+    }
+
+    /// Launcher resolution decides what actually gets executed, so the two input
+    /// shapes are pinned: a path is taken as a path, and a bare name is only
+    /// accepted when it exists on `PATH` or in a well-known install location.
+    #[test]
+    fn launcher_resolution_handles_paths_and_bare_names() {
+        // A path-shaped value that does not exist must not resolve.
+        assert!(resolve_dsh_launcher(r"C:\definitely\missing\node.exe").is_none());
+        assert!(resolve_dsh_launcher("definitely-not-a-real-launcher-xyz.exe").is_none());
+        // A path-shaped value that does exist must resolve to exactly it.
+        let self_exe = std::env::current_exe().expect("current exe");
+        let resolved = resolve_dsh_launcher(&self_exe.to_string_lossy()).expect("resolves");
+        assert_eq!(resolved, self_exe);
+        // A bare name is not treated as a relative path.
+        assert!(!resolve_dsh_launcher("node.exe")
+            .map(|path| path == std::path::PathBuf::from("node.exe"))
+            .unwrap_or(false));
+    }
+}
+
+#[cfg(test)]
+#[cfg(not(feature = "lite"))]
 mod harness_status_tests {
     use super::{compatible_harness_bridge_status, diagnose_harness_bridge_status, root_probe_availability};
     use crate::app_core::HarnessAvailability;
