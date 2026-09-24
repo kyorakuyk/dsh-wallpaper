@@ -890,6 +890,29 @@ const TRIGGER_SEND_SCRIPT: &str = r#"
    * whole sequence is strictly a superset of the old behaviour, so it cannot break
    * a control that a plain click already worked for.
    */
+  /**
+   * Suppress only the file-picker default action, for the duration of one click.
+   *
+   * The send control sits inside a `label` that wraps a hidden `input[type=file]`, so a
+   * click on the button has two effects at once: React's handler sends the message, and
+   * the label's default action opens a native file dialog. Both really happened, which is
+   * why "it works and pops a dialog" described the same single event. Removing the button
+   * from the candidate list was the wrong fix - it removed the send too; cancelling the
+   * default action affects only the dialog.
+   */
+  const suppressFilePickerDefault = () => {
+    const handler = (event) => {
+      const target = event.target;
+      if (!target) return;
+      const isFileInput = target.tagName === 'INPUT'
+        && (target.getAttribute('type') || '').toLowerCase() === 'file';
+      const containsFileInput = typeof target.querySelector === 'function'
+        && Boolean(target.querySelector('input[type="file"]'));
+      if (isFileInput || containsFileInput) event.preventDefault();
+    };
+    document.addEventListener('click', handler, true);
+    setTimeout(() => document.removeEventListener('click', handler, true), 0);
+  };
   const clickLikeUser = (node) => {
     const point = node.getBoundingClientRect();
     const options = {
@@ -899,6 +922,7 @@ const TRIGGER_SEND_SCRIPT: &str = r#"
       button: 0,
     };
     const pointer = { ...options, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    suppressFilePickerDefault();
     try { node.dispatchEvent(new PointerEvent('pointerover', pointer)); } catch (_) {}
     try { node.dispatchEvent(new PointerEvent('pointerenter', pointer)); } catch (_) {}
     try { node.dispatchEvent(new PointerEvent('pointerdown', pointer)); } catch (_) {}
@@ -1866,6 +1890,7 @@ mod tests {
             "composerCleared",
             "isFilePicker",
             "dshDescribe",
+            "suppressFilePickerDefault",
         ] {
             assert!(
                 script.contains(&format!("const {helper} =")),
