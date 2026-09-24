@@ -34,7 +34,7 @@ interface RouteHarness {
     cancel: ReturnType<typeof vi.fn>
   }
   create: ReturnType<typeof vi.fn>
-  logger: { warn: ReturnType<typeof vi.fn> }
+  logger: { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> }
   persistence: { enabled: boolean }
   injectedDependencies: string[] | undefined
   routeDependencies: string[] | undefined
@@ -46,6 +46,8 @@ interface RouteHarness {
   composeSessionScope(): void
   /** Make the next `/sessions` registration throw once. */
   failNextSessionRegistration(): void
+  /** Omit a host member (`service.member`) from the composed scope. */
+  withholdHostMember(member: string): void
 }
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => {
@@ -119,6 +121,7 @@ async function createHarness(
   persistenceEnabled = false,
   prepareTokenRoot?: (tokenRoot: string) => Promise<void>,
   webServerHost: string = '127.0.0.1',
+  options: { withhold?: string } = {},
 ): Promise<RouteHarness> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-wallpaper-bridge-'))
   const tokenRoot = join(root, 'host-owned-dsh-root')
@@ -133,6 +136,8 @@ async function createHarness(
   const listeners = new Map<string, (...args: never[]) => unknown>()
   /** When set, the next `/sessions` registration throws once. */
   let failNextSessionRegistration = false
+  /** Host members to omit from the composed scope, as `service.member`. */
+  let withheldHostMembers: string[] = options.withhold ? [options.withhold] : []
   const agent = {
     session: { id: '', deriveMessages: () => [] as [] },
     status: 'idle' as const,
@@ -190,7 +195,9 @@ async function createHarness(
       const kind = dependencies.includes('agents') ? 'routes' : 'status'
       if (kind === 'routes') routeDependencies = dependencies
       const scope = {
-        webServer,
+        // Spread so a test that withholds a member cannot mutate the shared
+        // web-server mock and leak into the next harness.
+        webServer: { ...webServer },
         agents: { create, resume: create },
         agentDefaultModel: { currentSelection: () => ({ provider: 'default-provider', model: 'default-model' }) },
         agentPresets: {
@@ -211,6 +218,15 @@ async function createHarness(
         commands: { list: () => [], execute: vi.fn(async () => undefined) },
         logger,
         effect: (callback: () => unknown) => { effects.push({ scope: kind, run: callback }) },
+      }
+      // Model a host that is missing a member the adapter validates, so the
+      // incompatibility path can be driven through the real route table.
+      for (const member of withheldHostMembers) {
+        const [service, property] = member.split('.')
+        const target = (scope as unknown as Record<string, unknown>)[service as string]
+        if (target && typeof target === 'object') {
+          delete (target as Record<string, unknown>)[property as string]
+        }
       }
       const compose = () => callback(scope)
       if (kind === 'routes') composeSessionScope = compose
@@ -253,6 +269,7 @@ async function createHarness(
     disposeSessionScope: () => disposeScope('routes'),
     composeSessionScope: () => composeSessionScope?.(),
     failNextSessionRegistration: () => { failNextSessionRegistration = true },
+    withholdHostMember: (member: string) => { withheldHostMembers = [member] },
     workspace,
     workspaceRegistry,
   }
@@ -370,8 +387,36 @@ describe('wallpaper bridge HTTP routes', () => {
     expect(harness.routes.has(`${API_PREFIX}/control`)).toBe(false)
   })
 
-  it('never announces capabilities for a partially registered route table', async () => {
-    // The second registration throws. The first must be rolled back, otherwise
+  it('reports an incompatible host by name and revokes it when the scope unloads', async () => {
+    // A host missing a member the adapter validates must be *named*, not left as
+    // an unexplained failure inside the first request that touches it.
+    const harness = await createHarness(true, undefined, '127.0.0.1', { withhold: 'agentPresets.recompose' })
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+
+    const incompatible = JSON.parse((await call(statusRoute, request('GET', `${API_PREFIX}/status`))).body) as {
+      state: string
+      reasonCode: string
+      capabilities: string[]
+    }
+    expect(incompatible.state).toBe('bridge-incompatible')
+    expect(incompatible.reasonCode).toBe('host-shape-mismatch')
+    // Only the diagnostic surface survives; nothing claims to be driveable.
+    expect(incompatible.capabilities).toEqual(['status'])
+    expect(harness.routes.has(`${API_PREFIX}/sessions`)).toBe(false)
+    expect(harness.routes.has(`${API_PREFIX}/control`)).toBe(false)
+    // The reason is recorded for diagnosis without leaking host internals.
+    expect(harness.logger.error).toHaveBeenCalled()
+    expect(String((harness.logger as unknown as { error: { mock: { calls: unknown[][] } } }).error.mock.calls[0]?.[0] ?? ''))
+      .toContain('agentPresets.recompose')
+
+    // Unloading the scope must clear the incompatibility: a stale one would keep
+    // reporting `bridge-incompatible` for a host that is now fine.
+    await harness.disposeSessionScope()
+    const after = JSON.parse((await call(statusRoute, request('GET', `${API_PREFIX}/status`))).body) as { state: string }
+    expect(after.state).toBe('bridge-loading')
+  })
+
+  it('never announces capabilities for a partially registered route table', async () => {    // The second registration throws. The first must be rolled back, otherwise
     // the status endpoint would advertise `control` for a route table that
     // failed to compose.
     const harness = await createHarness(true)

@@ -316,6 +316,36 @@ fn launch_dsh(
     spawn_managed_dsh(state.inner(), &root_path, &profile, command.as_deref())
 }
 
+/**
+ * Launchers the *automatic* path may use without an explicit user confirmation.
+ *
+ * A custom `command` is honoured as a single executable path (the Bridge never
+ * passes it through a shell, and splits no arguments out of it), but running an
+ * arbitrary configured program unattended at every wallpaper start is a
+ * different trust decision from a button the user just pressed. The check is
+ * stated here, at the automatic entry point, rather than left implicit in
+ * `resolve_dsh_launcher` failing to find a file.
+ */
+#[cfg(not(feature = "lite"))]
+const AUTO_START_LAUNCHER_ALLOWLIST: [&str; 4] =
+    ["node.exe", "node", "pnpm.cmd", "pnpm"];
+
+#[cfg(not(feature = "lite"))]
+fn is_allowlisted_auto_start_launcher(command: Option<&str>) -> bool {
+    let Some(value) = command.map(str::trim).filter(|value| !value.is_empty()) else {
+        // No command configured: the built-in Node/pnpm launcher is chosen and
+        // validated by `spawn_managed_dsh`.
+        return true;
+    };
+    let file_name = std::path::Path::new(value)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    AUTO_START_LAUNCHER_ALLOWLIST
+        .iter()
+        .any(|allowed| file_name.eq_ignore_ascii_case(allowed))
+}
+
 /// Launch DSH at most once per wallpaper process, for the
 /// `autoStartWithWallpaper` setting.
 ///
@@ -351,9 +381,10 @@ fn autostart_managed_dsh(
     }
 
     let configured = command.as_deref().map(str::trim).filter(|value| !value.is_empty());
-    if configured.is_some() && trusted_command != Some(true) {
+    if !is_allowlisted_auto_start_launcher(configured) && trusted_command != Some(true) {
         // Never silently run a custom launcher. The manual "启动" button keeps
-        // working; the automatic path needs an explicit confirmation.
+        // working; the automatic path needs an explicit confirmation, and even
+        // then the value is used as one executable path, never a shell line.
         let outcome = ManagedDshAutostart::new("command-not-confirmed");
         *record = Some(outcome.clone());
         return Ok(serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null));
@@ -485,8 +516,7 @@ fn spawn_managed_dsh(
         launch.arg(bundled_cli).args(["--profile", profile]);
     } else {
         launch.args(["dsh", "--profile", profile]);
-    }
-    launch.current_dir(&root);
+    }    launch.current_dir(&root);
     // DSH is a resident background service. `pnpm.cmd` otherwise inherits a
     // new visible console from the desktop process, leaving a stray CMD
     // window beside the wallpaper. Keep the child hidden while preserving its

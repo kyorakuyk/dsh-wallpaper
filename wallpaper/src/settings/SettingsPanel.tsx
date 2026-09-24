@@ -259,7 +259,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
           {props.dshCandidates.map((candidate) => <Field key={candidate.rootPath} title={candidate.rootPath} detail={candidate.source}><button className="settings-action secondary" onClick={() => props.onAdoptDsh(candidate.rootPath)}>采用</button></Field>)}
           <Field title="DSH 根目录"><input value={settings.dshLaunch.rootPath ?? ''} placeholder="自动扫描或手动填写 dsh 项目目录" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, rootPath: e.target.value || undefined } })} /></Field>
           <Field title="Profile"><input value={settings.dshLaunch.profile} placeholder="desktop" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, profile: e.target.value || 'desktop' } })} /></Field>
-          <Field title="启动命令"><input value={settings.dshLaunch.command ?? ''} placeholder="留空时优先使用已构建 CLI，找不到时回退 pnpm dsh" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, command: e.target.value || undefined, trustedCommandForAutoStart: e.target.value ? settings.dshLaunch.trustedCommandForAutoStart : false } })} /></Field>
+          <Field title="启动命令" detail="填写启动器可执行文件的路径（不接受带参数的整条命令行，也不会经 shell 执行）。留空时优先使用已构建 CLI，找不到时回退 pnpm dsh；node.exe / pnpm 无需额外确认。" ><input value={settings.dshLaunch.command ?? ''} placeholder="留空时优先使用已构建 CLI，找不到时回退 pnpm dsh" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, command: e.target.value || undefined, trustedCommandForAutoStart: e.target.value ? settings.dshLaunch.trustedCommandForAutoStart : false } })} /></Field>
           <Field
             title="随壁纸启动 DSH"
             detail="壁纸每次启动时尝试启动 DSH。登录后生效还需要壁纸自身开机自启；这里不会修改你的系统自启设置。每个壁纸进程最多启动一次，已在 3080 运行的外部 DSH 不会被接管或停止。"
@@ -281,8 +281,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
           )}
           {settings.dshLaunch.command && settings.dshLaunch.autoStartWithWallpaper && (
             <Field
-              title="自动启动不使用自定义命令"
-              detail="无人值守时自动执行自定义启动命令需要你明确同意。手动「启动」始终使用该命令。"
+              title="自动启动不使用自定义启动命令"
+              detail="node.exe / pnpm 以外的启动器在无人值守时自动执行需要你明确同意。手动「启动」始终使用该命令。"
             >
               <Toggle
                 label="允许自动启动使用该命令"

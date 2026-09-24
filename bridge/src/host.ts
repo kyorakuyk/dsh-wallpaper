@@ -164,6 +164,7 @@ export function createHostAdapter(ctx: Context): HostAdapter {
   requireShape(hasFunction(scope.agentDefaultModel, 'currentSelection'), 'agentDefaultModel.currentSelection')
   requireShape(hasFunction(scope.agentPresets, 'list'), 'agentPresets.list')
   requireShape(hasFunction(scope.agentPresets, 'mount'), 'agentPresets.mount')
+  requireShape(hasFunction(scope.agentPresets, 'recompose'), 'agentPresets.recompose')
   requireShape(hasFunction(scope.agents, 'create'), 'agents.create')
   requireShape(hasFunction(scope.agents, 'resume'), 'agents.resume')
   requireShape(hasFunction(scope.workspaceRegistry, 'list'), 'workspaceRegistry.list')

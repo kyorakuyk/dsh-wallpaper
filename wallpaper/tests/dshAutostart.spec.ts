@@ -119,6 +119,24 @@ describe('DSH autostart wiring', () => {
     expect(panel).toMatch(/command: e\.target\.value \|\| undefined, trustedCommandForAutoStart: e\.target\.value \?/)
   })
 
+  it('allows only node/pnpm launchers without confirmation, and never a shell', async () => {
+    const lib = await source('src-tauri/src/lib.rs')
+    const autostart = lib.slice(lib.indexOf('fn autostart_managed_dsh'), lib.indexOf('fn managed_dsh_autostart_status'))
+    // The trust boundary is stated at the automatic entry point, not left
+    // implicit in a file lookup failing.
+    expect(autostart).toMatch(/if !is_allowlisted_auto_start_launcher\(configured\) && trusted_command != Some\(true\)/)
+    expect(lib).toContain('AUTO_START_LAUNCHER_ALLOWLIST')
+    expect(lib).toMatch(/\["node\.exe", "node", "pnpm\.cmd", "pnpm"\]/)
+    // The configured command must be one executable path. A shell would turn a
+    // stored string into an arbitrary command line.
+    expect(lib).not.toMatch(/Command::new\("cmd(\.exe)?"\)/)
+    expect(lib).not.toMatch(/\/C\s/)
+    expect(lib).not.toMatch(/split_whitespace/)
+    // Arguments are always passed as an array, never concatenated into a line.
+    expect(lib).toContain('launch.args(["dsh", "--profile", profile])')
+    expect(lib).toContain('launch.arg(bundled_cli).args(["--profile", profile])')
+  })
+
   it('tells the user that login-time start needs the wallpaper to autostart', async () => {
     const panel = await source('src/settings/SettingsPanel.tsx')
     expect(panel).toContain('登录后生效还需要壁纸自身开机自启')

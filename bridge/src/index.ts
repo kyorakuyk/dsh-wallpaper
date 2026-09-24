@@ -1026,6 +1026,23 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.inject([...HOST_ADAPTER_SERVICES], (wctx) => {
     if (!isLoopbackWebServerHost(wctx.webServer.host)) return
     /**
+     * Every piece of published state in this scope is revoked here, and this
+     * dispatcher is registered *before* anything can go wrong. An early `return`
+     * on an incompatible host would otherwise skip the only cleanup hook, and a
+     * stale `bridge-incompatible` would outlive the scope that recorded it —
+     * which is exactly what a regression test caught.
+     */
+    const rollbackRegistrations = (): void => {
+      registered.control = false
+      registered.sessions = false
+      hostIncompatibility = undefined
+      controlDispose.current?.()
+      controlDispose.current = undefined
+      sessionRoutesDispose.current?.()
+      sessionRoutesDispose.current = undefined
+    }
+    wctx.effect(() => rollbackRegistrations)
+    /**
      * Build the validated host adapter once for this scope.
      *
      * A host that does not expose the shape the Bridge drives throws
@@ -1045,28 +1062,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       wctx.logger.error?.(`wallpaper bridge host is incompatible (${detail})`)
       return
     }
-    // Cleared by `rollbackRegistrations()` when this scope unloads, so an
-    // incompatibility cannot outlive the host that caused it.
     hostIncompatibility = undefined
-    /**
-     * Register both route groups as one unit. If the second registration
-     * throws, the first is rolled back before the error propagates: a
-     * half-registered bridge that already announced `control` would be worse
-     * than one that announces nothing, because the wallpaper would drive a
-     * route table it cannot rely on.
-     *
-     * The scope body stays synchronous up to this point so a registration
-     * failure surfaces as a thrown error in the fiber, which Cordis reports,
-     * rather than as a dangling route.
-     */
-    const rollbackRegistrations = (): void => {
-      registered.control = false
-      registered.sessions = false
-      controlDispose.current?.()
-      controlDispose.current = undefined
-      sessionRoutesDispose.current?.()
-      sessionRoutesDispose.current = undefined
-    }
     /**
      * A route-registration failure is not fatal to the Bridge: the status route
      * stays mounted so the wallpaper can still diagnose "the Bridge is here but
@@ -1159,7 +1155,10 @@ export function apply(ctx: Context, config: Config = {}): void {
     })
 
     controlDispose.current = controlDisposeFn
-    registered.control = true
+    // `registered.control` is deliberately *not* set here. The two route groups
+    // are announced together at the end of the scope, because a Bridge that
+    // advertises `control` while `sessions` is still unregistered would let the
+    // wallpaper drive a half-composed route table.
 
     const sessionsDisposeFn = wctx.webServer.register({
       kind: 'prefix',
@@ -1442,6 +1441,9 @@ export function apply(ctx: Context, config: Config = {}): void {
       },
     })
     sessionRoutesDispose.current = sessionsDisposeFn
+    // Both groups are registered, so the route table is now whole and can be
+    // announced. This is the only place either flag becomes true.
+    registered.control = true
     registered.sessions = true
     } catch (error) {
       // Registration failed part-way. Revoke everything and rethrow: the scope
@@ -1462,7 +1464,9 @@ export function apply(ctx: Context, config: Config = {}): void {
         sweepTimer = undefined
         // Revoke the announcement before the routes disappear, so a status
         // request racing this teardown cannot be told about capabilities that
-        // are already gone.
+        // are already gone. (`rollbackRegistrations` is also registered by its
+        // own effect at the top of this scope, so the incompatible-host path
+        // still revokes; calling it twice is safe.)
         rollbackRegistrations()
       }
     })
