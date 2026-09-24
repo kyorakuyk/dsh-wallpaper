@@ -26,6 +26,15 @@ export interface ConversationBubbleProps {
    * prop exists so returning to the desktop can make that same request.
    */
   desktopForeground: boolean
+  /**
+   * Draft text owned by the parent.
+   *
+   * The composer is deliberately rebuilt when the desktop regains the foreground,
+   * because only a rebuild restores the WebView keyboard channel. Keeping the draft
+   * above this component means that rebuild does not discard what the user typed.
+   */
+  initialDraft: string
+  onDraftChange: (draft: string) => void
   /** Hidden by default; callers may opt into custom role names. */
   speakerLabels?: ConversationSpeakerLabels
   usage?: TokenUsage
@@ -80,7 +89,10 @@ function UsageLine({ usage }: { usage?: TokenUsage }) {  if (!usage) return null
 }
 
 export function ConversationBubble(props: ConversationBubbleProps) {
-  const [draft, setDraft] = useState('')
+  // Seeded from the parent so the deliberate rebuild that restores keyboard
+  // focus does not discard a half-typed message.
+  const [draft, setDraft] = useState(() => props.initialDraft)
+  useEffect(() => { props.onDraftChange(draft) }, [draft])
   const [hovered, setHovered] = useState(false)
   const [focused, setFocused] = useState(false)
   const [commandMenuOpen, setCommandMenuOpen] = useState(false)

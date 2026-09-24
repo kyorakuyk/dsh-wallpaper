@@ -337,6 +337,21 @@ export function App({ surface = 'combined' }: AppProps) {
   // keyboard focus, and a click cannot take it back: the window is deliberately
   // non-activating, so only a programmatic focus request restores typing.
   const [desktopForeground, setDesktopForeground] = useState(true)
+  // The composer draft lives here rather than in the bubble because returning to
+  // the desktop has to rebuild the input area (that rebuild is what restores the
+  // keyboard channel), and component state would not survive it.
+  const [chatDraft, setChatDraft] = useState('')
+  // Bumped to force that rebuild; only the foreground transition changes it.
+  const [composerEpoch, setComposerEpoch] = useState(0)
+
+  // Only the false -> true edge rebuilds the input area. Doing it on every
+  // snapshot would remount the composer continuously while the user types.
+  const previousForegroundRef = useRef(true)
+  useEffect(() => {
+    const returned = !previousForegroundRef.current && desktopForeground
+    previousForegroundRef.current = desktopForeground
+    if (returned) setComposerEpoch((epoch) => epoch + 1)
+  }, [desktopForeground])
   const [workspace, setWorkspace] = useState<DesktopWorkspace>('front')
   const [innerHistoryExpanded, setInnerHistoryExpanded] = useState(false)
   const [expandedBottomInset, setExpandedBottomInset] = useState(48)
@@ -1158,6 +1173,12 @@ export function App({ surface = 'combined' }: AppProps) {
       streamingText={streamingText}
       historyExpanded={workspace === 'front' ? runtime.historyExpanded : innerHistoryExpanded}
       desktopForeground={desktopForeground}
+      // Rebuilt when the desktop regains the foreground: only a rebuild
+      // restores the WebView keyboard channel, and the draft is kept in App
+      // so the rebuild does not discard a half-typed message.
+      key={`composer-${composerEpoch}`}
+      initialDraft={chatDraft}
+      onDraftChange={setChatDraft}
       usage={usage}
       collapsed={settings.interactionLayout === 'taskbar-docked' && interactionState === 'collapsed'}
       layout={settings.interactionLayout}
