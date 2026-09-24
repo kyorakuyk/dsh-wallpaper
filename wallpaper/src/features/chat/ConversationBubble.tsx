@@ -137,6 +137,19 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   }, [props.backend])
 
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  // Focus on mount as well as on the foreground edge.
+  //
+  // The parent rebuilds this component when the desktop regains the foreground,
+  // which resets the edge detector below - so the edge alone leaves the page with
+  // no focused element at all. The native side gives the WebView its keyboard
+  // channel back; focusing here gives the channel a target to land on, and both
+  // are needed: the host window can hold the keyboard while the page has focus on
+  // nothing, in which case every keystroke is discarded.
+  useEffect(() => {
+    if (props.collapsed || props.disabled) return
+    composerRef.current?.focus()
+    // Mount only: the foreground edge is handled by the effect below.
+  }, [])
   const previousDesktopForeground = useRef(props.desktopForeground ?? true)
   // Returning to the desktop must re-request keyboard focus. The window cannot be
   // activated by a click, so nothing else gives the WebView its keyboard channel
