@@ -950,7 +950,21 @@ export function apply(ctx: Context, config: Config = {}): void {
    */
   let hostIncompatibility: { code: string; detail: string } | undefined
 
-  /** Capabilities the mounted route table can actually honour today. */
+  /**
+   * What the mounted route table can *structurally* honour.
+   *
+   * Two deliberate distinctions, both load-bearing for the consumer:
+   *
+   *  - `capabilities` describes what is mounted, not what is safe to use. An
+   *    unusable token still leaves the session routes registered (they refuse
+   *    per request with 503), so `sessions` may legitimately appear alongside
+   *    `authentication: "unavailable"`. Both interpreters check `authentication`
+   *    before capability matching, so such a document can never be read as
+   *    `bridge-ready`; suppressing the capability instead would erase the
+   *    difference between "mounted but unauthenticated" and "not mounted".
+   *  - An incompatible *host* is different: no route was registered, so nothing
+   *    beyond the diagnostic surface is announced.
+   */
   const liveCapabilities = (): string[] => {
     const capabilities = ['status']
     if (hostIncompatibility) return capabilities
