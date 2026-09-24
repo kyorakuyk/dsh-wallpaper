@@ -65,6 +65,16 @@ export function isCurrentChatOperation(
 
 export const HARNESS_DISCONNECTED_ERROR_PREFIX = 'DSH 壁纸 Bridge 当前不可用。'
 
+/**
+ * Process-wide record that the automatic DSH start has been requested.
+ *
+ * Module scope rather than a ref on purpose: a React remount would reset a ref
+ * and issue a second request. This is only a cheap short-circuit — the native
+ * `ManagedDshAutostartState` is the guarantee that survives a reload, a second
+ * WebView, or HMR, because a fresh JS realm starts with this flag false again.
+ */
+let dshAutostartRequestedInProcess = false
+
 export function canAutoSelectHarness(
   availability: RuntimeState['harness'],
   backend: BackendMode,
@@ -383,12 +393,14 @@ export function App({ surface = 'combined' }: AppProps) {
   }, [runtime.phase])
   const appSnapshotRevisionRef = useRef(-1)
   /**
-   * `autoStartWithWallpaper` is a wallpaper-start trigger, so it must fire from
-   * the background host exactly once. The native side owns the real guarantee
-   * (it remembers the attempt for the process lifetime); this ref only prevents
-   * a pointless IPC round trip on every remount. It is a module-free ref, so a
-   * React re-mount of this component in the same process still sees `true` via
-   * the native status query below.
+   * `autoStartWithWallpaper` starts a resident service, so it must fire from the
+   * background host exactly once per process.
+   *
+   * Two layers, deliberately. This module-scope marker survives a React remount
+   * of the component (a ref would not, so a remount would issue a pointless IPC
+   * round trip), and the native `ManagedDshAutostartState` is the actual
+   * guarantee: it remembers the attempt for the process lifetime and refuses a
+   * repeat, which also covers a second WebView, a reload, or an HMR pass.
    */
   const dshAutostartRequestedRef = useRef(false)
   /**
@@ -714,8 +726,10 @@ export function App({ surface = 'combined' }: AppProps) {
   useEffect(() => {
     if (!nativeRuntime.isNative) return
     if (!settings.dshLaunch.autoStartWithWallpaper) return
-    if (dshAutostartRequestedRef.current) return
+    // Module scope, so a React remount of this component does not re-request.
+    if (dshAutostartRequestedRef.current || dshAutostartRequestedInProcess) return
     dshAutostartRequestedRef.current = true
+    dshAutostartRequestedInProcess = true
     let disposed = false
     void (async () => {
       try {

@@ -96,9 +96,11 @@ describe('DSH autostart wiring', () => {
   it('starts DSH from the background host only, once per setting transition', async () => {
     const app = await source('src/App.tsx')
     expect(app).toContain('nativeRuntime.autostartManagedDsh({')
-    // Once per process, so a React remount cannot add a second resident DSH.
-    expect(app).toMatch(/if \(dshAutostartRequestedRef\.current\) return/)
-    expect(app).toMatch(/dshAutostartRequestedRef\.current = true/)
+    // Guarded twice: a module-scope marker so a React remount cannot re-request,
+    // and the native record (asserted in its own test) which is the guarantee.
+    expect(app).toContain('dshAutostartRequestedInProcess')
+    expect(app).toMatch(/if \(dshAutostartRequestedRef\.current \|\| dshAutostartRequestedInProcess\) return/)
+    expect(app).toMatch(/let dshAutostartRequestedInProcess = false/)
     // Keyed to the setting alone: editing rootPath/profile after a launch must
     // not spawn another process in the same run.
     expect(app).toMatch(/\}, \[settings\.dshLaunch\.autoStartWithWallpaper\]\)/)
