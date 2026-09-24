@@ -208,6 +208,34 @@ describe.skipIf(!smokeReady)('real DSH desktop profile smoke test', () => {
     expect(history.status).toBe(200)
     await expect(history.json()).resolves.toMatchObject({ sessionId: 'wallpaper-smoke' })
 
+    /**
+     * Delivery is exercised at the route boundary only.
+     *
+     * The throwaway `DSH_HOME` has no provider credentials, so this cannot assert
+     * that a model answered. What it does prove on a real host is that the
+     * message route reaches a live agent and accepts the turn, that the session
+     * survives it, and that closing and reconnecting reuses the same live handle
+     * instead of creating a second session. The end-to-end "identifiable message
+     * gets a final reply, then cancel a turn" step needs a profile that holds
+     * real credentials and belongs to a human; see the plan's acceptance section.
+     */
+    const sent = await authorizedFetch(`${API_PREFIX}/sessions/wallpaper-smoke/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'wallpaper-smoke-identifiable-message' }),
+    })
+    expect(sent.status, `body: ${await sent.clone().text()}`).toBe(202)
+
+    // Reconnecting the same session must reuse the live handle, not add one.
+    const reconnected = await authorizedFetch(`${API_PREFIX}/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'wallpaper-smoke' }),
+    })
+    expect(reconnected.status).toBe(200)
+    await expect(reconnected.json()).resolves.toMatchObject({ sessionId: 'wallpaper-smoke' })
+
+    // A cancel round is accepted for the live session.
     const cancelled = await authorizedFetch(`${API_PREFIX}/sessions/wallpaper-smoke/cancel`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
