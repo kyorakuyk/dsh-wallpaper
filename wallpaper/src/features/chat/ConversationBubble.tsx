@@ -17,16 +17,6 @@ export interface ConversationBubbleProps {
   streamingText: string
   historyExpanded: boolean
   /**
-   * Whether the desktop holds the foreground.
-   *
-   * A desktop wallpaper window is deliberately non-activating, so when focus goes to
-   * another window the WebView loses its keyboard channel and *clicking the composer
-   * cannot take it back*. A programmatic focus request still works — that is why
-   * re-mounting the bubble (switching backend away and back) restored typing. This
-   * prop exists so returning to the desktop can make that same request.
-   */
-  desktopForeground?: boolean
-  /**
    * Draft text owned by the parent.
    *
    * The composer is deliberately rebuilt when the desktop regains the foreground,
@@ -136,31 +126,6 @@ export function ConversationBubble(props: ConversationBubbleProps) {
     setHistoryLimit(HISTORY_RENDER_WINDOW)
   }, [props.backend])
 
-  const composerRef = useRef<HTMLTextAreaElement | null>(null)
-  // Focus on mount as well as on the foreground edge.
-  //
-  // The parent rebuilds this component when the desktop regains the foreground,
-  // which resets the edge detector below - so the edge alone leaves the page with
-  // no focused element at all. The native side gives the WebView its keyboard
-  // channel back; focusing here gives the channel a target to land on, and both
-  // are needed: the host window can hold the keyboard while the page has focus on
-  // nothing, in which case every keystroke is discarded.
-  useEffect(() => {
-    if (props.collapsed || props.disabled) return
-    composerRef.current?.focus()
-    // Mount only: the foreground edge is handled by the effect below.
-  }, [])
-  const previousDesktopForeground = useRef(props.desktopForeground ?? true)
-  // Returning to the desktop must re-request keyboard focus. The window cannot be
-  // activated by a click, so nothing else gives the WebView its keyboard channel
-  // back; only a programmatic focus request does, which is what re-mounting the
-  // bubble used to do by accident.
-  useEffect(() => {
-    const returning = !previousDesktopForeground.current && (props.desktopForeground ?? true)
-    previousDesktopForeground.current = props.desktopForeground ?? true
-    if (!returning || props.collapsed || props.disabled) return
-    composerRef.current?.focus()
-  }, [props.desktopForeground, props.collapsed, props.disabled])
 
   const submit = () => {
     const text = draft.trim()
@@ -325,7 +290,6 @@ export function ConversationBubble(props: ConversationBubbleProps) {
       <form className="dsh-chat__composer" onSubmit={(event) => { event.preventDefault(); submit() }}>
         <textarea
           className="dsh-chat__textarea"
-          ref={composerRef}
           value={draft}
           onChange={(event) => {
             const nextDraft = event.target.value

@@ -332,26 +332,10 @@ export function App({ surface = 'combined' }: AppProps) {
   const [harnessModelChoice, setHarnessModelChoice] = useState<string | undefined>()
   const [interactionState, setInteractionState] = useState<'collapsed' | 'expanded'>('collapsed')
   const [interactionEnabled, setInteractionEnabled] = useState(true)
-  // Whether the desktop (and therefore this wallpaper) holds the foreground.
-  // Tracked because returning from another window leaves the WebView without
-  // keyboard focus, and a click cannot take it back: the window is deliberately
-  // non-activating, so only a programmatic focus request restores typing.
-  const [desktopForeground, setDesktopForeground] = useState(true)
   // The composer draft lives here rather than in the bubble because returning to
   // the desktop has to rebuild the input area (that rebuild is what restores the
   // keyboard channel), and component state would not survive it.
   const [chatDraft, setChatDraft] = useState('')
-  // Bumped to force that rebuild; only the foreground transition changes it.
-  const [composerEpoch, setComposerEpoch] = useState(0)
-
-  // Only the false -> true edge rebuilds the input area. Doing it on every
-  // snapshot would remount the composer continuously while the user types.
-  const previousForegroundRef = useRef(true)
-  useEffect(() => {
-    const returned = !previousForegroundRef.current && desktopForeground
-    previousForegroundRef.current = desktopForeground
-    if (returned) setComposerEpoch((epoch) => epoch + 1)
-  }, [desktopForeground])
 
   // Report island pointer events to the native side, the only side that can act on
   // them: a real click never reaches the native window procedure, because the WebView2
@@ -623,7 +607,6 @@ export function App({ surface = 'combined' }: AppProps) {
         error: snapshot.error,
       })
       setInteractionEnabled(snapshot.interaction.enabled)
-      setDesktopForeground(snapshot.interaction.desktopForeground)
       if (snapshot.phase === 'chatting') {
         setWorkspace((current) => current === 'front' || current === 'leaving-inner' ? 'inner' : current)
         setInteractionState('expanded')
@@ -1190,11 +1173,9 @@ export function App({ surface = 'combined' }: AppProps) {
       messages={messages}
       streamingText={streamingText}
       historyExpanded={workspace === 'front' ? runtime.historyExpanded : innerHistoryExpanded}
-      desktopForeground={desktopForeground}
       // Rebuilt when the desktop regains the foreground: only a rebuild
       // restores the WebView keyboard channel, and the draft is kept in App
       // so the rebuild does not discard a half-typed message.
-      key={`composer-${composerEpoch}`}
       initialDraft={chatDraft}
       onDraftChange={setChatDraft}
       usage={usage}
