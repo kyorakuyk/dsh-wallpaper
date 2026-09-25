@@ -94,12 +94,7 @@ html, body, #root {
 .idle-bg {
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(140% 115% at 50% 46%, transparent 38%, #04060dd9 100%),
-    linear-gradient(104deg, transparent 33%, #9fe8ff1f 45%, transparent 58%),
-    radial-gradient(90% 70% at 18% 8%, var(--persona-glow), transparent 60%),
-    radial-gradient(115% 85% at 78% 92%, #0f4c5c59, transparent 58%),
-    linear-gradient(178deg, #0d1b33f2 0%, #0a1526fa 46%, #05070fff 100%);
+  background: var(--blank-background);
   backdrop-filter: blur(2px);
 }
 

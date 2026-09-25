@@ -30,3 +30,6 @@
 .history-row__main small{margin-top:4px;color:#6f8598;font-size:10px}
 .history-row__delete{flex:0 0 auto;border-color:rgba(235,119,127,.2)!important;color:#db939a!important}
 @media(max-width:780px){.history-row{align-items:stretch;flex-direction:column}.history-row__delete{width:100%}}
+
+/* 空白背景那一格的预览：与桌面实际渲染同一个值，而不是网格自己的占位渐变。 */
+.background-grid button[data-background='default']>span{background:var(--blank-background)}

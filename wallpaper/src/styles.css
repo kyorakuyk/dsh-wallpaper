@@ -338,12 +338,7 @@
 .idle-bg {
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(140% 115% at 50% 46%, transparent 38%, #04060dd9 100%),
-    linear-gradient(104deg, transparent 33%, #9fe8ff1f 45%, transparent 58%),
-    radial-gradient(90% 70% at 18% 8%, var(--persona-glow), transparent 60%),
-    radial-gradient(115% 85% at 78% 92%, #0f4c5c59, transparent 58%),
-    linear-gradient(178deg, #0d1b33f2 0%, #0a1526fa 46%, #05070fff 100%);
+  background: var(--blank-background);
   backdrop-filter: blur(2px);
 }
 
@@ -642,4 +637,20 @@
 @media (max-width: 760px) {
   .conversation-shell { bottom: 3%; width: calc(100vw - 24px); }
   .model-rule { grid-template-columns: 1fr 1fr; }
+}
+
+/*
+ * 空白背景渐变的唯一定义：--blank-background。
+ *
+ * 两处消费它——真正铺满桌面的 .idle-bg，以及设置里那一格的缩略图。缩略图原先有
+ * 自己的占位渐变，于是「选中前看到的」和「选中后得到的」是两回事；值抽成变量后，
+ * 预览与实物不会再各走各的。
+ */
+:root {
+  --blank-background:
+radial-gradient(140% 115% at 50% 46%, transparent 38%, #04060dd9 100%),
+    linear-gradient(104deg, transparent 33%, #9fe8ff1f 45%, transparent 58%),
+    radial-gradient(90% 70% at 18% 8%, var(--persona-glow), transparent 60%),
+    radial-gradient(115% 85% at 78% 92%, #0f4c5c59, transparent 58%),
+    linear-gradient(178deg, #0d1b33f2 0%, #0a1526fa 46%, #05070fff 100%);
 }
