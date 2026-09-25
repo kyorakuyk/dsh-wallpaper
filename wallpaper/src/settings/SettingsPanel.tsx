@@ -9,7 +9,7 @@ import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, LockScreenDiag
 import { preferredDisplayId } from '../runtime/displayLayout.ts'
 import { harnessStateLabel } from '../connect/harnessLabels.ts'
 import type { AutostartStatus, HarnessEndpointScan, HarnessTarget } from '../native/runtime.ts'
-import { catalogAgeLabel, subjectDetail, subjectKindLabel } from '../connect/harnessSubjects.ts'
+import { catalogAgeLabel, displaySubjectPath, sameSubject, subjectOptionLabel } from '../connect/harnessSubjects.ts'
 import { OfficialPersonaCards } from '../persona/OfficialPersonaCards.tsx'
 import './SettingsPanel.css'
 
@@ -79,15 +79,14 @@ export interface SettingsPanelProps {
    * shape: a desktop client's window is raised, while the windowless CLI/webui
    * shape is opened in the default browser at the endpoint it listens on.
    */
-  onReachClient: () => void
-  reachBusy: boolean
+  /** Idempotent 「打开界面」: start it if needed, then show it. */
+  onOpenClient: () => void
   /** Which action the current selection takes, for the button label. */
   reachAction: 'browser' | 'window'
   /** The endpoint the action will act on, when one is selected. */
   reachPort?: number
-  onLaunchDsh: () => void
-  /** A launch waits for the client to answer, so the button reports that wait. */
-  subjectLaunchBusy: boolean
+  /** Opening waits for the client to answer, so the button reports that wait. */
+  openBusy: boolean
   managedDsh: ManagedDshStatus
   onRefreshManagedDsh: () => void
   onStopManagedDsh: () => void
@@ -256,7 +255,6 @@ export function SettingsPanel(props: SettingsPanelProps) {
    * bookkeeping the user cannot act on, so showing them would be disclosure without
    * a decision attached to it.
    */
-  const runningClients = props.endpointScan.filter((item) => item.bridgeFound)
   const updateRule = (index: number, patch: Partial<ModelTierRule>) => set({ modelTierRules: settings.modelTierRules.map((rule, i) => i === index ? { ...rule, ...patch } : rule) })
   const pageMeta = pages.find((item) => item.id === page)!
   const displayOptions = props.desktopDisplays.map((display, index) => ({ value: display.id, label: displayLabel(display, index) }))
@@ -332,85 +330,77 @@ export function SettingsPanel(props: SettingsPanelProps) {
             the toggle points at that page instead of introducing a second.
         */}
         <Card title="DeepSeek Harness 启动" description="选择由谁来跑 DeepSeek Harness：客户端自带运行环境，源码目录由本应用启动。已经在运行的实例不会被接管或关闭。">
-          <Field title="自动扫描" detail={props.dshScanBusy ? '正在后台搜索可识别的执行主体，请稍候。' : props.harnessTargets.length > 0 ? `已发现 ${props.harnessTargets.length} 个可选执行主体${props.subjectCatalogVerifiedAt ? `（${catalogAgeLabel(props.subjectCatalogVerifiedAt)}）` : ''}。` : '也会识别本机已安装的客户端；扫描不会阻塞设置中心。'}><button className="settings-action secondary" disabled={props.dshScanBusy} onClick={props.onScanDsh}>{props.dshScanBusy ? '扫描中…' : '扫描执行主体'}</button></Field>
-          {props.subjectChoice && <Field title="请选择默认主体" detail={props.subjectChoice}><span /></Field>}
-          {props.harnessTargets.map((target) => {
-            const chosen = settings.dshLaunch.subjectId === target.id
-            return (
-              <Field key={target.id} title={`${subjectKindLabel(target.kind)} · ${target.label}`} detail={subjectDetail(target)}>
-                <button className="settings-action secondary" disabled={chosen} onClick={() => props.onSelectSubject(target.id)}>{chosen ? '已选择' : '采用'}</button>
-              </Field>
-            )
-          })}
-          <Field title="DSH 根目录" detail={shellSelected ? '当前主体自带检出，不需要填根目录。' : '扫描时会一并作为提示路径；手动填写即可手工登记一个源码检出。'}><input value={settings.dshLaunch.rootPath ?? ''} placeholder="自动扫描或手动填写 dsh 项目目录" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, rootPath: e.target.value || undefined } })} /></Field>
-          {runningClients.length > 1 ? (
-            <Field title="接入的客户端" detail="检测到多个客户端正在运行，请选择壁纸连接哪一个。">
-              <span className="integration-actions">
-                <button className="settings-action secondary" disabled={props.endpointScanBusy} onClick={props.onScanEndpoints}>
-                  {props.endpointScanBusy ? '扫描中…' : '重新扫描'}
-                </button>
+          {/*
+            One control for "who runs it", because that is one question. The scanned
+            subjects used to be a row each with its own 采用 button, plus a separate row
+            prompting for a default when several source trees exist; a select answers all
+            of it in one line, and that prompt becomes this line's description. There is
+            deliberately no manual path entry: fewer items was the request, and typing a
+            directory is discovery work the scan already does.
+          */}
+          <Field
+            title="运行方式"
+            detail={props.dshScanBusy
+              ? '正在后台搜索可识别的运行方式，请稍候。'
+              : props.harnessTargets.length === 0
+                ? '点「扫描」找出本机可以运行的 DeepSeek Harness；扫描不会阻塞设置中心。'
+                : [props.subjectChoice, `已发现 ${props.harnessTargets.length} 个可选项${props.subjectCatalogVerifiedAt ? `（${catalogAgeLabel(props.subjectCatalogVerifiedAt)}）` : ''}。`].filter(Boolean).join(' ')}
+          >
+            <span className="integration-actions">
+              {props.harnessTargets.length > 0 && (
                 <select
                   className="settings-select"
-                  aria-label="接入的客户端"
-                  value={settings.dshLaunch.endpointPort === undefined ? 'auto' : String(settings.dshLaunch.endpointPort)}
-                  onChange={(e) => set({
-                    dshLaunch: {
-                      ...settings.dshLaunch,
-                      endpointPort: e.target.value === 'auto' ? undefined : Number(e.target.value),
-                    },
-                  })}
+                  aria-label="运行方式"
+                  value={settings.dshLaunch.subjectId ?? ''}
+                  onChange={(event) => props.onSelectSubject(event.target.value)}
                 >
-                  <option value="auto">自动（按客户端优先级）</option>
-                  {runningClients.map((item) => (
-                    <option key={item.port} value={String(item.port)}>
-                      {runningClients.filter((other) => other.kind === item.kind).length > 1
-                        ? `${harnessEndpointKindLabel(item.kind)}（${item.port}）`
-                        : harnessEndpointKindLabel(item.kind)}
-                    </option>
+                  {/*
+                    A subject stored before this list was rescanned stays visible:
+                    dropping the user's choice because a scan has not run yet is the
+                    "looks empty" failure the catalogue exists to prevent.
+                  */}
+                  {settings.dshLaunch.subjectId && !props.harnessTargets.some((target) => sameSubject(target.id, settings.dshLaunch.subjectId)) && (
+                    <option value={settings.dshLaunch.subjectId}>{`当前：${displaySubjectPath(settings.dshLaunch.subjectId)}`}</option>
+                  )}
+                  {props.harnessTargets.map((target) => (
+                    <option key={target.id} value={target.id}>{subjectOptionLabel(target, props.harnessTargets)}</option>
                   ))}
                 </select>
-              </span>
-            </Field>
-          ) : (
-            <Field
-              title="接入的客户端"
-              detail={runningClients.length === 1
-                ? `已连接到正在运行的${harnessEndpointKindLabel(runningClients[0].kind)}。`
-                : '壁纸会自动连接正在运行的客户端；扫描只用来确认它已被识别。'}
-            >
-              <button className="settings-action secondary" disabled={props.endpointScanBusy} onClick={props.onScanEndpoints}>
-                {props.endpointScanBusy ? '扫描中…' : '扫描客户端'}
+              )}
+              <button className="settings-action secondary" disabled={props.dshScanBusy} onClick={props.onScanDsh}>
+                {props.dshScanBusy ? '扫描中…' : props.harnessTargets.length > 0 ? '重新扫描' : '扫描'}
               </button>
-            </Field>
-          )}
-          <Field
-            title="打开客户端界面"
-            detail={props.reachPort === undefined
-              ? '先在下面选定要与壁纸对话的客户端。'
-              : props.reachAction === 'browser'
-                ? `会打开它的界面（浏览器窗口）；如果它没在运行，会先把它启动起来。`
-                : `会把它自己的窗口调到前台；如果它没在运行，会先把它启动起来。`}
-          >
-            <button
-              className="settings-action"
-              disabled={props.reachPort === undefined || props.reachBusy}
-              onClick={props.onReachClient}
-            >
-              {props.reachBusy
-                ? '处理中…'
-                : props.reachAction === 'browser' ? '在浏览器中打开' : '拉起窗口'}
-            </button>
+            </span>
           </Field>
           {!shellSelected && <>
-                        {/*
-              Only a source directory has these settings, which is why the block
-              disappears for a client: it cannot be pointed at a directory, and a field
-              that is ignored is a question with no answer. "数据档案" leads because
-              that is what a profile *is* to a user.
+            {/*
+              These three belong to a source directory only, which is why the block
+              disappears for a client. The directory itself is read-only: with no manual
+              entry the scan is what fills the list, so an editable field would be an
+              input with no effect.
             */}
+            <Field title="源码目录" detail="这份源码的位置；扫描会用它作为下一次查找的提示路径。"><span>{displaySubjectPath(selectedSubject?.identity.rootPath ?? settings.dshLaunch.rootPath)}</span></Field>
             <Field title="数据档案（Profile）" detail="这份源码使用的档案名；不同档案的会话互不相通。"><input value={settings.dshLaunch.profile} placeholder="desktop" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, profile: e.target.value || 'desktop' } })} /></Field>
-            <Field title="启动命令" detail="一般留空即可。只有在需要用别的程序启动它时，才填写那个程序的完整路径（不能带参数）。" ><input value={settings.dshLaunch.command ?? ''} placeholder="留空时优先使用已构建 CLI，找不到时回退 pnpm dsh" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, command: e.target.value || undefined, trustedCommandForAutoStart: e.target.value ? settings.dshLaunch.trustedCommandForAutoStart : false } })} /></Field>
+            <Field title="启动命令" detail="一般留空即可。只有在需要用别的程序启动它时，才填写那个程序的完整路径（不能带参数）。"><input value={settings.dshLaunch.command ?? ''} placeholder="留空时使用内置的启动方式" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, command: e.target.value || undefined, trustedCommandForAutoStart: e.target.value ? settings.dshLaunch.trustedCommandForAutoStart : false } })} /></Field>
           </>}
+          {/*
+            One action, named for what the user wants (see it), not for the two things it
+            does (start it if needed, then show it). 「启动执行主体」 used to sit beside this
+            as a peer row: two similar options for one intent, and the ambiguity was in
+            the pair rather than in either label.
+          */}
+          <Field
+            title="打开界面"
+            detail={!selectedSubject
+              ? '先在上面选定运行方式。'
+              : shellSelected
+                ? '会把它自己的窗口调到前台；如果它没在运行，会先把它启动起来。'
+                : '会用它自己的界面（默认浏览器）；如果它没在运行，会先把它启动起来。'}
+          >
+            <button className="settings-action" disabled={!settings.dshLaunch.subjectId || props.openBusy} onClick={props.onOpenClient}>
+              {props.openBusy ? '处理中…' : '打开'}
+            </button>
+          </Field>
           <Field
             title="随壁纸启动 DSH"
             detail={shellSelected
@@ -444,8 +434,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
               />
             </Field>
           )}
-          <Field title="启动执行主体" detail={shellSelected ? '现在把它跑起来，并显示它自己的窗口。' : '现在按上面的档案把它跑起来；已经在运行的其他实例不会被接管。'}><button className="settings-action" disabled={(!settings.dshLaunch.subjectId && !settings.dshLaunch.rootPath) || props.managedDsh.running || props.subjectLaunchBusy} onClick={props.onLaunchDsh}>{props.subjectLaunchBusy ? '启动中…' : props.managedDsh.running ? `运行中 · PID ${props.managedDsh.pid}` : '启动'}</button></Field>
-          <Field title="受管进程" detail={props.managedDsh.managed ? '该 DSH 由本应用启动，可以在这里停止它。' : '本应用没有启动 DSH；其他人启动的实例不会被停止。'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshManagedDsh}>刷新</button><button className="settings-action secondary" disabled={!props.managedDsh.running} onClick={props.onStopManagedDsh}>停止本应用启动的 DSH</button></span></Field>
+                    <Field title="受管进程" detail={props.managedDsh.managed ? '该 DSH 由本应用启动，可以在这里停止它。' : '本应用没有启动 DSH；其他人启动的实例不会被停止。'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshManagedDsh}>刷新</button><button className="settings-action secondary" disabled={!props.managedDsh.running} onClick={props.onStopManagedDsh}>停止本应用启动的 DSH</button></span></Field>
         </Card>
         <Card title="DeepSeek 网页入口（实验）" description="在应用内持久 WebView2 中打开 DeepSeek 官方页面，登录后可从桌面会话窗发送消息。"><Field title="官方页面" detail="页面和登录状态由独立 WebView2 配置目录保存；本应用不读取、复制或记录 Cookie。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开应用内页面</button></Field><Field title="网页适配器配置" detail={props.deepseekWebAdapterConfig ? `${props.deepseekWebAdapterConfig.source === 'local' ? '本地 override' : '内置默认'} · ${props.deepseekWebAdapterConfig.adapterVersion} · ${props.deepseekWebAdapterConfig.path}${props.deepseekWebAdapterConfig.warning ? ` · ${props.deepseekWebAdapterConfig.warning}` : ''}` : '正在读取配置状态…'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshDeepSeekWebAdapterConfig}>刷新</button><button className="settings-action secondary" onClick={props.onOpenDeepSeekWebAdapterConfig}>打开配置</button><button className="settings-action secondary" onClick={props.onResetDeepSeekWebAdapterConfig}>恢复默认</button></span></Field></Card>
         <Card title="DeepSeek API" description="API 模式会产生实际费用，密钥只保存在 Windows 凭据管理器。">

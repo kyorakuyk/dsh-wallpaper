@@ -34,7 +34,6 @@ export function SettingsWindow() {
    * can say how old it is: a cached list must not look current.
    */
   const [catalogVerifiedAt, setCatalogVerifiedAt] = useState<number>()
-  const [subjectLaunchBusy, setSubjectLaunchBusy] = useState(false)
   const [managedDsh, setManagedDsh] = useState<ManagedDshStatus>({ managed: false, running: false })
   const [lockScreenDiagnostics, setLockScreenDiagnostics] = useState<LockScreenDiagnostics>()
   const [desktopDisplays, setDesktopDisplays] = useState<DesktopDisplayInfo[]>([])
@@ -167,32 +166,6 @@ export function SettingsWindow() {
     }
   }
 
-  /**
-   * Start the chosen execution subject, whatever class it belongs to.
-   *
-   * The renderer deliberately does not branch on client shape: the id names a
-   * subject, and native decides whether that means a shell alias or the managed
-   * checkout chain. Building that branch here would duplicate a rule that has to
-   * hold for the unattended path too.
-   */
-  const launchSubject = async () => {
-    const targetId = settingsRef.current.dshLaunch.subjectId ?? settingsRef.current.dshLaunch.rootPath
-    if (!targetId) return
-    setSubjectLaunchBusy(true)
-    try {
-      const outcome = await nativeRuntime.launchHarnessTarget({
-        targetId,
-        profile: settingsRef.current.dshLaunch.profile,
-        command: settingsRef.current.dshLaunch.command,
-      })
-      setNotice(launchOutcomeNotice(outcome) ?? undefined)
-      refreshManagedDsh()
-    } catch (error) {
-      setNotice(String(error))
-    } finally {
-      setSubjectLaunchBusy(false)
-    }
-  }
 
   /**
    * Show what the last scan confirmed, without walking the disk on open.
@@ -275,11 +248,9 @@ export function SettingsWindow() {
    */
   const reachClient = async () => {
     const current = settingsRef.current.dshLaunch
-    const port = current.endpointPort ?? reachPort
-    if (port === undefined) {
-      setNotice('请先扫描并选定一个接入端点。')
-      return
-    }
+    // 0 means the native side decides from the subject itself: the user no longer picks
+    // an endpoint anywhere, so no scan has to run before this action can work.
+    const port = current.endpointPort ?? reachPort ?? 0
     const kind = endpointScan.find((item) => item.port === port)?.kind ?? 'official-web'
     setReachBusy(true)
     try {
@@ -640,15 +611,13 @@ export function SettingsWindow() {
       endpointScanBusy={endpointScanBusy}
       endpointScanDone={endpointScanDone}
       onScanEndpoints={() => { void scanEndpoints() }}
-      onReachClient={() => { void reachClient() }}
-      reachBusy={reachBusy}
+      onOpenClient={() => { void reachClient() }}
+      openBusy={reachBusy}
       reachAction={clientRaiseAction(reachKind)}
       reachPort={reachPort}
       autostart={autostartState}
       onScanDsh={() => { void scanDsh(true) }}
       dshScanBusy={dshScanBusy}
-      onLaunchDsh={() => { void launchSubject() }}
-      subjectLaunchBusy={subjectLaunchBusy}
       managedDsh={managedDsh}
       onRefreshManagedDsh={refreshManagedDsh}
       onStopManagedDsh={() => void nativeRuntime.stopManagedDsh().then(() => { setNotice('已停止本应用启动的 DSH。'); refreshManagedDsh() }).catch((error) => setNotice(String(error)))}

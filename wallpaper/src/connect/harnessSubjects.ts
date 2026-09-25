@@ -85,6 +85,58 @@ export function catalogAgeLabel(verifiedAtMs: number, now = Date.now()): string 
   return `${Math.floor(hours / 24)} 天前验证`
 }
 
+/**
+ * The Win32 extended-length prefix, as a canonical path comes back from native.
+ *
+ * It is a transport detail: the same directory is the same subject with or without
+ * it, and showing it to the user only makes a path look broken.
+ */
+const VERBATIM_PREFIX = '\\\\?\\'
+
+function withoutVerbatimPrefix(path: string): string {
+  const trimmed = path.trim()
+  return trimmed.startsWith(VERBATIM_PREFIX) ? trimmed.slice(VERBATIM_PREFIX.length) : trimmed
+}
+
+/** A path as the user should see it: no extended-length prefix, no trailing slash. */
+export function displaySubjectPath(path: string | undefined): string {
+  return withoutVerbatimPrefix(path ?? '').replace(/[\\/]+$/, '')
+}
+
+/**
+ * Whether two stored subject ids name the same subject.
+ *
+ * Comparison is deliberately loose because a stored id outlives the scan that
+ * produced it: an id written before the prefix above was stripped still names the
+ * same directory, and Windows paths are case-insensitive. A loose comparison here is
+ * what keeps a re-scan from silently un-selecting the user's choice.
+ */
+export function sameSubject(left: string | undefined, right: string | undefined): boolean {
+  const a = displaySubjectPath(left).toLowerCase()
+  const b = displaySubjectPath(right).toLowerCase()
+  return a.length > 0 && a === b
+}
+
+/** The directory that contains a path, for telling two same-named trees apart. */
+function parentName(path: string): string {
+  const parts = withoutVerbatimPrefix(path).split(/[\\/]+/).filter(Boolean)
+  return parts.length >= 2 ? parts[parts.length - 2] : ''
+}
+
+/**
+ * One option's text in the subject select.
+ *
+ * Two clones of the same project share their last path segment, which is the normal
+ * case rather than an edge case — so a name that appears twice is qualified with its
+ * parent directory. Without that, a user cannot tell the entries apart, which is what
+ * a select is for.
+ */
+export function subjectOptionLabel(target: HarnessTarget, all: readonly HarnessTarget[]): string {
+  const duplicated = all.filter((other) => other.label === target.label).length > 1
+  const parent = duplicated && target.identity.rootPath ? parentName(target.identity.rootPath) : ''
+  const name = parent ? `${target.label}（${parent}）` : target.label
+  return `${subjectKindLabel(target.kind)} · ${name}`
+}
 export function launchOutcomeNotice(outcome: {
   outcome: string
   kind: HarnessLaunchOutcome['kind']
