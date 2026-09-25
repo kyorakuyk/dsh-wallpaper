@@ -18,6 +18,7 @@
     "allow-deepseek-web-history",
     "allow-open-settings-window",
     "allow-scan-dsh-paths",
+    "allow-scan-harness-targets",
     "allow-begin-interaction-region-session",
     "allow-update-interaction-regions",
     "allow-desktop-layout-metrics",

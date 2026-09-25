@@ -1,0 +1,727 @@
+//! The shim: which harness actually executes on this machine, and how each one
+//! is recognised.
+//!
+//! The wallpaper used to model exactly one harness shape — a source checkout it
+//! starts with `node`/`pnpm`. The two Electron shells (the official client and
+//! the third-party desktop client) bundle their *own* checkout, so they were
+//! invisible: the wallpaper could neither see them nor raise them. This module
+//! is that missing half, and it answers one question: *which execution subjects
+//! are available here?* The design it implements is frozen in
+//! `docs/design/harness-subject-and-ui-design.md` (§3–§4).
+//!
+//! Two classes, and only two:
+//!
+//! | class | subject | identity | launch |
+//! | --- | --- | --- | --- |
+//! | 自带检出 [`HarnessTargetKind::EmbeddedShell`] | official / third-party desktop client | AUMID | `shell:AppsFolder\<AUMID>` |
+//! | 非自带检出 [`HarnessTargetKind::Checkout`] | a source tree | directory fingerprint | the managed launch chain |
+//!
+//! Three rules from the design shape every function here:
+//!
+//! * **No baked-in path.** A shell is addressed by its AUMID, so re-installing
+//!   it cannot invalidate anything the renderer stored (§4.4). For a shell, `id`
+//!   and the launch alias are location-independent; a checkout's path *is* its
+//!   identity, which is why it is the one target kind that carries a path.
+//! * **One fingerprint, one place.** The checkout fingerprint is
+//!   [`crate::scan_dsh_paths_blocking`] — not a second copy that could drift
+//!   away from the one the settings picker already shows.
+//! * **Facts here, wording there.** This module returns labels only where a
+//!   label is an identity (the two known shells reuse the strings
+//!   `wallpaper/src/connect/endpoints.ts` already shows); every sentence the
+//!   user reads is composed by the renderer.
+//!
+//! Deliberately *not* here yet (next slices, see §9 of the design): the protocol
+//! fingerprint (which subject is answering right now), persistence of the scan
+//! result, and the launch/raise actions. `identity.default_ports` is carried as
+//! a probe *hint* only — ports are defaults, never a contract (§4.5).
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+/// Which of the two frozen classes an execution subject belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HarnessTargetKind {
+    /// A shell that ships its own checkout. Choosing it fixes the service *and*
+    /// the window at once; the two cannot be split (§3).
+    EmbeddedShell,
+    /// A source tree. The service is this tree; the window is chosen separately,
+    /// because a checkout has none of its own.
+    Checkout,
+}
+
+/// The client shapes the endpoint scanner already knows.
+///
+/// The three strings match `HarnessClientKind` in
+/// `wallpaper/src/connect/endpoints.ts` on purpose: the settings UI already has
+/// one vocabulary for "official desktop / third-party desktop / official web",
+/// and a second one here would eventually disagree with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HarnessClientKind {
+    OfficialDesktop,
+    CommunityDesktop,
+    OfficialWeb,
+}
+
+/// How the wallpaper starts a subject.
+///
+/// One enum value per class, because launch genuinely cannot be unified (§10):
+/// the shells are resolved by the Windows shell through a name that survives
+/// their updates, while a checkout is a process the wallpaper has to spawn and
+/// own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LaunchRecipeKind {
+    /// Hand the AUMID alias to the shell. This is the same indirection the
+    /// autostart entry uses, and the reason a client update cannot break it.
+    AppsFolder,
+    /// Spawn the checkout's own launcher through the managed launch chain.
+    ManagedCommand,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchRecipe {
+    pub kind: LaunchRecipeKind,
+    /// The location-independent token `AppsFolder` resolves at launch time
+    /// (`shell:AppsFolder\<AUMID>`), or `None` for a checkout, whose launch
+    /// input is its root path.
+    pub alias: Option<String>,
+}
+
+/// What the scanner matched this target on.
+///
+/// Exactly one of the two identity fields is set, and which one is set *is* the
+/// class: a shell is known by name, a checkout by location.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetIdentity {
+    /// The shell's `System.AppUserModel.ID`. Both a fingerprint — it is how the
+    /// shell registration is recognised — and the launch token.
+    pub aumid: Option<String>,
+    /// The checkout's canonical root path. One of the few places a path belongs:
+    /// a source tree has no other identity.
+    pub root_path: Option<String>,
+    /// Default ports for this shape, as a hint for the endpoint probe.
+    ///
+    /// Never a contract: a user may move any of them, which is why discovery
+    /// also has to scan arbitrary loopback ports (§4.5).
+    pub default_ports: Vec<u16>,
+}
+
+/// What this target can be asked to do, as measured rather than assumed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetCapabilities {
+    /// Launching it again reuses the running shell instead of opening a second
+    /// window.
+    ///
+    /// Measured for the official client (`requestSingleInstanceLock`), and
+    /// measured *absent* in the third-party client, which is therefore never
+    /// re-launched to recover a window it lost (§6.1).
+    pub single_instance: bool,
+    /// It owns a Windows window, so 「拉起 UI」 can raise it. A checkout has no
+    /// window of its own; its interface is the browser.
+    pub owns_window: bool,
+    /// It can be started with its window kept out of sight, so "开机只供能" is
+    /// possible for it (§5.1).
+    pub can_start_hidden: bool,
+    /// It needs the `profile` setting, which belongs to the checkout path only
+    /// (§4.7).
+    pub needs_profile: bool,
+}
+
+/// One execution subject: what it is, how it was found, and how to start it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessTarget {
+    /// The stable key the renderer stores and later resolves back to a target.
+    /// Location-independent for a shell.
+    pub id: String,
+    pub kind: HarnessTargetKind,
+    pub client: HarnessClientKind,
+    pub label: String,
+    /// Where the scan found it: a checkout's scan origin, exactly as
+    /// `scan_dsh_paths` reports it, or the shortcut directory a shell was
+    /// registered from.
+    pub source: String,
+    pub identity: TargetIdentity,
+    pub launch: LaunchRecipe,
+    pub capabilities: TargetCapabilities,
+}
+
+/// The outcome of one scan, in the shape the settings surface needs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessTargetScan {
+    /// Shells first (in priority order), then the checkouts the scan found in
+    /// its own order — so the user's configured root still leads.
+    pub targets: Vec<HarnessTarget>,
+    /// True when more than one source tree exists. The wallpaper must not pick
+    /// one for the user; the settings surface asks instead (§4.3).
+    pub requires_subject_choice: bool,
+}
+
+/// A shortcut whose `System.AppUserModel.ID` the Windows shell reported.
+///
+/// A separate type so the matching rules can be tested without a Start Menu:
+/// reading the property needs COM, deciding what it means does not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScannedShortcut {
+    pub aumid: String,
+    /// The directory the shortcut was found in, for the settings row.
+    pub directory: String,
+}
+
+/// A shell this build knows how to start.
+///
+/// The list is a *matching* table, not a path table: nothing here names an
+/// install location, so moving or reinstalling a client changes only the AUMID
+/// the shell registration carries (*it does not change at all*).
+struct ShellAppSpec {
+    aumid: &'static str,
+    /// Reuses the wording `endpoints.ts` already shows for this shape.
+    label: &'static str,
+    client: HarnessClientKind,
+    default_ports: &'static [u16],
+    single_instance: bool,
+    can_start_hidden: bool,
+}
+
+/// Official client first, then the third-party desktop client — the priority the
+/// endpoint scanner uses as well.
+const SHELL_APPS: &[ShellAppSpec] = &[
+    ShellAppSpec {
+        aumid: "com.deepseek.dsh",
+        label: "官方桌面客户端",
+        client: HarnessClientKind::OfficialDesktop,
+        default_ports: &[19387],
+        // The official shell calls `requestSingleInstanceLock`, so a second
+        // launch focuses the running window instead of adding one, and it
+        // supports starting without showing the window.
+        single_instance: true,
+        can_start_hidden: true,
+    },
+    ShellAppSpec {
+        aumid: "ai.deepseek.dsh.desktop",
+        label: "第三方桌面客户端",
+        client: HarnessClientKind::CommunityDesktop,
+        default_ports: &[43120],
+        // Measured: no single-instance lock, no tray, no hidden start. A second
+        // launch opens a second window, so none of those may be assumed (§2.3).
+        single_instance: false,
+        can_start_hidden: false,
+    },
+];
+
+/// The alias the Windows shell resolves through the current registration.
+fn apps_folder_alias(aumid: &str) -> String {
+    format!(r"shell:AppsFolder\{aumid}")
+}
+
+/// Build the target for one known shell.
+fn shell_target(spec: &ShellAppSpec, source: String) -> HarnessTarget {
+    HarnessTarget {
+        // Location-independent by construction: no version, no directory, and
+        // therefore nothing for an update to invalidate.
+        id: format!("shell:{}", spec.aumid.to_ascii_lowercase()),
+        kind: HarnessTargetKind::EmbeddedShell,
+        client: spec.client,
+        label: spec.label.into(),
+        source,
+        identity: TargetIdentity {
+            aumid: Some(spec.aumid.into()),
+            root_path: None,
+            default_ports: spec.default_ports.to_vec(),
+        },
+        launch: LaunchRecipe {
+            kind: LaunchRecipeKind::AppsFolder,
+            alias: Some(apps_folder_alias(spec.aumid)),
+        },
+        capabilities: TargetCapabilities {
+            single_instance: spec.single_instance,
+            owns_window: true,
+            can_start_hidden: spec.can_start_hidden,
+            needs_profile: false,
+        },
+    }
+}
+
+/// Build the target for one source checkout.
+///
+/// `source` is the scan's own origin string ("当前设置路径", "常见项目目录", …),
+/// kept verbatim so this list and the settings picker explain a candidate the
+/// same way.
+fn checkout_target(root_path: &str, source: &str) -> HarnessTarget {
+    let label = Path::new(root_path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| root_path.to_string());
+    HarnessTarget {
+        // For a checkout the path *is* the identity: there is no name that
+        // survives the tree being moved, rebuilt, or re-cloned.
+        id: root_path.to_string(),
+        kind: HarnessTargetKind::Checkout,
+        // A source tree started as `dsh web` is the shape the scanner calls
+        // official web: no window of its own, interface in the browser.
+        client: HarnessClientKind::OfficialWeb,
+        label,
+        source: source.to_string(),
+        identity: TargetIdentity {
+            aumid: None,
+            root_path: Some(root_path.to_string()),
+            default_ports: vec![crate::HARNESS_DEFAULT_PORT],
+        },
+        launch: LaunchRecipe {
+            kind: LaunchRecipeKind::ManagedCommand,
+            alias: None,
+        },
+        capabilities: TargetCapabilities {
+            // "Single instance" for a checkout is not a property of a client but
+            // of the port it listens on, and that is handled by the managed
+            // launch chain (an external DSH on the port is left alone, §4.6).
+            single_instance: false,
+            owns_window: false,
+            can_start_hidden: true,
+            needs_profile: true,
+        },
+    }
+}
+
+/// Match the scanned shortcuts against the shells this build can start.
+///
+/// Unknown AUMIDs are ignored: they belong to applications that have nothing to
+/// do with the harness, and reporting them would turn a settings list into an
+/// inventory of the Start Menu.
+fn shell_targets_from(shortcuts: &[ScannedShortcut]) -> Vec<HarnessTarget> {
+    let mut targets = Vec::new();
+    for spec in SHELL_APPS {
+        // The same application can be registered more than once (a Start Menu
+        // entry and a desktop shortcut); the first registration is still one
+        // subject, which is why this looks a match up instead of collecting.
+        let Some(shortcut) = shortcuts
+            .iter()
+            .find(|shortcut| shortcut.aumid.eq_ignore_ascii_case(spec.aumid))
+        else {
+            continue;
+        };
+        targets.push(shell_target(spec, shortcut.directory.clone()));
+    }
+    targets
+}
+
+/// Assemble one scan result from the two fingerprint sources.
+fn build_scan(shortcuts: &[ScannedShortcut], checkouts: &[crate::DshPathCandidate]) -> HarnessTargetScan {
+    let mut targets = shell_targets_from(shortcuts);
+    let mut seen = HashSet::new();
+    for checkout in checkouts {
+        // Defence in depth: the directory scan already deduplicates
+        // case-insensitively, and a second key here keeps a future caller from
+        // handing this list the same tree twice.
+        if !seen.insert(checkout.root_path.to_ascii_lowercase()) {
+            continue;
+        }
+        targets.push(checkout_target(&checkout.root_path, &checkout.source));
+    }
+    let requires_subject_choice = targets
+        .iter()
+        .filter(|target| target.kind == HarnessTargetKind::Checkout)
+        .count()
+        > 1;
+    HarnessTargetScan {
+        targets,
+        requires_subject_choice,
+    }
+}
+
+/// Scan this machine for harness execution subjects.
+///
+/// Blocking by design: it walks the filesystem and reads shell properties, so
+/// the command wrapper runs it on a blocking thread.
+pub fn scan_harness_targets_blocking(hint_path: Option<String>, deep_scan: bool) -> HarnessTargetScan {
+    let shortcuts = scan_shell_shortcuts();
+    let checkouts = crate::scan_dsh_paths_blocking(hint_path, deep_scan);
+    let scan = build_scan(&shortcuts, &checkouts);
+    log::info!(
+        "harness target scan: {} 个快捷方式，{} 个可选项（{} 个壳，{} 份源码检出）",
+        shortcuts.len(),
+        scan.targets.len(),
+        scan.targets
+            .iter()
+            .filter(|target| target.kind == HarnessTargetKind::EmbeddedShell)
+            .count(),
+        scan.targets
+            .iter()
+            .filter(|target| target.kind == HarnessTargetKind::Checkout)
+            .count()
+    );
+    scan
+}
+
+/// The directories a shell registration can live in.
+///
+/// Start Menu entries are what `Get-StartApps` reports; the desktop directory is
+/// included because an installer may create only that shortcut.
+fn shortcut_directories_from(
+    appdata: Option<&str>,
+    programdata: Option<&str>,
+    userprofile: Option<&str>,
+) -> Vec<PathBuf> {
+    let mut directories = Vec::new();
+    let mut push = |path: PathBuf| {
+        if path.is_dir() && !directories.iter().any(|existing| existing == &path) {
+            directories.push(path);
+        }
+    };
+    if let Some(appdata) = appdata {
+        push(PathBuf::from(appdata).join(r"Microsoft\Windows\Start Menu\Programs"));
+    }
+    if let Some(programdata) = programdata {
+        push(PathBuf::from(programdata).join(r"Microsoft\Windows\Start Menu\Programs"));
+    }
+    if let Some(userprofile) = userprofile {
+        push(PathBuf::from(userprofile).join("Desktop"));
+    }
+    directories
+}
+
+#[cfg(windows)]
+fn shortcut_directories() -> Vec<PathBuf> {
+    shortcut_directories_from(
+        std::env::var("APPDATA").ok().as_deref(),
+        std::env::var("ProgramData").ok().as_deref(),
+        std::env::var("USERPROFILE").ok().as_deref(),
+    )
+}
+
+/// Read the `System.AppUserModel.ID` the shell registered for one shortcut.
+///
+/// This is why a shell needs no path: the same string that proves the
+/// application is installed is the string `shell:AppsFolder\<AUMID>` resolves at
+/// launch time. A shortcut without the property (most of them) reports no error
+/// worth surfacing — it simply is not a candidate.
+#[cfg(windows)]
+fn shortcut_aumid(path: &Path) -> Option<String> {
+    use windows::core::HSTRING;
+    use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID;
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{IShellItem2, SHCreateItemFromParsingName};
+
+    let item: IShellItem2 = unsafe { SHCreateItemFromParsingName(&HSTRING::from(path), None).ok()? };
+    let raw = unsafe { item.GetString(&PKEY_AppUserModel_ID).ok()? };
+    if raw.is_null() {
+        return None;
+    }
+    let value = unsafe { raw.to_string() }.ok();
+    unsafe { CoTaskMemFree(Some(raw.0 as *const core::ffi::c_void)) };
+    let value = value?.trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+/// Bound the walk: a Start Menu is user data, and a pathological one must not
+/// turn one settings scan into thousands of COM property reads.
+#[cfg(windows)]
+const SHORTCUT_SCAN_MAX_FILES: usize = 512;
+#[cfg(windows)]
+const SHORTCUT_SCAN_MAX_DEPTH: u8 = 5;
+
+#[cfg(windows)]
+fn collect_shortcut_aumids(
+    directory: &Path,
+    depth: u8,
+    budget: &mut usize,
+    found: &mut Vec<ScannedShortcut>,
+) {
+    if *budget == 0 || depth > SHORTCUT_SCAN_MAX_DEPTH {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    // Sorted so a duplicated registration resolves to the same one on every
+    // scan, instead of depending on directory order.
+    let mut entries: Vec<_> = entries.flatten().collect();
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        if *budget == 0 {
+            return;
+        }
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            collect_shortcut_aumids(&path, depth.saturating_add(1), budget, found);
+            continue;
+        }
+        if path
+            .extension()
+            .map(|extension| !extension.eq_ignore_ascii_case("lnk"))
+            .unwrap_or(true)
+        {
+            continue;
+        }
+        *budget -= 1;
+        if let Some(aumid) = shortcut_aumid(&path) {
+            found.push(ScannedShortcut {
+                aumid,
+                directory: directory.to_string_lossy().into_owned(),
+            });
+        }
+    }
+}
+
+/// Every shell registration this machine exposes to the settings list.
+#[cfg(windows)]
+fn scan_shell_shortcuts() -> Vec<ScannedShortcut> {
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+
+    // Property reads on a pooled blocking thread: mirror the app's own apartment
+    // (MTA). A thread that already has an apartment keeps it — the call is then a
+    // no-op — and for the same reason this deliberately does not uninitialize.
+    let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+    let mut budget = SHORTCUT_SCAN_MAX_FILES;
+    let mut found = Vec::new();
+    for directory in shortcut_directories() {
+        collect_shortcut_aumids(&directory, 0, &mut budget, &mut found);
+    }
+    found
+}
+
+#[cfg(not(windows))]
+fn scan_shell_shortcuts() -> Vec<ScannedShortcut> {
+    Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shortcut(aumid: &str, directory: &str) -> ScannedShortcut {
+        ScannedShortcut {
+            aumid: aumid.into(),
+            directory: directory.into(),
+        }
+    }
+
+    fn checkout(root: &str, source: &str) -> crate::DshPathCandidate {
+        crate::DshPathCandidate {
+            root_path: root.into(),
+            source: source.into(),
+        }
+    }
+
+    const OFFICIAL: &str = "com.deepseek.dsh";
+    const DESKTOP: &str = "ai.deepseek.dsh.desktop";
+
+    #[test]
+    fn a_shell_is_matched_by_aumid_and_never_by_path() {
+        let scan = build_scan(&[shortcut(OFFICIAL, r"C:\Start Menu")], &[]);
+        assert_eq!(scan.targets.len(), 1);
+        let target = &scan.targets[0];
+        assert_eq!(target.kind, HarnessTargetKind::EmbeddedShell);
+        assert_eq!(target.client, HarnessClientKind::OfficialDesktop);
+        assert_eq!(target.label, "官方桌面客户端");
+        assert_eq!(target.id, "shell:com.deepseek.dsh");
+        assert_eq!(target.identity.aumid.as_deref(), Some(OFFICIAL));
+        assert_eq!(target.identity.root_path, None);
+        assert_eq!(target.identity.default_ports, vec![19387]);
+        assert_eq!(target.launch.kind, LaunchRecipeKind::AppsFolder);
+        assert_eq!(
+            target.launch.alias.as_deref(),
+            Some(r"shell:AppsFolder\com.deepseek.dsh")
+        );
+    }
+
+    #[test]
+    fn the_shell_registration_is_matched_regardless_of_letter_case() {
+        let scan = build_scan(&[shortcut("COM.DeepSeek.DSH", r"C:\Start Menu")], &[]);
+        let target = &scan.targets[0];
+        // The canonical spelling is this build's, not whatever the registration
+        // happened to record.
+        assert_eq!(target.identity.aumid.as_deref(), Some(OFFICIAL));
+        assert_eq!(
+            target.launch.alias.as_deref(),
+            Some(r"shell:AppsFolder\com.deepseek.dsh")
+        );
+    }
+
+    #[test]
+    fn unrelated_shortcut_aumids_are_not_offered() {
+        let scan = build_scan(
+            &[
+                shortcut("Microsoft.Windows.Explorer", r"C:\Start Menu"),
+                shortcut("Notepad", r"C:\Start Menu"),
+            ],
+            &[],
+        );
+        assert!(scan.targets.is_empty());
+    }
+
+    #[test]
+    fn a_shell_seen_in_two_places_is_still_one_subject() {
+        let scan = build_scan(
+            &[
+                shortcut(OFFICIAL, r"C:\Start Menu"),
+                shortcut(OFFICIAL, r"C:\Desktop"),
+            ],
+            &[],
+        );
+        assert_eq!(scan.targets.len(), 1);
+        assert_eq!(scan.targets[0].source, r"C:\Start Menu");
+    }
+
+    #[test]
+    fn shells_keep_the_priority_order_whatever_order_they_were_found_in() {
+        let scan = build_scan(
+            &[
+                shortcut(DESKTOP, r"C:\Desktop"),
+                shortcut(OFFICIAL, r"C:\Start Menu"),
+            ],
+            &[],
+        );
+        let clients: Vec<_> = scan.targets.iter().map(|target| target.client).collect();
+        assert_eq!(
+            clients,
+            vec![
+                HarnessClientKind::OfficialDesktop,
+                HarnessClientKind::CommunityDesktop
+            ]
+        );
+        let desktop = &scan.targets[1];
+        assert!(!desktop.capabilities.single_instance);
+        assert!(!desktop.capabilities.can_start_hidden);
+        assert!(desktop.capabilities.owns_window);
+    }
+
+    #[test]
+    fn a_checkout_is_identified_by_its_root_and_needs_a_profile() {
+        let scan = build_scan(&[], &[checkout(r"D:\Family\DeepSeekHarness\deepseek-harness", "常见项目目录")]);
+        let target = &scan.targets[0];
+        assert_eq!(target.kind, HarnessTargetKind::Checkout);
+        assert_eq!(target.client, HarnessClientKind::OfficialWeb);
+        assert_eq!(target.label, "deepseek-harness");
+        assert_eq!(target.source, "常见项目目录");
+        assert_eq!(target.id, r"D:\Family\DeepSeekHarness\deepseek-harness");
+        assert_eq!(
+            target.identity.root_path.as_deref(),
+            Some(r"D:\Family\DeepSeekHarness\deepseek-harness")
+        );
+        assert_eq!(target.identity.aumid, None);
+        assert_eq!(target.identity.default_ports, vec![3080]);
+        assert_eq!(target.launch.kind, LaunchRecipeKind::ManagedCommand);
+        assert_eq!(target.launch.alias, None);
+        // A checkout has no window of its own and no single instance: what
+        // answers on the port decides, and the managed chain leaves another
+        // instance alone.
+        assert!(!target.capabilities.owns_window);
+        assert!(!target.capabilities.single_instance);
+        assert!(target.capabilities.needs_profile);
+    }
+
+    #[test]
+    fn a_duplicated_checkout_is_reported_once() {
+        let scan = build_scan(
+            &[],
+            &[
+                checkout(r"D:\Family\Harness", "当前设置路径"),
+                checkout(r"d:\family\harness", "常见项目目录"),
+            ],
+        );
+        assert_eq!(scan.targets.len(), 1);
+        assert_eq!(scan.targets[0].id, r"D:\Family\Harness");
+    }
+
+    #[test]
+    fn shells_lead_the_list_and_checkouts_keep_the_scan_order() {
+        let scan = build_scan(
+            &[shortcut(OFFICIAL, r"C:\Start Menu")],
+            &[
+                checkout(r"D:\Family\DeepSeekHarness\deepseek-harness", "当前设置路径"),
+                checkout(r"D:\Family\DeepSeekHarness\plugins\dsh-wallpaper", "常见项目目录"),
+            ],
+        );
+        let ids: Vec<_> = scan.targets.iter().map(|target| target.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "shell:com.deepseek.dsh",
+                r"D:\Family\DeepSeekHarness\deepseek-harness",
+                r"D:\Family\DeepSeekHarness\plugins\dsh-wallpaper",
+            ]
+        );
+    }
+
+    #[test]
+    fn several_source_trees_ask_the_user_to_choose_a_subject() {
+        let one = build_scan(&[], &[checkout(r"D:\Family\Harness", "当前目录")]);
+        assert!(!one.requires_subject_choice);
+        // A shell plus one tree is unambiguous: the shell is not a "subject
+        // choice" the user has to resolve.
+        let with_shell = build_scan(
+            &[shortcut(OFFICIAL, r"C:\Start Menu")],
+            &[checkout(r"D:\Family\Harness", "当前目录")],
+        );
+        assert!(!with_shell.requires_subject_choice);
+        let two = build_scan(
+            &[],
+            &[
+                checkout(r"D:\Family\Harness", "当前目录"),
+                checkout(r"D:\Family\Harness-rebuild", "常见项目目录"),
+            ],
+        );
+        assert!(two.requires_subject_choice);
+    }
+
+    #[test]
+    fn shortcut_directories_skip_roots_that_do_not_exist() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let user_start_menu = root.path().join(r"appdata\Microsoft\Windows\Start Menu\Programs");
+        let machine_start_menu = root
+            .path()
+            .join(r"programdata\Microsoft\Windows\Start Menu\Programs");
+        std::fs::create_dir_all(&user_start_menu).expect("user start menu");
+        std::fs::create_dir_all(&machine_start_menu).expect("machine start menu");
+
+        let directories = shortcut_directories_from(
+            Some(&root.path().join("appdata").to_string_lossy()),
+            Some(&root.path().join("programdata").to_string_lossy()),
+            // A user profile without a Desktop contributes nothing, rather than
+            // a path that cannot exist on this machine.
+            Some(&root.path().join("home").to_string_lossy()),
+        );
+
+        assert_eq!(directories, vec![user_start_menu, machine_start_menu]);
+    }
+
+    /// Ground truth for this machine's shell registrations.
+    ///
+    /// Ignored by default: it reads the real Start Menu and a real filesystem,
+    /// so it belongs in a manual run (`cargo test -- --ignored --nocapture`).
+    /// It asserts only structural invariants — never that a particular client is
+    /// installed, which is the user's machine's business.
+    #[test]
+    #[ignore = "reads this machine's shell registrations and filesystem"]
+    fn this_machine_reports_its_installed_subjects() {
+        let scan = scan_harness_targets_blocking(None, false);
+        println!("{}", serde_json::to_string_pretty(&scan).expect("scan json"));
+        let mut ids = HashSet::new();
+        for target in &scan.targets {
+            assert!(ids.insert(target.id.clone()), "duplicate id {}", target.id);
+            match target.kind {
+                HarnessTargetKind::EmbeddedShell => {
+                    assert!(target.identity.aumid.is_some());
+                    assert!(target.identity.root_path.is_none());
+                }
+                HarnessTargetKind::Checkout => {
+                    assert!(target.identity.root_path.is_some());
+                    assert!(target.identity.aumid.is_none());
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-scan-harness-targets"
+description = "Enables the scan_harness_targets command without any pre-configured scope."
+commands.allow = ["scan_harness_targets"]
+
+[[permission]]
+identifier = "deny-scan-harness-targets"
+description = "Denies the scan_harness_targets command without any pre-configured scope."
+commands.deny = ["scan_harness_targets"]

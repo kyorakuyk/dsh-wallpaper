@@ -11,6 +11,8 @@ pub mod desktop_repair;
 mod deepseek_web;
 #[cfg(not(feature = "lite"))]
 mod deepseek_web_config;
+#[cfg(not(feature = "lite"))]
+mod harness_targets;
 mod desktop_fallback;
 mod lock_screen_backup;
 mod native_bootstrap;
@@ -301,6 +303,32 @@ async fn scan_dsh_paths(
     })
     .await
     .map_err(|error| format!("扫描 DSH 未完成：{error}"))
+}
+
+/// List the harness execution subjects this machine offers.
+///
+/// This is the shim's "find" half: it answers "which subjects exist" for the two
+/// frozen classes (a shell that carries its own checkout, and a source tree),
+/// and nothing else. It never starts, stops, or takes over anything, and it
+/// reads no credential — a shell is recognised from its shell registration and a
+/// checkout from its directory fingerprint, so no value it returns can be
+/// invalidated by a client update.
+///
+/// Discovery is deliberately separate from launch: the process forms differ
+/// enough that only discovery can be shared (`harness_targets`).
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+async fn scan_harness_targets(
+    caller: tauri::WebviewWindow,
+    hint_path: Option<String>,
+    deep_scan: Option<bool>,
+) -> Result<harness_targets::HarnessTargetScan, String> {
+    require_wallpaper_surface(&caller)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        harness_targets::scan_harness_targets_blocking(hint_path, deep_scan.unwrap_or(false))
+    })
+    .await
+    .map_err(|error| format!("扫描 Harness 执行主体未完成：{error}"))
 }
 
 #[tauri::command]
@@ -3153,6 +3181,7 @@ macro_rules! register_edition_commands {
             set_autostart,
             autostart_status,
             scan_dsh_paths,
+            scan_harness_targets,
             launch_dsh,
             autostart_managed_dsh,
             managed_dsh_autostart_status,

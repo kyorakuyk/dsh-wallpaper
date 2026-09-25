@@ -24,6 +24,9 @@ fn main() {
             "set_autostart",
             "autostart_status",
             "scan_dsh_paths",
+            // Lists the harness execution subjects (shells with their own
+            // checkout, and source trees) the shim can offer and start.
+            "scan_harness_targets",
             "launch_dsh",
             "autostart_managed_dsh",
             "managed_dsh_autostart_status",

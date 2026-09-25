@@ -76,6 +76,10 @@ windows = { version = "0.61", features = [
   "Win32_System_IO",
   "Win32_System_LibraryLoader",
   "Win32_Storage_FileSystem",
+  # `PKEY_AppUserModel_ID` (propsys.h), which is how a shell registration is
+  # recognised and how `shell:AppsFolder\<AUMID>` is addressed. The `windows`
+  # crate groups the propsys constants under this feature.
+  "Win32_Storage_EnhancedStorage",
   "Win32_System_Threading",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_Storage_Packaging_Appx",

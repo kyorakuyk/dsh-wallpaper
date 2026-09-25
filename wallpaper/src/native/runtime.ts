@@ -42,6 +42,60 @@ export interface HarnessEndpointScan {
 }
 
 /**
+ * One harness execution subject, in the two classes the design froze
+ * (`docs/design/harness-subject-and-ui-design.md`, §3).
+ *
+ * An `embedded-shell` carries its own checkout, so it fixes the service and the
+ * window together and is identified by AUMID — never by a path, which is what
+ * lets a client update leave a stored choice valid. A `checkout` is a source
+ * tree: its path *is* its identity, it has no window of its own, and it is the
+ * only class that uses the `profile` setting.
+ */
+export interface HarnessTarget {
+  /** Stable key to store and later resolve back to a subject. */
+  id: string
+  kind: 'embedded-shell' | 'checkout'
+  /** Which client shape this subject answers as, reusing the endpoint scan's vocabulary. */
+  client: 'official-desktop' | 'community-desktop' | 'official-web'
+  label: string
+  /** Where the scan found it: a checkout's scan origin, or a shell's shortcut directory. */
+  source: string
+  identity: {
+    /** The shell's AppUserModelID; set for shells only. */
+    aumid?: string
+    /** The checkout's root; set for checkouts only. */
+    rootPath?: string
+    /** Probe hints only. A user may move any port. */
+    defaultPorts: number[]
+  }
+  launch: {
+    /** `apps-folder` hands the shell a location-independent alias; `managed-command` spawns the tree. */
+    kind: 'apps-folder' | 'managed-command'
+    alias?: string
+  }
+  capabilities: {
+    /** Re-launching reuses the running shell instead of opening a second window. */
+    singleInstance: boolean
+    /** It owns a Windows window, so 「拉起 UI」 can raise it. */
+    ownsWindow: boolean
+    /** It can be started with its window kept out of sight. */
+    canStartHidden: boolean
+    /** It needs the `profile` setting (checkouts only). */
+    needsProfile: boolean
+  }
+}
+
+/**
+ * One subject scan. `requiresSubjectChoice` is set when more than one source
+ * tree exists: the wallpaper must not choose for the user, so the settings
+ * surface asks which tree is the default subject (§4.3).
+ */
+export interface HarnessTargetScan {
+  targets: HarnessTarget[]
+  requiresSubjectChoice: boolean
+}
+
+/**
  * Result of asking for a client's own Windows window.
  *
  * `raised` is the only success. `no-window` means something is listening on that
@@ -169,6 +223,12 @@ export interface NativeRuntime {
   desktopDisplays(): Promise<DesktopDisplayInfo[]>
   desktopLayoutMetrics(displayId?: string): Promise<{ expandedBottomInset: number; taskbarVisible: boolean }>
   scanDshPaths(hintPath?: string, deepScan?: boolean): Promise<Array<{ rootPath: string; source: string }>>
+  /**
+   * List the harness execution subjects this machine offers: shells that carry
+   * their own checkout, and source trees. Discovery only — it starts nothing and
+   * takes over nothing.
+   */
+  scanHarnessTargets(hintPath?: string, deepScan?: boolean): Promise<HarnessTargetScan>
   launchDsh(rootPath: string, profile: string, command?: string): Promise<number>
   /**
    * One automatic start attempt per process, with the outcome remembered even
@@ -482,6 +542,11 @@ export const nativeRuntime: NativeRuntime = {
   async scanDshPaths(hintPath, deepScan = false) {
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<Array<{ rootPath: string; source: string }>>('scan_dsh_paths', { hintPath, deepScan })
+  },
+  async scanHarnessTargets(hintPath, deepScan = false) {
+    if (!await tauriAvailable()) return { targets: [], requiresSubjectChoice: false }
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<HarnessTargetScan>('scan_harness_targets', { hintPath, deepScan })
   },
   async launchDsh(rootPath, profile, command) {
     const { invoke } = await import('@tauri-apps/api/core')
