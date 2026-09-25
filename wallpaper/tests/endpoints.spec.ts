@@ -50,7 +50,7 @@ describe('reaching a client interface', () => {
 
   it('names the client and the next step for the two real failures', () => {
     const noWindow = raiseOutcomeNotice('no-window', 'official-desktop')
-    expect(noWindow).toContain('官方桌面客户端')
+    expect(noWindow).toContain('桌面客户端')
     expect(noWindow).toContain('浏览器')
 
     const notRunning = raiseOutcomeNotice('not-running', 'community-desktop')

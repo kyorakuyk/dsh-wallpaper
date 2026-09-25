@@ -24,7 +24,7 @@ export const BACKGROUND_OPTIONS = [
   { id: 'workspace', name: '深夜工作室', path: 'personas/deepsea-bg/deepsea-studio.png' },
   { id: 'deepsea-2', name: '深海穹顶舱', path: 'personas/deepsea-bg/deepsea-dome.png' },
   { id: 'deepsea-3', name: '深海书房', path: 'personas/deepsea-bg/deepsea-study.png' },
-  { id: 'default', name: '默认主题渐变', path: '' },
+  { id: 'default', name: '认认主题渐变', path: '' },
 ] as const
 
 export type BackgroundId = (typeof BACKGROUND_OPTIONS)[number]['id']
@@ -41,9 +41,9 @@ export interface MultiScreenSettings {
 export interface ApiSettings {
   baseUrl: string
   model: string
-  /** 人民币／每百万 input tokens；留空时不估算费用。 */
+  /** 人民币／每百万 input tokens；留白时不估算费用。 */
   priceInputPerMillion?: number
-  /** 人民币／每百万 output tokens；留空时不估算费用。 */
+  /** 人民币／每百万 output tokens；留白时不估算费用。 */
   priceOutputPerMillion?: number
 }
 
@@ -476,7 +476,7 @@ export function saveSettings(s: WallpaperSettings): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(normalizeSettings(s)))
   } catch {
-    /* localStorage 不可用时静默 */
+    /* localStorage 不可用时静认 */
   }
 }
 

@@ -36,12 +36,12 @@ describe('official persona catalog', () => {
       overrides={{ 'persona.deepseek.flash': replacement.id }}
     />)
 
-    expect(html).toContain('aria-label="官方人物列表"')
+    expect(html).toContain('aria-label="人物列表"')
     expect(html.match(/official-persona-card official-persona-card--/g)).toHaveLength(4)
     expect(html).toContain('DeepSeek</span><strong>Flash · 幼年')
     expect(html).toContain('DeepSeek Harness</span><strong>Pro · 成年')
     expect(html).toContain('已替换：我的蓝色 Flash 立绘.png')
-    expect(html).toContain('官方基础立绘')
+    expect(html).toContain('基础立绘')
     expect(html).not.toContain('<button')
   })
 })

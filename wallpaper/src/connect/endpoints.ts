@@ -42,9 +42,9 @@ export interface HarnessEndpointCandidate {
 /** A stable, non-sensitive label for the settings dropdown. */
 export function endpointKindLabel(kind: HarnessClientKind): string {
   switch (kind) {
-    case 'official-desktop': return '官方桌面客户端'
+    case 'official-desktop': return '桌面客户端'
     case 'community-desktop': return '第三方桌面客户端'
-    default: return '官方 Web / CLI'
+    default: return 'Web / CLI'
   }
 }
 

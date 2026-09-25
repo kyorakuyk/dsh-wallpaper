@@ -10,7 +10,7 @@ export interface IdleSceneProps {
   persona: PersonaManifest
   /** 当前气泡文案（父组件根据事件更新） */
   bubbleText: string
-  /** 待机背景图 URL（空字符串 = 默认主题渐变） */
+  /** 待机背景图 URL（空字符串 = 空白背景渐变） */
   backgroundUrl?: string
   portraitAmbientLength?: number
   portraitAmbientStrength?: number
@@ -39,7 +39,7 @@ export function IdleScene({
       className="scene scene-idle"
       style={{ ['--persona-primary' as string]: persona.theme.primary }}
     >
-      {/* 背景：深海插画 or 默认主题渐变 */}
+      {/* 背景：深海插画 or 空白背景渐变 */}
       {backgroundUrl ? (
         <img className="idle-bg-image" src={backgroundUrl} alt="背景" draggable={false} />
       ) : (

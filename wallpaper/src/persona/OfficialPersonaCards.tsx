@@ -26,7 +26,7 @@ const TIER_LABEL = {
 export function OfficialPersonaCards({ assets, overrides }: OfficialPersonaCardsProps) {
   const assetsById = new Map(assets.map((asset) => [asset.id, asset]))
 
-  return <div className="official-persona-grid" role="list" aria-label="官方人物列表">
+  return <div className="official-persona-grid" role="list" aria-label="人物列表">
     {OFFICIAL_PERSONA_CARDS.map((card) => {
       const replacement = overrides[card.slot] ? assetsById.get(overrides[card.slot]!) : undefined
       const hasReplacement = Boolean(overrides[card.slot])
@@ -46,7 +46,7 @@ export function OfficialPersonaCards({ assets, overrides }: OfficialPersonaCards
             <strong>{TIER_LABEL[card.tier]}</strong>
           </div>
           <small>{card.slot}</small>
-          <p>{replacement ? `已替换：${replacement.originalName}` : hasReplacement ? '已替换：自定义素材' : '官方基础立绘'}</p>
+          <p>{replacement ? `已替换：${replacement.originalName}` : hasReplacement ? '已替换：自定义素材' : '基础立绘'}</p>
         </div>
       </article>
     })}
