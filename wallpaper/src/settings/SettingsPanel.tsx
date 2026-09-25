@@ -74,7 +74,6 @@ export interface SettingsPanelProps {
   endpointScanBusy: boolean
   endpointScanDone: boolean
   onScanEndpoints: () => void
-  onClearEndpoints: () => void
   /**
    * Reach the selected client's own interface. The action differs by client
    * shape: a desktop client's window is raised, while the windowless CLI/webui
@@ -276,6 +275,13 @@ export function SettingsPanel(props: SettingsPanelProps) {
    */
   const selectedSubject = props.harnessTargets.find((target) => target.id === settings.dshLaunch.subjectId)
   const shellSelected = selectedSubject?.kind === 'embedded-shell'
+  /**
+   * Clients that are actually running. The endpoint picker is only a *choice* when
+   * there is more than one: with zero or one, ports and Bridge states are internal
+   * bookkeeping the user cannot act on, so showing them would be disclosure without
+   * a decision attached to it.
+   */
+  const runningClients = props.endpointScan.filter((item) => item.bridgeFound)
   const updateRule = (index: number, patch: Partial<ModelTierRule>) => set({ modelTierRules: settings.modelTierRules.map((rule, i) => i === index ? { ...rule, ...patch } : rule) })
   const pageMeta = pages.find((item) => item.id === page)!
   const displayOptions = props.desktopDisplays.map((display, index) => ({ value: display.id, label: displayLabel(display, index) }))
@@ -348,38 +354,46 @@ export function SettingsPanel(props: SettingsPanelProps) {
             )
           })}
           <Field title="DSH 根目录" detail={shellSelected ? '当前主体自带检出，不需要填根目录。' : '扫描时会一并作为提示路径；手动填写即可手工登记一个源码检出。'}><input value={settings.dshLaunch.rootPath ?? ''} placeholder="自动扫描或手动填写 dsh 项目目录" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, rootPath: e.target.value || undefined } })} /></Field>
-          <Field
-            title="Harness 接入端点"
-            detail={endpointScanDetail(props)}
-          >
-            <span className="integration-actions">
+          {runningClients.length > 1 ? (
+            <Field title="接入的客户端" detail="检测到多个客户端正在运行，请选择壁纸连接哪一个。">
+              <span className="integration-actions">
+                <button className="settings-action secondary" disabled={props.endpointScanBusy} onClick={props.onScanEndpoints}>
+                  {props.endpointScanBusy ? '扫描中…' : '重新扫描'}
+                </button>
+                <select
+                  className="settings-select"
+                  aria-label="接入的客户端"
+                  value={settings.dshLaunch.endpointPort === undefined ? 'auto' : String(settings.dshLaunch.endpointPort)}
+                  onChange={(e) => set({
+                    dshLaunch: {
+                      ...settings.dshLaunch,
+                      endpointPort: e.target.value === 'auto' ? undefined : Number(e.target.value),
+                    },
+                  })}
+                >
+                  <option value="auto">自动（按客户端优先级）</option>
+                  {runningClients.map((item) => (
+                    <option key={item.port} value={String(item.port)}>
+                      {runningClients.filter((other) => other.kind === item.kind).length > 1
+                        ? `${harnessEndpointKindLabel(item.kind)}（${item.port}）`
+                        : harnessEndpointKindLabel(item.kind)}
+                    </option>
+                  ))}
+                </select>
+              </span>
+            </Field>
+          ) : (
+            <Field
+              title="接入的客户端"
+              detail={runningClients.length === 1
+                ? `已连接到正在运行的${harnessEndpointKindLabel(runningClients[0].kind)}。`
+                : '壁纸会自动连接正在运行的客户端；扫描只用来确认它已被识别。'}
+            >
               <button className="settings-action secondary" disabled={props.endpointScanBusy} onClick={props.onScanEndpoints}>
-                {props.endpointScanBusy ? '扫描中…' : '扫描可接入的 Harness'}
+                {props.endpointScanBusy ? '扫描中…' : '扫描客户端'}
               </button>
-              <select
-                className="settings-select"
-                aria-label="Harness 接入端点"
-                value={settings.dshLaunch.endpointPort === undefined ? 'auto' : String(settings.dshLaunch.endpointPort)}
-                disabled={!props.endpointScanDone}
-                onChange={(e) => set({
-                  dshLaunch: {
-                    ...settings.dshLaunch,
-                    endpointPort: e.target.value === 'auto' ? undefined : Number(e.target.value),
-                  },
-                })}
-              >
-                <option value="auto">默认（官方桌面 → 第三方桌面 → 官方 Web/CLI）</option>
-                {props.endpointScan.filter((item) => item.bridgeFound).map((item) => (
-                  <option key={item.port} value={String(item.port)}>
-                    {`${item.port} · ${harnessEndpointKindLabel(item.kind)} · ${item.status.availability}`}
-                  </option>
-                ))}
-              </select>
-              {props.endpointScanDone && props.endpointScan.every((item) => !item.bridgeFound) && (
-                <button className="settings-action secondary" onClick={props.onClearEndpoints}>清除扫描结果</button>
-              )}
-            </span>
-          </Field>
+            </Field>
+          )}
           <Field
             title="打开客户端界面"
             detail={props.reachPort === undefined
@@ -436,7 +450,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
             </Field>
           )}
           <Field title="启动执行主体" detail={shellSelected ? '启动该客户端自带的检出与服务；手动启动会显示它自己的窗口。' : '仅启动此处配置的 profile，不会接管已有 3080 服务。'}><button className="settings-action" disabled={(!settings.dshLaunch.subjectId && !settings.dshLaunch.rootPath) || props.managedDsh.running || props.subjectLaunchBusy} onClick={props.onLaunchDsh}>{props.subjectLaunchBusy ? '启动中…' : props.managedDsh.running ? `运行中 · PID ${props.managedDsh.pid}` : '启动'}</button></Field>
-          <Field title="受管进程" detail={props.managedDsh.managed ? `${props.managedDsh.rootPath} · profile ${props.managedDsh.profile}` : '未由本应用启动 DSH；外部 DSH 不会被停止。'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshManagedDsh}>刷新</button><button className="settings-action secondary" disabled={!props.managedDsh.running} onClick={props.onStopManagedDsh}>停止本应用启动的 DSH</button></span></Field>
+          <Field title="受管进程" detail={props.managedDsh.managed ? '该 DSH 由本应用启动，可以在这里停止它。' : '本应用没有启动 DSH；其他人启动的实例不会被停止。'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshManagedDsh}>刷新</button><button className="settings-action secondary" disabled={!props.managedDsh.running} onClick={props.onStopManagedDsh}>停止本应用启动的 DSH</button></span></Field>
         </Card>
         <Card title="DeepSeek 网页入口（实验）" description="在应用内持久 WebView2 中打开 DeepSeek 官方页面，登录后可从桌面会话窗发送消息。"><Field title="官方页面" detail="页面和登录状态由独立 WebView2 配置目录保存；本应用不读取、复制或记录 Cookie。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开应用内页面</button></Field><Field title="网页适配器配置" detail={props.deepseekWebAdapterConfig ? `${props.deepseekWebAdapterConfig.source === 'local' ? '本地 override' : '内置默认'} · ${props.deepseekWebAdapterConfig.adapterVersion} · ${props.deepseekWebAdapterConfig.path}${props.deepseekWebAdapterConfig.warning ? ` · ${props.deepseekWebAdapterConfig.warning}` : ''}` : '正在读取配置状态…'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshDeepSeekWebAdapterConfig}>刷新</button><button className="settings-action secondary" onClick={props.onOpenDeepSeekWebAdapterConfig}>打开配置</button><button className="settings-action secondary" onClick={props.onResetDeepSeekWebAdapterConfig}>恢复默认</button></span></Field></Card>
         <Card title="DeepSeek API" description="API 模式会产生实际费用，密钥只保存在 Windows 凭据管理器。">

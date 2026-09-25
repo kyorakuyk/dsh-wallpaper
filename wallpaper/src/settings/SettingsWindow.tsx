@@ -640,7 +640,6 @@ export function SettingsWindow() {
       endpointScanBusy={endpointScanBusy}
       endpointScanDone={endpointScanDone}
       onScanEndpoints={() => { void scanEndpoints() }}
-      onClearEndpoints={() => { setEndpointScan([]); setEndpointScanDone(false) }}
       onReachClient={() => { void reachClient() }}
       reachBusy={reachBusy}
       reachAction={clientRaiseAction(reachKind)}
