@@ -1,6 +1,6 @@
 # Harness 执行主体与「拉起 UI」：设计与已冻结决定
 
-状态：**设计已定，未实施**。基线为 `codex/startup-render-handoff` 的 `a0d5aa0`（2026-09-26）。本文汇总 2026-09-26 讨论中钉死的决定、实测事实与已排除的假设，不含实现代码。
+状态：**施工中**。基线为 `codex/startup-render-handoff` 的 `a0d5aa0`（2026-09-26）。本文汇总 2026-09-26 讨论中钉死的决定、实测事实与已排除的假设。施工进度见 §9：**靶点模型与静态发现已落地**（`60aacc4`，`wallpaper/src-tauri/src/harness_targets.rs`），启动链、设置 UI、持久化尚未动工。
 
 相关：登录自启项本身的稳定性问题见 [`../plans/autostart-recovery-plan.md`](../plans/autostart-recovery-plan.md)；"更新后自启失效"的修复见同目录 `../plans/dsh-harness-connection-autostart-compatibility-plan.md`。
 
@@ -162,7 +162,11 @@ app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(
 1. 读 `managed-dsh.log` 定位 §7 的遗留根因。
 2. **官壳静默启动**：本机由用户验证（**不能拿官壳做实验——19387 同时是本次会话的宿主**）。
 3. **桌面"隐藏→再显示"**：可在本机实测（当前未运行，风险低）。
-4. 垫片实现：靶点模型（静态指纹 / 启动配方 / 协议指纹 / 能力标记 / 失效判断）、扫描结果持久化（含最后验证时间）、设置里的两段式选择。
+4. 垫片实现，分四块：
+   - [x] **靶点模型与静态发现**（`60aacc4`）：两类靶点（`embedded-shell` / `checkout`）、AUMID 指纹（读快捷方式的 `System.AppUserModel.ID`）、检出复用既有目录指纹、`requiresSubjectChoice` 信号；本机实测认出官壳与桌面两个壳。命令 `scan_harness_targets`。
+   - [ ] **启动链**：统一"起"（`shell:AppsFolder\<AUMID>` vs 受管命令），与 5.3 的滑槽共用同一条链，只把"是否切模式"作为参数。
+   - [ ] **「拉起 UI」**：幂等地覆盖"主体没起 / 窗口隐藏 / 窗口在后台"三态，失败可见（复用 `managed-dsh.log`）。
+   - [ ] **设置里的两段式选择 + 扫描结果持久化**（含最后验证时间）：多了源码树时按 §4.3 提示选择默认主体。
 
 ---
 
