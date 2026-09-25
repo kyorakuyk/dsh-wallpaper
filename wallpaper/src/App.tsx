@@ -352,6 +352,24 @@ export function App({ surface = 'combined' }: AppProps) {
     previousForegroundRef.current = desktopForeground
     if (returned) setComposerEpoch((epoch) => epoch + 1)
   }, [desktopForeground])
+
+  // Report island pointer events to the native side, the only side that can act on
+  // them: a real click never reaches the native window procedure, because the WebView2
+  // child owns the mouse messages from another process.
+  //
+  // A report, not a trigger. The native command re-checks the physical left button and
+  // the window under the cursor, so this cannot become an unverified activation path.
+  useEffect(() => {
+    if (!nativeRuntime.isNative) return
+    const reportIslandClick = (event: PointerEvent) => {
+      if (event.button !== 0) return
+      void nativeRuntime.verifyIslandClick().catch((error) => {
+        if (import.meta.env.DEV) console.debug("verify island click rejected:", error)
+      })
+    }
+    document.addEventListener("pointerdown", reportIslandClick, true)
+    return () => document.removeEventListener("pointerdown", reportIslandClick, true)
+  }, [])
   const [workspace, setWorkspace] = useState<DesktopWorkspace>('front')
   const [innerHistoryExpanded, setInnerHistoryExpanded] = useState(false)
   const [expandedBottomInset, setExpandedBottomInset] = useState(48)

@@ -149,6 +149,15 @@ export interface NativeRuntime {
    * Bring a desktop client's own window forward. Never launches anything, so a
    * client that is not running reports `not-running` rather than starting up.
    */
+  /**
+   * Verify that a renderer island `pointerdown` really is a user click.
+   *
+   * The native click route is closed, so the island event has to be reported from
+   * here - and the native side deliberately does not trust that report: it re-checks
+   * the physical left button and the window under the cursor, and rejects the call
+   * otherwise. Returns the verdict for logging; it performs no activation.
+   */
+  verifyIslandClick(): Promise<string>
   raiseClientWindow(port: number): Promise<RaiseClientOutcome>
   /**
    * Open a windowless client's web UI in the default browser. Only a loopback
@@ -423,6 +432,12 @@ export const nativeRuntime: NativeRuntime = {
    * wallpaper is connected to, so it is the same client whose session the user is
    * talking to, and no stored executable path can go stale.
    */
+  /** Returns the native verification verdict, or an empty string off Tauri. */
+  async verifyIslandClick() {
+      if (!await tauriAvailable()) return ''
+      const { invoke } = await import('@tauri-apps/api/core')
+      return invoke<string>('verify_island_click')
+  },
   async raiseClientWindow(port: number) {
     if (!await tauriAvailable()) return { outcome: 'not-running' as const, raised: false }
     const { invoke } = await import('@tauri-apps/api/core')
