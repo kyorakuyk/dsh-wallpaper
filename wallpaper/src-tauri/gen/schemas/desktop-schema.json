@@ -621,6 +621,12 @@
           "markdownDescription": "Enables the update_interaction_regions command without any pre-configured scope."
         },
         {
+          "description": "Enables the verify_island_click command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-verify-island-click",
+          "markdownDescription": "Enables the verify_island_click command without any pre-configured scope."
+        },
+        {
           "description": "Denies the api_history command without any pre-configured scope.",
           "type": "string",
           "const": "deny-api-history",
@@ -1063,6 +1069,12 @@
           "type": "string",
           "const": "deny-update-interaction-regions",
           "markdownDescription": "Denies the update_interaction_regions command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the verify_island_click command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-verify-island-click",
+          "markdownDescription": "Denies the verify_island_click command without any pre-configured scope."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

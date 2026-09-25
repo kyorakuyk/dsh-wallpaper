@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-verify-island-click"
+description = "Enables the verify_island_click command without any pre-configured scope."
+commands.allow = ["verify_island_click"]
+
+[[permission]]
+identifier = "deny-verify-island-click"
+description = "Denies the verify_island_click command without any pre-configured scope."
+commands.deny = ["verify_island_click"]
