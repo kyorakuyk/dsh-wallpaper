@@ -1,6 +1,6 @@
 # Harness 执行主体与「拉起 UI」：设计与已冻结决定
 
-状态：**施工中**。基线为 `codex/startup-render-handoff` 的 `a0d5aa0`（2026-09-26）。本文汇总 2026-09-26 讨论中钉死的决定、实测事实与已排除的假设。施工进度见 §9：**靶点模型与静态发现已落地**（`60aacc4`，`wallpaper/src-tauri/src/harness_targets.rs`），启动链、设置 UI、持久化尚未动工。
+状态：**施工中**。基线为 `codex/startup-render-handoff` 的 `a0d5aa0`（2026-09-26）。本文汇总 2026-09-26 讨论中钉死的决定、实测事实与已排除的假设。施工进度见 §9：**靶点模型与静态发现**（`60aacc4`）与**启动链 + 设置里的执行主体选择**（`c8dd0f4`…见 §9）已落地；「拉起 UI」三态幂等与扫描结果持久化尚未动工。
 
 相关：登录自启项本身的稳定性问题见 [`../plans/autostart-recovery-plan.md`](../plans/autostart-recovery-plan.md)；"更新后自启失效"的修复见同目录 `../plans/dsh-harness-connection-autostart-compatibility-plan.md`。
 
@@ -164,9 +164,10 @@ app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(
 3. **桌面"隐藏→再显示"**：可在本机实测（当前未运行，风险低）。
 4. 垫片实现，分四块：
    - [x] **靶点模型与静态发现**（`60aacc4`）：两类靶点（`embedded-shell` / `checkout`）、AUMID 指纹（读快捷方式的 `System.AppUserModel.ID`）、检出复用既有目录指纹、`requiresSubjectChoice` 信号；本机实测认出官壳与桌面两个壳。命令 `scan_harness_targets`。
-   - [ ] **启动链**：统一"起"（`shell:AppsFolder\<AUMID>` vs 受管命令），与 5.3 的滑槽共用同一条链，只把"是否切模式"作为参数。
-   - [ ] **「拉起 UI」**：幂等地覆盖"主体没起 / 窗口隐藏 / 窗口在后台"三态，失败可见（复用 `managed-dsh.log`）。
-   - [ ] **设置里的两段式选择 + 扫描结果持久化**（含最后验证时间）：多了源码树时按 §4.3 提示选择默认主体。
+   - [x] **启动链**（本块）：`harness_launch` 的纯策略 `plan_launch`（分类、profile 是否适用、无人值守才可隐藏窗口/才需确认自定义启动器）+ 机制（壳走 `shell:AppsFolder` 别名，检出走既有受管链）；`already-running` 一律不接管；只有本 build 已知的壳可被启动（别名即"启动请求"，故必须是白名单）。命令 `launch_harness_target` / `autostart_harness_target`，两者共用既有的一次性自动启动记录。**本机实测**：第三方桌面客户端按存储的别名启动成功、二次调用报 `already-running`、按应答端口的 PID 干净停止。
+   - [x] **设置里的执行主体选择**：`dshLaunch.subjectId` + 主体列表（自带检出/源码检出两类）+ 多源码树时按 §4.3 提示选择默认主体；选了自带检出即隐藏 profile/启动命令/根目录（§4.7）；滑槽与开机自启都改为起"主体"（§5.3），只差触发时机。
+   - [ ] **「拉起 UI」**：幂等地覆盖"主体没起 / 窗口隐藏 / 窗口在后台"三态，失败可见（复用 `managed-dsh.log`）。`client_window::hide_client_window` 已落地，`raise_client_window` 已有，缺的是三态编排与"主体不在则重拉整条链"。
+   - [ ] **扫描结果持久化**（含最后验证时间）：现在只在设置窗口打开时按需扫描，未落盘。
 
 ---
 
