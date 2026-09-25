@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>默认渐变主题 · 独立预览</title>
+    <style>
+      /* 规则由脚本从 wallpaper/src/styles.css 原样抽取注入：预览与实物是同一份文本，
+         不是另抄一遍，避免再出现「预览与实物不一致」。 */
+      :root {
+        --persona-glow: rgba(77, 166, 255, 0.18);
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #05070f;
+        color: #cfe3f2;
+        font: 13px/1.6 system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+      }
+      /* 满屏这一份：就是待机屏上的真实尺寸。 */
+      .stage {
+        position: fixed;
+        inset: 0;
+      }
+      .panel {
+        position: fixed;
+        right: 22px;
+        bottom: 22px;
+        width: 268px;
+        padding: 14px 16px;
+        border: 1px solid rgba(145, 194, 227, 0.16);
+        border-radius: 12px;
+        background: rgba(4, 13, 25, 0.62);
+        backdrop-filter: blur(8px);
+      }
+      .panel h1 {
+        margin: 0 0 6px;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+      .panel p {
+        margin: 0 0 10px;
+        color: #93a9bd;
+        font-size: 11px;
+      }
+      /* 与设置里那一格同尺寸，便于对照「缩略图 vs 实物」。 */
+      .thumb {
+        aspect-ratio: 16 / 10;
+        border-radius: 7px;
+        overflow: hidden;
+        background: var(--blank-background);
+      }
+      .hint {
+        position: fixed;
+        left: 22px;
+        bottom: 22px;
+        color: #7e93a8;
+        font-size: 11px;
+      }
+:root {
+        --blank-background:
+          /* 顺序即绘制顺序：先写的最上层。暗角必须在上层才能压住四边，但压得太狠会把两团光
+           * 连同亮部一起吃成一片糊——上一版就是因此显得"平"。这里把暗角起点退到 52% 并降低
+           * 不透明度，让亮部留在原地。 */
+          radial-gradient(150% 118% at 50% 46%, transparent 52%, #03050ba8 100%),
+          /* 玻璃高光：一小片偏白的反光，交代"这是一层玻璃"而不是一张纸 */
+          radial-gradient(38vmax 22vmax at 62% 5%, #cdeeff30, transparent 72%),
+          /* 水面微光带：顶端一层薄亮，交代上面是水面 */
+          linear-gradient(178deg, #2f7bb033 0%, transparent 32%),
+          /* 漏下的光柱：全图唯一的方向来源 */
+          linear-gradient(104deg, transparent 40%, #b6eeff30 46%, #b6eeff12 53%, transparent 62%),
+          /* 两团冷光：跟随立绘主题色 + 固定深海青，错开位置形成玻璃透镜感 */
+          radial-gradient(46vmax 34vmax at 20% 14%, var(--persona-glow), transparent 66%),
+          radial-gradient(58vmax 42vmax at 82% 88%, #1a7fa87a, transparent 62%),
+          /* 纵深底色：上半略提亮，避免整屏死黑 */
+          linear-gradient(176deg, #12233f 0%, #0b1830 46%, #060a16 100%);
+      }
+      
+      .idle-bg {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        background: var(--blank-background);
+        /* 这里没有 backdrop-filter：它下面只有这一层渐变，模糊没有视觉收益，却让整屏每帧
+         * 重新采样；岛上的玻璃（.dsh-glass）本身也是 backdrop-filter，鼠标滑过时任何状态
+         * 变化都会连带触发整屏重采样，卡顿就来自这一对。改为提升为独立图层：渐变只栅格化
+         * 一次，上面的玻璃采样一张已缓存的纹理。 */
+        transform: translateZ(0);
+      }
+      
+      .idle-bg::before,
+      .idle-bg::after {
+        content: '';
+        position: absolute;
+        width: 56vmax;
+        height: 56vmax;
+        border-radius: 50%;
+        pointer-events: none;
+      }
+      
+      .idle-bg::before {
+        top: -20vmax;
+        left: -14vmax;
+        background: radial-gradient(circle at 50% 50%, var(--persona-glow), transparent 62%);
+        opacity: 0.62;
+        /* screen = 叠加发光，而不是覆盖：这是"玻璃"与"色块"的区别，也让底下那几层渐变的
+         * 结构透出来。只用在两个伪元素上，代价可控。 */
+        mix-blend-mode: screen;
+        animation: blank-drift-a 46s ease-in-out infinite;
+      }
+      
+      .idle-bg::after {
+        content: '';
+        position: absolute;
+        width: 56vmax;
+        height: 56vmax;
+        border-radius: 50%;
+        pointer-events: none;
+      }
+      
+      @keyframes blank-drift-a {
+        0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+        50% { transform: translate3d(5vmax, 3vmax, 0) scale(1.14); }
+      }
+      
+      @keyframes blank-drift-b {
+        0%, 100% { transform: translate3d(0, 0, 0) scale(1.06); }
+        50% { transform: translate3d(-6vmax, -4vmax, 0) scale(0.94); }
+      }
+      
+      @media (prefers-reduced-motion: reduce) {
+        .idle-bg::before,
+        .idle-bg::after { animation: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stage"><div class="idle-bg"></div></div>
+
+    <div class="hint">满屏这份就是待机屏的真实尺寸与动效；两团光周期 46s / 68s，极慢。</div>
+
+    <div class="panel">
+      <h1>默认渐变主题</h1>
+      <p>下面这格是设置中心里的缩略图尺寸，用来对照预览与实物是否一致。</p>
+      <div class="thumb"></div>
+    </div>
+  </body>
+</html>
