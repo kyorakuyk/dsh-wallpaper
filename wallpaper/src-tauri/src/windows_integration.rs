@@ -1699,9 +1699,37 @@ unsafe extern "system" fn session_subclass_proc(
 /// records key content, window titles, input text or session content, and it is compiled
 /// out of release builds. Called only from mouse-activation and focus messages, so the
 /// per-mouse-move `WM_NCHITTEST` path stays untouched.
+// Pure arithmetic on the message parameter; needed by the call sites in every profile.
+#[cfg(windows)]
+fn client_point(lparam: LPARAM) -> (i32, i32) {
+    let packed = lparam.0 as u32;
+    ((packed as u16 as i16) as i32, ((packed >> 16) as u16 as i16) as i32)
+}
+
+/// Phase A diagnostic for the input-island focus handoff.
+///
+/// Two questions have to be separated, and only a real click answers either: did the click
+/// land on the WebView at all, and did Windows hand over the keyboard channel? A failing
+/// fix was believed to work because `SetFocus` returned success, so every claim below is a
+/// readback rather than a return code.
+///
+/// Records window classes, PIDs, the click resolution and those readbacks. Never records
+/// key content, window titles, input text or session content, and it is compiled out of
+/// release builds. Attached only to mouse-activation and focus messages, so the
+/// per-mouse-move `WM_NCHITTEST` path stays untouched.
 #[cfg(all(windows, debug_assertions))]
-fn trace_focus_handoff(stage: &str, hot_zone: Option<bool>) {
+fn trace_focus_handoff(stage: &str, client: Option<(i32, i32)>) {
     unsafe {
+        // Resolve the click point to the window actually under it, which tells a missed
+        // hot zone apart from a click that arrived without the keyboard following.
+        let point_hit = client.map(|(x, y)| {
+            let mut point = POINT { x, y };
+            let _ = windows::Win32::Graphics::Gdi::ClientToScreen(hwnd_of_foreground(), &mut point);
+            let under = WindowFromPoint(point);
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(under, Some(&mut pid));
+            (window_class(under).unwrap_or_else(|| "<none>".to_string()), pid)
+        });
         let foreground = GetForegroundWindow();
         let mut foreground_pid = 0u32;
         GetWindowThreadProcessId(foreground, Some(&mut foreground_pid));
@@ -1717,16 +1745,25 @@ fn trace_focus_handoff(stage: &str, hot_zone: Option<bool>) {
             ("<no-gui-thread-info>".to_string(), 0)
         };
         log::info!(
-            "focus trace [{stage}]: hot_zone={hot_zone:?} foreground={foreground_class} foreground_pid={foreground_pid} focus={focus_class} focus_pid={focus_pid} self_pid={}",
+            "focus trace [{stage}]: point_hit={point_hit:?} foreground={foreground_class} foreground_pid={foreground_pid} focus={focus_class} focus_pid={focus_pid} self_pid={}",
             std::process::id(),
         );
     }
 }
 
+#[cfg(all(windows, debug_assertions))]
+fn hwnd_of_foreground() -> HWND {
+    unsafe { GetForegroundWindow() }
+}
+
+/// Release builds keep the call sites but compile the probe away, so the instrumentation
+/// never runs in a shipped build.
+#[cfg(all(windows, not(debug_assertions)))]
+fn trace_focus_handoff(_stage: &str, _client: Option<(i32, i32)>) {}
+
+
 /// Release builds keep the call sites but compile the probe away, so the
 /// instrumentation never runs in a shipped build.
-#[cfg(all(windows, not(debug_assertions)))]
-fn trace_focus_handoff(_stage: &str, _hot_zone: Option<bool>) {}
 
 unsafe extern "system" fn interaction_subclass_proc(
     hwnd: HWND,
@@ -1783,7 +1820,7 @@ unsafe extern "system" fn interaction_subclass_proc(
             trace_focus_handoff("WM_MOUSEACTIVATE", None);
         }
         WM_LBUTTONDOWN | WM_NCLBUTTONDOWN => {
-            trace_focus_handoff("WM_LBUTTONDOWN", None);
+            trace_focus_handoff("WM_LBUTTONDOWN", Some(client_point(lparam)));
         }
         WM_ACTIVATE | WM_SETFOCUS => {
             trace_focus_handoff("WM_ACTIVATE/WM_SETFOCUS", None);
@@ -1890,7 +1927,38 @@ fn restore_desktop_keyboard_focus(app: &tauri::AppHandle) {
             return;
         };
         match unsafe { SetFocus(Some(HWND(hwnd.0))) } {
-            Ok(_) => log::info!("desktop focus restored to the wallpaper WebView"),
+            Ok(_) => {
+                // Tiered on purpose (repair plan 3.C). `SetFocus` returning success only
+                // proves this thread could set focus; it does not prove Windows handed the
+                // keyboard channel over. Reporting "restored" on that alone is what made a
+                // failing fix look like a working one, so the claim is graded by readback:
+                // the window must actually be foreground and its keyboard focus must sit on
+                // a WebView2 process, which is the state a working input was measured in.
+                let foreground = unsafe { GetForegroundWindow() };
+                let mut foreground_pid = 0u32;
+                unsafe { GetWindowThreadProcessId(foreground, Some(&mut foreground_pid)) };
+                let mut info = GUITHREADINFO::default();
+                info.cbSize = core::mem::size_of::<GUITHREADINFO>() as u32;
+                let focus_pid = if unsafe { GetGUIThreadInfo(0, &mut info) }.is_ok() {
+                    let mut pid = 0u32;
+                    unsafe { GetWindowThreadProcessId(info.hwndFocus, Some(&mut pid)) };
+                    Some(pid)
+                } else {
+                    None
+                };
+                let ours = foreground_pid == std::process::id();
+                // A WebView2 input window belongs to a browser helper process, never to us,
+                // so a different-but-present PID is the expected success shape here.
+                let webview2_has_focus = focus_pid.is_some_and(|pid| pid != 0 && pid != std::process::id());
+                if ours && webview2_has_focus {
+                    log::info!("keyboard channel restored: foreground is the wallpaper and focus is on the WebView");
+                } else {
+                    log::warn!(
+                        "thread focus set, but the keyboard channel is not restored: \
+                         foreground_is_wallpaper={ours} focus_on_webview={webview2_has_focus}"
+                    );
+                }
+            }
             // Not fatal - the desktop may not be foreground yet - but reported rather
             // than swallowed, since a silent failure here is what made this hard to find.
             Err(error) => log::warn!("desktop focus restore: SetFocus failed: {error}"),
