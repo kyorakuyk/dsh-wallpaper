@@ -2316,6 +2316,25 @@ async fn fetch_harness_status() -> serde_json::Value {
 /// background surface when it receives the broadcast. Validation is deliberately
 /// strict — a port outside the TCP range is rejected rather than silently
 /// falling back, so a bad value is visible instead of looking like "no Bridge".
+/// Verify that the renderer's island `pointerdown` really is a user click.
+///
+/// The native click route is closed - a real click reaches neither `WM_MOUSEACTIVATE` nor
+/// `WM_LBUTTONDOWN` nor a hit test, because the WebView2 child owns the mouse messages from
+/// another process (see `docs/input-island-focus-native-route-closed.md`). The island event
+/// therefore has to be reported by the renderer, and plan 3.A requires the native side not to
+/// trust that report: it re-checks the physical left button and the window under the cursor.
+///
+/// Restricted to the wallpaper surface, so neither the Lite surface nor a remote page can ask
+/// for it. It performs no activation yet - this is the diagnostic step of plan 3.A.
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+fn verify_island_click(caller: tauri::WebviewWindow) -> Result<String, String> {
+    require_wallpaper_surface(&caller)?;
+    let verdict = windows_integration::verify_island_click()?;
+    log::info!("{verdict}");
+    Ok(verdict)
+}
+
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
 fn set_harness_endpoint(
@@ -3086,6 +3105,7 @@ macro_rules! register_edition_commands {
             probe_harness,
             scan_harness_endpoints_command,
             set_harness_endpoint,
+            verify_island_click,
             raise_client_window,
             open_client_in_browser,
             harness_endpoint_listening,

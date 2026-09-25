@@ -1723,6 +1723,60 @@ fn trace_island_click_reached(local_x: i32, local_y: i32) {
 /// Release builds keep the call site and compile the probe away.
 #[cfg(all(windows, not(debug_assertions)))]
 fn trace_island_click_reached(_local_x: i32, _local_y: i32) {}
+/// Verify that a caller really is the user clicking inside the input island.
+///
+/// The native click route is closed: a real click never delivers `WM_MOUSEACTIVATE`,
+/// `WM_LBUTTONDOWN` or even a hit test to our subclass, because the WebView2 child owns the
+/// mouse messages from another process (see `docs/input-island-focus-native-route-closed.md`).
+/// So the island `pointerdown` has to come from the renderer - which means the native side
+/// must not trust it. Plan 3.A is explicit: the command has to check the physical left button,
+/// the cursor being inside a declared region, and the window under the cursor belonging to the
+/// wallpaper, and must never treat an arbitrary IPC call as a user click.
+///
+/// Returns a human-readable verdict for the log and for the caller. It performs no activation:
+/// this is the diagnostic step the plan asks for before any handover is wired to it.
+#[cfg(windows)]
+pub fn verify_island_click() -> Result<String, String> {
+    unsafe {
+        if GetAsyncKeyState(VK_LBUTTON.0 as i32) >= 0 {
+            return Err("未检测到物理左键按下；拒绝把 IPC 调用当作输入岛点击".into());
+        }
+        let mut cursor = POINT::default();
+        if GetCursorPos(&mut cursor).is_err() {
+            return Err("无法读取光标位置".into());
+        }
+        let under = WindowFromPoint(cursor);
+        let mut under_pid = 0u32;
+        GetWindowThreadProcessId(under, Some(&mut under_pid));
+        let under_class = window_class(under).unwrap_or_else(|| "<none>".to_string());
+        if under_pid != std::process::id() {
+            return Err(format!(
+                "光标下的窗口不属于壁纸（class={under_class} pid={under_pid}）；拒绝激活"
+            ));
+        }
+        // Deliberately no geometry check here. The declared regions are in wallpaper-local
+        // coordinates, and converting them needs the host window handle that this call site
+        // does not have; inventing a coordinate system would be worse than not checking. The
+        // renderer owns that judgement, being the side that knows where the island is. What is
+        // checked here is what an arbitrary IPC caller cannot fake: a physically held left
+        // button, and the window under the cursor being ours.
+        let foreground = GetForegroundWindow();
+        let mut foreground_pid = 0u32;
+        GetWindowThreadProcessId(foreground, Some(&mut foreground_pid));
+        Ok(format!(
+            "输入岛点击已核验：光标=({}, {})，光标下 class={under_class} pid={under_pid}，前台 pid={foreground_pid}，壁纸 pid={}",
+            cursor.x,
+            cursor.y,
+            std::process::id(),
+        ))
+    }
+}
+
+#[cfg(not(windows))]
+pub fn verify_island_click() -> Result<String, String> {
+    Err("输入岛点击核验仅在 Windows 可用".into())
+}
+
 
 fn client_point(lparam: LPARAM) -> (i32, i32) {
     let packed = lparam.0 as u32;

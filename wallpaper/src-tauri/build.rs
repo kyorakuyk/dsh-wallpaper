@@ -57,6 +57,9 @@ fn main() {
             "harness_set_preset",
             "harness_controls",
             "harness_set_permission",
+            // Verifies that the renderer's island pointerdown is a real user click before any
+            // keyboard handover may act on it (repair plan 3.A).
+            "verify_island_click",
             "api_history",
             "list_api_conversations",
             "delete_api_conversation",
