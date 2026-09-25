@@ -21,15 +21,23 @@
 ## 2. 五个待办问题（按建议顺序）
 
 ### ① 底部停靠胶囊既点不到、也不能穿透（最优先，与 ⑤ 同源）
-现象：表桌面底部那枚胶囊**收不到点击**，同时**挡住了本该给桌面的点击**；输入岛右上角「X」也不可用。
-已知事实（已核实，不要再重新怀疑）：
-- `wallpaper/src/runtime/interactionRegions.ts`（`beginInteractionRegionSession` / `collectInteractionRegions` / `publishInteractionRegions`）**没有任何调用者**；原生 `begin_interaction_region_session` / `update_interaction_regions` 同理。**那套"交互区域"机制是死代码**，不是本次元凶（上一轮已排除，勿再改它）。
-- 因此现在**没有一套可用的"点击该落到哪一层"的模型**。取证问题是：命中测试究竟归谁——原生前台/区域监控线程、窗口样式（`WS_EX_TRANSPARENT` / `set_ignore_cursor_events`）、还是 Tauri 窗口的透明与鼠标设置？为什么胶囊既收不到点击、又没把点击放过去？
-**动手前提：先给出可复述的输入模型 + 证据（代码位置/日志/实测），再修。**
+现象：表桌面底部那枚胶囊**收不到点击**；输入岛右上角「X」也不可用。
+
+**取证已完成**：见 [`../evidence/input-model-desktop-hit-testing.md`](../evidence/input-model-desktop-hit-testing.md)（含实测窗口栈、Z 序、UIA 读出的热区几何、被排除的假设、复现脚本）。结论：
+
+- **表桌面上壁纸 WebView 收不到任何鼠标消息**：壁纸宿主 `Tauri Window` 是 Progman 的直接子窗口，且排在 `SHELLDLL_DefView`（图标层）**之后**（实测 Z 序 #0 对 #2）。该点上最前的可见窗口是全屏 `SysListView32`，点击归 Explorer，DOM 事件永不发生。所以胶囊不是"点不到"，而是"点不到我们"。
+- 里桌面（`set_desktop_icons_visible(false)` → `ShowWindow(SHELLDLL_DefView, SW_HIDE)`）之后，壁纸宿主才是该点最前的可见窗口，`WM_NCHITTEST` 走 `INNER_WORKSPACE_ACTIVE` 分支返回 `HTCLIENT`，点击才进 DOM——**输入岛能输入的全部前提就是先隐藏图标层**。
+- **更正上一轮的错误结论**：`interactionRegions.ts` **不是死代码**。`wallpaper/src/App.tsx` 第 25 / 1123 / 1132 / 1145 行在调用它；`capabilities/background.json` 第 25–26 行也授予了两个命令。坐标换算实测无误（`devicePixelRatio=1.5`，`ClientToScreen(宿主)=(0,0)`）。它是**表/里双击判定唯一可用的判据**（UIA 的"空白桌面"检查对我们自己的 WebView 同样返回空白）。
+- **架构结论（最重要）**：胶囊、X、立绘在表桌面**不可能用 DOM 事件实现**。它们必须做进已有的原生全局线程 `start_desktop_workspace_monitor`（`GetAsyncKeyState` 上升沿 + 热区 + UIA）：**热区内的真实左键单击 ⇒ 原生切换工作区并通知前端展开**。这正好与 §1.1 的拍板决定吻合。
+- **未闭合**：真实点击发生时原生手里的热区列表内容（运行中不可读；该 WebView2 未开远程调试端口，日志 0 字节）。关闭它的实验：`docs/evidence/input-probe/capsule-click-experiment.ps1`（需桌面可见数秒，自动合成点击并观察 `SHELLDLL_DefView` 可见性，可逆）。
+**动手前提：先跑完上面那个实验，再改胶囊几何或形态。**
 
 ### ② 双击交互控件会误触表/里桌面切换
 现象：快速双击「会话记录」与输入岛右下角「切换模型」，会触发表/里桌面切换。
-方向：双击判定大概率挂在桌面根节点上，未排除落在交互控件内的事件（`event.target.closest(...)`）。属小修，注释里写清"为什么控件上的双击不算桌面手势"。
+真正的机制（**不是**前端根节点上的 DOM 双击判定）：原生 `start_desktop_workspace_monitor` 是全局 16ms 轮询，判据为
+`cursor_is_on_desktop_surface && !cursor_hits_interaction_region && UIA 判为空白桌面`，且两次点击间隔 ≤500ms。
+其中 UIA 那一项对壁纸自己的 WebView 也返回"空白"，所以**已发布热区是唯一判据**；而热区列表没有活性校验——为空或过期时不报错，只静默退化成"到处是桌面空白"。
+方向：让热区可核验（非空 + 与当前布局一致，见 §2① 证据文档的 D3/D4/D5），把"控件上的双击不算桌面手势"落在**热区覆盖**上，而不是再加一层前端判断。
 
 ### ③ 隐藏任务栏时底部没有适配
 理想（用户原话）：**输入岛下边界始终距屏幕下边缘 1.5 个任务栏高度**。
@@ -93,7 +101,9 @@
 
 ## 7. 已知的"账"（未清，均不阻塞）
 
-- **死代码**：`interactionRegions.ts` 与原生 `begin_interaction_region_session` / `update_interaction_regions`；`scan_dsh_paths` 与 `launch_dsh` 两个命令（渲染层已无调用者，目录指纹由主体扫描复用）；`set_harness_endpoint` / `dshLaunch.endpointPort`（UI 已不再暴露）。清理需连权限、capability 与 `gen/schemas` 一起动，面积较大，**一次只清一项**。
+- **死代码**：`scan_dsh_paths` 与 `launch_dsh` 两个命令（渲染层已无调用者，目录指纹由主体扫描复用）；`set_harness_endpoint` / `dshLaunch.endpointPort`（UI 已不再暴露）。清理需连权限、capability 与 `gen/schemas` 一起动，面积较大，**一次只清一项**。
+  **注意**：`interactionRegions.ts` 与原生 `begin_interaction_region_session` / `update_interaction_regions` **不在死代码之列**（上一轮记错，已由 §2① 的取证更正）——它们是表/里双击判定唯一可用的判据，清理它等于删掉交互层。
+  另外 `interaction_subclass_proc` 的 `HTTRANSPARENT` 分支在表桌面**轮不到执行**（壁纸宿主不是该点最前窗口），里桌面又一律返回 `HTCLIENT`，属可疑复杂度，见证据文档 D2。
 - **§7 遗留根因**："壁纸拉起 DSH 后立即退出"仍未定位。`managed-dsh.log` 已就绪（记录确切的 program/args/cwd、退出码与最后 20 行输出），复现一次即可给出结论。
 - `blank-background-preview.html` 的自检里 `mix-blend-mode` 计数与预期差 1，未复核（可能是抽取正则合并了一处；若真漏，预览里会有一团光"不发光"，实物是发的）。
 - 两个注释里曾残留旧名"空白背景渐变"，已改为"默认渐变主题"。
