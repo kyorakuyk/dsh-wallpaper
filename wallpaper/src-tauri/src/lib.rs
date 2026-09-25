@@ -2330,7 +2330,16 @@ async fn fetch_harness_status() -> serde_json::Value {
 #[cfg(not(feature = "lite"))]
 fn verify_island_click(caller: tauri::WebviewWindow) -> Result<String, String> {
     require_wallpaper_surface(&caller)?;
-    let verdict = windows_integration::verify_island_click()?;
+    // Log both outcomes. Logging only the success made a rejected report
+    // indistinguishable from a report that was never sent, which is exactly the
+    // ambiguity the repair plan forbids swallowing.
+    let verdict = match windows_integration::verify_island_click() {
+        Ok(verdict) => verdict,
+        Err(error) => {
+            log::warn!("island click report rejected: {error}");
+            return Err(error);
+        }
+    };
     log::info!("{verdict}");
     Ok(verdict)
 }
