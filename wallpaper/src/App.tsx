@@ -414,6 +414,20 @@ export function App({ surface = 'combined' }: AppProps) {
   activeBackendRef.current = runtime.backend
   const runtimeRef = useRef(runtime)
   runtimeRef.current = runtime
+  /**
+   * The latest settings, for callbacks and subscriptions that outlive one render.
+   *
+   * This exists so that a *subscription* never has to name a setting in its dependency
+   * list. Naming one there looks harmless and is not: the boot effect below used to
+   * depend on `settings.interactionLayout`, so changing that one preference tore the
+   * effect down and re-ran it — and re-running it dispatched `boot-ready` again, which
+   * is the event the state machine reads as "this desktop has just started waking up".
+   * The wake animation therefore replayed on every layout change. A setting that only
+   * decides *how* something is drawn must not be able to re-trigger an event that means
+   * "this session just started".
+   */
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
 
   useEffect(() => {
     if (!nativeRuntime.isNative) return
@@ -549,7 +563,9 @@ export function App({ surface = 'combined' }: AppProps) {
     // The existing drawer already has its own state and visual treatment. The
     // preference therefore only chooses its initial state as a workspace is
     // entered; it does not add another surface or force a transcript open.
-    setInnerHistoryExpanded(settings.historyStartsExpanded)
+    // Read through the ref: these handlers are held by a long-lived listener, so a
+    // captured value would go stale the moment the preference changed.
+    setInnerHistoryExpanded(settingsRef.current.historyStartsExpanded)
     setWorkspace('entering-inner')
     setInteractionState('expanded')
     baseDispatch({ type: 'OPEN_CHAT' })
@@ -559,7 +575,7 @@ export function App({ surface = 'combined' }: AppProps) {
 
   const leaveInnerWorkspace = () => {
     setInnerHistoryExpanded(false)
-    if (settings.interactionLayout === 'floating') {
+    if (settingsRef.current.interactionLayout === 'floating') {
       // A floating surface is either fully present or absent. Resizing its native
       // HWND during a CSS exit animation exposes partially clipped WebView frames.
       setWorkspace('front')
@@ -608,10 +624,7 @@ export function App({ surface = 'combined' }: AppProps) {
   }, [nativeHandoffGeneration, runtime.phase])
 
   useEffect(() => {
-    if (!appCoreClient.native) {
-      const timer = setTimeout(() => baseDispatch({ type: 'BOOT_READY', playWake: settings.animationsEnabled && !settings.skipWakeAnimation }), 120)
-      return () => clearTimeout(timer)
-    }
+    if (!appCoreClient.native) return
     const applySnapshot = (snapshot: Awaited<ReturnType<typeof appCoreClient.snapshot>>) => {
       if (!shouldApplyAppSnapshot(appSnapshotRevisionRef.current, snapshot.revision)) return
       appSnapshotRevisionRef.current = snapshot.revision
@@ -637,7 +650,7 @@ export function App({ surface = 'combined' }: AppProps) {
         setInteractionState('expanded')
       }
       if (!snapshot.interaction.desktopForeground || snapshot.privacyScreen) {
-        if (settings.interactionLayout === 'taskbar-docked') setInteractionState('collapsed')
+        if (settingsRef.current.interactionLayout === 'taskbar-docked') setInteractionState('collapsed')
       }
     }
     // The subscription is owned by the helper: if this effect is torn down
@@ -651,12 +664,29 @@ export function App({ surface = 'combined' }: AppProps) {
     void appCoreClient.snapshot()
       .then(applySnapshot)
       .catch((error) => patchRuntime({ error: String(error) }))
-    const timer = setTimeout(() => dispatchCore('boot-ready', { playWake: settings.animationsEnabled && !settings.skipWakeAnimation }), 120)
-    return () => {
-      clearTimeout(timer)
-      listener.dispose()
-    }
-  }, [settings.animationsEnabled, settings.interactionLayout, settings.skipWakeAnimation, surface])
+    return () => listener.dispose()
+    // Deliberately keyed on the surface alone: this is a subscription, and every
+    // setting it reads goes through `settingsRef`. Listing a setting here is what
+    // re-issued the boot event — see the ref's own comment.
+  }, [surface])
+
+  /**
+   * Boot is an event, not a setting.
+   *
+   * `boot-ready` is what the state machine reads as "this desktop has just started
+   * waking up", so it is dispatched exactly once per surface — never again because a
+   * preference changed. `animationsEnabled` and `skipWakeAnimation` decide whether
+   * *this* wake animates; they do not decide that another wake happens, which is why
+   * they are read once through the ref instead of being watched.
+   */
+  useEffect(() => {
+    const playWake = settingsRef.current.animationsEnabled && !settingsRef.current.skipWakeAnimation
+    const timer = setTimeout(() => {
+      if (appCoreClient.native) dispatchCore('boot-ready', { playWake })
+      else baseDispatch({ type: 'BOOT_READY', playWake })
+    }, 120)
+    return () => clearTimeout(timer)
+  }, [surface])
 
   useEffect(() => {
     if (!nativeRuntime.isNative) return
@@ -1016,7 +1046,7 @@ export function App({ surface = 'combined' }: AppProps) {
         if (event === 'locked' || event === 'suspend') observedLockOrSuspend = true
         if (!appCoreClient.native && (event === 'locked' || event === 'suspend')) baseDispatch({ type: 'LOCK' })
         if (event === 'unlocked' || event === 'resume') {
-          if (settings.interactionLayout === 'taskbar-docked') setInteractionState('collapsed')
+          if (settingsRef.current.interactionLayout === 'taskbar-docked') setInteractionState('collapsed')
           const now = new Date()
           const policy = conversationPolicyRef.current
           if (shouldStartNewConversationOnUnlock(policy, previousUnlockDayRef.current, now)) {
@@ -1024,13 +1054,16 @@ export function App({ surface = 'combined' }: AppProps) {
           }
           previousUnlockDayRef.current = localCalendarDay(now)
           observedLockOrSuspend = false
-          if (!appCoreClient.native) baseDispatch({ type: 'UNLOCK', playWake: settings.playWakeOnEveryUnlock && settings.animationsEnabled && !settings.skipWakeAnimation })
+          if (!appCoreClient.native) baseDispatch({ type: 'UNLOCK', playWake: settingsRef.current.playWakeOnEveryUnlock && settingsRef.current.animationsEnabled && !settingsRef.current.skipWakeAnimation })
         }
       },
       { onError: (error) => patchRuntime({ error: `系统会话事件订阅失败：${String(error)}` }) },
     )
     return () => listener.dispose()
-  }, [settings.animationsEnabled, settings.interactionLayout, settings.playWakeOnEveryUnlock, settings.skipWakeAnimation])
+    // Subscription, not a reaction to a preference: the values it reads are taken from
+    // `settingsRef` when an unlock actually arrives. Re-subscribing on every preference
+    // change only made the listener churn.
+  }, [])
 
   useEffect(() => {
     if (!nativeRuntime.isNative) return
@@ -1056,7 +1089,11 @@ export function App({ surface = 'combined' }: AppProps) {
       { onError: (error) => patchRuntime({ error: String(error) }) },
     )
     return () => listener.dispose()
-  }, [settings.interactionLayout])
+    // One subscription for the surface's lifetime: the handlers read the layout they
+    // need from `settingsRef`, so a toggle preference no longer tears the listener down
+    // and rebuilds it. Keying a subscription on a preference is the same mistake that
+    // re-issued the boot event.
+  }, [])
 
   useEffect(() => {
     if (!nativeAppearance.isNative) return
