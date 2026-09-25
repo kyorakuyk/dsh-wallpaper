@@ -1735,6 +1735,44 @@ fn trace_island_click_reached(_local_x: i32, _local_y: i32) {}
 ///
 /// Returns a human-readable verdict for the log and for the caller. It performs no activation:
 /// this is the diagnostic step the plan asks for before any handover is wired to it.
+/// How far up the window chain to look before giving up.
+const MAX_WINDOW_CHAIN_DEPTH: usize = 8;
+
+/// Whether a window's own process, or any ancestor's, is this process.
+///
+/// The wallpaper paints through a WebView2 renderer owned by a browser helper process, so the
+/// window under the cursor inside the island is a `Chrome_RenderWidgetHostHWND` and never ours.
+/// Plan 3.A requires the parent chain to belong to the wallpaper, which is the check that
+/// actually tells our surface apart from an unrelated window sitting on top of it.
+fn window_chain_reaches_this_process(hwnd: HWND) -> bool {
+    let mut current = hwnd;
+    for _ in 0..MAX_WINDOW_CHAIN_DEPTH {
+        if current.0.is_null() {
+            return false;
+        }
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(current, Some(&mut pid)) };
+        if pid == std::process::id() {
+            return true;
+        }
+        if pid == 0 {
+            return false;
+        }
+        // `GetParent` is a `Result` in windows 0.61, and a window with no parent is
+        // the normal termination of this walk rather than an error.
+        let parent = match unsafe { GetParent(current) } {
+            Ok(parent) => parent,
+            Err(_) => return false,
+        };
+        if parent.0.is_null() {
+            return false;
+        }
+        current = parent;
+    }
+    false
+}
+
+#[cfg(windows)]
 #[cfg(windows)]
 pub fn verify_island_click() -> Result<String, String> {
     unsafe {
@@ -1749,9 +1787,15 @@ pub fn verify_island_click() -> Result<String, String> {
         let mut under_pid = 0u32;
         GetWindowThreadProcessId(under, Some(&mut under_pid));
         let under_class = window_class(under).unwrap_or_else(|| "<none>".to_string());
-        if under_pid != std::process::id() {
+        // Walk the parent chain rather than testing the window itself. The wallpaper's own
+        // content is drawn by a WebView2 renderer in a helper process, so the window directly
+        // under the cursor inside the island is a `Chrome_RenderWidgetHostHWND` that never
+        // belongs to us. Testing only the immediate owner rejected every genuine island click -
+        // the log showed exactly that, repeatedly. Plan 3.A says the HWND parent chain must
+        // belong to the wallpaper, and this is that check.
+        if !window_chain_reaches_this_process(under) {
             return Err(format!(
-                "光标下的窗口不属于壁纸（class={under_class} pid={under_pid}）；拒绝激活"
+                "光标下的窗口父链不属于壁纸（class={under_class} pid={under_pid}）；拒绝激活"
             ));
         }
         // Deliberately no geometry check here. The declared regions are in wallpaper-local
