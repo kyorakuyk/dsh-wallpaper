@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { ConversationBubble, insertNewlineAtSelection } from '../src/features/chat/ConversationBubble.tsx'
+import { ConversationBubble, insertNewlineAtSelection, shouldRevealHistory } from '../src/features/chat/ConversationBubble.tsx'
 
 const callbacks = {
   onToggleHistory: () => undefined,
@@ -171,5 +171,22 @@ describe('ConversationBubble', () => {
     expect(css).toMatch(/\.dsh-chat__history \{[\s\S]*?position: relative;[\s\S]*?z-index: 1;/)
     expect(css).toContain('mask-image: none')
     expect(css).toContain('-webkit-mask-image: none')
+  })
+})
+
+describe('shouldRevealHistory', () => {
+  it('keeps a collapsed island collapsed while the user types', () => {
+    // Expanding on the first keystroke moves the composer while the user is aiming at it.
+    expect(shouldRevealHistory('typing', false)).toBe(false)
+  })
+
+  it('reveals the history when a collapsed island sends', () => {
+    // The reply is about to arrive, so the conversation must become visible.
+    expect(shouldRevealHistory('send', false)).toBe(true)
+  })
+
+  it('leaves an expanded island alone for both actions', () => {
+    expect(shouldRevealHistory('typing', true)).toBe(false)
+    expect(shouldRevealHistory('send', true)).toBe(false)
   })
 })

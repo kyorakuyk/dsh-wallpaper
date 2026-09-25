@@ -61,6 +61,22 @@ export interface ConversationBubbleProps {
   onClose: () => void
 }
 
+/// What a drafting or sending action should do to the conversation history view.
+///
+/// Three branches, and each one is deliberate:
+///
+/// - typing while collapsed must not reveal the history, because expanding on the first
+///   keystroke moves the composer while the user is still aiming at it;
+/// - sending while collapsed must always reveal it, because the reply is about to arrive;
+/// - typing or sending while already expanded changes nothing, so the layout stays put.
+export function shouldRevealHistory(
+  trigger: 'typing' | 'send',
+  historyExpanded: boolean,
+): boolean {
+  if (historyExpanded) return false
+  return trigger === 'send'
+}
+
 export function insertNewlineAtSelection(value: string, start: number, end: number): { value: string; caret: number } {
   const safeStart = Math.max(0, Math.min(start, value.length))
   const safeEnd = Math.max(safeStart, Math.min(end, value.length))
@@ -130,6 +146,11 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const submit = () => {
     const text = draft.trim()
     if (!text || busy || props.disabled) return
+    // Sending always reveals the conversation, however the island looked while the
+    // draft was being written. Typing deliberately does not: expanding on the first
+    // keystroke moves the composer while the user is aiming at it, and it also meant a
+    // collapsed island could never be typed into without changing its layout.
+    if (shouldRevealHistory('send', props.historyExpanded)) props.onToggleHistory()
     props.onSend(text)
     setDraft('')
   }
@@ -293,7 +314,6 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           value={draft}
           onChange={(event) => {
             const nextDraft = event.target.value
-            if (nextDraft && !draft && !props.historyExpanded) props.onToggleHistory()
             setDraft(nextDraft)
           }}
           onKeyDown={(event) => {
