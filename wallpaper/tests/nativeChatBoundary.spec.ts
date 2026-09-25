@@ -101,14 +101,22 @@ describe('native chat boundary', () => {
   })
 
   it('declares an MSIX StartupTask while retaining the native autostart fallback', async () => {
-    const [manifest, lib] = await Promise.all([
+    const [manifest, lib, windows] = await Promise.all([
       readFile(resolve(wallpaperRoot, '..', 'packaging/msix/AppxManifest.xml'), 'utf8'),
       readNative('src/lib.rs'),
+      readNative('src/windows_integration.rs'),
     ])
     expect(manifest).toContain('windows.startupTask')
     expect(manifest).toContain('DshWallpaperStartup')
     expect(lib).toContain('windows_integration::set_startup_task')
-    expect(lib).toContain('HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run')
+    // The per-user Run entry remains the fallback for builds Windows will not
+    // start through a StartupTask.
+    expect(windows).toContain('Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run')
+    // It must record the version-stable shell alias: the versioned
+    // `WindowsApps` path an earlier release wrote is deleted by the next
+    // package update, which silently broke autostart across 0.2.0.71 → 0.2.0.74.
+    expect(windows).toContain('shell:AppsFolder')
+    expect(windows).toContain('GetCurrentPackageFamilyName')
   })
 
   it('keeps the DeepSeek web transport in a dedicated persistent WebView', async () => {

@@ -1253,7 +1253,6 @@ async fn get_lock_screen_diagnostics(
 fn set_autostart_blocking(enabled: bool) -> Result<windows_integration::AutostartStatus, String> {
     #[cfg(windows)]
     {
-        use std::process::Command;
         if windows_integration::set_startup_task(enabled)?.is_some() {
             // A package StartupTask is the authoritative autostart path. Drop
             // any legacy Run value left by an older build so the single-instance
@@ -1261,36 +1260,18 @@ fn set_autostart_blocking(enabled: bool) -> Result<windows_integration::Autostar
             let _ = windows_integration::remove_legacy_run_entry();
             return windows_integration::autostart_status();
         }
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         // 注册表 Run 键：开机自启 dsh-wallpaper
-        //  add:    reg add HKCU\...\Run /V dsh-wallpaper /D "<exe>" /F
-        //  delete: reg delete HKCU\...\Run /V dsh-wallpaper /F
-        let mut cmd = Command::new("reg");
-        // `reg.exe` is only a compatibility fallback. Keep it out of the
-        // user's desktop even when the host is a GUI-subsystem process.
-        std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x08000000);
+        //  开启: 写入当前构建需要的启动命令
+        //  关闭: 删除该值
+        // An MSIX install must record the shell's version-stable launch alias
+        // rather than its own versioned `WindowsApps` path, which the next
+        // package update deletes.
         if enabled {
-            cmd.args([
-                "add",
-                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
-                "/V",
-                "dsh-wallpaper",
-                "/D",
-                &exe.to_string_lossy(),
-                "/F",
-            ]);
+            windows_integration::write_run_entry(
+                &windows_integration::current_run_entry_command()?
+            )?;
         } else {
-            cmd.args([
-                "delete",
-                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
-                "/V",
-                "dsh-wallpaper",
-                "/F",
-            ]);
-        }
-        let status = cmd.status().map_err(|e| e.to_string())?;
-        if !status.success() && (enabled || windows_integration::legacy_run_entry_present()?) {
-            return Err("更新当前用户开机自启失败".into());
+            windows_integration::remove_legacy_run_entry()?;
         }
     }
     windows_integration::autostart_status()

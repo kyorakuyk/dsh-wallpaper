@@ -65,7 +65,9 @@ use windows::{
                 ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
             },
         },
-        Storage::Packaging::Appx::{GetCurrentPackageFullName, GetCurrentPackagePath},
+        Storage::Packaging::Appx::{
+            GetCurrentPackageFamilyName, GetCurrentPackageFullName, GetCurrentPackagePath,
+        },
         System::{
             Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED},
             // `AttachThreadInput` lives here in windows 0.61, not under KeyboardAndMouse.
@@ -2852,6 +2854,201 @@ fn has_package_identity() -> Result<bool, String> {
     ))
 }
 
+/// Per-user autostart location for builds Windows will not start through a
+/// package StartupTask.
+#[cfg(windows)]
+const RUN_KEY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+#[cfg(windows)]
+const RUN_VALUE_NAME: &str = "dsh-wallpaper";
+/// The `<Application Id>` declared by `packaging/msix/AppxManifest.xml`. The
+/// shell needs it, together with the package family name, to address the
+/// packaged app's launch alias.
+#[cfg(windows)]
+const PACKAGE_APPLICATION_ID: &str = "Wallpaper";
+
+/// The per-user autostart value a packaged build must record.
+///
+/// A packaged build must never record its own path: Tauri reports the
+/// version-pinned `WindowsApps\..._<version>_...` directory, which the next
+/// package update deletes, and that is precisely how autostart disappeared
+/// between 0.2.0.71 and 0.2.0.74. The shell resolves the `AppsFolder` alias
+/// through the current package registration instead, so the value recorded
+/// once keeps launching every later version.
+#[cfg(windows)]
+fn packaged_run_entry_command(package_family_name: &str) -> String {
+    format!(r"explorer.exe shell:AppsFolder\{package_family_name}!{PACKAGE_APPLICATION_ID}")
+}
+
+/// Whether a recorded Run value still launches the build that needs it.
+/// Values are written by `reg.exe`, by older releases and occasionally by
+/// hand, so quoting, surrounding whitespace and letter case must not be
+/// mistaken for a version change.
+#[cfg(windows)]
+fn autostart_commands_match(recorded: &str, expected: &str) -> bool {
+    fn normalize(value: &str) -> String {
+        value.replace('"', "").trim().to_lowercase()
+    }
+    !expected.is_empty() && normalize(recorded) == normalize(expected)
+}
+
+/// The Run value this build needs. A packaged install uses the version-stable
+/// shell alias; an unpackaged development or NSIS build keeps naming its own
+/// executable, which no MSIX update can move.
+#[cfg(windows)]
+pub(crate) fn current_run_entry_command() -> Result<String, String> {
+    if !has_package_identity()? {
+        let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+        return Ok(exe.to_string_lossy().into_owned());
+    }
+    let mut length = 0u32;
+    let probe = unsafe { GetCurrentPackageFamilyName(&mut length, None) };
+    if probe != ERROR_INSUFFICIENT_BUFFER || length == 0 {
+        return Err(format!(
+            "无法读取当前应用的 MSIX 包族名（Windows 错误码 {}）。",
+            probe.0
+        ));
+    }
+    // The length includes the terminator; supply one spare element and pass the
+    // capacity back explicitly, as `GetCurrentPackagePath` requires above.
+    let mut buffer = vec![0u16; length as usize + 1];
+    let mut capacity = buffer.len() as u32;
+    let read =
+        unsafe { GetCurrentPackageFamilyName(&mut capacity, Some(PWSTR(buffer.as_mut_ptr()))) };
+    if !read.is_ok() || capacity == 0 {
+        return Err(format!(
+            "无法读取当前应用的 MSIX 包族名（Windows 错误码 {}）。",
+            read.0
+        ));
+    }
+    let family = String::from_utf16_lossy(&buffer[..capacity as usize]);
+    let family = family.trim_end_matches('\0');
+    if family.is_empty() {
+        return Err("无法读取当前应用的 MSIX 包族名。".into());
+    }
+    Ok(packaged_run_entry_command(family))
+}
+
+/// The value the per-user Run entry currently records, if it exists at all.
+#[cfg(windows)]
+fn run_entry_command() -> Result<Option<String>, String> {
+    let mut key = windows::Win32::System::Registry::HKEY::default();
+    let open_status = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            w!(r"Software\Microsoft\Windows\CurrentVersion\Run"),
+            None,
+            KEY_READ,
+            &mut key,
+        )
+    };
+    if open_status == ERROR_FILE_NOT_FOUND {
+        return Ok(None);
+    }
+    if open_status != ERROR_SUCCESS {
+        return Err(format!(
+            "无法读取当前用户开机启动项（错误码 {}）。",
+            open_status.0
+        ));
+    }
+
+    let mut value_size = 0u32;
+    let query_status = unsafe {
+        RegQueryValueExW(
+            key,
+            w!("dsh-wallpaper"),
+            None,
+            None,
+            None,
+            Some(&mut value_size),
+        )
+    };
+    if query_status == ERROR_FILE_NOT_FOUND {
+        let _ = unsafe { RegCloseKey(key) };
+        return Ok(None);
+    }
+    if query_status != ERROR_SUCCESS && query_status != ERROR_MORE_DATA {
+        let _ = unsafe { RegCloseKey(key) };
+        return Err(format!(
+            "无法读取 DSH Wallpaper 开机启动项（错误码 {}）。",
+            query_status.0
+        ));
+    }
+    if value_size == 0 {
+        let _ = unsafe { RegCloseKey(key) };
+        return Ok(Some(String::new()));
+    }
+
+    // The value is a UTF-16 `REG_SZ`. Ask for one spare byte: a size that does
+    // not count the terminator must not make the second read fail.
+    let mut buffer = vec![0u8; value_size as usize + 2];
+    let mut read_size = buffer.len() as u32;
+    let read_status = unsafe {
+        RegQueryValueExW(
+            key,
+            w!("dsh-wallpaper"),
+            None,
+            None,
+            Some(buffer.as_mut_ptr()),
+            Some(&mut read_size),
+        )
+    };
+    let _ = unsafe { RegCloseKey(key) };
+    if read_status != ERROR_SUCCESS {
+        return Err(format!(
+            "无法读取 DSH Wallpaper 开机启动项（错误码 {}）。",
+            read_status.0
+        ));
+    }
+    let units = buffer[..read_size as usize]
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect::<Vec<u16>>();
+    let value = String::from_utf16_lossy(&units);
+    Ok(Some(value.trim_end_matches('\0').to_string()))
+}
+
+/// Whether the per-user Run entry launches this exact build. A recorded path
+/// is not evidence of working autostart by itself: it may name a `WindowsApps`
+/// directory that a package update has already deleted.
+#[cfg(windows)]
+pub(crate) fn run_entry_matches_current_build() -> Result<bool, String> {
+    let Some(recorded) = run_entry_command()? else {
+        return Ok(false);
+    };
+    Ok(autostart_commands_match(
+        &recorded,
+        &current_run_entry_command()?,
+    ))
+}
+
+/// Record (or refresh) the per-user Run entry.
+///
+/// `reg.exe` stays the writer because it is the compatibility path older
+/// releases used, so an entry it updates remains readable by them.
+#[cfg(windows)]
+pub(crate) fn write_run_entry(command: &str) -> Result<(), String> {
+    use std::process::Command;
+    let mut cmd = Command::new("reg");
+    // `reg.exe` is only a compatibility fallback. Keep it out of the user's
+    // desktop even when the host is a GUI-subsystem process.
+    std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x08000000);
+    cmd.args([
+        "add",
+        RUN_KEY_PATH,
+        "/V",
+        RUN_VALUE_NAME,
+        "/D",
+        command,
+        "/F",
+    ]);
+    let status = cmd.status().map_err(|error| error.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("更新当前用户开机自启失败".into())
+    }
+}
+
 /// Prefer the package-owned StartupTask when the app is running from an MSIX.
 /// Older packages and unpackaged development/NSIS builds do not carry the
 /// extension, so callers may fall back to the legacy per-user Run entry.
@@ -2902,52 +3099,6 @@ pub(crate) struct AutostartStatus {
 }
 
 #[cfg(windows)]
-pub(crate) fn legacy_run_entry_present() -> Result<bool, String> {
-    let mut key = windows::Win32::System::Registry::HKEY::default();
-    let open_status = unsafe {
-        RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
-            None,
-            KEY_READ,
-            &mut key,
-        )
-    };
-    if open_status == ERROR_FILE_NOT_FOUND {
-        return Ok(false);
-    }
-    if open_status != ERROR_SUCCESS {
-        return Err(format!(
-            "无法读取当前用户开机启动项（错误码 {}）。",
-            open_status.0
-        ));
-    }
-
-    let mut value_size = 0u32;
-    let query_status = unsafe {
-        RegQueryValueExW(
-            key,
-            w!("dsh-wallpaper"),
-            None,
-            None,
-            None,
-            Some(&mut value_size),
-        )
-    };
-    let _ = unsafe { RegCloseKey(key) };
-    if query_status == ERROR_SUCCESS || query_status == ERROR_MORE_DATA {
-        Ok(true)
-    } else if query_status == ERROR_FILE_NOT_FOUND {
-        Ok(false)
-    } else {
-        Err(format!(
-            "无法读取 DSH Wallpaper 开机启动项（错误码 {}）。",
-            query_status.0
-        ))
-    }
-}
-
-#[cfg(windows)]
 pub(crate) fn remove_legacy_run_entry() -> Result<(), String> {
     let mut key = windows::Win32::System::Registry::HKEY::default();
     let open_status = unsafe {
@@ -2980,11 +3131,6 @@ pub(crate) fn remove_legacy_run_entry() -> Result<(), String> {
     }
 }
 
-#[cfg(not(windows))]
-pub(crate) fn legacy_run_entry_present() -> Result<bool, String> {
-    Ok(false)
-}
-
 #[cfg(windows)]
 pub(crate) fn autostart_status() -> Result<AutostartStatus, String> {
     if has_package_identity()? {
@@ -3003,9 +3149,13 @@ pub(crate) fn autostart_status() -> Result<AutostartStatus, String> {
                 // previously using the HKCU Run compatibility path. Keep the
                 // effective preference enabled until the user explicitly
                 // changes it; otherwise the new package would appear to have
-                // silently turned autostart off during an update.
+                // silently turned autostart off during an update. A Run entry
+                // only counts while it still launches this build: an entry left
+                // by a superseded version names a deleted `WindowsApps`
+                // directory and would otherwise report working autostart that
+                // no longer exists.
                 StartupTaskState::Disabled => {
-                    if legacy_run_entry_present()? {
+                    if run_entry_matches_current_build()? {
                         (true, "run")
                     } else {
                         (false, "startup-task")
@@ -3022,30 +3172,63 @@ pub(crate) fn autostart_status() -> Result<AutostartStatus, String> {
         // still readable through the compatibility Run entry.
     }
 
-    let enabled = legacy_run_entry_present()?;
+    if run_entry_matches_current_build()? {
+        return Ok(AutostartStatus {
+            enabled: true,
+            source: "run".into(),
+        });
+    }
+    // An entry recorded by a superseded version is deliberately not reported
+    // as enabled: it names a path the package update deleted, so this build
+    // really does not start at logon. The startup check repairs it.
     Ok(AutostartStatus {
-        enabled,
-        source: if enabled { "run" } else { "none" }.into(),
+        enabled: false,
+        source: "none".into(),
     })
 }
 
-/// Convert an enabled legacy Run entry to the package StartupTask after an
-/// update. If Windows declines the request, the old entry is intentionally
-/// left untouched, so an update can never create an autostart gap.
+/// Carry an enabled autostart preference across a package update.
+///
+/// A package update installs into a new versioned `WindowsApps` directory and
+/// deletes the previous one, so a per-user Run entry recorded by the old build
+/// stops launching anything the moment the new version is installed — which is
+/// exactly how autostart vanished between 0.2.0.71 and 0.2.0.74. The
+/// authoritative package StartupTask is preferred, and when Windows cannot
+/// offer it the compatibility entry is refreshed so it names this version.
 #[cfg(windows)]
 pub(crate) fn migrate_legacy_autostart() -> Result<Option<AutostartStatus>, String> {
     if !has_package_identity()? {
+        // Unpackaged development and NSIS builds only ever have the Run entry,
+        // and nothing about an MSIX update can invalidate it.
         return Ok(None);
     }
-    let status = autostart_status()?;
-    if status.source != "run" {
-        return Ok(Some(status));
-    }
-    if set_startup_task(true)? == Some(true) {
-        remove_legacy_run_entry()?;
+    // Absence is the user's choice: never enable autostart on their behalf.
+    let Some(recorded) = run_entry_command()? else {
         return Ok(Some(autostart_status()?));
+    };
+
+    // 1. Prefer the package task: it survives updates without our help.
+    match set_startup_task(true) {
+        Ok(Some(true)) => {
+            remove_legacy_run_entry()?;
+            return Ok(Some(autostart_status()?));
+        }
+        Ok(_) => {}
+        // Windows may refuse, for example when the user disabled the task in
+        // Task Manager. Keep the compatibility entry working instead of
+        // leaving autostart broken for as long as the refusal lasts.
+        Err(error) => log::warn!("开机启动任务不可用，改用当前用户启动项：{error}"),
     }
-    Ok(Some(status))
+
+    // 2. The compatibility entry must name this version. Refreshing it is what
+    //    makes an already-enabled autostart survive the update without the
+    //    user having to toggle the setting again.
+    let expected = current_run_entry_command()?;
+    if !autostart_commands_match(&recorded, &expected) {
+        write_run_entry(&expected)?;
+        log::info!("已将当前用户开机自启重新指向本次安装的版本");
+    }
+    Ok(Some(autostart_status()?))
 }
 
 #[cfg(not(windows))]
@@ -3426,6 +3609,47 @@ mod tests {
     #[test]
     fn unpackaged_lock_screen_takeover_is_never_eligible() {
         assert!(!can_attempt_lock_screen_takeover(false));
+    }
+
+    #[test]
+    fn packaged_autostart_records_the_version_stable_shell_alias() {
+        let command = packaged_run_entry_command("com.dsh.wallpaper_pdxj8y3r6rm5g");
+        assert_eq!(
+            command,
+            r"explorer.exe shell:AppsFolder\com.dsh.wallpaper_pdxj8y3r6rm5g!Wallpaper"
+        );
+        // Whatever identifies the release must stay out of the autostart value:
+        // a package update deletes the directory that carries it.
+        assert!(!command.contains("WindowsApps"));
+        assert!(!command.contains("0.2.0"));
+    }
+
+    #[test]
+    fn an_entry_left_by_a_superseded_version_is_not_a_match() {
+        let expected = packaged_run_entry_command("com.dsh.wallpaper_pdxj8y3r6rm5g");
+        // The exact value 0.2.0.71 wrote, which 0.2.0.74 could no longer launch.
+        let stale = r"C:\Program Files\WindowsApps\com.dsh.wallpaper_0.2.0.71_x64__pdxj8y3r6rm5g\dsh-wallpaper.exe";
+        assert!(!autostart_commands_match(stale, &expected));
+    }
+
+    #[test]
+    fn recorded_run_values_are_compared_leniently() {
+        let expected = r"C:\Program Files\WindowsApps\com.dsh.wallpaper_0.2.0.74_x64__pdxj8y3r6rm5g\dsh-wallpaper.exe";
+        assert!(autostart_commands_match(
+            r#"  "C:\Program Files\WindowsApps\com.dsh.wallpaper_0.2.0.74_x64__pdxj8y3r6rm5g\dsh-wallpaper.exe"  "#,
+            expected
+        ));
+        assert!(autostart_commands_match(
+            r"c:\program files\windowsapps\COM.DSH.WALLPAPER_0.2.0.74_X64__PDXJ8Y3R6RM5G\dsh-wallpaper.exe",
+            expected
+        ));
+        assert!(!autostart_commands_match("", expected));
+    }
+
+    #[test]
+    fn a_missing_expected_command_never_matches() {
+        assert!(!autostart_commands_match("anything", ""));
+        assert!(!autostart_commands_match("", ""));
     }
 
     #[test]
