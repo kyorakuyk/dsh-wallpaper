@@ -398,6 +398,41 @@ fn record_autostart_attempt(
     Ok(())
 }
 
+/// Make a chosen execution subject's interface available and foreground.
+///
+/// 「拉起 UI」, and idempotent on purpose: the subject may not be running, may be
+/// running with the window the wallpaper hid at startup, or may simply be behind
+/// something else, and the caller should not have to know which. Starting a subject
+/// is part of this action (§5.2), which is why it lives beside the launch chain
+/// rather than in the raise-only path.
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+async fn ensure_harness_ui(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    target_id: Option<String>,
+    port: u16,
+    profile: Option<String>,
+    command: Option<String>,
+) -> Result<harness_launch::HarnessUiOutcome, String> {
+    require_wallpaper_surface(&caller)?;
+    let target_id = target_id.unwrap_or_default();
+    let profile = profile.unwrap_or_default();
+    let worker = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let managed = worker.state::<ManagedDshState>();
+        harness_launch::ensure_ui(
+            &target_id,
+            port,
+            &profile,
+            command.as_deref(),
+            managed.inner(),
+        )
+    })
+    .await
+    .map_err(|error| format!("拉起 Harness 界面未完成：{error}"))
+}
+
 /// Start the chosen execution subject at most once per wallpaper process.
 ///
 /// The automatic counterpart of `launch_harness_target`, for the
@@ -3332,6 +3367,7 @@ macro_rules! register_edition_commands {
             scan_dsh_paths,
             scan_harness_targets,
             launch_harness_target,
+            ensure_harness_ui,
             autostart_harness_target,
             launch_dsh,
             autostart_managed_dsh,

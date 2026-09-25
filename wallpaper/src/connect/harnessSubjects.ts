@@ -54,8 +54,18 @@ export function subjectChoicePrompt(targets: readonly HarnessTarget[]): string |
   return `检测到您电脑上安装了 ${checkouts.length} 个 deepseek harness 源码树，请选择默认主体。`
 }
 
-/** What to say after a launch attempt, or `null` when saying nothing is better. */
-export function launchOutcomeNotice(outcome: HarnessLaunchOutcome): string | null {
+/**
+ * What to say after a launch attempt, or `null` when saying nothing is better.
+ *
+ * Takes a subset rather than a whole `HarnessLaunchOutcome` because 「拉起 UI」
+ * reports the same start codes in its own shape: the words for "no profile", "no
+ * Node", "port taken" are the same whichever action discovered them.
+ */
+export function launchOutcomeNotice(outcome: {
+  outcome: string
+  kind: HarnessLaunchOutcome['kind']
+  hidden?: boolean
+}): string | null {
   const label = outcome.kind === 'embedded-shell' ? '客户端' : '源码检出'
   switch (outcome.outcome) {
     case 'started':

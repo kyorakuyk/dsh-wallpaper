@@ -351,6 +351,12 @@
           "markdownDescription": "Enables the dispatch_app_action command without any pre-configured scope."
         },
         {
+          "description": "Enables the ensure_harness_ui command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ensure-harness-ui",
+          "markdownDescription": "Enables the ensure_harness_ui command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_app_snapshot command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-app-snapshot",
@@ -817,6 +823,12 @@
           "type": "string",
           "const": "deny-dispatch-app-action",
           "markdownDescription": "Denies the dispatch_app_action command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ensure_harness_ui command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ensure-harness-ui",
+          "markdownDescription": "Denies the ensure_harness_ui command without any pre-configured scope."
         },
         {
           "description": "Denies the get_app_snapshot command without any pre-configured scope.",

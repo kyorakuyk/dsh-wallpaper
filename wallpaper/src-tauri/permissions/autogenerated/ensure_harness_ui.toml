@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-ensure-harness-ui"
+description = "Enables the ensure_harness_ui command without any pre-configured scope."
+commands.allow = ["ensure_harness_ui"]
+
+[[permission]]
+identifier = "deny-ensure-harness-ui"
+description = "Denies the ensure_harness_ui command without any pre-configured scope."
+commands.deny = ["ensure_harness_ui"]

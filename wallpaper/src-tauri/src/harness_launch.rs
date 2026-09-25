@@ -31,6 +31,9 @@ use crate::harness_targets::{known_shell, HarnessTargetKind, SHELL_ID_PREFIX};
 /// login is slow, and a false "failed" would be worse than a slow "started".
 const SHELL_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const SHELL_START_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+/// How long a started shell is given to *paint*, which happens after it starts
+/// listening. Same order of magnitude as the start timeout, for the same reason.
+const UI_WINDOW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// What the wallpaper did, in the renderer's vocabulary.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,6 +268,162 @@ fn wait_for_shell(port: u16, hide_window: bool) -> (bool, bool) {
     (confirmed, hidden)
 }
 
+/// What 「拉起 UI」 found, and what it had to do about it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessUiOutcome {
+    /// A raise code (`raised`, `raise-refused`, `no-window`), `not-running` when
+    /// nothing answered even after starting the subject, or `unknown-target`.
+    pub outcome: String,
+    pub kind: HarnessTargetKind,
+    /// True when this call had to start the subject first (§5.2).
+    pub started: bool,
+    /// The start's own code when it had to start — the actionable half, because it
+    /// names what to fix (missing profile, missing Node, an occupied port).
+    pub start_outcome: Option<String>,
+}
+
+/// Which class a stored id names. No scan: the id namespace is the model's.
+fn subject_kind(subject_id: &str) -> HarnessTargetKind {
+    if subject_id.trim().starts_with(SHELL_ID_PREFIX) {
+        HarnessTargetKind::EmbeddedShell
+    } else {
+        HarnessTargetKind::Checkout
+    }
+}
+
+/// The endpoint that decides whether a subject is running.
+///
+/// A caller that knows the endpoint the wallpaper is connected to passes it. When
+/// it does not, the subject's own default is the only hint available — and it is a
+/// hint, not a contract, which is why the explicit port wins whenever there is one.
+fn ui_port(subject_id: &str, declared: u16) -> u16 {
+    if declared != 0 {
+        return declared;
+    }
+    if let Some(aumid) = subject_id.trim().strip_prefix(SHELL_ID_PREFIX) {
+        if let Some(shell) = known_shell(aumid) {
+            if let Some(port) = shell.default_port {
+                return port;
+            }
+        }
+    }
+    crate::HARNESS_DEFAULT_PORT
+}
+
+/// Make the chosen subject's interface available and foreground.
+///
+/// Idempotent over the three states the design names (§5.2), in the one order that
+/// is correct:
+///
+/// 1. **subject not running** → start it, with the manual trigger, so this time it
+///    is not hidden: the user asked to *see* something;
+/// 2. **running, window hidden** → show it — including the case the wallpaper
+///    itself created by starting it in the background;
+/// 3. **window in the background** → bring it forward.
+///
+/// The window work is `client_window`'s, so "which window" has exactly one answer
+/// in this codebase, and this function never guesses an executable path.
+pub(crate) fn ensure_ui(
+    subject_id: &str,
+    port: u16,
+    profile: &str,
+    command: Option<&str>,
+    managed: &crate::ManagedDshState,
+) -> HarnessUiOutcome {
+    let kind = subject_kind(subject_id);
+    let port = ui_port(subject_id, port);
+    // An empty id means "no subject chosen yet": still a legitimate request to
+    // reach whatever answers on that endpoint, just nothing to start.
+    let plan = if subject_id.trim().is_empty() {
+        None
+    } else {
+        match plan_launch(subject_id, profile, command, LaunchTrigger::Manual) {
+            Ok(plan) => Some(plan),
+            Err(code) => {
+                return HarnessUiOutcome {
+                    outcome: code.into(),
+                    kind,
+                    started: false,
+                    start_outcome: None,
+                }
+            }
+        }
+    };
+
+    let mut started = false;
+    let mut start_outcome = None;
+    if !crate::client_window::endpoint_is_listening(port) {
+        if let Some(plan) = &plan {
+            let launch = run_launch(plan, managed);
+            started = true;
+            start_outcome = Some(launch.outcome.clone());
+            // The start's own wait applies to shells; a checkout comes up on its own
+            // schedule, so give it the same grace here before giving up.
+            if launch.kind == HarnessTargetKind::Checkout {
+                wait_for_endpoint(port, SHELL_START_TIMEOUT);
+            }
+        }
+    }
+
+    if !crate::client_window::endpoint_is_listening(port) {
+        // §6.2: the subject is genuinely gone (or was never there). Report it rather
+        // than waiting for a window that cannot appear.
+        return HarnessUiOutcome {
+            outcome: "not-running".into(),
+            kind,
+            started,
+            start_outcome,
+        };
+    }
+
+    let raise = reveal(port, kind);
+    HarnessUiOutcome {
+        outcome: raise.outcome.into(),
+        kind,
+        started,
+        start_outcome,
+    }
+}
+
+/// Bring the subject's window forward, waiting for it when its class has one.
+///
+/// The wait is not optional and it is not a workaround: an Electron client starts
+/// listening before it paints, so the first raise attempt after a start would answer
+/// `no-window` for a client that is about to show one — measured on this machine,
+/// which is why state 1 of the three-state test failed before this wait existed.
+///
+/// It is bounded by the class: only a shell is expected to own a window, so a
+/// checkout reports the answer immediately instead of waiting for a window that
+/// does not exist, and the caller can open a browser without a pointless delay.
+fn reveal(port: u16, kind: HarnessTargetKind) -> crate::client_window::RaiseOutcome {
+    let deadline = if kind == HarnessTargetKind::EmbeddedShell {
+        std::time::Instant::now() + UI_WINDOW_TIMEOUT
+    } else {
+        std::time::Instant::now()
+    };
+    loop {
+        let raise = crate::client_window::raise_client_window(port);
+        if raise.outcome == "no-window" && std::time::Instant::now() < deadline {
+            std::thread::sleep(SHELL_START_POLL);
+            continue;
+        }
+        return raise;
+    }
+}
+
+/// Wait for an endpoint to start answering, bounded.
+fn wait_for_endpoint(port: u16, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if crate::client_window::endpoint_is_listening(port) {
+            return true;
+        }
+        std::thread::sleep(SHELL_START_POLL);
+    }
+    crate::client_window::endpoint_is_listening(port)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,5 +581,76 @@ mod tests {
             !crate::client_window::endpoint_is_listening(port),
             "the client this test started is still listening on {port}"
         );
+    }
+
+    /// Ground truth for 「拉起 UI」's three states (§5.2), on the one class this
+    /// machine can be asked about.
+    ///
+    /// Ignored by default: it starts, hides, kills and stops the third-party desktop
+    /// client. The official shell is never touched — it hosts the session running
+    /// this test — so its version of this stays a user-verified step (§9.2).
+    #[test]
+    #[ignore = "starts, hides and stops this machine's third-party desktop client"]
+    fn this_machine_covers_the_three_states_of_raising_the_ui() {
+        let port = 43120;
+        if crate::client_window::endpoint_is_listening(port) {
+            println!("desktop client already listening on {port}; nothing started");
+            return;
+        }
+        let state = crate::ManagedDshState::default();
+
+        // State 1 — nothing running: raising the UI starts the whole chain, and this
+        // time the window is expected on screen (the manual trigger, not §5.1's
+        // silent start).
+        let down = ensure_ui(DESKTOP_ID, port, "desktop", None, &state);
+        println!("state 1 (subject down): {down:?}");
+        assert!(down.started);
+        assert_eq!(down.kind, HarnessTargetKind::EmbeddedShell);
+        assert!(
+            matches!(down.outcome.as_str(), "raised" | "raise-refused"),
+            "a subject this call started must end up with a window to look at: {down:?}"
+        );
+
+        // State 2 — running with its window hidden by the wallpaper: the same call
+        // must find that window again and show it. This is the assertion that fails
+        // if window resolution only ever looks for *visible* windows, which is how
+        // a silently started client would become unreachable.
+        assert!(
+            crate::client_window::hide_client_window(port).hidden,
+            "the wallpaper must be able to hide the window it is about to be asked for"
+        );
+        let hidden = ensure_ui(DESKTOP_ID, port, "desktop", None, &state);
+        println!("state 2 (window hidden): {hidden:?}");
+        assert!(!hidden.started, "the port was answering, so nothing should start");
+        assert!(
+            matches!(hidden.outcome.as_str(), "raised" | "raise-refused"),
+            "a hidden window must be found and shown, not reported as missing: {hidden:?}"
+        );
+
+        // State 3 — the subject itself is gone (§6.2): raising must re-pull the whole
+        // chain rather than wait for a window that cannot appear.
+        let pid = crate::client_window::endpoint_process_id(port).expect("identifiable process");
+        let _ = std::process::Command::new("taskkill.exe")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while crate::client_window::endpoint_is_listening(port)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(SHELL_START_POLL);
+        }
+        let gone = ensure_ui(DESKTOP_ID, port, "desktop", None, &state);
+        println!("state 3 (subject killed): {gone:?}");
+        assert!(gone.started, "a subject that is gone must be started again");
+        assert!(
+            matches!(gone.outcome.as_str(), "raised" | "raise-refused"),
+            "{gone:?}"
+        );
+
+        let pid = crate::client_window::endpoint_process_id(port).expect("identifiable process");
+        println!("stopping the client this test started: pid={pid}");
+        let _ = std::process::Command::new("taskkill.exe")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output();
     }
 }

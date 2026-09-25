@@ -19,7 +19,7 @@
 //! window must not become a back door that starts processes.
 
 #[cfg(windows)]
-use windows::Win32::Foundation::{HWND, LPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 #[cfg(windows)]
 use windows::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID, MIB_TCPROW_OWNER_PID,
@@ -29,8 +29,8 @@ use windows::Win32::NetworkManagement::IpHelper::{
 use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow, ShowWindow,
-    SW_HIDE, SW_RESTORE,
+    EnumWindows, GetWindowRect, GetWindowTextLengthW, GetWindowThreadProcessId, IsWindowVisible,
+    SetForegroundWindow, ShowWindow, SW_HIDE, SW_RESTORE, SW_SHOW,
 };
 #[cfg(windows)]
 use windows::core::BOOL;
@@ -181,6 +181,12 @@ fn listener_pid_v6(port: u16) -> Option<u32> {
 #[cfg(windows)]
 struct TopLevelSearch {
     pid: u32,
+    /// Whether an invisible top-level window counts as the client's interface.
+    ///
+    /// Two callers need the two answers: raising must find a window the wallpaper
+    /// itself hid, while a client that has *never* shown a window (the CLI/webui
+    /// shape) must not be reported as raisable.
+    require_visible: bool,
     found: Option<HWND>,
 }
 
@@ -189,13 +195,38 @@ unsafe extern "system" fn find_top_level(hwnd: HWND, param: LPARAM) -> BOOL {
     let search = unsafe { &mut *(param.0 as *mut TopLevelSearch) };
     let mut owner = 0u32;
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
-    if owner == search.pid && unsafe { IsWindowVisible(hwnd) }.as_bool() {
+    if owner != search.pid {
+        return BOOL(1);
+    }
+    let is_interface = unsafe { IsWindowVisible(hwnd) }.as_bool()
+        || (!search.require_visible && window_is_a_client_window(hwnd));
+    if is_interface {
         search.found = Some(hwnd);
-        // One visible top-level window per client is the expected shape; stop at
-        // the first rather than picking an arbitrary later one.
+        // One top-level window per client is the expected shape; stop at the first
+        // rather than picking an arbitrary later one.
         return BOOL(0);
     }
     BOOL(1)
+}
+
+/// Whether an invisible top-level window is still a client's own interface window.
+///
+/// The distinction matters because the wallpaper now starts a client with its
+/// window hidden, and later has to find that same window again to bring it back
+/// (§6.1). A window it hid keeps its title and its size; a framework's bookkeeping
+/// windows (Chromium creates several per process) have neither, and treating one of
+/// those as "the client's window" would make a windowless client look raisable, and
+/// would make hiding a client that has no window look successful.
+#[cfg(windows)]
+fn window_is_a_client_window(hwnd: HWND) -> bool {
+    if unsafe { GetWindowTextLengthW(hwnd) } <= 0 {
+        return false;
+    }
+    let mut rect = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut rect) }.is_err() {
+        return false;
+    }
+    rect.right > rect.left && rect.bottom > rect.top
 }
 
 /// Bring the selected client's window forward.
@@ -219,8 +250,14 @@ pub fn raise_client_window(port: u16) -> RaiseOutcome {
             };
         };
         unsafe {
-            // A minimised client is restored before it is raised, otherwise
-            // "bring it forward" visibly does nothing.
+            // Order matters, and both calls are idempotent:
+            // * `SW_SHOW` first, because a window the wallpaper hid during a silent
+            //   start is *invisible*, not minimised, and the wallpaper must be the
+            //   one to bring it back — the client's own idea of whether its window
+            //   is visible was never trusted in either direction (§6.1).
+            // * `SW_RESTORE` then, because a minimised client would otherwise be
+            //   "brought forward" without becoming visible.
+            let _ = ShowWindow(window, SW_SHOW);
             let _ = ShowWindow(window, SW_RESTORE);
             if SetForegroundWindow(window).as_bool() {
                 RaiseOutcome::raised()
@@ -317,8 +354,17 @@ pub fn window_for_endpoint(port: u16) -> Option<HWND> {
         let Some(pid) = listener_pid(port) else {
             return None;
         };
-        for candidate in ancestor_chain(pid, MAX_ANCESTOR_DEPTH) {
-            if let Some(window) = first_visible_window(candidate) {
+        let chain = ancestor_chain(pid, MAX_ANCESTOR_DEPTH);
+        // A visible window is always the right answer; only when the client has
+        // none do we look for one it is keeping hidden — which is the state the
+        // wallpaper itself creates when it starts a client in the background.
+        for candidate in &chain {
+            if let Some(window) = first_window(*candidate, true) {
+                return Some(window);
+            }
+        }
+        for candidate in &chain {
+            if let Some(window) = first_window(*candidate, false) {
                 return Some(window);
             }
         }
@@ -426,8 +472,12 @@ fn parent_pid(pid: u32) -> Option<u32> {
 }
 
 #[cfg(windows)]
-fn first_visible_window(pid: u32) -> Option<HWND> {
-    let mut search = TopLevelSearch { pid, found: None };
+fn first_window(pid: u32, require_visible: bool) -> Option<HWND> {
+    let mut search = TopLevelSearch {
+        pid,
+        require_visible,
+        found: None,
+    };
     unsafe {
         let _ = EnumWindows(Some(find_top_level), LPARAM(&mut search as *mut _ as isize));
     }

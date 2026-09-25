@@ -62,6 +62,23 @@ export interface HarnessLaunchOutcome {
 }
 
 /**
+ * What 「拉起 UI」 found, and what it had to do about it.
+ *
+ * Idempotent over the three states a subject can be in, so the caller does not
+ * have to know which one it is looking at: it starts the subject when nothing
+ * answers, shows a window the wallpaper hid at startup, and otherwise just brings
+ * the window forward.
+ */
+export interface HarnessUiOutcome {
+  outcome: 'raised' | 'raise-refused' | 'no-window' | 'not-running' | 'unknown-target'
+  kind: 'embedded-shell' | 'checkout'
+  /** True when this call had to start the subject first. */
+  started: boolean
+  /** The start's own code (word it with `launchOutcomeNotice`) when it had to. */
+  startOutcome?: string
+}
+
+/**
  * One harness execution subject, in the two classes the design froze
  * (`docs/design/harness-subject-and-ui-design.md`, §3).
  *
@@ -271,6 +288,18 @@ export interface NativeRuntime {
     command?: string
     trustedCommand?: boolean
   }): Promise<ManagedDshAutostart>
+  /**
+   * Make the chosen subject's interface available and foreground, whatever state it
+   * is in: not running, running with a window the wallpaper hid, or behind another
+   * window. Starts it when nothing answers, which is why this is native policy
+   * rather than a caller's branch.
+   */
+  ensureHarnessUi(options: {
+    targetId?: string
+    port: number
+    profile?: string
+    command?: string
+  }): Promise<HarnessUiOutcome>
   launchDsh(rootPath: string, profile: string, command?: string): Promise<number>
   /**
    * One automatic start attempt per process, with the outcome remembered even
@@ -613,6 +642,18 @@ export const nativeRuntime: NativeRuntime = {
       profile: options.profile,
       command: options.command,
       trustedCommand: options.trustedCommand,
+    })
+  },
+  async ensureHarnessUi(options) {
+    if (!await tauriAvailable()) {
+      return { outcome: 'not-running' as const, kind: 'checkout' as const, started: false }
+    }
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<HarnessUiOutcome>('ensure_harness_ui', {
+      targetId: options.targetId,
+      port: options.port,
+      profile: options.profile,
+      command: options.command,
     })
   },
   async launchDsh(rootPath, profile, command) {

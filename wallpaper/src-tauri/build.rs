@@ -30,6 +30,9 @@ fn main() {
             // Starts the chosen execution subject (a shell, or a source tree) and
             // the unattended counterpart of that start.
             "launch_harness_target",
+            // Idempotent 「拉起 UI」: start the subject if it is gone, show a window
+            // the wallpaper hid, then bring it forward.
+            "ensure_harness_ui",
             "autostart_harness_target",
             "launch_dsh",
             "autostart_managed_dsh",

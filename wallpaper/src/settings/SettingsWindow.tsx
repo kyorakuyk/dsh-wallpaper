@@ -243,11 +243,12 @@ export function SettingsWindow() {
   /**
    * Reach the selected client's interface.
    *
-   * Split by client shape, because the shapes genuinely differ and guessing would
-   * be wrong either way: a desktop client owns a window that can be raised, while
-   * the CLI/webui shape has no window and its interface is the browser at the
-   * endpoint it listens on. Raising never launches anything, so "not running" is
-   * reported rather than silently starting a client.
+   * One action, because the user's intent is one thing — "show me that client" —
+   * and the states behind it (not running / hidden / backgrounded) are native's to
+   * distinguish. Only the *last* step splits by client shape, because it genuinely
+   * differs: a desktop client owns a window to bring forward, while the CLI/webui
+   * shape has no window and its interface is the browser at the endpoint it
+   * listens on. The design freezes the browser as that shape's only window choice.
    */
   const reachClient = async () => {
     const current = settingsRef.current.dshLaunch
@@ -259,20 +260,33 @@ export function SettingsWindow() {
     const kind = endpointScan.find((item) => item.port === port)?.kind ?? 'official-web'
     setReachBusy(true)
     try {
-      if (clientRaiseAction(kind) === 'browser') {
-        // No window exists for this shape; the browser is its interface.
-        if (!await nativeRuntime.harnessEndpointListening(port)) {
-          setNotice(`${endpointKindLabel(kind)} 未在运行（127.0.0.1:${port} 无监听）。请先启动它，然后重新扫描。`)
-          return
-        }
+      // §5.2: one idempotent action covers all three states — the subject may not be
+      // running, may be running with the window this wallpaper hid at startup, or may
+      // just be behind another window. Native decides which, and starts the subject
+      // itself when nothing answers, so the caller never has to branch on that.
+      const ensured = await nativeRuntime.ensureHarnessUi({
+        targetId: current.subjectId ?? current.rootPath,
+        port,
+        profile: current.profile,
+        command: current.command,
+      })
+      // A start that failed is the actionable half: it names what to fix.
+      if (ensured.started && ensured.outcome === 'not-running') {
+        setNotice(launchOutcomeNotice({ outcome: ensured.startOutcome ?? 'spawn-failed', kind: ensured.kind })
+          ?? '启动失败，请查看日志中的启动记录。')
+        return
+      }
+      if (clientRaiseAction(kind) === 'browser' || ensured.outcome === 'no-window') {
+        // No window exists for this shape; the browser is its interface, and it is
+        // now confirmed to be answering (this action started it if it was not).
         await nativeRuntime.openClientInBrowser(port)
         setNotice(`已在默认浏览器中打开 127.0.0.1:${port}。`)
         return
       }
-      const result = await nativeRuntime.raiseClientWindow(port)
-      const notice = raiseOutcomeNotice(result.outcome, kind)
+      const notice = raiseOutcomeNotice(ensured.outcome, kind)
       if (notice) setNotice(notice)
-      else if (result.raised) setNotice(`已把 ${endpointKindLabel(kind)} 的窗口拉到前台。`)
+      else if (ensured.outcome === 'raised') setNotice(`已把 ${endpointKindLabel(kind)} 的窗口拉到前台。`)
+      else setNotice(`${endpointKindLabel(kind)} 的窗口已恢复；Windows 拒绝了前台切换，点一下它即可。`)
     } catch (error) {
       setNotice(`打开客户端界面失败：${String(error)}`)
     } finally {

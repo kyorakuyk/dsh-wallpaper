@@ -20,6 +20,7 @@
     "allow-scan-dsh-paths",
     "allow-scan-harness-targets",
     "allow-launch-harness-target",
+    "allow-ensure-harness-ui",
     "allow-autostart-harness-target",
     "allow-begin-interaction-region-session",
     "allow-update-interaction-regions",
