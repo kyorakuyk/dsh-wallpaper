@@ -86,7 +86,7 @@ use windows::{
             GW_HWNDNEXT, GW_HWNDPREV, HTTRANSPARENT, HWND_TOP, MONITORINFOF_PRIMARY,
             PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SEND_MESSAGE_TIMEOUT_FLAGS, SMTO_NORMAL,
             SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-            SW_HIDE, SW_SHOWNA, WM_ACTIVATE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_NCACTIVATE,
+            GetWindowThreadProcessId, GetGUIThreadInfo, SW_HIDE, SW_SHOWNA, WM_ACTIVATE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_NCACTIVATE, WM_NCLBUTTONDOWN, WM_SETFOCUS, GUITHREADINFO,
             WM_NCDESTROY, WM_NCHITTEST, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WS_BORDER,
             WS_CAPTION, WS_CHILD, WS_DLGFRAME, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME,
             WS_EX_STATICEDGE, WS_EX_TOOLWINDOW, WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
@@ -1688,6 +1688,46 @@ unsafe extern "system" fn session_subclass_proc(
 }
 
 #[cfg(windows)]
+/// Phase A diagnostic for the input-island focus handoff.
+///
+/// The open question is which native message actually arrives on a real left-click in the
+/// input hot zone, and where Windows put the foreground and its keyboard focus at that
+/// moment. A thread-local `SetFocus` returning success did not mean the keyboard channel
+/// was handed over, so the readbacks below are the only trustworthy evidence.
+///
+/// Records window classes, PIDs, handles, the hot-zone outcome and those readbacks. Never
+/// records key content, window titles, input text or session content, and it is compiled
+/// out of release builds. Called only from mouse-activation and focus messages, so the
+/// per-mouse-move `WM_NCHITTEST` path stays untouched.
+#[cfg(all(windows, debug_assertions))]
+fn trace_focus_handoff(stage: &str, hot_zone: Option<bool>) {
+    unsafe {
+        let foreground = GetForegroundWindow();
+        let mut foreground_pid = 0u32;
+        GetWindowThreadProcessId(foreground, Some(&mut foreground_pid));
+        let foreground_class = window_class(foreground).unwrap_or_else(|| "<none>".to_string());
+        let mut info = GUITHREADINFO::default();
+        info.cbSize = core::mem::size_of::<GUITHREADINFO>() as u32;
+        let (focus_class, focus_pid) = if GetGUIThreadInfo(0, &mut info).is_ok() {
+            let class = window_class(info.hwndFocus).unwrap_or_else(|| "<none>".to_string());
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(info.hwndFocus, Some(&mut pid));
+            (class, pid)
+        } else {
+            ("<no-gui-thread-info>".to_string(), 0)
+        };
+        log::info!(
+            "focus trace [{stage}]: hot_zone={hot_zone:?} foreground={foreground_class} foreground_pid={foreground_pid} focus={focus_class} focus_pid={focus_pid} self_pid={}",
+            std::process::id(),
+        );
+    }
+}
+
+/// Release builds keep the call sites but compile the probe away, so the
+/// instrumentation never runs in a shipped build.
+#[cfg(all(windows, not(debug_assertions)))]
+fn trace_focus_handoff(_stage: &str, _hot_zone: Option<bool>) {}
+
 unsafe extern "system" fn interaction_subclass_proc(
     hwnd: HWND,
     message: u32,
@@ -1736,6 +1776,17 @@ unsafe extern "system" fn interaction_subclass_proc(
             } else {
                 return DefSubclassProc(hwnd, message, wparam, lparam);
             }
+        }
+        WM_MOUSEACTIVATE => {
+            // Sent to decide whether a click may activate the window. If it arrives,
+            // it is the one message that can legitimately request the foreground.
+            trace_focus_handoff("WM_MOUSEACTIVATE", None);
+        }
+        WM_LBUTTONDOWN | WM_NCLBUTTONDOWN => {
+            trace_focus_handoff("WM_LBUTTONDOWN", None);
+        }
+        WM_ACTIVATE | WM_SETFOCUS => {
+            trace_focus_handoff("WM_ACTIVATE/WM_SETFOCUS", None);
         }
         WM_NCDESTROY => {
             let _ = RemoveWindowSubclass(hwnd, Some(interaction_subclass_proc), subclass_id);
