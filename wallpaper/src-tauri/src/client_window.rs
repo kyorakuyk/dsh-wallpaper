@@ -384,12 +384,18 @@ const MAX_ANCESTOR_DEPTH: usize = 4;
 
 /// The process itself, then each ancestor, bounded by `max_depth`.
 ///
-/// An ancestor is only followed while its executable name matches the process we
-/// started from. Measured on this machine, the official shell's window belongs to
-/// a parent process *of the same executable*; without the same-name rule the walk
-/// reaches `explorer.exe` two levels up and could raise the desktop's own window —
-/// a shared launcher is an ancestor of many processes, so following it is not
-/// evidence that it belongs to this client.
+/// Measured on this machine, the official shell's UI belongs to a parent process of
+/// the same executable, one level above the process holding the socket, and a
+/// different executable in the chain is not this client — `explorer.exe` is an
+/// ancestor of everything the user starts from the desktop, so crossing it could
+/// raise the desktop's own window.
+///
+/// An ancestor whose name cannot be read is followed anyway, and that distinction is
+/// the whole point: reading another process's name is what a *packaged* build cannot
+/// always do, so stopping there reported a live client's window as missing in the
+/// installed build while the same code resolved it unpackaged. The depth bound is
+/// what keeps an ancestor walk meaningful, so it — not an unreadable name — is the
+/// guard. A name that *is* readable is still decisive.
 #[cfg(windows)]
 fn ancestor_chain(pid: u32, max_depth: usize) -> Vec<u32> {
     let mut chain = vec![pid];
@@ -403,16 +409,16 @@ fn ancestor_chain(pid: u32, max_depth: usize) -> Vec<u32> {
         if parent == 0 || chain.contains(&parent) {
             break;
         }
-        // Stop at a different executable: it is not this client.
-        if process_name(parent).as_deref() != Some(original_name.as_str()) {
-            break;
+        if let Some(name) = process_name(parent) {
+            if name != original_name {
+                break;
+            }
         }
         chain.push(parent);
         current = parent;
     }
     chain
 }
-
 /// The executable's file name, lower-cased so the comparison is case-insensitive
 /// and so the same product installed under two directories still matches.
 #[cfg(windows)]

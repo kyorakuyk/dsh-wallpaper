@@ -190,6 +190,31 @@ pub(crate) fn run_launch(
     }
 }
 
+/// Ask the Windows shell to start the client behind one alias.
+///
+/// Also the way a single-instance shell is asked to focus the window it already
+/// owns: launching its alias again is what its own `second-instance` handler acts
+/// on, so this reaches a window that resolving the owning process cannot (S6.1).
+///
+/// `explorer.exe` is a GUI process: it has no use for this process's standard
+/// streams, and inheriting them would keep a handle family alive past this call.
+fn spawn_alias(alias: &str, aumid: &str) -> bool {
+    let mut launch = std::process::Command::new("explorer.exe");
+    launch.arg(alias);
+    launch
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    log::info!("harness shell launch: program=explorer.exe arg={alias} aumid={aumid}");
+    match launch.spawn() {
+        Ok(_) => true,
+        Err(error) => {
+            log::warn!("harness shell launch failed: {error}");
+            false
+        }
+    }
+}
+
 /// Start a shell through the Windows shell's own alias.
 ///
 /// `aumid` is used only for logging: the launch request is `alias`, which came
@@ -210,17 +235,7 @@ fn launch_shell(
         }
     }
 
-    let mut launch = std::process::Command::new("explorer.exe");
-    launch.arg(alias);
-    // `explorer.exe` is a GUI process: it has no use for our standard streams, and
-    // inheriting the wallpaper's would keep a handle family alive past this call.
-    launch
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    log::info!("harness shell launch: program=explorer.exe arg={alias} aumid={aumid}");
-    if let Err(error) = launch.spawn() {
-        log::warn!("harness shell launch failed: {error}");
+    if !spawn_alias(alias, aumid) {
         return HarnessLaunchOutcome::new("spawn-failed", HarnessTargetKind::EmbeddedShell);
     }
 
@@ -377,7 +392,23 @@ pub(crate) fn ensure_ui(
         };
     }
 
-    let raise = reveal(port, kind);
+    let mut raise = reveal(port, kind);
+    // (S6.1) When a client's window cannot be resolved directly, ask a single-instance
+    // shell to do it itself: launching its alias again makes it focus the window it
+    // already owns (second-instance -> focusOwner). This is the belt to the braces - it
+    // never depends on finding the window, which matters because the owning process is
+    // not always one this application may inspect. Limited to shells that hold the
+    // lock: for a client without one, the same action opens a second window instead.
+    if raise.outcome == "no-window" && kind == HarnessTargetKind::EmbeddedShell {
+        if let Some(aumid) = subject_id.trim().strip_prefix(SHELL_ID_PREFIX) {
+            if let Some(shell) = known_shell(aumid) {
+                if shell.single_instance && spawn_alias(&shell.alias, shell.aumid) {
+                    log::info!("harness shell asked to focus its own window: aumid={}", shell.aumid);
+                    raise = reveal(port, kind);
+                }
+            }
+        }
+    }
     HarnessUiOutcome {
         outcome: raise.outcome.into(),
         kind,

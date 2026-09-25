@@ -240,6 +240,12 @@ pub(crate) struct ShellApp {
     pub default_port: Option<u16>,
     /// Whether an unattended start may keep the window out of sight.
     pub can_start_hidden: bool,
+    /// Whether launching it again focuses the instance already running.
+    ///
+    /// This is the one reliable way to reach a single-instance shell's window when
+    /// the window cannot be resolved directly (§6.1): the shell itself brings the
+    /// window it already owns to the front.
+    pub single_instance: bool,
 }
 
 /// Look up a shell by AUMID, case-insensitively.
@@ -258,6 +264,7 @@ pub(crate) fn known_shell(aumid: &str) -> Option<ShellApp> {
             alias: apps_folder_alias(spec.aumid),
             default_port: spec.default_ports.first().copied(),
             can_start_hidden: spec.can_start_hidden,
+            single_instance: spec.single_instance,
         })
 }
 
