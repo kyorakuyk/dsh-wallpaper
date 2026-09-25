@@ -1729,7 +1729,7 @@ fn trace_island_click_reached(_local_x: i32, _local_y: i32) {}
 ///
 /// The native click route is closed: a real click never delivers `WM_MOUSEACTIVATE`,
 /// `WM_LBUTTONDOWN` or even a hit test to our subclass, because the WebView2 child owns the
-/// mouse messages from another process (see `docs/input-island-focus-native-route-closed.md`).
+/// mouse messages from another process (see `docs/evidence/input-island-focus-native-route-closed.md`).
 /// So the island `pointerdown` has to come from the renderer - which means the native side
 /// must not trust it. Plan 3.A is explicit: the command has to check the physical left button,
 /// the cursor being inside a declared region, and the window under the cursor belonging to the
@@ -1989,7 +1989,7 @@ fn trace_focus_handoff(_stage: &str, _client: Option<(i32, i32)>) {}
 /// Hand the keyboard to the WebView after a real click inside the input island.
 ///
 /// Phase B of the repair plan. The phase A measurement (see
-/// `docs/input-island-focus-phase-a-evidence.md`) described the failure precisely: keyboard
+/// `docs/evidence/input-island-focus-phase-a-evidence.md`) described the failure precisely: keyboard
 /// focus is already on the WebView while the global foreground is Progman, so keystrokes are
 /// consumed by the foreground window. `WM_MOUSEACTIVATE` never arrives - the WebView2 child
 /// takes the mouse messages in another process - so this runs from `WM_NCHITTEST`, which does

@@ -2301,7 +2301,7 @@ async fn fetch_harness_status() -> serde_json::Value {
 ///
 /// The native click route is closed - a real click reaches neither `WM_MOUSEACTIVATE` nor
 /// `WM_LBUTTONDOWN` nor a hit test, because the WebView2 child owns the mouse messages from
-/// another process (see `docs/input-island-focus-native-route-closed.md`). The island event
+/// another process (see `docs/evidence/input-island-focus-native-route-closed.md`). The island event
 /// therefore has to be reported by the renderer, and plan 3.A requires the native side not to
 /// trust that report: it re-checks the physical left button and the window under the cursor.
 ///

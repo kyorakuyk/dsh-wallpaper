@@ -35,11 +35,10 @@ Thumbs.db
 .idea/
 
 # Job-hunt / interview material (local only — do not commit)
-# 求职与面试材料、学习路线：仅本地使用，不进仓库
-/docs/interview-*.md
-/docs/campus-recruit-*.md
-/docs/career-*.md
-/docs/learning-guide.md
+# 求职与面试材料、学习路线：仅本地使用，不进仓库。
+# 按目录整目录忽略（docs/career/）：这些文件搬进子目录后仍不会被提交，
+# 也不必在每次新增材料时补规则。
+/docs/career/
 
 # 简历：含真实姓名 / 手机 / 邮箱，绝不入库
 /docs/resume/
