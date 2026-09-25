@@ -9,7 +9,7 @@ import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, LockScreenDiag
 import { preferredDisplayId } from '../runtime/displayLayout.ts'
 import { harnessStateLabel } from '../connect/harnessLabels.ts'
 import type { AutostartStatus, HarnessEndpointScan, HarnessTarget } from '../native/runtime.ts'
-import { subjectDetail, subjectKindLabel } from '../connect/harnessSubjects.ts'
+import { catalogAgeLabel, subjectDetail, subjectKindLabel } from '../connect/harnessSubjects.ts'
 import { OfficialPersonaCards } from '../persona/OfficialPersonaCards.tsx'
 import './SettingsPanel.css'
 
@@ -47,6 +47,12 @@ export interface SettingsPanelProps {
    * a source tree still needs its window (and its profile) chosen separately.
    */
   harnessTargets: HarnessTarget[]
+  /**
+   * When those subjects were last confirmed by a scan. Shown as an age rather than
+   * hidden, because a cached list that looks current would send the launcher after a
+   * client the user has since uninstalled.
+   */
+  subjectCatalogVerifiedAt?: number
   /** The §4.3 prompt when several source trees exist, so the user chooses one. */
   subjectChoice?: string
   onSelectSubject: (targetId: string) => void
@@ -331,7 +337,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <Field title="DSH 就绪时自动切换" detail="仅检测到兼容的壁纸 Bridge 才会切换。"><Toggle label="DSH 自动切换" checked={settings.autoSwitchHarness} onChange={(value) => set({ autoSwitchHarness: value })} /></Field>
         </Card>
         <Card title="DeepSeek Harness 启动" description="先选执行主体：两个客户端自带检出与服务，源码检出由本应用启动。壁纸只启动自己登记或拉起的进程，不会关闭或接管其他实例。">
-          <Field title="自动扫描" detail={props.dshScanBusy ? '正在后台搜索可识别的执行主体，请稍候。' : props.harnessTargets.length > 0 ? `已发现 ${props.harnessTargets.length} 个可选执行主体。` : '也会识别本机已安装的客户端；扫描不会阻塞设置中心。'}><button className="settings-action secondary" disabled={props.dshScanBusy} onClick={props.onScanDsh}>{props.dshScanBusy ? '扫描中…' : '扫描执行主体'}</button></Field>
+          <Field title="自动扫描" detail={props.dshScanBusy ? '正在后台搜索可识别的执行主体，请稍候。' : props.harnessTargets.length > 0 ? `已发现 ${props.harnessTargets.length} 个可选执行主体${props.subjectCatalogVerifiedAt ? `（${catalogAgeLabel(props.subjectCatalogVerifiedAt)}）` : ''}。` : '也会识别本机已安装的客户端；扫描不会阻塞设置中心。'}><button className="settings-action secondary" disabled={props.dshScanBusy} onClick={props.onScanDsh}>{props.dshScanBusy ? '扫描中…' : '扫描执行主体'}</button></Field>
           {props.subjectChoice && <Field title="请选择默认主体" detail={props.subjectChoice}><span /></Field>}
           {props.harnessTargets.map((target) => {
             const chosen = settings.dshLaunch.subjectId === target.id

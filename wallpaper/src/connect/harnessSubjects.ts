@@ -61,6 +61,22 @@ export function subjectChoicePrompt(targets: readonly HarnessTarget[]): string |
  * reports the same start codes in its own shape: the words for "no profile", "no
  * Node", "port taken" are the same whichever action discovered them.
  */
+/**
+ * How long ago a scan confirmed the list, in words.
+ *
+ * The renderer owns this because it is the only side that knows "now": a persisted
+ * timestamp shown without its age is exactly the "looks current" failure the
+ * catalogue exists to prevent.
+ */
+export function catalogAgeLabel(verifiedAtMs: number, now = Date.now()): string {
+  const minutes = Math.max(0, Math.floor((now - verifiedAtMs) / 60_000))
+  if (minutes < 1) return '刚刚验证'
+  if (minutes < 60) return `${minutes} 分钟前验证`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} 小时前验证`
+  return `${Math.floor(hours / 24)} 天前验证`
+}
+
 export function launchOutcomeNotice(outcome: {
   outcome: string
   kind: HarnessLaunchOutcome['kind']

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-harness-target-catalog"
+description = "Enables the harness_target_catalog command without any pre-configured scope."
+commands.allow = ["harness_target_catalog"]
+
+[[permission]]
+identifier = "deny-harness-target-catalog"
+description = "Denies the harness_target_catalog command without any pre-configured scope."
+commands.deny = ["harness_target_catalog"]

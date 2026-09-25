@@ -15,6 +15,8 @@ mod deepseek_web_config;
 mod harness_targets;
 #[cfg(not(feature = "lite"))]
 mod harness_launch;
+#[cfg(not(feature = "lite"))]
+mod harness_catalog;
 mod desktop_fallback;
 mod lock_screen_backup;
 mod native_bootstrap;
@@ -326,11 +328,30 @@ async fn scan_harness_targets(
     deep_scan: Option<bool>,
 ) -> Result<harness_targets::HarnessTargetScan, String> {
     require_wallpaper_surface(&caller)?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let scan = tauri::async_runtime::spawn_blocking(move || {
         harness_targets::scan_harness_targets_blocking(hint_path, deep_scan.unwrap_or(false))
     })
     .await
-    .map_err(|error| format!("扫描 Harness 执行主体未完成：{error}"))
+    .map_err(|error| format!("扫描 Harness 执行主体未完成：{error}"))?;
+    // A completed scan is a verification, so it refreshes the catalogue the settings
+    // surface reads on open. Best effort by design: see `harness_catalog`.
+    harness_catalog::persist_scan(&scan);
+    Ok(scan)
+}
+
+/// The subjects the last scan confirmed, with the time it confirmed them.
+///
+/// Read-only and cheap, so the settings surface can show what it already knows
+/// instead of walking the disk every time it opens. `null` means nothing has been
+/// scanned yet, which the UI says plainly rather than showing an empty list as if it
+/// were a result.
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+fn harness_target_catalog(
+    caller: tauri::WebviewWindow,
+) -> Result<Option<harness_catalog::HarnessTargetCatalog>, String> {
+    require_wallpaper_surface(&caller)?;
+    Ok(harness_catalog::load_catalog())
 }
 
 /// Start the chosen execution subject — a shell that carries its own checkout, or
@@ -3366,6 +3387,7 @@ macro_rules! register_edition_commands {
             autostart_status,
             scan_dsh_paths,
             scan_harness_targets,
+            harness_target_catalog,
             launch_harness_target,
             ensure_harness_ui,
             autostart_harness_target,

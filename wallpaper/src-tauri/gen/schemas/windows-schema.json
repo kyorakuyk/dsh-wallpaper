@@ -411,6 +411,12 @@
           "markdownDescription": "Enables the harness_set_preset command without any pre-configured scope."
         },
         {
+          "description": "Enables the harness_target_catalog command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-harness-target-catalog",
+          "markdownDescription": "Enables the harness_target_catalog command without any pre-configured scope."
+        },
+        {
           "description": "Enables the hide_settings_window command without any pre-configured scope.",
           "type": "string",
           "const": "allow-hide-settings-window",
@@ -883,6 +889,12 @@
           "type": "string",
           "const": "deny-harness-set-preset",
           "markdownDescription": "Denies the harness_set_preset command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the harness_target_catalog command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-harness-target-catalog",
+          "markdownDescription": "Denies the harness_target_catalog command without any pre-configured scope."
         },
         {
           "description": "Denies the hide_settings_window command without any pre-configured scope.",

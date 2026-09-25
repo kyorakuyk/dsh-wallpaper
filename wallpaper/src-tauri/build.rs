@@ -27,6 +27,8 @@ fn main() {
             // Lists the harness execution subjects (shells with their own
             // checkout, and source trees) the shim can offer and start.
             "scan_harness_targets",
+            // The last confirmed subject list, with when it was confirmed.
+            "harness_target_catalog",
             // Starts the chosen execution subject (a shell, or a source tree) and
             // the unattended counterpart of that start.
             "launch_harness_target",

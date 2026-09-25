@@ -29,6 +29,11 @@ export function SettingsWindow() {
   const [interactionEnabled, setInteractionEnabled] = useState(true)
   const [translucentTb, setTranslucentTb] = useState<TranslucentTbStatus>({ installed: false, running: false })
   const [harnessTargets, setHarnessTargets] = useState<HarnessTarget[]>([])
+  /**
+   * When the shown subject list was last confirmed by a real scan. Kept so the card
+   * can say how old it is: a cached list must not look current.
+   */
+  const [catalogVerifiedAt, setCatalogVerifiedAt] = useState<number>()
   const [subjectLaunchBusy, setSubjectLaunchBusy] = useState(false)
   const [managedDsh, setManagedDsh] = useState<ManagedDshStatus>({ managed: false, running: false })
   const [lockScreenDiagnostics, setLockScreenDiagnostics] = useState<LockScreenDiagnostics>()
@@ -147,6 +152,8 @@ export function SettingsWindow() {
       const scan = await nativeRuntime.scanHarnessTargets(settingsRef.current.dshLaunch.rootPath, announce)
       if (!mountedRef.current) return
       setHarnessTargets(scan.targets)
+      // The scan that just finished is the verification this list now carries.
+      setCatalogVerifiedAt(Date.now())
       if (announce) {
         setNotice(subjectChoicePrompt(scan.targets) ?? (scan.targets.length > 0
           ? `扫描完成，发现 ${scan.targets.length} 个可选执行主体。`
@@ -186,6 +193,22 @@ export function SettingsWindow() {
       setSubjectLaunchBusy(false)
     }
   }
+
+  /**
+   * Show what the last scan confirmed, without walking the disk on open.
+   *
+   * The scan itself stays manual (§4.1). This only avoids the opposite mistake: a
+   * settings window that shows nothing until the user scans again would hide subjects
+   * the wallpaper already knows how to start.
+   */
+  useEffect(() => {
+    void (async () => {
+      const catalog = await nativeRuntime.harnessTargetCatalog().catch(() => null)
+      if (!mountedRef.current || !catalog) return
+      setHarnessTargets(catalog.targets)
+      setCatalogVerifiedAt(catalog.verifiedAtMs)
+    })()
+  }, [])
 
   const refreshLockScreenDiagnostics = async () => {
     const request = ++lockScreenDiagnosticsRequestRef.current
@@ -600,6 +623,7 @@ export function SettingsWindow() {
       harnessStatus={harness}
       translucentTb={translucentTb}
       harnessTargets={harnessTargets}
+      subjectCatalogVerifiedAt={catalogVerifiedAt}
       subjectChoice={subjectChoicePrompt(harnessTargets) ?? undefined}
       onSelectSubject={(targetId) => change({
         ...settingsRef.current,

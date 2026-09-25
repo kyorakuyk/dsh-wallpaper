@@ -354,6 +354,13 @@ fn shell_targets_from(shortcuts: &[ScannedShortcut]) -> Vec<HarnessTarget> {
 }
 
 /// Assemble one scan result from the two fingerprint sources.
+///
+/// Visible to the crate so the catalogue's tests can record a scan built by the
+/// model's own matching rules instead of hand-made targets.
+pub(crate) fn build_scan_for_tests(shortcuts: &[ScannedShortcut]) -> HarnessTargetScan {
+    build_scan(shortcuts, &[])
+}
+
 fn build_scan(shortcuts: &[ScannedShortcut], checkouts: &[crate::DshPathCandidate]) -> HarnessTargetScan {
     let mut targets = shell_targets_from(shortcuts);
     let mut seen = HashSet::new();

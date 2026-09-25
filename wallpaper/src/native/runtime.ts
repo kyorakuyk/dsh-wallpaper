@@ -79,6 +79,21 @@ export interface HarnessUiOutcome {
 }
 
 /**
+ * What the last scan confirmed, and when.
+ *
+ * A scan is manual and expensive, so the settings surface shows this instead of
+ * walking the disk on every open — with `verifiedAtMs` visible, because a cached
+ * list must never look current: a client can be uninstalled between two scans.
+ */
+export interface HarnessTargetCatalog {
+  schemaVersion: number
+  /** Milliseconds since the epoch, from the scan that produced this list. */
+  verifiedAtMs: number
+  targets: HarnessTarget[]
+  requiresSubjectChoice: boolean
+}
+
+/**
  * One harness execution subject, in the two classes the design froze
  * (`docs/design/harness-subject-and-ui-design.md`, §3).
  *
@@ -266,6 +281,8 @@ export interface NativeRuntime {
    * takes over nothing.
    */
   scanHarnessTargets(hintPath?: string, deepScan?: boolean): Promise<HarnessTargetScan>
+  /** The last confirmed subject list, or null when nothing has been scanned yet. */
+  harnessTargetCatalog(): Promise<HarnessTargetCatalog | null>
   /**
    * Start the chosen execution subject. The class decides the mechanism — a shell
    * alias, or the managed checkout chain — so the caller passes an id and reads a
@@ -618,6 +635,11 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) return { targets: [], requiresSubjectChoice: false }
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<HarnessTargetScan>('scan_harness_targets', { hintPath, deepScan })
+  },
+  async harnessTargetCatalog() {
+    if (!await tauriAvailable()) return null
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<HarnessTargetCatalog | null>('harness_target_catalog')
   },
   async launchHarnessTarget(options) {
     if (!await tauriAvailable()) {
