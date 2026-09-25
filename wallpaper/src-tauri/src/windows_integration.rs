@@ -68,6 +68,8 @@ use windows::{
         Storage::Packaging::Appx::{GetCurrentPackageFullName, GetCurrentPackagePath},
         System::{
             Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED},
+            // `AttachThreadInput` lives here in windows 0.61, not under KeyboardAndMouse.
+            Threading::{AttachThreadInput, GetCurrentThreadId},
             Registry::{
                 RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER,
                 KEY_READ, KEY_SET_VALUE,
@@ -1765,6 +1767,73 @@ fn trace_focus_handoff(_stage: &str, _client: Option<(i32, i32)>) {}
 /// Release builds keep the call sites but compile the probe away, so the
 /// instrumentation never runs in a shipped build.
 
+/// Hand the keyboard to the WebView after a real click inside the input island.
+///
+/// Phase B of the repair plan. The phase A measurement (see
+/// `docs/input-island-focus-phase-a-evidence.md`) described the failure precisely: keyboard
+/// focus is already on the WebView while the global foreground is Progman, so keystrokes are
+/// consumed by the foreground window. `WM_MOUSEACTIVATE` never arrives - the WebView2 child
+/// takes the mouse messages in another process - so this runs from `WM_NCHITTEST`, which does
+/// reach us, on the input's own window thread and during the click itself.
+///
+/// `AttachThreadInput` is the substance of the call, not a decoration: a thread whose window
+/// is not foreground cannot give its window keyboard focus, and the desktop host window never
+/// is foreground. Attaching to the foreground thread's input queue lifts that restriction for
+/// the duration of the call, which is what the API exists for.
+///
+/// Success is decided by readback and never by a return code. A `SetFocus` that returns
+/// success while the foreground stays elsewhere is exactly the false success that hid this
+/// fault for several rounds.
+#[cfg(windows)]
+fn hand_over_keyboard_after_island_click(root: HWND) {
+    // `WM_NCHITTEST` repeats while the button is held, so one click must not run this twice.
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    {
+        let Ok(mut last) = LAST.lock() else { return };
+        if last.is_some_and(|previous| previous.elapsed() < std::time::Duration::from_millis(500))
+        {
+            return;
+        }
+        *last = Some(std::time::Instant::now());
+    }
+    unsafe {
+        let foreground = GetForegroundWindow();
+        let mut foreground_pid = 0u32;
+        let foreground_thread = GetWindowThreadProcessId(foreground, Some(&mut foreground_pid));
+        let current_thread = GetCurrentThreadId();
+        let attached = foreground_thread != 0
+            && foreground_thread != current_thread
+            && AttachThreadInput(current_thread, foreground_thread, true).as_bool();
+        let focus_result = SetFocus(Some(root));
+        if attached {
+            let _ = AttachThreadInput(current_thread, foreground_thread, false);
+        }
+        // Readback, not return codes.
+        let foreground_now = GetForegroundWindow();
+        let mut foreground_now_pid = 0u32;
+        GetWindowThreadProcessId(foreground_now, Some(&mut foreground_now_pid));
+        let mut info = GUITHREADINFO::default();
+        info.cbSize = core::mem::size_of::<GUITHREADINFO>() as u32;
+        let focus_pid = if GetGUIThreadInfo(0, &mut info).is_ok() {
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(info.hwndFocus, Some(&mut pid));
+            Some(pid)
+        } else {
+            None
+        };
+        let ours = foreground_now_pid == std::process::id();
+        let webview_has_focus = focus_pid.is_some_and(|pid| pid != 0 && pid != std::process::id());
+        if ours && webview_has_focus {
+            log::info!("island click: keyboard channel handed over to the WebView");
+        } else {
+            log::warn!(
+                "island click: handover did not take - attached={attached} set_focus_ok={} foreground_is_wallpaper={ours} focus_on_webview={webview_has_focus} foreground_pid={foreground_now_pid}",
+                focus_result.is_ok(),
+            );
+        }
+    }
+}
+
 unsafe extern "system" fn interaction_subclass_proc(
     hwnd: HWND,
     message: u32,
@@ -1809,6 +1878,14 @@ unsafe extern "system" fn interaction_subclass_proc(
                     .unwrap_or(false);
                 if !hit {
                     return LRESULT(HTTRANSPARENT as isize);
+                }
+                // Inside the input island. `WM_NCHITTEST` reaches us where the mouse
+                // messages do not, so this is where a real click can be recognised: the
+                // point is in a declared region and the physical left button is down.
+                // Outside the island nothing here runs, so the wallpaper still never
+                // takes the keyboard without the user asking for it (plan 3.C).
+                if unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0 {
+                    hand_over_keyboard_after_island_click(root_hwnd);
                 }
             } else {
                 return DefSubclassProc(hwnd, message, wparam, lparam);
