@@ -2856,8 +2856,16 @@ fn has_package_identity() -> Result<bool, String> {
 
 /// Per-user autostart location for builds Windows will not start through a
 /// package StartupTask.
+///
+/// `reg.exe` needs the hive inside the path and answers "Invalid key name"
+/// without it, while `RegOpenKeyExW` receives the hive as its own argument.
+/// Both spellings are kept side by side, and a unit test asserts that they still
+/// name the same key: using the hive-less one for `reg.exe` is how the repair
+/// silently stopped writing the entry after a package update.
 #[cfg(windows)]
-const RUN_KEY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_KEY_PATH: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+#[cfg(windows)]
+const RUN_KEY_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(windows)]
 const RUN_VALUE_NAME: &str = "dsh-wallpaper";
 /// The `<Application Id>` declared by `packaging/msix/AppxManifest.xml`. The
@@ -2931,11 +2939,21 @@ pub(crate) fn current_run_entry_command() -> Result<String, String> {
 /// The value the per-user Run entry currently records, if it exists at all.
 #[cfg(windows)]
 fn run_entry_command() -> Result<Option<String>, String> {
+    // `RegOpenKeyExW` and `RegQueryValueExW` take the hive and the value name
+    // separately, so both are spelled from the same constants the writer uses.
+    let subkey = RUN_KEY_SUBKEY
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<u16>>();
+    let value_name = RUN_VALUE_NAME
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<u16>>();
     let mut key = windows::Win32::System::Registry::HKEY::default();
     let open_status = unsafe {
         RegOpenKeyExW(
             HKEY_CURRENT_USER,
-            w!(r"Software\Microsoft\Windows\CurrentVersion\Run"),
+            PCWSTR(subkey.as_ptr()),
             None,
             KEY_READ,
             &mut key,
@@ -2955,7 +2973,7 @@ fn run_entry_command() -> Result<Option<String>, String> {
     let query_status = unsafe {
         RegQueryValueExW(
             key,
-            w!("dsh-wallpaper"),
+            PCWSTR(value_name.as_ptr()),
             None,
             None,
             None,
@@ -2985,7 +3003,7 @@ fn run_entry_command() -> Result<Option<String>, String> {
     let read_status = unsafe {
         RegQueryValueExW(
             key,
-            w!("dsh-wallpaper"),
+            PCWSTR(value_name.as_ptr()),
             None,
             None,
             Some(buffer.as_mut_ptr()),
@@ -3021,6 +3039,24 @@ pub(crate) fn run_entry_matches_current_build() -> Result<bool, String> {
     ))
 }
 
+/// The exact `reg.exe` invocation that records the entry. Kept apart from the
+/// spawn so a unit test can pin that the path names the hive: `reg.exe` rejects
+/// one that does not, and that rejection left autostart unfixed after a package
+/// update because the error was not distinguishing "not written" from "no
+/// permission".
+#[cfg(windows)]
+fn run_entry_add_arguments(command: &str) -> Vec<String> {
+    vec![
+        "add".into(),
+        RUN_KEY_PATH.into(),
+        "/V".into(),
+        RUN_VALUE_NAME.into(),
+        "/D".into(),
+        command.into(),
+        "/F".into(),
+    ]
+}
+
 /// Record (or refresh) the per-user Run entry.
 ///
 /// `reg.exe` stays the writer because it is the compatibility path older
@@ -3032,20 +3068,17 @@ pub(crate) fn write_run_entry(command: &str) -> Result<(), String> {
     // `reg.exe` is only a compatibility fallback. Keep it out of the user's
     // desktop even when the host is a GUI-subsystem process.
     std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x08000000);
-    cmd.args([
-        "add",
-        RUN_KEY_PATH,
-        "/V",
-        RUN_VALUE_NAME,
-        "/D",
-        command,
-        "/F",
-    ]);
+    cmd.args(run_entry_add_arguments(command));
     let status = cmd.status().map_err(|error| error.to_string())?;
     if status.success() {
         Ok(())
     } else {
-        Err("更新当前用户开机自启失败".into())
+        // Carry the exit code. Without it a failure here could not be told apart
+        // from a rejected key path, a rejected value or a missing `reg.exe`.
+        Err(format!(
+            "更新当前用户开机自启失败（reg.exe 退出码 {}）",
+            status.code().unwrap_or(-1)
+        ))
     }
 }
 
@@ -3650,6 +3683,34 @@ mod tests {
     fn a_missing_expected_command_never_matches() {
         assert!(!autostart_commands_match("anything", ""));
         assert!(!autostart_commands_match("", ""));
+    }
+
+    #[test]
+    fn the_autostart_key_paths_name_the_same_key() {
+        assert!(RUN_KEY_PATH.starts_with(r"HKCU\"));
+        assert_eq!(RUN_KEY_PATH.strip_prefix(r"HKCU\"), Some(RUN_KEY_SUBKEY));
+    }
+
+    #[test]
+    fn the_run_entry_writer_names_the_hive() {
+        // `reg.exe` answers "Invalid key name" for a path without a hive, and
+        // the repair then left the entry pointing at the previous version's
+        // deleted directory without saying why.
+        let arguments = run_entry_add_arguments(r"explorer.exe shell:AppsFolder\pf!Wallpaper");
+        let as_str: Vec<&str> = arguments.iter().map(String::as_str).collect();
+        assert_eq!(
+            as_str,
+            vec![
+                "add",
+                RUN_KEY_PATH,
+                "/V",
+                RUN_VALUE_NAME,
+                "/D",
+                r"explorer.exe shell:AppsFolder\pf!Wallpaper",
+                "/F",
+            ]
+        );
+        assert!(as_str[1].starts_with(r"HKCU\"));
     }
 
     #[test]
