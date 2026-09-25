@@ -342,7 +342,21 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <Field title="启动时使用"><Choice label="启动时使用" value={settings.defaultBackend} onChange={(value) => set({ defaultBackend: value as BackendMode })} options={[{ value: 'deepseek-web', label: 'DeepSeek 网页入口（实验）' }, { value: 'deepseek-api', label: 'DeepSeek API（付费）' }, { value: 'harness', label: 'DeepSeek Harness' }]} /></Field>
           <Field title="DSH 就绪时自动切换" detail="仅检测到兼容的壁纸 Bridge 才会切换。"><Toggle label="DSH 自动切换" checked={settings.autoSwitchHarness} onChange={(value) => set({ autoSwitchHarness: value })} /></Field>
         </Card>
-        <Card title="DeepSeek Harness 启动" description="先选执行主体：两个客户端自带检出与服务，源码检出由本应用启动。壁纸只启动自己登记或拉起的进程，不会关闭或接管其他实例。">
+                {/*
+          Wording rules for this card, applied to every sentence in it:
+          * name what the user is choosing between, never how it is built — "客户端 /
+            源码目录", not the design's "自带检出 / 执行主体", which stay internal;
+          * every control says what it will *do*, including that it may start
+            something. The text below used to promise "不会替你启动它", which stopped
+            being true when 「拉起 UI」 gained the right to start a subject: a promise the
+            code no longer keeps must not survive in a sentence;
+          * no port, no Bridge state, no filesystem path, and no step the user cannot
+            take themselves;
+          * one name per thing. The autostart toggle used to call the same setting both
+            "壁纸自身开机自启" and "你的系统自启设置"; the page has one name for it, so
+            the toggle points at that page instead of introducing a second.
+        */}
+        <Card title="DeepSeek Harness 启动" description="选择由谁来跑 DeepSeek Harness：客户端自带运行环境，源码目录由本应用启动。已经在运行的实例不会被接管或关闭。">
           <Field title="自动扫描" detail={props.dshScanBusy ? '正在后台搜索可识别的执行主体，请稍候。' : props.harnessTargets.length > 0 ? `已发现 ${props.harnessTargets.length} 个可选执行主体${props.subjectCatalogVerifiedAt ? `（${catalogAgeLabel(props.subjectCatalogVerifiedAt)}）` : ''}。` : '也会识别本机已安装的客户端；扫描不会阻塞设置中心。'}><button className="settings-action secondary" disabled={props.dshScanBusy} onClick={props.onScanDsh}>{props.dshScanBusy ? '扫描中…' : '扫描执行主体'}</button></Field>
           {props.subjectChoice && <Field title="请选择默认主体" detail={props.subjectChoice}><span /></Field>}
           {props.harnessTargets.map((target) => {
@@ -397,10 +411,10 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <Field
             title="打开客户端界面"
             detail={props.reachPort === undefined
-              ? '先在上面选定一个接入端点，这里才能拉起它的界面。'
+              ? '先在下面选定要与壁纸对话的客户端。'
               : props.reachAction === 'browser'
-                ? `将以默认浏览器打开 127.0.0.1:${props.reachPort}（该客户端没有自己的窗口）。`
-                : `将把 ${props.reachPort} 上那个客户端自己的窗口拉到前台；它没在运行时会如实提示，不会替你启动它。`}
+                ? `会打开它的界面（浏览器窗口）；如果它没在运行，会先把它启动起来。`
+                : `会把它自己的窗口调到前台；如果它没在运行，会先把它启动起来。`}
           >
             <button
               className="settings-action"
@@ -413,14 +427,20 @@ export function SettingsPanel(props: SettingsPanelProps) {
             </button>
           </Field>
           {!shellSelected && <>
-            <Field title="Profile"><input value={settings.dshLaunch.profile} placeholder="desktop" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, profile: e.target.value || 'desktop' } })} /></Field>
-            <Field title="启动命令" detail="填写启动器可执行文件的路径（不接受带参数的整条命令行，也不会经 shell 执行）。留空时优先使用已构建 CLI，找不到时回退 pnpm dsh；node.exe / pnpm 无需额外确认。" ><input value={settings.dshLaunch.command ?? ''} placeholder="留空时优先使用已构建 CLI，找不到时回退 pnpm dsh" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, command: e.target.value || undefined, trustedCommandForAutoStart: e.target.value ? settings.dshLaunch.trustedCommandForAutoStart : false } })} /></Field>
+                        {/*
+              Only a source directory has these settings, which is why the block
+              disappears for a client: it cannot be pointed at a directory, and a field
+              that is ignored is a question with no answer. "数据档案" leads because
+              that is what a profile *is* to a user.
+            */}
+            <Field title="数据档案（Profile）" detail="这份源码使用的档案名；不同档案的会话互不相通。"><input value={settings.dshLaunch.profile} placeholder="desktop" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, profile: e.target.value || 'desktop' } })} /></Field>
+            <Field title="启动命令" detail="一般留空即可。只有在需要用别的程序启动它时，才填写那个程序的完整路径（不能带参数）。" ><input value={settings.dshLaunch.command ?? ''} placeholder="留空时优先使用已构建 CLI，找不到时回退 pnpm dsh" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, command: e.target.value || undefined, trustedCommandForAutoStart: e.target.value ? settings.dshLaunch.trustedCommandForAutoStart : false } })} /></Field>
           </>}
           <Field
             title="随壁纸启动 DSH"
             detail={shellSelected
-              ? '壁纸每次启动时尝试启动该客户端（自带检出，未实现静默启动的客户端会带窗口出现）。登录后生效还需要壁纸自身开机自启；这里不会修改你的系统自启设置。每个壁纸进程最多启动一次，已在运行的实例不会被接管或重启。'
-              : '壁纸每次启动时尝试启动 DSH。登录后生效还需要壁纸自身开机自启；这里不会修改你的系统自启设置。每个壁纸进程最多启动一次，已在 3080 运行的外部 DSH 不会被接管或停止。'}
+              ? '壁纸启动时自动把该客户端跑起来（它不支持静默启动时会直接出现窗口）。要让它随登录生效，还需要在「常规」里开启壁纸开机自启。已经在运行的实例不会被接管或重启。'
+              : '壁纸启动时自动把该源码目录跑起来。要让它随登录生效，还需要在「常规」里开启壁纸开机自启。已经在运行的实例不会被接管或停止。'}
           >
             <Toggle
               label="随壁纸启动 DSH"
@@ -449,7 +469,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
               />
             </Field>
           )}
-          <Field title="启动执行主体" detail={shellSelected ? '启动该客户端自带的检出与服务；手动启动会显示它自己的窗口。' : '仅启动此处配置的 profile，不会接管已有 3080 服务。'}><button className="settings-action" disabled={(!settings.dshLaunch.subjectId && !settings.dshLaunch.rootPath) || props.managedDsh.running || props.subjectLaunchBusy} onClick={props.onLaunchDsh}>{props.subjectLaunchBusy ? '启动中…' : props.managedDsh.running ? `运行中 · PID ${props.managedDsh.pid}` : '启动'}</button></Field>
+          <Field title="启动执行主体" detail={shellSelected ? '现在把它跑起来，并显示它自己的窗口。' : '现在按上面的档案把它跑起来；已经在运行的其他实例不会被接管。'}><button className="settings-action" disabled={(!settings.dshLaunch.subjectId && !settings.dshLaunch.rootPath) || props.managedDsh.running || props.subjectLaunchBusy} onClick={props.onLaunchDsh}>{props.subjectLaunchBusy ? '启动中…' : props.managedDsh.running ? `运行中 · PID ${props.managedDsh.pid}` : '启动'}</button></Field>
           <Field title="受管进程" detail={props.managedDsh.managed ? '该 DSH 由本应用启动，可以在这里停止它。' : '本应用没有启动 DSH；其他人启动的实例不会被停止。'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshManagedDsh}>刷新</button><button className="settings-action secondary" disabled={!props.managedDsh.running} onClick={props.onStopManagedDsh}>停止本应用启动的 DSH</button></span></Field>
         </Card>
         <Card title="DeepSeek 网页入口（实验）" description="在应用内持久 WebView2 中打开 DeepSeek 官方页面，登录后可从桌面会话窗发送消息。"><Field title="官方页面" detail="页面和登录状态由独立 WebView2 配置目录保存；本应用不读取、复制或记录 Cookie。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开应用内页面</button></Field><Field title="网页适配器配置" detail={props.deepseekWebAdapterConfig ? `${props.deepseekWebAdapterConfig.source === 'local' ? '本地 override' : '内置默认'} · ${props.deepseekWebAdapterConfig.adapterVersion} · ${props.deepseekWebAdapterConfig.path}${props.deepseekWebAdapterConfig.warning ? ` · ${props.deepseekWebAdapterConfig.warning}` : ''}` : '正在读取配置状态…'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshDeepSeekWebAdapterConfig}>刷新</button><button className="settings-action secondary" onClick={props.onOpenDeepSeekWebAdapterConfig}>打开配置</button><button className="settings-action secondary" onClick={props.onResetDeepSeekWebAdapterConfig}>恢复默认</button></span></Field></Card>

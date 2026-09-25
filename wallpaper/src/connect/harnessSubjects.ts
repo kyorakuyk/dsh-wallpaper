@@ -15,7 +15,13 @@ import type { HarnessLaunchOutcome, HarnessTarget } from '../native/runtime.ts'
 /** The user-facing class name, which is also the reason the two classes behave
  * differently: one carries its own checkout, the other does not. */
 export function subjectKindLabel(kind: HarnessTarget['kind']): string {
-  return kind === 'embedded-shell' ? '自带检出（客户端）' : '源码检出'
+  // The design's own terms are 自带检出 / 源码检出, and they are exact: the two
+  // classes differ in whether the client carries its *own* checkout. Measured
+  // against what a user can see, though, "检出" names an implementation detail —
+  // what they are choosing between is a client that brings its own runtime and a
+  // source directory of their own. The labels therefore say that, and the two words
+  // never appear in the settings surface.
+  return kind === 'embedded-shell' ? '客户端' : '源码目录'
 }
 
 /**
@@ -38,7 +44,9 @@ export function isEmbeddedShellSubject(subjectId: string | undefined): boolean {
  */
 export function subjectDetail(target: HarnessTarget): string {
   return target.kind === 'embedded-shell'
-    ? '自带检出与服务，不需要配置路径或 profile。'
+    // A shell needs no configuration at all, and saying so is the useful part: the
+    // user would otherwise look for the path field we deliberately hid for it.
+    ? '客户端自带运行环境，不需要填路径。'
     : target.identity.rootPath ?? target.source
 }
 
@@ -82,7 +90,9 @@ export function launchOutcomeNotice(outcome: {
   kind: HarnessLaunchOutcome['kind']
   hidden?: boolean
 }): string | null {
-  const label = outcome.kind === 'embedded-shell' ? '客户端' : '源码检出'
+  // One noun per class, the same two the subject list uses, so a result line and the
+  // row it refers to cannot read as two different things.
+  const label = outcome.kind === 'embedded-shell' ? '客户端' : '源码目录'
   switch (outcome.outcome) {
     case 'started':
       // A hidden start is the one case where "started" is not the whole story:
@@ -96,18 +106,31 @@ export function launchOutcomeNotice(outcome: {
     case 'already-running':
       return `${label}已在运行；本应用不会接管、重启或停止它。`
     case 'unknown-target':
-      return '没有可启动的执行主体，请先扫描并选择一个。'
+      // "执行主体" is this plan's word for what runs the Harness; a user has no
+      // reason to learn it, so the sentence names the missing act instead.
+      return '还没有选好要启动谁，请先扫描并选择一个。'
     case 'root-path-invalid':
-      return '源码检出目录不可识别，请重新扫描后选择。'
+      // Names what is wrong with the *thing the user picked*, and the one action
+      // that fixes it. A path is deliberately not repeated here: the row they
+      // clicked already shows it.
+      return '这个目录不是可用的 DSH 源码目录，请重新扫描后选择。'
     case 'launcher-missing':
-      return '未找到启动器：Node.js / pnpm 不在 PATH 中，或自定义启动器路径不存在。'
+      // The only entry that cannot avoid a system name: the fix is to install one of
+      // two programs or point at their location, so naming them is the actionable
+      // half, while PATH stays out of the sentence.
+      return '找不到用来启动它的程序：请安装 Node.js，或在「启动命令」里填写启动器的完整路径。'
     case 'profile-invalid':
       return 'profile 无效：只能包含字母、数字、连字符或下划线。'
     case 'port-occupied-external':
-      return '3080 端口已被其他 DSH 占用；本应用不会接管或停止它。'
+      // The port number is an implementation fact; the user's situation is that
+      // something is already running and this application is leaving it alone.
+      return '本机已有一个 DSH 在运行（不是本应用启动的），因此没有重复启动，也不会去接管或停止它。'
     case 'command-not-confirmed':
-      return '自定义启动命令尚未获得自动启动授权，因此没有执行。'
+      // Says which switch is off, not which flag failed.
+      return '自动启动不使用自定义启动命令（未获得授权），因此这次没有执行它。'
     default:
-      return '启动失败，请查看日志中的启动记录。'
+      // No code, no path: the log does name both, and that is where a bug report
+      // should come from rather than from a dialog.
+      return '启动没有成功。日志里有这次启动的完整记录，可用于排查。'
   }
 }

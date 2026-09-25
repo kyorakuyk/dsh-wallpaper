@@ -180,8 +180,9 @@ describe('DSH autostart wiring', () => {  it('starts DSH from the background hos
 
   it('tells the user that login-time start needs the wallpaper to autostart', async () => {
     const panel = await source('src/settings/SettingsPanel.tsx')
-    expect(panel).toContain('登录后生效还需要壁纸自身开机自启')
-    expect(panel).toContain('不会修改你的系统自启设置')
+    // The requirement itself, not the old second name for it: the toggle now points at
+    // the page that owns the setting instead of introducing 系统自启设置 as well.
+    expect(panel).toContain('还需要在「常规」里开启壁纸开机自启')
     // The warning is driven by the real Windows state, not by a guess.
     expect(panel).toContain('props.autostart.enabled')
     expect(panel).toContain('disabled-by-policy')
