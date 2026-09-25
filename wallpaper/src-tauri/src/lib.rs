@@ -25,7 +25,7 @@ use std::collections::{HashSet, VecDeque};
 #[cfg(not(feature = "lite"))]
 use std::path::{Path, PathBuf};
 #[cfg(not(feature = "lite"))]
-use std::process::Child;
+use std::process::{Child, Stdio};
 use std::sync::OnceLock;
 #[cfg(not(feature = "lite"))]
 use std::sync::{Mutex, RwLock};
@@ -220,6 +220,8 @@ struct ManagedDshProcess {
     child: Child,
     root_path: String,
     profile: String,
+    /// Where this child's own output was captured, when it could be.
+    log_path: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -453,6 +455,37 @@ fn classify_dsh_launch_failure(error: &str) -> String {
     }
 }
 
+/// Where a DSH started by the wallpaper keeps its own output.
+///
+/// DSH reports every startup failure on stderr, and a GUI-subsystem parent has
+/// no usable standard streams. Inheriting those handles threw the only evidence
+/// away, which left the wallpaper able to say no more than "DSH 启动后立即退出；
+/// 请检查 DSH 配置或启动日志" and to point at a log that was never written. Keep
+/// the child hidden, but put its own words on disk beside the wallpaper's log.
+#[cfg(not(feature = "lite"))]
+fn managed_dsh_log_path() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|root| {
+        root.join("com.dsh.wallpaper")
+            .join("logs")
+            .join("managed-dsh.log")
+    })
+}
+
+/// The last `lines` lines of a managed DSH's captured output, or why there are
+/// none to show. Never panics on a missing or unreadable log.
+#[cfg(not(feature = "lite"))]
+fn managed_dsh_log_tail(path: Option<&PathBuf>, lines: usize) -> String {
+    let Some(path) = path else {
+        return "（本次未捕获 DSH 输出）".into();
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return format!("（无法读取 {}）", path.display());
+    };
+    let collected = text.lines().collect::<Vec<&str>>();
+    let start = collected.len().saturating_sub(lines);
+    collected[start..].join("\n")
+}
+
 /// Shared, validated launch path for the manual button and the autostart
 /// setting. Both callers get identical validation, ownership tracking and
 /// single-instance behaviour because there is only one implementation.
@@ -518,13 +551,53 @@ fn spawn_managed_dsh(
         launch.arg(bundled_cli).args(["--profile", profile]);
     } else {
         launch.args(["dsh", "--profile", profile]);
-    }    launch.current_dir(&root);
-    // DSH is a resident background service. `pnpm.cmd` otherwise inherits a
-    // new visible console from the desktop process, leaving a stray CMD
-    // window beside the wallpaper. Keep the child hidden while preserving its
-    // stdout/stderr for the process lifetime and managed PID tracking.
+    }
+    launch.current_dir(&root);
+    // DSH is a resident background service. `pnpm.cmd` otherwise inherits a new
+    // visible console from the desktop process, leaving a stray CMD window
+    // beside the wallpaper.
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut launch, 0x08000000);
+    let managed_log = managed_dsh_log_path();
+    launch.stdin(Stdio::null());
+    let log_file = managed_log.as_ref().and_then(|path| {
+        std::fs::create_dir_all(path.parent()?).ok()?;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .ok()
+    });
+    match log_file {
+        Some(file) => match file.try_clone() {
+            Ok(duplicate) => {
+                launch.stdout(Stdio::from(file));
+                launch.stderr(Stdio::from(duplicate));
+            }
+            Err(_) => {
+                launch.stdout(Stdio::from(file));
+                launch.stderr(Stdio::null());
+            }
+        },
+        None => {
+            launch.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+    }
+    // Record the exact command before it runs. A launch that fails inside DSH
+    // cannot be told apart from a wrong profile or a wrong project root without
+    // knowing what was actually executed.
+    log::info!(
+        "managed DSH launch: program={} args={:?} cwd={} log={}",
+        launch.get_program().to_string_lossy(),
+        launch
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<String>>(),
+        root.display(),
+        managed_log
+            .as_ref()
+            .map_or_else(|| "none".to_string(), |path| path.display().to_string())
+    );
     let child = launch
         .spawn()
         .map_err(|error| format!("无法启动 DSH：{error}"))?;
@@ -533,6 +606,7 @@ fn spawn_managed_dsh(
         child,
         root_path: root.to_string_lossy().into_owned(),
         profile: profile.into(),
+        log_path: managed_log,
     });
     Ok(pid)
 }
@@ -565,7 +639,27 @@ fn managed_dsh_status(
             root_path: Some(process.root_path.clone()),
             profile: Some(process.profile.clone()),
         }),
-        Ok(Some(_)) | Err(_) => {
+        Ok(Some(status)) => {
+            // The child is gone. Its own last words are the only explanation
+            // available, so record them with the exit code rather than leaving a
+            // bare "not running" that no one can act on.
+            log::warn!(
+                "managed DSH exited: pid={} code={:?}; last output:\n{}",
+                process.child.id(),
+                status.code(),
+                managed_dsh_log_tail(process.log_path.as_ref(), 20)
+            );
+            *managed = None;
+            Ok(ManagedDshStatus {
+                managed: false,
+                running: false,
+                pid: None,
+                root_path: None,
+                profile: None,
+            })
+        }
+        Err(error) => {
+            log::warn!("managed DSH state query failed: {error}");
             *managed = None;
             Ok(ManagedDshStatus {
                 managed: false,
