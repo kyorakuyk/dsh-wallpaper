@@ -217,9 +217,48 @@ const SHELL_APPS: &[ShellAppSpec] = &[
     },
 ];
 
+/// Prefix of every shell target id. One definition, because the launcher parses
+/// this namespace back out of a stored id and the two spellings must not drift.
+pub(crate) const SHELL_ID_PREFIX: &str = "shell:";
+
 /// The alias the Windows shell resolves through the current registration.
 fn apps_folder_alias(aumid: &str) -> String {
     format!(r"shell:AppsFolder\{aumid}")
+}
+
+/// The launch-relevant facts about a shell this build knows how to start.
+///
+/// Returned by [`known_shell`] so the launcher never has to re-read the table or
+/// trust a caller-supplied alias.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ShellApp {
+    /// Canonical spelling, as this build knows the client.
+    pub aumid: &'static str,
+    /// The canonical launch alias.
+    pub alias: String,
+    /// Default port, as a probe hint for waiting on a start.
+    pub default_port: Option<u16>,
+    /// Whether an unattended start may keep the window out of sight.
+    pub can_start_hidden: bool,
+}
+
+/// Look up a shell by AUMID, case-insensitively.
+///
+/// This lookup *is* the allowlist. It keeps a renderer from asking the Windows
+/// shell to start an arbitrary Start Menu item (the alias string is a launch
+/// request, so an unvalidated one would be a general-purpose "run this app"
+/// primitive), and it is why the alias is taken from this table rather than from
+/// whatever the caller passed.
+pub(crate) fn known_shell(aumid: &str) -> Option<ShellApp> {
+    SHELL_APPS
+        .iter()
+        .find(|spec| spec.aumid.eq_ignore_ascii_case(aumid.trim()))
+        .map(|spec| ShellApp {
+            aumid: spec.aumid,
+            alias: apps_folder_alias(spec.aumid),
+            default_port: spec.default_ports.first().copied(),
+            can_start_hidden: spec.can_start_hidden,
+        })
 }
 
 /// Build the target for one known shell.
@@ -227,7 +266,7 @@ fn shell_target(spec: &ShellAppSpec, source: String) -> HarnessTarget {
     HarnessTarget {
         // Location-independent by construction: no version, no directory, and
         // therefore nothing for an update to invalidate.
-        id: format!("shell:{}", spec.aumid.to_ascii_lowercase()),
+        id: format!("{SHELL_ID_PREFIX}{}", spec.aumid.to_ascii_lowercase()),
         kind: HarnessTargetKind::EmbeddedShell,
         client: spec.client,
         label: spec.label.into(),
@@ -696,6 +735,34 @@ mod tests {
         );
 
         assert_eq!(directories, vec![user_start_menu, machine_start_menu]);
+    }
+
+    #[test]
+    fn the_shell_allowlist_answers_with_this_build_s_canonical_alias() {
+        let shell = known_shell("COM.DeepSeek.DSH").expect("known shell");
+        assert_eq!(shell.aumid, OFFICIAL);
+        assert_eq!(shell.alias, r"shell:AppsFolder\com.deepseek.dsh");
+        assert_eq!(shell.default_port, Some(19387));
+        assert!(shell.can_start_hidden);
+        // Anything this build does not know how to start is refused here rather
+        // than handed to the Windows shell as a launch request.
+        assert!(known_shell("Notepad").is_none());
+        assert!(known_shell("Microsoft.Windows.Explorer").is_none());
+        assert!(known_shell("   ").is_none());
+    }
+
+    #[test]
+    fn a_shell_target_id_resolves_back_to_the_same_shell() {
+        let scan = build_scan(&[shortcut(DESKTOP, r"C:\Desktop")], &[]);
+        let target = &scan.targets[0];
+        let aumid = target
+            .id
+            .strip_prefix(SHELL_ID_PREFIX)
+            .expect("shell id namespace");
+        let shell = known_shell(aumid).expect("resolvable");
+        // What the renderer stores, and what the launcher will hand to Windows,
+        // are the same alias: no path and no version exists in between.
+        assert_eq!(Some(shell.alias), target.launch.alias);
     }
 
     /// Ground truth for this machine's shell registrations.

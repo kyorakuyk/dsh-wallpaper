@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-autostart-harness-target"
+description = "Enables the autostart_harness_target command without any pre-configured scope."
+commands.allow = ["autostart_harness_target"]
+
+[[permission]]
+identifier = "deny-autostart-harness-target"
+description = "Denies the autostart_harness_target command without any pre-configured scope."
+commands.deny = ["autostart_harness_target"]

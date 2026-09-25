@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import { appCoreClient } from '../runtime/appCoreClient.ts'
-import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type HarnessEndpointScan, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
+import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type HarnessEndpointScan, type HarnessTarget, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
 import { loadSettings, saveSettings, type WallpaperSettings } from './store.ts'
 import { clientRaiseAction, endpointKindLabel, raiseOutcomeNotice, type HarnessClientKind } from '../connect/endpoints.ts'
+import { launchOutcomeNotice, subjectChoicePrompt } from '../connect/harnessSubjects.ts'
 import { SettingsPanel, type SettingsPanelHarnessStatus } from './SettingsPanel.tsx'
 import {
   createProbeScheduler,
@@ -27,7 +28,8 @@ export function SettingsWindow() {
   const [harness, setHarness] = useState<SettingsPanelHarnessStatus>('offline')
   const [interactionEnabled, setInteractionEnabled] = useState(true)
   const [translucentTb, setTranslucentTb] = useState<TranslucentTbStatus>({ installed: false, running: false })
-  const [dshCandidates, setDshCandidates] = useState<Array<{ rootPath: string; source: string }>>([])
+  const [harnessTargets, setHarnessTargets] = useState<HarnessTarget[]>([])
+  const [subjectLaunchBusy, setSubjectLaunchBusy] = useState(false)
   const [managedDsh, setManagedDsh] = useState<ManagedDshStatus>({ managed: false, running: false })
   const [lockScreenDiagnostics, setLockScreenDiagnostics] = useState<LockScreenDiagnostics>()
   const [desktopDisplays, setDesktopDisplays] = useState<DesktopDisplayInfo[]>([])
@@ -129,27 +131,59 @@ export function SettingsWindow() {
     .catch((error) => setNotice(`素材库读取失败：${String(error)}`))
 
   /**
-   * The manual scan is the *only* place that walks the disk for DSH projects.
-   * `deepScan` is requested explicitly here and never on window open.
+   * The manual scan is the *only* place that walks the disk for DSH projects, and
+   * the only place that reads the shell registrations. `deepScan` is requested
+   * explicitly here and never on window open.
+   *
+   * One command fills both answers — the subjects to choose from, and (through the
+   * subject model) the checkout the root-path field describes — so there is no
+   * second walk of the same disk that could disagree with this one.
    */
   const scanDsh = async (announce = false) => {
     if (dshScanOperationRef.current) return
     dshScanOperationRef.current = true
     setDshScanBusy(true)
     try {
-      const candidates = await nativeRuntime.scanDshPaths(settingsRef.current.dshLaunch.rootPath, announce)
+      const scan = await nativeRuntime.scanHarnessTargets(settingsRef.current.dshLaunch.rootPath, announce)
       if (!mountedRef.current) return
-      setDshCandidates(candidates)
+      setHarnessTargets(scan.targets)
       if (announce) {
-        setNotice(candidates.length > 0
-          ? `扫描完成，发现 ${candidates.length} 个 DSH 项目。`
-          : '未发现 DSH 项目；请手动填写可访问的项目根目录。')
+        setNotice(subjectChoicePrompt(scan.targets) ?? (scan.targets.length > 0
+          ? `扫描完成，发现 ${scan.targets.length} 个可选执行主体。`
+          : '未发现 DSH 项目或已安装的客户端；可手动填写 DSH 项目根目录后再扫描。'))
       }
     } catch (error) {
       setNotice(`扫描 DSH 失败：${String(error)}`)
     } finally {
       dshScanOperationRef.current = false
       setDshScanBusy(false)
+    }
+  }
+
+  /**
+   * Start the chosen execution subject, whatever class it belongs to.
+   *
+   * The renderer deliberately does not branch on client shape: the id names a
+   * subject, and native decides whether that means a shell alias or the managed
+   * checkout chain. Building that branch here would duplicate a rule that has to
+   * hold for the unattended path too.
+   */
+  const launchSubject = async () => {
+    const targetId = settingsRef.current.dshLaunch.subjectId ?? settingsRef.current.dshLaunch.rootPath
+    if (!targetId) return
+    setSubjectLaunchBusy(true)
+    try {
+      const outcome = await nativeRuntime.launchHarnessTarget({
+        targetId,
+        profile: settingsRef.current.dshLaunch.profile,
+        command: settingsRef.current.dshLaunch.command,
+      })
+      setNotice(launchOutcomeNotice(outcome) ?? undefined)
+      refreshManagedDsh()
+    } catch (error) {
+      setNotice(String(error))
+    } finally {
+      setSubjectLaunchBusy(false)
     }
   }
 
@@ -551,7 +585,19 @@ export function SettingsWindow() {
       onPageChange={(next) => { setPage(next); if (next === 'appearance') refreshAppearance() }}
       harnessStatus={harness}
       translucentTb={translucentTb}
-      dshCandidates={dshCandidates}
+      harnessTargets={harnessTargets}
+      subjectChoice={subjectChoicePrompt(harnessTargets) ?? undefined}
+      onSelectSubject={(targetId) => change({
+        ...settingsRef.current,
+        dshLaunch: {
+          ...settingsRef.current.dshLaunch,
+          subjectId: targetId,
+          // A checkout's id *is* its path, so keeping the root-path field in step
+          // means the profile/launcher fields below still describe the same tree.
+          // A shell keeps whatever path is there, so switching back is lossless.
+          ...(targetId.startsWith('shell:') ? {} : { rootPath: targetId }),
+        },
+      })}
       endpointScan={endpointScan}
       endpointScanBusy={endpointScanBusy}
       endpointScanDone={endpointScanDone}
@@ -564,8 +610,8 @@ export function SettingsWindow() {
       autostart={autostartState}
       onScanDsh={() => { void scanDsh(true) }}
       dshScanBusy={dshScanBusy}
-      onAdoptDsh={(rootPath) => change({ ...settingsRef.current, dshLaunch: { ...settingsRef.current.dshLaunch, rootPath } })}
-      onLaunchDsh={() => { const dsh = settingsRef.current.dshLaunch; if (!dsh.rootPath) return; void nativeRuntime.launchDsh(dsh.rootPath, dsh.profile, dsh.command).then((pid) => { setNotice(`已启动 DSH（PID ${pid}），等待 Bridge 就绪后可在桌面切换。`); refreshManagedDsh() }).catch((error) => setNotice(String(error))) }}
+      onLaunchDsh={() => { void launchSubject() }}
+      subjectLaunchBusy={subjectLaunchBusy}
       managedDsh={managedDsh}
       onRefreshManagedDsh={refreshManagedDsh}
       onStopManagedDsh={() => void nativeRuntime.stopManagedDsh().then(() => { setNotice('已停止本应用启动的 DSH。'); refreshManagedDsh() }).catch((error) => setNotice(String(error)))}

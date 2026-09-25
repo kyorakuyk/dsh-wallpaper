@@ -9,6 +9,7 @@ import { personaIdFor, resolveModelTier } from './domain/modelTier.ts'
 import { isHarnessReady } from './connect/harness.ts'
 import { monitorHarnessEndpoint } from './connect/harnessEndpoint.ts'
 import { HARNESS_STATE_DETAILS } from './connect/harnessLabels.ts'
+import { isEmbeddedShellSubject } from './connect/harnessSubjects.ts'
 import { PersonaRegistry } from './persona/registry.ts'
 import { IdleScene } from './scenes/IdleScene.tsx'
 import { MultiScreenIdleScene } from './scenes/MultiScreenIdleScene.tsx'
@@ -76,6 +77,17 @@ export const HARNESS_DISCONNECTED_ERROR_PREFIX = 'DSH 壁纸 Bridge 当前不可
  */
 let dshAutostartRequestedInProcess = false
 
+/**
+ * Which class the last launch started, so the 45-second supervision knows whether
+ * "not managed" means anything.
+ *
+ * A checkout is a child of this process and its exit is observable; a shell is an
+ * application the Windows shell starts on our behalf, and nothing about it is
+ * owned here. Same module-scope reasoning as above: this survives a remount, and
+ * it is only a label — the native side decides what actually happens.
+ */
+let harnessLaunchedKind: 'embedded-shell' | 'checkout' = 'checkout'
+
 export function canAutoSelectHarness(
   availability: RuntimeState['harness'],
   backend: BackendMode,
@@ -120,7 +132,13 @@ export function dshAutostartNotice(result: ManagedDshAutostart): string | null {
     case 'port-occupied-external':
       return null
     case 'root-path-missing':
-      return '已开启「随壁纸启动 DSH」，但尚未配置 DSH 根目录；请在设置中心填写或扫描后重试。'
+      return '已开启「随壁纸启动 DSH」，但尚未选择执行主体；请在设置中心扫描并选择一个。'
+    case 'unknown-target':
+      return '已开启「随壁纸启动 DSH」，但所选执行主体不可用；请在设置中心重新扫描后选择。'
+    case 'started-unconfirmed':
+      return '已请求启动所选客户端，但它在超时时间内没有应答；若界面始终没有出现，请确认该客户端仍已安装。'
+    case 'already-running':
+      return null
     case 'root-path-invalid':
       return '已开启「随壁纸启动 DSH」，但配置的根目录不是可识别的 DSH 项目；请在设置中心修正。'
     case 'launcher-missing':
@@ -146,9 +164,16 @@ export function harnessLaunchOutcome(
   elapsedMs: number,
   managed: { managed: boolean; running: boolean },
   timeoutMs = 45_000,
+  /**
+   * Which class was started. Only a checkout is a child this process owns, so only
+   * a checkout can be observed *exiting*: for a shell the process that answers is
+   * not ours, and "not managed" would otherwise be reported as "started and
+   * immediately exited" for a client that is running perfectly well.
+   */
+  launchedKind: 'embedded-shell' | 'checkout' = 'checkout',
 ): { message: string } | null {
   if (status.availability === 'bridge-ready') return null
-  if (!managed.managed || !managed.running) {
+  if (launchedKind === 'checkout' && (!managed.managed || !managed.running)) {
     return { message: 'DSH 启动后立即退出；请检查 DSH 配置或启动日志。' }
   }
   if (elapsedMs <= timeoutMs) return null
@@ -730,6 +755,8 @@ export function App({ surface = 'combined' }: AppProps) {
           { availability: runtime.harness, reasonCode: runtime.harnessReasonCode },
           Date.now() - (harnessLaunchStartedAtRef.current ?? Date.now()),
           managed,
+          45_000,
+          harnessLaunchedKind,
         )
         if (!outcome) return
         harnessLaunchPendingRef.current = false
@@ -768,19 +795,31 @@ export function App({ surface = 'combined' }: AppProps) {
     let disposed = false
     void (async () => {
       try {
-        const result = await nativeRuntime.autostartManagedDsh({
-          rootPath: settings.dshLaunch.rootPath,
+        // §5.1: the automatic start starts the chosen *subject*, whatever class it
+        // belongs to. Native decides which mechanism that means, so this passes the
+        // stored id and reads a closed outcome code back.
+        const subjectId = settings.dshLaunch.subjectId ?? settings.dshLaunch.rootPath
+        const result = await nativeRuntime.autostartHarnessTarget({
+          targetId: subjectId,
           profile: settings.dshLaunch.profile,
           command: settings.dshLaunch.command,
           trustedCommand: settings.dshLaunch.trustedCommandForAutoStart,
         })
         if (disposed) return
-        if (result.outcome === 'started') {
+        if (result.outcome === 'started' || result.outcome === 'started-unconfirmed') {
           // Reuse the manual launch's readiness window, so the same 45-second
-          // supervision, timeout message and exit detection apply.
+          // supervision, timeout message and exit detection apply. A shell is
+          // supervised on the bridge probe alone: nothing here owns its process.
+          harnessLaunchedKind = isEmbeddedShellSubject(subjectId) ? 'embedded-shell' : 'checkout'
           harnessLaunchStartedAtRef.current = Date.now()
           harnessLaunchPendingRef.current = true
           setHarnessStarting(true)
+          // A start that was never confirmed still deserves its own sentence: the
+          // user must be able to tell "still starting" from "nothing happened".
+          if (result.outcome === 'started-unconfirmed') {
+            const notice = dshAutostartNotice(result)
+            if (notice) patchRuntime({ error: notice })
+          }
           return
         }
         if (result.outcome === 'port-occupied-external') {
@@ -1195,15 +1234,23 @@ export function App({ surface = 'combined' }: AppProps) {
         harnessLaunchPendingRef.current = true
         harnessLaunchStartedAtRef.current = Date.now()
         try {
-          const rootPath = settings.dshLaunch.rootPath ?? (await nativeRuntime.scanDshPaths(settings.dshLaunch.rootPath, true))[0]?.rootPath
-          if (!rootPath) {
+          // §5.3: the route switch does what the automatic start does — start the
+          // chosen execution subject — and differs only in switching the backend
+          // afterwards, which is the caller's job.
+          const subjectId = settings.dshLaunch.subjectId ?? settings.dshLaunch.rootPath
+          if (!subjectId) {
             harnessLaunchPendingRef.current = false
             harnessLaunchStartedAtRef.current = undefined
             setHarnessStarting(false)
             await nativeRuntime.openSettingsWindow()
             return
           }
-          await nativeRuntime.launchDsh(rootPath, settings.dshLaunch.profile, settings.dshLaunch.command)
+          harnessLaunchedKind = isEmbeddedShellSubject(subjectId) ? 'embedded-shell' : 'checkout'
+          await nativeRuntime.launchHarnessTarget({
+            targetId: subjectId,
+            profile: settings.dshLaunch.profile,
+            command: settings.dshLaunch.command,
+          })
         } catch (error) {
           harnessLaunchPendingRef.current = false
           harnessLaunchStartedAtRef.current = undefined

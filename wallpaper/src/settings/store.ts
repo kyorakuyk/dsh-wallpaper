@@ -52,6 +52,20 @@ export interface DshLaunchSettings {
   profile: string
   command?: string
   /**
+   * The chosen harness execution subject, as an id from the target scan.
+   *
+   * Two classes are folded into this one id, because a subject is not a free
+   * combination (`docs/design/harness-subject-and-ui-design.md` §3–§4): a shell
+   * that carries its own checkout is identified by AUMID and fixes the window too,
+   * while a source tree's id *is* its path and leaves the window a separate
+   * choice. Storing the id rather than a path is what lets a client update leave
+   * the choice valid.
+   *
+   * Absent means "nothing chosen yet"; `rootPath` is then still honoured as a
+   * checkout subject, so a profile written by an older version keeps working.
+   */
+  subjectId?: string
+  /**
    * Start the configured DSH once, every time the wallpaper starts.
    *
    * This is a wallpaper-start trigger, not a login trigger: it is only useful
@@ -356,6 +370,7 @@ function normalizeDshLaunchSettings(raw: unknown): DshLaunchSettings {
     profile: profile.length > 0 && profile.length <= MAX_SETTINGS_SHORT_STRING ? profile : DEFAULT_SETTINGS.dshLaunch.profile,
     rootPath: optionalText(value.rootPath),
     command: optionalText(value.command),
+    subjectId: optionalText(value.subjectId),
     // Both new flags default to `false` for an upgraded profile. Auto-starting a
     // resident service is opt-in, and so is trusting a custom launcher with it.
     autoStartWithWallpaper: value.autoStartWithWallpaper === true,

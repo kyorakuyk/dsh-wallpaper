@@ -249,6 +249,12 @@
           "markdownDescription": "Enables the appearance_set_override command without any pre-configured scope."
         },
         {
+          "description": "Enables the autostart_harness_target command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-autostart-harness-target",
+          "markdownDescription": "Enables the autostart_harness_target command without any pre-configured scope."
+        },
+        {
           "description": "Enables the autostart_managed_dsh command without any pre-configured scope.",
           "type": "string",
           "const": "allow-autostart-managed-dsh",
@@ -409,6 +415,12 @@
           "type": "string",
           "const": "allow-launch-dsh",
           "markdownDescription": "Enables the launch_dsh command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the launch_harness_target command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-launch-harness-target",
+          "markdownDescription": "Enables the launch_harness_target command without any pre-configured scope."
         },
         {
           "description": "Enables the launch_translucent_tb command without any pre-configured scope.",
@@ -705,6 +717,12 @@
           "markdownDescription": "Denies the appearance_set_override command without any pre-configured scope."
         },
         {
+          "description": "Denies the autostart_harness_target command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-autostart-harness-target",
+          "markdownDescription": "Denies the autostart_harness_target command without any pre-configured scope."
+        },
+        {
           "description": "Denies the autostart_managed_dsh command without any pre-configured scope.",
           "type": "string",
           "const": "deny-autostart-managed-dsh",
@@ -865,6 +883,12 @@
           "type": "string",
           "const": "deny-launch-dsh",
           "markdownDescription": "Denies the launch_dsh command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the launch_harness_target command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-launch-harness-target",
+          "markdownDescription": "Denies the launch_harness_target command without any pre-configured scope."
         },
         {
           "description": "Denies the launch_translucent_tb command without any pre-configured scope.",

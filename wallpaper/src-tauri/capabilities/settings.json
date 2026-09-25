@@ -17,6 +17,7 @@
     "allow-autostart-status",
     "allow-scan-dsh-paths",
     "allow-scan-harness-targets",
+    "allow-launch-harness-target",
     "allow-scan-harness-endpoints-command",
     "allow-set-harness-endpoint",
     "allow-raise-client-window",

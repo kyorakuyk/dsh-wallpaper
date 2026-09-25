@@ -13,6 +13,8 @@ mod deepseek_web;
 mod deepseek_web_config;
 #[cfg(not(feature = "lite"))]
 mod harness_targets;
+#[cfg(not(feature = "lite"))]
+mod harness_launch;
 mod desktop_fallback;
 mod lock_screen_backup;
 mod native_bootstrap;
@@ -331,6 +333,149 @@ async fn scan_harness_targets(
     .map_err(|error| format!("扫描 Harness 执行主体未完成：{error}"))
 }
 
+/// Start the chosen execution subject — a shell that carries its own checkout, or
+/// a source tree — and report what happened.
+///
+/// This is the shim's "start" half, and the only manual launch entry point once a
+/// subject is chosen: the class decides the mechanism, so the caller passes an id
+/// and gets a closed outcome code back instead of branching on client shape
+/// itself. Checkouts still start through `spawn_managed_dsh`, which is what keeps
+/// ownership tracking and the port-occupancy rule in one place.
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+async fn launch_harness_target(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    target_id: String,
+    profile: Option<String>,
+    command: Option<String>,
+) -> Result<harness_launch::HarnessLaunchOutcome, String> {
+    require_wallpaper_surface(&caller)?;
+    let plan = harness_launch::plan_launch(
+        &target_id,
+        profile.as_deref().unwrap_or_default(),
+        command.as_deref(),
+        harness_launch::LaunchTrigger::Manual,
+    )
+    .map_err(str::to_string)?;
+    // Starting a shell waits for the client to answer (up to the launch timeout),
+    // so it must not run on the caller's own thread. The managed state is taken
+    // inside the blocking task, where acquiring it cannot block the UI.
+    tauri::async_runtime::spawn_blocking(move || {
+        let managed = app.state::<ManagedDshState>();
+        harness_launch::run_launch(&plan, managed.inner())
+    })
+    .await
+    .map_err(|error| format!("启动 Harness 执行主体未完成：{error}"))
+}
+
+/// The one automatic-launch record, read without consuming it.
+///
+/// Read and write are separate helpers on purpose: a live `tauri::State` borrow of
+/// the app handle cannot cross an `await`, and the start below has to be offloaded
+/// to a blocking task.
+#[cfg(not(feature = "lite"))]
+fn autostart_attempt(app: &tauri::AppHandle) -> Result<Option<ManagedDshAutostart>, String> {
+    let state = app.state::<ManagedDshAutostartState>();
+    let record = state
+        .0
+        .lock()
+        .map_err(|_| "DSH 自动启动状态不可用".to_string())?;
+    Ok(record.clone())
+}
+
+#[cfg(not(feature = "lite"))]
+fn record_autostart_attempt(
+    app: &tauri::AppHandle,
+    outcome: &ManagedDshAutostart,
+) -> Result<(), String> {
+    let state = app.state::<ManagedDshAutostartState>();
+    let mut record = state
+        .0
+        .lock()
+        .map_err(|_| "DSH 自动启动状态不可用".to_string())?;
+    *record = Some(outcome.clone());
+    Ok(())
+}
+
+/// Start the chosen execution subject at most once per wallpaper process.
+///
+/// The automatic counterpart of `launch_harness_target`, for the
+/// `autoStartWithWallpaper` setting. The trigger is the only difference in the
+/// plan, and it is a real one: only this path may keep a window out of sight
+/// (§5.1) and only this path refuses a custom launcher the user has not confirmed.
+///
+/// The single-flight record is shared with `autostart_managed_dsh`, so the two
+/// entry points cannot each start something — the guarantee has to be native,
+/// because a remount, a broadcast, an unlock, HMR or a second WebView would each
+/// arrive as a fresh caller.
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+async fn autostart_harness_target(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    target_id: Option<String>,
+    profile: String,
+    command: Option<String>,
+    trusted_command: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    require_background(&caller)?;
+    if let Some(previous) = autostart_attempt(&app)? {
+        // Already attempted in this process: report the same outcome rather than
+        // trying again.
+        return Ok(serde_json::to_value(&previous).unwrap_or_else(|_| {
+            serde_json::json!({ "outcome": "already-attempted" })
+        }));
+    }
+
+    // Nothing chosen yet is the same situation the checkout-only version reported
+    // as `root-path-missing`, and the settings view already words that outcome.
+    let Some(target_id) = target_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        let outcome = ManagedDshAutostart::new("root-path-missing");
+        record_autostart_attempt(&app, &outcome)?;
+        return Ok(serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null));
+    };
+    let plan = match harness_launch::plan_launch(
+        &target_id,
+        &profile,
+        command.as_deref(),
+        harness_launch::LaunchTrigger::Automatic {
+            trusted_command: trusted_command == Some(true),
+        },
+    ) {
+        Ok(plan) => plan,
+        Err(code) => {
+            let outcome = ManagedDshAutostart::new(code);
+            record_autostart_attempt(&app, &outcome)?;
+            return Ok(serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null));
+        }
+    };
+
+    // The handle is cloned into the blocking task so this one keeps working for
+    // the record below: the task owns the clone, this frame owns the original.
+    let worker = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let managed = worker.state::<ManagedDshState>();
+        harness_launch::run_launch(&plan, managed.inner())
+    })
+    .await
+    .map_err(|error| format!("启动 Harness 执行主体未完成：{error}"))?;
+
+    let record = ManagedDshAutostart {
+        // An `already-running` subject is someone else's live client, left
+        // completely alone: the same meaning `external` carries on the checkout
+        // path, where an external DSH already owned the port.
+        external: outcome.outcome == "already-running",
+        pid: outcome.pid,
+        outcome: outcome.outcome,
+    };
+    record_autostart_attempt(&app, &record)?;
+    Ok(serde_json::to_value(record).unwrap_or(serde_json::Value::Null))
+}
+
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
 fn launch_dsh(
@@ -517,8 +662,12 @@ fn managed_dsh_log_tail(path: Option<&PathBuf>, lines: usize) -> String {
 /// Shared, validated launch path for the manual button and the autostart
 /// setting. Both callers get identical validation, ownership tracking and
 /// single-instance behaviour because there is only one implementation.
+///
+/// Reachable from `harness_launch`, which is how a chosen execution subject ends
+/// up here: the shim decides *which* class to start, and every checkout still
+/// starts through this one chain.
 #[cfg(not(feature = "lite"))]
-fn spawn_managed_dsh(
+pub(crate) fn spawn_managed_dsh(
     state: &ManagedDshState,
     root_path: &str,
     profile: &str,
@@ -3182,6 +3331,8 @@ macro_rules! register_edition_commands {
             autostart_status,
             scan_dsh_paths,
             scan_harness_targets,
+            launch_harness_target,
+            autostart_harness_target,
             launch_dsh,
             autostart_managed_dsh,
             managed_dsh_autostart_status,

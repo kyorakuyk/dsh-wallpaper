@@ -8,7 +8,8 @@ import type { AppearanceSlot } from '../appearance/theme/index.ts'
 import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, LockScreenDiagnostics, ManagedDshStatus, ApiConversationListing } from '../native/runtime.ts'
 import { preferredDisplayId } from '../runtime/displayLayout.ts'
 import { harnessStateLabel } from '../connect/harnessLabels.ts'
-import type { AutostartStatus, HarnessEndpointScan } from '../native/runtime.ts'
+import type { AutostartStatus, HarnessEndpointScan, HarnessTarget } from '../native/runtime.ts'
+import { subjectDetail, subjectKindLabel } from '../connect/harnessSubjects.ts'
 import { OfficialPersonaCards } from '../persona/OfficialPersonaCards.tsx'
 import './SettingsPanel.css'
 
@@ -40,7 +41,15 @@ export interface SettingsPanelProps {
   onRefreshTranslucentTb: () => void
   onLaunchTranslucentTb: () => void
   onInstallTranslucentTb: () => void
-  dshCandidates: Array<{ rootPath: string; source: string }>
+  /**
+   * The execution subjects the shim found: shells that carry their own checkout,
+   * and source trees (§3). Choosing one fixes which service the wallpaper starts;
+   * a source tree still needs its window (and its profile) chosen separately.
+   */
+  harnessTargets: HarnessTarget[]
+  /** The §4.3 prompt when several source trees exist, so the user chooses one. */
+  subjectChoice?: string
+  onSelectSubject: (targetId: string) => void
   /**
    * Actual Windows autostart state. The "start DSH with the wallpaper" setting
    * is only a wallpaper-start trigger, so the card must say so rather than
@@ -71,8 +80,9 @@ export interface SettingsPanelProps {
   reachAction: 'browser' | 'window'
   /** The endpoint the action will act on, when one is selected. */
   reachPort?: number
-  onAdoptDsh: (rootPath: string) => void
   onLaunchDsh: () => void
+  /** A launch waits for the client to answer, so the button reports that wait. */
+  subjectLaunchBusy: boolean
   managedDsh: ManagedDshStatus
   onRefreshManagedDsh: () => void
   onStopManagedDsh: () => void
@@ -251,6 +261,15 @@ export function PriceInput({
 export function SettingsPanel(props: SettingsPanelProps) {
   const { settings, harnessStatus, onChange, onClose, translucentTb, page } = props
   const set = (patch: Partial<WallpaperSettings>) => onChange({ ...settings, ...patch })
+  /**
+   * The chosen subject, and whether it is the class that carries its own checkout.
+   *
+   * An unknown or not-yet-chosen id is treated as a checkout: that is what the
+   * root-path/profile/launcher fields describe, and it is also the class a
+   * profile written by an older version falls back to.
+   */
+  const selectedSubject = props.harnessTargets.find((target) => target.id === settings.dshLaunch.subjectId)
+  const shellSelected = selectedSubject?.kind === 'embedded-shell'
   const updateRule = (index: number, patch: Partial<ModelTierRule>) => set({ modelTierRules: settings.modelTierRules.map((rule, i) => i === index ? { ...rule, ...patch } : rule) })
   const pageMeta = pages.find((item) => item.id === page)!
   const displayOptions = props.desktopDisplays.map((display, index) => ({ value: display.id, label: displayLabel(display, index) }))
@@ -311,10 +330,18 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <Field title="启动时使用"><Choice label="启动时使用" value={settings.defaultBackend} onChange={(value) => set({ defaultBackend: value as BackendMode })} options={[{ value: 'deepseek-web', label: 'DeepSeek 网页入口（实验）' }, { value: 'deepseek-api', label: 'DeepSeek API（付费）' }, { value: 'harness', label: 'DeepSeek Harness' }]} /></Field>
           <Field title="DSH 就绪时自动切换" detail="仅检测到兼容的壁纸 Bridge 才会切换。"><Toggle label="DSH 自动切换" checked={settings.autoSwitchHarness} onChange={(value) => set({ autoSwitchHarness: value })} /></Field>
         </Card>
-        <Card title="DeepSeek Harness 启动" description="自动扫描只建议候选路径；壁纸只启动自己登记的 DSH 进程，不会关闭其他 3080 服务。">
-          <Field title="自动扫描" detail={props.dshScanBusy ? '正在后台搜索可识别的 DSH 项目目录，请稍候。' : props.dshCandidates.length > 0 ? `已发现 ${props.dshCandidates.length} 个候选目录。` : '支持迁移后的磁盘位置；扫描不会阻塞设置中心。'}><button className="settings-action secondary" disabled={props.dshScanBusy} onClick={props.onScanDsh}>{props.dshScanBusy ? '扫描中…' : '扫描 DSH'}</button></Field>
-          {props.dshCandidates.map((candidate) => <Field key={candidate.rootPath} title={candidate.rootPath} detail={candidate.source}><button className="settings-action secondary" onClick={() => props.onAdoptDsh(candidate.rootPath)}>采用</button></Field>)}
-          <Field title="DSH 根目录"><input value={settings.dshLaunch.rootPath ?? ''} placeholder="自动扫描或手动填写 dsh 项目目录" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, rootPath: e.target.value || undefined } })} /></Field>
+        <Card title="DeepSeek Harness 启动" description="先选执行主体：两个客户端自带检出与服务，源码检出由本应用启动。壁纸只启动自己登记或拉起的进程，不会关闭或接管其他实例。">
+          <Field title="自动扫描" detail={props.dshScanBusy ? '正在后台搜索可识别的执行主体，请稍候。' : props.harnessTargets.length > 0 ? `已发现 ${props.harnessTargets.length} 个可选执行主体。` : '也会识别本机已安装的客户端；扫描不会阻塞设置中心。'}><button className="settings-action secondary" disabled={props.dshScanBusy} onClick={props.onScanDsh}>{props.dshScanBusy ? '扫描中…' : '扫描执行主体'}</button></Field>
+          {props.subjectChoice && <Field title="请选择默认主体" detail={props.subjectChoice}><span /></Field>}
+          {props.harnessTargets.map((target) => {
+            const chosen = settings.dshLaunch.subjectId === target.id
+            return (
+              <Field key={target.id} title={`${subjectKindLabel(target.kind)} · ${target.label}`} detail={subjectDetail(target)}>
+                <button className="settings-action secondary" disabled={chosen} onClick={() => props.onSelectSubject(target.id)}>{chosen ? '已选择' : '采用'}</button>
+              </Field>
+            )
+          })}
+          <Field title="DSH 根目录" detail={shellSelected ? '当前主体自带检出，不需要填根目录。' : '扫描时会一并作为提示路径；手动填写即可手工登记一个源码检出。'}><input value={settings.dshLaunch.rootPath ?? ''} placeholder="自动扫描或手动填写 dsh 项目目录" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, rootPath: e.target.value || undefined } })} /></Field>
           <Field
             title="Harness 接入端点"
             detail={endpointScanDetail(props)}
@@ -365,11 +392,15 @@ export function SettingsPanel(props: SettingsPanelProps) {
                 : props.reachAction === 'browser' ? '在浏览器中打开' : '拉起窗口'}
             </button>
           </Field>
-          <Field title="Profile"><input value={settings.dshLaunch.profile} placeholder="desktop" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, profile: e.target.value || 'desktop' } })} /></Field>
-          <Field title="启动命令" detail="填写启动器可执行文件的路径（不接受带参数的整条命令行，也不会经 shell 执行）。留空时优先使用已构建 CLI，找不到时回退 pnpm dsh；node.exe / pnpm 无需额外确认。" ><input value={settings.dshLaunch.command ?? ''} placeholder="留空时优先使用已构建 CLI，找不到时回退 pnpm dsh" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, command: e.target.value || undefined, trustedCommandForAutoStart: e.target.value ? settings.dshLaunch.trustedCommandForAutoStart : false } })} /></Field>
+          {!shellSelected && <>
+            <Field title="Profile"><input value={settings.dshLaunch.profile} placeholder="desktop" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, profile: e.target.value || 'desktop' } })} /></Field>
+            <Field title="启动命令" detail="填写启动器可执行文件的路径（不接受带参数的整条命令行，也不会经 shell 执行）。留空时优先使用已构建 CLI，找不到时回退 pnpm dsh；node.exe / pnpm 无需额外确认。" ><input value={settings.dshLaunch.command ?? ''} placeholder="留空时优先使用已构建 CLI，找不到时回退 pnpm dsh" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, command: e.target.value || undefined, trustedCommandForAutoStart: e.target.value ? settings.dshLaunch.trustedCommandForAutoStart : false } })} /></Field>
+          </>}
           <Field
             title="随壁纸启动 DSH"
-            detail="壁纸每次启动时尝试启动 DSH。登录后生效还需要壁纸自身开机自启；这里不会修改你的系统自启设置。每个壁纸进程最多启动一次，已在 3080 运行的外部 DSH 不会被接管或停止。"
+            detail={shellSelected
+              ? '壁纸每次启动时尝试启动该客户端（自带检出，未实现静默启动的客户端会带窗口出现）。登录后生效还需要壁纸自身开机自启；这里不会修改你的系统自启设置。每个壁纸进程最多启动一次，已在运行的实例不会被接管或重启。'
+              : '壁纸每次启动时尝试启动 DSH。登录后生效还需要壁纸自身开机自启；这里不会修改你的系统自启设置。每个壁纸进程最多启动一次，已在 3080 运行的外部 DSH 不会被接管或停止。'}
           >
             <Toggle
               label="随壁纸启动 DSH"
@@ -398,7 +429,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
               />
             </Field>
           )}
-          <Field title="启动 DSH" detail="仅启动此处配置的 profile，不会接管已有 3080 服务。"><button className="settings-action" disabled={!settings.dshLaunch.rootPath || props.managedDsh.running} onClick={props.onLaunchDsh}>{props.managedDsh.running ? `运行中 · PID ${props.managedDsh.pid}` : '启动'}</button></Field>
+          <Field title="启动执行主体" detail={shellSelected ? '启动该客户端自带的检出与服务；手动启动会显示它自己的窗口。' : '仅启动此处配置的 profile，不会接管已有 3080 服务。'}><button className="settings-action" disabled={(!settings.dshLaunch.subjectId && !settings.dshLaunch.rootPath) || props.managedDsh.running || props.subjectLaunchBusy} onClick={props.onLaunchDsh}>{props.subjectLaunchBusy ? '启动中…' : props.managedDsh.running ? `运行中 · PID ${props.managedDsh.pid}` : '启动'}</button></Field>
           <Field title="受管进程" detail={props.managedDsh.managed ? `${props.managedDsh.rootPath} · profile ${props.managedDsh.profile}` : '未由本应用启动 DSH；外部 DSH 不会被停止。'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshManagedDsh}>刷新</button><button className="settings-action secondary" disabled={!props.managedDsh.running} onClick={props.onStopManagedDsh}>停止本应用启动的 DSH</button></span></Field>
         </Card>
         <Card title="DeepSeek 网页入口（实验）" description="在应用内持久 WebView2 中打开 DeepSeek 官方页面，登录后可从桌面会话窗发送消息。"><Field title="官方页面" detail="页面和登录状态由独立 WebView2 配置目录保存；本应用不读取、复制或记录 Cookie。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开应用内页面</button></Field><Field title="网页适配器配置" detail={props.deepseekWebAdapterConfig ? `${props.deepseekWebAdapterConfig.source === 'local' ? '本地 override' : '内置默认'} · ${props.deepseekWebAdapterConfig.adapterVersion} · ${props.deepseekWebAdapterConfig.path}${props.deepseekWebAdapterConfig.warning ? ` · ${props.deepseekWebAdapterConfig.warning}` : ''}` : '正在读取配置状态…'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshDeepSeekWebAdapterConfig}>刷新</button><button className="settings-action secondary" onClick={props.onOpenDeepSeekWebAdapterConfig}>打开配置</button><button className="settings-action secondary" onClick={props.onResetDeepSeekWebAdapterConfig}>恢复默认</button></span></Field></Card>

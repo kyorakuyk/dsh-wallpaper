@@ -19,6 +19,8 @@
     "allow-open-settings-window",
     "allow-scan-dsh-paths",
     "allow-scan-harness-targets",
+    "allow-launch-harness-target",
+    "allow-autostart-harness-target",
     "allow-begin-interaction-region-session",
     "allow-update-interaction-regions",
     "allow-desktop-layout-metrics",

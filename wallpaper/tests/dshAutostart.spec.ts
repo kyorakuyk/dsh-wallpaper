@@ -34,7 +34,7 @@ describe('DSH autostart outcome reporting', () => {
   it('names the concrete fix for every correctable failure', async () => {
     const { dshAutostartNotice } = await appModule()
     const cases: Array<[Parameters<typeof dshAutostartNotice>[0]['outcome'], string]> = [
-      ['root-path-missing', '尚未配置 DSH 根目录'],
+      ['root-path-missing', '尚未选择执行主体'],
       ['root-path-invalid', '不是可识别的 DSH 项目'],
       ['launcher-missing', '未找到 Node.js 或 pnpm'],
       ['profile-invalid', 'profile 名称无效'],
@@ -134,7 +134,7 @@ describe('every condition the plan requires an actionable message for', () => {
 
 describe('DSH autostart wiring', () => {  it('starts DSH from the background host only, once per setting transition', async () => {
     const app = await source('src/App.tsx')
-    expect(app).toContain('nativeRuntime.autostartManagedDsh({')
+    expect(app).toContain('nativeRuntime.autostartHarnessTarget({')
     // Guarded twice: a module-scope marker so a React remount cannot re-request,
     // and the native record (asserted in its own test) which is the guarantee.
     expect(app).toContain('dshAutostartRequestedInProcess')

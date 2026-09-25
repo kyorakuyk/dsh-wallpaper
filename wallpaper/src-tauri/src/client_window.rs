@@ -30,7 +30,7 @@ use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow, ShowWindow,
-    SW_RESTORE,
+    SW_HIDE, SW_RESTORE,
 };
 #[cfg(windows)]
 use windows::core::BOOL;
@@ -59,6 +59,16 @@ impl RaiseOutcome {
     fn not_running() -> Self {
         Self { outcome: "not-running", raised: false }
     }
+}
+
+/// The process id that owns a listening TCP port on loopback, if any.
+///
+/// Exposed within the crate so a caller that started something for the user can
+/// clean up after itself by identity (the kernel's own table) instead of by image
+/// name, which would also match an instance the user was already running.
+#[cfg(windows)]
+pub(crate) fn endpoint_process_id(port: u16) -> Option<u32> {
+    listener_pid(port)
 }
 
 /// The process id that owns a listening TCP port on loopback, if any.
@@ -227,6 +237,66 @@ pub fn raise_client_window(port: u16) -> RaiseOutcome {
     {
         let _ = port;
         RaiseOutcome::no_window()
+    }
+}
+
+/// What happened when the wallpaper put a client's window out of sight.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HideOutcome {
+    /// Stable, non-sensitive code. The UI maps it to wording.
+    pub outcome: &'static str,
+    /// True when a visible window was actually hidden.
+    pub hidden: bool,
+}
+
+impl HideOutcome {
+    fn hidden_ok() -> Self {
+        Self { outcome: "hidden", hidden: true }
+    }
+
+    fn no_window() -> Self {
+        Self { outcome: "no-window", hidden: false }
+    }
+
+    fn not_running() -> Self {
+        Self { outcome: "not-running", hidden: false }
+    }
+}
+
+/// Put the selected client's window out of sight, without touching its process.
+///
+/// The mirror image of `raise_client_window`, and deliberately the same mechanism:
+/// the port resolves to a process and that process to its own window, so nothing
+/// here depends on a stored executable path either.
+///
+/// It exists because Windows has no "start without showing a window" flag for an
+/// application that does not implement one, so a silent start is "start, then hide
+/// the window we can see" (`docs/design/harness-subject-and-ui-design.md` §5.1).
+/// Because the wallpaper is what hides the window, the wallpaper is also what
+/// shows it again (§6.1): the shell's own idea of whether its window is visible is
+/// never depended upon, in either direction.
+pub fn hide_client_window(port: u16) -> HideOutcome {
+    #[cfg(windows)]
+    {
+        let Some(window) = window_for_endpoint(port) else {
+            return if endpoint_is_listening(port) {
+                HideOutcome::no_window()
+            } else {
+                HideOutcome::not_running()
+            };
+        };
+        // `ShowWindow` reports the *previous* visibility, which is not the answer
+        // this returns: the caller asked whether the window is now hidden, and a
+        // window that was already hidden is not reachable here at all, because
+        // `window_for_endpoint` only ever returns visible windows.
+        unsafe { ShowWindow(window, SW_HIDE) };
+        HideOutcome::hidden_ok()
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = port;
+        HideOutcome::no_window()
     }
 }
 

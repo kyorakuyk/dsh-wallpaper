@@ -22,8 +22,9 @@ export interface ManagedDshStatus { managed: boolean; running: boolean; pid?: nu
  * already owned by someone else's DSH and was deliberately left alone.
  */
 export interface ManagedDshAutostart {
-  outcome: 'started' | 'already-attempted' | 'root-path-missing' | 'root-path-invalid'
-    | 'launcher-missing' | 'profile-invalid' | 'port-occupied-external' | 'command-not-confirmed' | 'spawn-failed'
+  outcome: 'started' | 'started-unconfirmed' | 'already-attempted' | 'already-running' | 'root-path-missing'
+    | 'root-path-invalid' | 'launcher-missing' | 'profile-invalid' | 'port-occupied-external'
+    | 'command-not-confirmed' | 'unknown-target' | 'spawn-failed'
   pid?: number
   external: boolean
 }
@@ -39,6 +40,25 @@ export interface HarnessEndpointScan {
   source: 'default' | 'user'
   bridgeFound: boolean
   status: HarnessStatus
+}
+
+/**
+ * What the shim did when asked to start a chosen execution subject.
+ *
+ * `started-unconfirmed` is not a failure: the Windows shell accepted the request
+ * but nothing answered before the launch timeout, which a slow first start of an
+ * Electron client can produce. `already-running` means the subject's port was
+ * already answering, so its live instance was reported and left untouched.
+ */
+export interface HarnessLaunchOutcome {
+  outcome: 'started' | 'started-unconfirmed' | 'already-running' | 'unknown-target'
+    | 'root-path-invalid' | 'launcher-missing' | 'profile-invalid'
+    | 'port-occupied-external' | 'command-not-confirmed' | 'spawn-failed'
+  kind: 'embedded-shell' | 'checkout'
+  /** Present only when this application started and owns a child (a checkout). */
+  pid?: number
+  /** True when the subject's window was put out of sight after starting. */
+  hidden: boolean
 }
 
 /**
@@ -229,6 +249,28 @@ export interface NativeRuntime {
    * takes over nothing.
    */
   scanHarnessTargets(hintPath?: string, deepScan?: boolean): Promise<HarnessTargetScan>
+  /**
+   * Start the chosen execution subject. The class decides the mechanism — a shell
+   * alias, or the managed checkout chain — so the caller passes an id and reads a
+   * closed outcome code back.
+   */
+  launchHarnessTarget(options: {
+    targetId: string
+    profile?: string
+    command?: string
+  }): Promise<HarnessLaunchOutcome>
+  /**
+   * The unattended counterpart, at most once per wallpaper process (native state
+   * is the single-flight authority, exactly as for `autostartManagedDsh`). The
+   * differences are real: only this path may keep a window out of sight, and only
+   * this path needs explicit consent for a custom launcher.
+   */
+  autostartHarnessTarget(options: {
+    targetId?: string
+    profile: string
+    command?: string
+    trustedCommand?: boolean
+  }): Promise<ManagedDshAutostart>
   launchDsh(rootPath: string, profile: string, command?: string): Promise<number>
   /**
    * One automatic start attempt per process, with the outcome remembered even
@@ -547,6 +589,31 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) return { targets: [], requiresSubjectChoice: false }
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<HarnessTargetScan>('scan_harness_targets', { hintPath, deepScan })
+  },
+  async launchHarnessTarget(options) {
+    if (!await tauriAvailable()) {
+      return { outcome: 'spawn-failed' as const, kind: 'checkout' as const, hidden: false }
+    }
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<HarnessLaunchOutcome>('launch_harness_target', {
+      targetId: options.targetId,
+      profile: options.profile,
+      command: options.command,
+    })
+  },
+  async autostartHarnessTarget(options) {
+    if (!await tauriAvailable()) {
+      // A browser preview has no native shell to own the process, so this reports
+      // a terminal outcome instead of throwing into a boot path.
+      return { outcome: 'spawn-failed' as const, external: false }
+    }
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<ManagedDshAutostart>('autostart_harness_target', {
+      targetId: options.targetId,
+      profile: options.profile,
+      command: options.command,
+      trustedCommand: options.trustedCommand,
+    })
   },
   async launchDsh(rootPath, profile, command) {
     const { invoke } = await import('@tauri-apps/api/core')
