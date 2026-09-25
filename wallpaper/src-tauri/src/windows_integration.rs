@@ -1703,6 +1703,27 @@ unsafe extern "system" fn session_subclass_proc(
 /// per-mouse-move `WM_NCHITTEST` path stays untouched.
 // Pure arithmetic on the message parameter; needed by the call sites in every profile.
 #[cfg(windows)]
+/// Record that the hit-test branch really runs while the left button is down.
+///
+/// Phase A of the repair plan requires the trigger to be proven on a real click rather than
+/// assumed. `WM_MOUSEACTIVATE` and `WM_LBUTTONDOWN` were measured to never arrive; whether
+/// `WM_NCHITTEST` arrives is the remaining question, and the whole island-click handover
+/// hangs on it. Rate limited, because hit-testing repeats while a button is held.
+#[cfg(all(windows, debug_assertions))]
+fn trace_island_click_reached(local_x: i32, local_y: i32) {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else { return };
+    if last.is_some_and(|previous| previous.elapsed() < std::time::Duration::from_millis(500)) {
+        return;
+    }
+    *last = Some(std::time::Instant::now());
+    log::info!("island click reached WM_NCHITTEST with the left button down at ({local_x}, {local_y})");
+}
+
+/// Release builds keep the call site and compile the probe away.
+#[cfg(all(windows, not(debug_assertions)))]
+fn trace_island_click_reached(_local_x: i32, _local_y: i32) {}
+
 fn client_point(lparam: LPARAM) -> (i32, i32) {
     let packed = lparam.0 as u32;
     ((packed as u16 as i16) as i32, ((packed >> 16) as u16 as i16) as i32)
@@ -1885,6 +1906,10 @@ unsafe extern "system" fn interaction_subclass_proc(
                 // Outside the island nothing here runs, so the wallpaper still never
                 // takes the keyboard without the user asking for it (plan 3.C).
                 if unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0 {
+                    // Phase A still has one open question: whether this branch is reached at all on
+                    // a real click. The WebView2 child belongs to another process, so hit-testing may
+                    // not be ours to see. Traced so the answer is measured rather than assumed.
+                    trace_island_click_reached(local_x, local_y);
                     hand_over_keyboard_after_island_click(root_hwnd);
                 }
             } else {
