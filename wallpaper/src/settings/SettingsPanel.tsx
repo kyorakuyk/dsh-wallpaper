@@ -196,32 +196,7 @@ function Choice({ value, options, onChange, label, disabled = false, emptyMessag
   </div>
 }
 
-/**
- * Wording for the endpoint card.
- *
- * The user's rule: the first scan is mandatory, so before it the card says so
- * rather than showing an empty dropdown that looks broken; after it, the card
- * states how many Bridges were found, because "found 2" and "found none" need
- * different next actions.
- */
-export function endpointScanDetail(props: {
-  endpointScanDone: boolean
-  endpointScan: HarnessEndpointScan[]
-}): string {
-  if (!props.endpointScanDone) {
-    return '先点「扫描」找一找本机正在运行的 Harness。官方桌面客户端、第三方桌面客户端和官方 Web/CLI 监听不同端口，不扫描的话壁纸可能连不上正在运行的那个。'
-  }
-  const bridges = props.endpointScan.filter((item) => item.bridgeFound)
-  if (bridges.length === 0) {
-    return `已扫描 ${props.endpointScan.length} 个端口，未发现可接入的 Harness。请先启动任一个客户端，然后重新扫描。`
-  }
-  const ready = bridges.filter((item) => item.status.availability === 'bridge-ready')
-  const detail = `已扫描 ${props.endpointScan.length} 个端口，发现 ${bridges.length} 个可接入的 Harness`
-  const suffix = ready.length === 0
-    ? '，但当前都不可对话（下面下拉里可以看到各自的原因）。'
-    : `，其中 ${ready.length} 个可用。默认按「官方桌面 → 第三方桌面 → 官方 Web/CLI」选择，也可以在下拉里指定。`
-  return detail + suffix
-}
+
 
 /** Local copy of the kind label so the panel does not import the connect layer. */
 export function harnessEndpointKindLabel(kind: HarnessEndpointScan['kind']): string {
