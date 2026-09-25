@@ -2328,7 +2328,7 @@ async fn fetch_harness_status() -> serde_json::Value {
 /// for it. It performs no activation yet - this is the diagnostic step of plan 3.A.
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
-fn verify_island_click(caller: tauri::WebviewWindow) -> Result<String, String> {
+fn verify_island_click(app: tauri::AppHandle, caller: tauri::WebviewWindow) -> Result<String, String> {
     require_wallpaper_surface(&caller)?;
     // Log both outcomes. Logging only the success made a rejected report
     // indistinguishable from a report that was never sent, which is exactly the
@@ -2341,6 +2341,10 @@ fn verify_island_click(caller: tauri::WebviewWindow) -> Result<String, String> {
         }
     };
     log::info!("{verdict}");
+    // A verified click is the authorisation: a genuine input event lifts the foreground
+    // lock, which is what makes the handover permissible, and why it is bound to a click
+    // and never called on its own.
+    windows_integration::hand_over_keyboard_for_app(&app);
     Ok(verdict)
 }
 

@@ -88,7 +88,7 @@ use windows::{
             GW_HWNDNEXT, GW_HWNDPREV, HTTRANSPARENT, HWND_TOP, MONITORINFOF_PRIMARY,
             PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SEND_MESSAGE_TIMEOUT_FLAGS, SMTO_NORMAL,
             SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-            GetWindowThreadProcessId, GetGUIThreadInfo, SW_HIDE, SW_SHOWNA, WM_ACTIVATE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_NCACTIVATE, WM_NCLBUTTONDOWN, WM_SETFOCUS, GUITHREADINFO,
+            GetAncestor, GetWindowThreadProcessId, GetGUIThreadInfo, SetForegroundWindow, GA_ROOT, SW_HIDE, SW_SHOWNA, WM_ACTIVATE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_NCACTIVATE, WM_NCLBUTTONDOWN, WM_SETFOCUS, GUITHREADINFO,
             WM_NCDESTROY, WM_NCHITTEST, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WS_BORDER,
             WS_CAPTION, WS_CHILD, WS_DLGFRAME, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME,
             WS_EX_STATICEDGE, WS_EX_TOOLWINDOW, WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
@@ -1770,6 +1770,104 @@ fn window_chain_reaches_this_process(hwnd: HWND) -> bool {
         current = parent;
     }
     false
+}
+
+/// Carry out the foreground handover for a click that has already been verified.
+///
+/// Runs on the main thread because `SetFocus` fails for a window owned by another thread, and
+/// the wallpaper host belongs to the main thread.
+///
+/// Two steps, in this order, and the order is the whole point. Our host is a `WS_CHILD` of the
+/// desktop host window, and a child cannot be the foreground window - that is why every earlier
+/// `SetFocus` "succeeded" while the keyboard stayed with Progman. What the working double-click
+/// does is make the *top-level* desktop window foreground, after which the keyboard descends to
+/// its children. So the top-level ancestor goes foreground first, and only then does the
+/// keyboard focus follow into the WebView.
+///
+/// A genuine user click is what makes this permissible: Windows lifts the foreground lock for
+/// the process that received the input, which is why this is bound to a verified click and
+/// never called on its own.
+///
+/// Returns a description of the readback. Success is never claimed from a return code.
+/// Run the handover for the wallpaper's own host window, on the main thread.
+///
+/// The host window belongs to the main thread, so `SetFocus` on it from any other thread
+/// fails; this resolves the window here and dispatches the work where it can succeed. Failures
+/// are logged rather than returned, since the caller is a click report and the handover itself
+/// already records the outcome.
+#[cfg(windows)]
+pub fn hand_over_keyboard_for_app(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let dispatched = app.run_on_main_thread(move || {
+        let Some(window) = handle.get_webview_window("background") else {
+            log::warn!("输入岛交接：找不到 background 窗口");
+            return;
+        };
+        let Ok(hwnd) = window.hwnd() else {
+            log::warn!("输入岛交接：background 窗口没有句柄");
+            return;
+        };
+        log::info!("{}", hand_over_keyboard_after_verified_click(HWND(hwnd.0)));
+    });
+    if dispatched.is_err() {
+        log::warn!("输入岛交接：无法到达主线程");
+    }
+}
+
+#[cfg(not(windows))]
+pub fn hand_over_keyboard_for_app(_app: &tauri::AppHandle) {}
+
+#[cfg(windows)]
+pub fn hand_over_keyboard_after_verified_click(host: HWND) -> String {
+    unsafe {
+        let top = GetAncestor(host, GA_ROOT);
+        if top.0.is_null() {
+            return "未找到顶层祖先窗口；未执行交接".to_string();
+        }
+        let foreground_before = GetForegroundWindow();
+        let mut foreground_thread = 0u32;
+        GetWindowThreadProcessId(foreground_before, Some(&mut foreground_thread));
+        let current_thread = GetCurrentThreadId();
+        let attached = foreground_thread != 0
+            && foreground_thread != current_thread
+            && AttachThreadInput(current_thread, foreground_thread, true).as_bool();
+        let foreground_ok = SetForegroundWindow(top).as_bool();
+        let focus_ok = SetFocus(Some(host)).is_ok();
+        if attached {
+            let _ = AttachThreadInput(current_thread, foreground_thread, false);
+        }
+        let foreground_now = GetForegroundWindow();
+        let mut foreground_now_pid = 0u32;
+        GetWindowThreadProcessId(foreground_now, Some(&mut foreground_now_pid));
+        let mut info = GUITHREADINFO::default();
+        info.cbSize = core::mem::size_of::<GUITHREADINFO>() as u32;
+        let focus_pid = if GetGUIThreadInfo(0, &mut info).is_ok() {
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(info.hwndFocus, Some(&mut pid));
+            Some(pid)
+        } else {
+            None
+        };
+        let focus_class = if focus_pid.is_some() {
+            window_class(info.hwndFocus).unwrap_or_else(|| "<none>".to_string())
+        } else {
+            "<no-gui-thread-info>".to_string()
+        };
+        let foreground_class = window_class(foreground_now).unwrap_or_else(|| "<none>".to_string());
+        // The channel is restored only when the readback agrees: the desktop top-level holds the
+        // foreground and the keyboard focus has followed into the WebView. Anything else is
+        // reported as a failure with the whole picture, never as a success.
+        let webview_has_focus = focus_pid.is_some_and(|pid| pid != 0 && pid != std::process::id());
+        format!(
+            "交接结果：附接={attached} SetForegroundWindow={foreground_ok} SetFocus={focus_ok} | 读回 前台={foreground_class}(pid={foreground_now_pid}) 焦点={focus_class}(pid={focus_pid:?}) 壁纸pid={}",
+            std::process::id(),
+        )
+    }
+}
+
+#[cfg(not(windows))]
+pub fn hand_over_keyboard_after_verified_click(_host: usize) -> String {
+    "交接仅在 Windows 可用".to_string()
 }
 
 #[cfg(windows)]
