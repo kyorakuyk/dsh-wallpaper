@@ -74,13 +74,32 @@ html, body, #root {
   background: linear-gradient(160deg, #0d1428, #131b3c 60%, #1a2244);
 }
 
+/*
+ * 空白背景渐变：液态玻璃质感的深海空景。
+ *
+ * 取代原来那层「两团同色辉光 + 一条斜向线性渐变」——它在全屏分辨率下就是一片扁平
+ * 色块，既空又突兀。现在由四层叠出来，全部是 CSS，不引入图片：多屏铺满、任意分辨
+ * 率都不失真，也不会给每个屏幕多一份素材。
+ *
+ *   1. 深海纵深底色：上方微亮、深处近乎全黑，撑住整幅画面的进深；
+ *   2. 水面漏下的光柱：一道很窄的斜向亮带，是全图唯一的「方向」；
+ *   3. 两团冷光：一团跟随立绘主题色（--persona-glow），一团固定深海青，错开位置，
+ *      让底色看起来像透镜后面的水，而不是一张纸；
+ *   4. 边缘暗角：把视觉重心压回中央，避免全屏发白。
+ *
+ * 整体仍然压得很暗是刻意的：背景只负责氛围，立绘与气泡文字的可读性优先。
+ * 单独用固定青色而不是把主题色再混一次，是为了不依赖 color-mix 这类较新的 CSS，
+ * 旧 WebView2 上也不会退化成一整块纯色。
+ */
 .idle-bg {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(120% 90% at 15% 10%, var(--persona-glow), transparent 55%),
-    radial-gradient(100% 80% at 85% 85%, var(--persona-glow), transparent 50%),
-    linear-gradient(160deg, #10162e88, #1a224488);
+    radial-gradient(140% 115% at 50% 46%, transparent 38%, #04060dd9 100%),
+    linear-gradient(104deg, transparent 33%, #9fe8ff1f 45%, transparent 58%),
+    radial-gradient(90% 70% at 18% 8%, var(--persona-glow), transparent 60%),
+    radial-gradient(115% 85% at 78% 92%, #0f4c5c59, transparent 58%),
+    linear-gradient(178deg, #0d1b33f2 0%, #0a1526fa 46%, #05070fff 100%);
   backdrop-filter: blur(2px);
 }
 
