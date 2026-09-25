@@ -19,12 +19,12 @@ const CONVERSATION_KEY = 'dsh-wallpaper:conversations:v1'
 // and web pointers remain unaffected.
 const HARNESS_POINTER_REVISION = 2
 
-/** 背景选项：'default' = 主题色渐变；其他项 = 正式深海室内插画。 */
+/** 背景选项：'default' = 默认渐变主题（纯 CSS 的空白背景）；其他项 = 深海室内插画。 */
 export const BACKGROUND_OPTIONS = [
   { id: 'workspace', name: '深夜工作室', path: 'personas/deepsea-bg/deepsea-studio.png' },
   { id: 'deepsea-2', name: '深海穹顶舱', path: 'personas/deepsea-bg/deepsea-dome.png' },
   { id: 'deepsea-3', name: '深海书房', path: 'personas/deepsea-bg/deepsea-study.png' },
-  { id: 'default', name: '认认主题渐变', path: '' },
+  { id: 'default', name: '默认渐变主题', path: '' },
 ] as const
 
 export type BackgroundId = (typeof BACKGROUND_OPTIONS)[number]['id']

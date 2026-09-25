@@ -319,7 +319,7 @@
 }
 
 /*
- * 空白背景渐变：液态玻璃质感的深海空景。
+ * 默认渐变主题：液态玻璃质感的深海空景。
  *
  * 取代原来那层「两团同色辉光 + 一条斜向线性渐变」——它在全屏分辨率下就是一片扁平
  * 色块，既空又突兀。现在由四层叠出来，全部是 CSS，不引入图片：多屏铺满、任意分辨
@@ -338,8 +338,61 @@
 .idle-bg {
   position: absolute;
   inset: 0;
+  overflow: hidden;
   background: var(--blank-background);
-  backdrop-filter: blur(2px);
+  /* 这里没有 backdrop-filter：它下面只有这一层渐变，模糊没有视觉收益，却让整屏每帧
+   * 重新采样；岛上的玻璃（.dsh-glass）本身也是 backdrop-filter，鼠标滑过时任何状态
+   * 变化都会连带触发整屏重采样，卡顿就来自这一对。改为提升为独立图层：渐变只栅格化
+   * 一次，上面的玻璃采样一张已缓存的纹理。 */
+  transform: translateZ(0);
+}
+
+/*
+ * 两团"水母光"，让默认渐变主题有呼吸感。
+ *
+ * 只动 transform：合成器就能完成位移与缩放，既不重新栅格化那几层大渐变，也不会让上层
+ * 玻璃的采样结果失效——这是"有动态"和"滑过就卡"之间的分界线。周期取 46s / 68s 且不成
+ * 整数倍，所以两团光不会一起回到原位；速度慢到看不出在动，只有长时间盯着才发现画面在
+ * 呼吸（壁纸是常驻画面，快动画很快就会变成干扰）。
+ *
+ * 不写 will-change：动画本来就一直在跑，浏览器会自行提升这两个层，而 will-change 会让
+ * 这份显存占用常驻——4K 下每层都是实打实的几十 MB。
+ */
+.idle-bg::before,
+.idle-bg::after {
+  content: '';
+  position: absolute;
+  width: 56vmax;
+  height: 56vmax;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.idle-bg::before {
+  top: -20vmax;
+  left: -14vmax;
+  background: radial-gradient(circle at 50% 50%, var(--persona-glow), transparent 62%);
+  opacity: 0.5;
+  animation: blank-drift-a 46s ease-in-out infinite;
+}
+.idle-bg::after {
+  right: -18vmax;
+  bottom: -22vmax;
+  background: radial-gradient(circle at 50% 50%, #1a7fa86b, transparent 60%);
+  opacity: 0.55;
+  animation: blank-drift-b 68s ease-in-out infinite;
+}
+@keyframes blank-drift-a {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(5vmax, 3vmax, 0) scale(1.14); }
+}
+@keyframes blank-drift-b {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1.06); }
+  50% { transform: translate3d(-6vmax, -4vmax, 0) scale(0.94); }
+}
+/* 壁纸是长时间常驻的画面，系统要求减少动态时就完全不呼吸。 */
+@media (prefers-reduced-motion: reduce) {
+  .idle-bg::before,
+  .idle-bg::after { animation: none; }
 }
 
 /* 背景插画模式：全屏铺满，轻微暗化保证立绘/气泡可读 */
@@ -640,17 +693,22 @@
 }
 
 /*
- * 空白背景渐变的唯一定义：--blank-background。
+ * 默认渐变主题的唯一定义：--blank-background。
  *
  * 两处消费它——真正铺满桌面的 .idle-bg，以及设置里那一格的缩略图。缩略图原先有
  * 自己的占位渐变，于是「选中前看到的」和「选中后得到的」是两回事；值抽成变量后，
  * 预览与实物不会再各走各的。
+ *
+ * 亮部尺寸一律用 vmax，不用百分比：百分比在 4K 全屏上会被摊成几米宽的糊斑，整幅画面
+ * 就只剩底色和一道光柱，看起来"简陋"——这不是配色问题，是尺寸单位的问题。vmax 让每团
+ * 光在任何分辨率下都保持直径量级，形状不会被屏幕大小吃掉。
  */
 :root {
   --blank-background:
-radial-gradient(140% 115% at 50% 46%, transparent 38%, #04060dd9 100%),
-    linear-gradient(104deg, transparent 33%, #9fe8ff1f 45%, transparent 58%),
-    radial-gradient(90% 70% at 18% 8%, var(--persona-glow), transparent 60%),
-    radial-gradient(115% 85% at 78% 92%, #0f4c5c59, transparent 58%),
-    linear-gradient(178deg, #0d1b33f2 0%, #0a1526fa 46%, #05070fff 100%);
+    radial-gradient(140% 115% at 50% 46%, transparent 38%, #04060dd9 100%),
+    linear-gradient(178deg, #2f7bb026 0%, transparent 30%),
+    linear-gradient(104deg, transparent 41%, #b6eeff26 47%, #b6eeff10 53%, transparent 61%),
+    radial-gradient(52vmax 38vmax at 20% 12%, var(--persona-glow), transparent 64%),
+    radial-gradient(64vmax 46vmax at 82% 90%, #12556b5c, transparent 62%),
+    linear-gradient(176deg, #0e1d38 0%, #0a1526 48%, #05070f 100%);
 }

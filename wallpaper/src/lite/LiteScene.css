@@ -94,8 +94,10 @@ html, body, #root {
 .idle-bg {
   position: absolute;
   inset: 0;
+  /* 与完整版同样处理：不再用全屏 backdrop-filter（模糊没有视觉收益，却让上层玻璃每次
+   * 状态变化都重采样整屏），改为提升为独立图层，渐变只栅格化一次。 */
   background: var(--blank-background);
-  backdrop-filter: blur(2px);
+  transform: translateZ(0);
 }
 
 .idle-bg-image {
