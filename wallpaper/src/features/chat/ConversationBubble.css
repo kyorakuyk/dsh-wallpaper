@@ -69,10 +69,12 @@
   pointer-events: none;
 }
 
-/* 消息轨道：与输入岛（`.dsh-chat__card`）用**同一套面板材质**。
-   以前这里是一条顶部渐隐的 gradient，所以消息看起来直接铺在壁纸上（用户报的"图一"：
-   没有容器、文字浮在桌面）。现在给它和卡片同款的边框、丙烯填充与背景模糊，只保留
-   "从卡片下抽出来"的几何（宽度、上圆角、底部藏进卡片、无下边框），因此输入岛本身不变。 */
+/* 消息轨道：**透明**——和输入岛一样让壁纸透出来。
+   上一版我把它做成了不透明面板（错的方向 ✗）：以前它是一条顶部渐隐的 gradient，
+   问题只是"渐隐"（顶端透明→底端 32%），于是消息看起来没有容器；现在保留边框与圆角
+   作为轨道轮廓，但**不画填充**，所以材质观感和输入岛一致、壁纸照样透出来。
+   想给它一点点材质时，把 `transparent` 换成
+   `color-mix(in srgb, var(--dsh-glass-fill-strong) calc(var(--dsh-chat-acrylic-opacity, .74) * 35%), transparent)` 即可。 */
 .dsh-chat__history-wrap {
   position: relative;
   z-index: -1;
@@ -80,14 +82,12 @@
   margin: 0 auto -18px;
   padding-bottom: 24px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  border: 1px solid color-mix(in srgb, var(--dsh-text-strong) 14%, transparent);
   border-bottom: 0;
   border-radius: 28px 28px 0 0;
-  background:
-    linear-gradient(180deg, rgba(235, 250, 255, .05), transparent 30%),
-    color-mix(in srgb, var(--dsh-glass-fill-strong) calc(var(--dsh-chat-acrylic-opacity, .74) * 100%), transparent);
-  box-shadow: inset 0 1px 0 rgba(232,250,255,.08), 0 18px 48px rgba(0,0,0,.20);
-  backdrop-filter: blur(34px) saturate(132%);
+  background: transparent;
+  box-shadow: inset 0 1px 0 rgba(232,250,255,.06);
+  backdrop-filter: blur(6px) saturate(108%);
   animation: dsh-chat-history-in var(--dsh-duration-slow) var(--dsh-ease-expressive);
 }
 
@@ -103,10 +103,10 @@
   content: '';
   pointer-events: none;
 }
-.dsh-chat__history-wrap::before { top: 1px; background: linear-gradient(var(--dsh-glass-fill-strong), transparent); border-radius: inherit; }
-.dsh-chat__history-wrap::before { top: 1px; background: linear-gradient(180deg, transparent, rgba(4,13,27,.12) 88%); }
-/* 轨道现在是不透明面板了，底部这条"提亮"必须跟着变淡，否则会在面板里切出一条亮带。 */
-.dsh-chat__history-wrap::after { bottom: 23px; background: linear-gradient(transparent, rgba(4,13,27,.28)); }
+/* 轨道是透明的，所以底部那条"提亮"蒙版必须收掉：它原本是给半透明薄片收边的，
+   现在是透明的，留着只会在消息上切出一条带子。 */
+.dsh-chat__history-wrap::before { top: 1px; background: none; }
+.dsh-chat__history-wrap::after { bottom: 23px; background: none; }
 
 .dsh-chat__history {
   position: relative;
