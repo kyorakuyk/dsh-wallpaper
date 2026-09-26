@@ -656,11 +656,26 @@ pub fn update_interaction_regions(
     // 岛可见性的变化必须留痕：悬浮球「岛在前面就不弹」完全建立在这个标志上，
     // 而它只可能由前端发布热区改变——出问题时第一个要看的就是这条日志。
     if state.island_visible != island_visible {
+        // 热区矩形也打出来：双击误判（"点功能组件却切回表桌面"）只可能是"这个点不在热区里"，
+        // 而热区是前端按元素 rect 发布的——没有矩形就没法判断是发布错了还是判断错了。
+        let rects = state
+            .regions
+            .iter()
+            .map(|region| {
+                format!(
+                    "({},{})-({},{})",
+                    region.left, region.top, region.right, region.bottom
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
         log::info!(
-            "interaction regions: island_visible={} region_count={} revision={}",
+            "interaction regions: island_visible={} region_count={} revision={} scale={} rects=[{}]",
             island_visible,
             state.regions.len(),
-            revision
+            revision,
+            scale_factor,
+            rects
         );
     }
     state.island_visible = island_visible;
@@ -2628,6 +2643,39 @@ fn should_toggle_desktop_workspace(
     cursor_on_desktop_surface && !cursor_hits_interaction && automation_reports_blank
 }
 
+/// 「点功能组件却切回表桌面」只可能是三个输入里有一个不成立，而热区是前端按元素 rect
+/// 发布的：光标落在哪个矩形之外、UI Automation 认为桌面是否空白，必须留痕，否则只能猜。
+#[cfg(windows)]
+fn log_workspace_toggle_decision(hits_interaction: bool, automation_blank: bool) {
+    let mut cursor = POINT::default();
+    let (cursor_x, cursor_y) = unsafe {
+        if GetCursorPos(&mut cursor).is_err() {
+            (i32::MIN, i32::MIN)
+        } else {
+            (cursor.x, cursor.y)
+        }
+    };
+    let rects = interaction_regions()
+        .read()
+        .map(|state| {
+            state
+                .regions
+                .iter()
+                .map(|region| {
+                    format!(
+                        "({},{})-({},{})",
+                        region.left, region.top, region.right, region.bottom
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_else(|_| "<poisoned>".into());
+    log::info!(
+        "workspace toggle armed: cursor=({cursor_x},{cursor_y}) hits_interaction_region={hits_interaction} automation_blank={automation_blank} rects=[{rects}]"
+    );
+}
+
 #[cfg(windows)]
 pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
     std::thread::spawn(move || {
@@ -2664,6 +2712,7 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                     )
                 });
                 if can_toggle {
+                    log_workspace_toggle_decision(false, true);
                     let now = std::time::Instant::now();
                     if last_blank_click.is_some_and(|previous| {
                         now.duration_since(previous) <= std::time::Duration::from_millis(500)
