@@ -298,7 +298,12 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           aria-checked={props.backend === 'harness'}
           aria-label={harnessReady ? `切换至${props.backend === 'harness' ? ' DeepSeek' : ' Harness'} 模式` : props.harnessStarting ? harnessLabel : props.onStartHarness ? '启动 DSH' : '配置 DSH'}
           title={harnessReady ? `当前：${props.backend === 'harness' ? 'Harness，点击切回 DeepSeek' : 'DeepSeek，点击切换 Harness'}` : props.harnessStarting ? harnessLabel : props.onStartHarness ? '启动已配置的 DSH 后端' : '先配置 DSH 根目录与 profile'}
-          disabled={props.harnessStarting}
+          // Deliberately never disabled. A start can take up to the whole 45-second
+          // readiness window, and dimming the only switch on the island for that long
+          // is what made it look stuck: the user could neither switch back nor try
+          // again. A click during a start is already a no-op on the caller's side
+          // (single-flight), and the label says what is happening.
+          data-starting={props.harnessStarting ? 'true' : undefined}
           onClick={() => harnessReady
             ? props.onSelectBackend?.(props.backend === 'harness' ? 'deepseek-web' : 'harness')
             : props.onStartHarness?.() ?? props.onConfigureHarness?.()}

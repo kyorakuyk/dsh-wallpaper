@@ -152,6 +152,28 @@ describe('ConversationBubble', () => {
     expect(html).not.toMatch(/class="dsh-chat__mode-switch"[^>]*disabled/)
   })
 
+  it('keeps the switch usable while a start is still in flight', () => {
+    // A start can take the whole 45-second readiness window. Dimming the only switch
+    // on the island for that long is what made it look stuck: no way back, no way to
+    // retry. The label carries the state instead.
+    const html = renderToStaticMarkup(<ConversationBubble
+      backend="deepseek-web"
+      activity="idle"
+      modelLabel="deepseek-chat"
+      messages={[]}
+      streamingText=""
+      historyExpanded={false}
+      harnessAvailability="offline"
+      harnessStarting
+      onStartHarness={() => undefined}
+      {...callbacks}
+    />)
+
+    expect(html).toContain('DSH 正在启动')
+    expect(html).toContain('data-starting="true"')
+    expect(html).not.toMatch(/class="dsh-chat__mode-switch[^"]*"[^>]*disabled/)
+  })
+
   it('keeps the composer editable while Harness is offline', () => {
     const html = renderToStaticMarkup(<ConversationBubble
       backend="harness"
