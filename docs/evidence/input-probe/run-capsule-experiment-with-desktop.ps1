@@ -99,8 +99,9 @@ try {
   $args1 = @('-NoProfile','-File', $exp)
   if ($Payload -eq 'capsule-click-experiment.ps1') {
     $args1 += @('-CapsuleX', $CapsuleX, '-CapsuleY', $CapsuleY)
-    if ($Run) { $args1 += '-Run' }
   }
+  # Every payload that synthesizes input takes -Run; without it they stay read-only.
+  if ($Run) { $args1 += '-Run' }
   & pwsh @args1
 }
 finally {

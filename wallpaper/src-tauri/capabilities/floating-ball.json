@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "floating-ball",
+  "description": "独立悬浮球窗口：只允许它请求「进入里桌面」这一件事",
+  "windows": ["floating-ball"],
+  "permissions": [
+    "core:event:allow-listen",
+    "allow-enter-inner-workspace-from-ball"
+  ]
+}

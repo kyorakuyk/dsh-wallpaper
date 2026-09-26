@@ -25,9 +25,12 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder}
 /// `floating-ball` 并把它归到 surface `ball`（URL 里的 `?surface=ball` 只是预览兜底）。
 pub const BALL_LABEL: &str = "floating-ball";
 
-/// 悬浮球尺寸（逻辑像素）。与胶囊折叠态（190×44）同一量级，高度留出胶囊两端的半圆。
-const BALL_LOGICAL_WIDTH: f64 = 216.0;
-const BALL_LOGICAL_HEIGHT: f64 = 72.0;
+/// 悬浮球尺寸（逻辑像素）。
+///
+/// 用户要的是**一个极简的小圆球**：正方形窗口 + 圆形容器 + 原生圆形区域裁剪，
+/// 于是"窗口矩形 == 球"——球以外一个像素都不占，也就没有需要登记热区的地方。
+const BALL_LOGICAL_WIDTH: f64 = 56.0;
+const BALL_LOGICAL_HEIGHT: f64 = 56.0;
 
 /// 隐藏位置在主屏下边缘之外的偏移（物理像素）。
 ///
@@ -42,6 +45,22 @@ const BALL_POLL_INTERVAL_MS: u64 = 16;
 
 /// 光标离开球之后多久收回。
 const BALL_HIDE_DELAY_MS: u64 = 400;
+
+/// 用户点过球之后，多久之内不许再弹出。
+///
+/// 实测（0.2.0.90）：点击球 ⇒ 命令进入里桌面 ⇒ 球收到收回请求退场，但紧接着**又弹了回来**
+/// （日志：`hidden reason=retract-requested` 后 1 拍就是 `shown reason=approach`）。
+/// 原因是「岛是否可见」这个判据来自前端发布的热区列表，而进入里桌面时前端会重挂载/重发，
+/// 中间存在一个「列表里暂时没有 chat」的窗口期，球恰好在那几十毫秒里被判成"可以弹"。
+/// 这里加一个冷却期：点过球就是「交给输入岛」的意图，这段时间内球不再冒头。
+/// 与它配套的是下面的「等待岛接管」状态——那条才是真正的判据，冷却只是兜底。
+const BALL_POP_COOLDOWN_AFTER_CLICK_MS: u64 = 1500;
+
+/// 点过球之后，最多等多久才算「岛没来接」并允许球重新弹出（安全阀）。
+///
+/// 正常情况下岛会在几百毫秒内发布 `chat` 热区，`waiting_for_island` 随即解除；
+/// 万一岛因为别的原因没出现（例如用户设置变了），也不能让球永远憋着不出现。
+const BALL_ISLAND_HANDOVER_TIMEOUT_MS: u64 = 10_000;
 
 /// 「靠近球」的纵向/横向容差（物理像素）。
 ///
@@ -80,13 +99,32 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetCursorPos, GetParent, GetShellWindow, GetSystemMetrics, GetWindow,
     GetWindowLongPtrW, GetWindowRect, SetWindowLongPtrW, SetWindowPos, WindowFromPoint,
     GWL_EXSTYLE, GWL_STYLE, GW_HWNDNEXT, GW_HWNDPREV, HWND_TOP, SM_CXSCREEN, SM_CYSCREEN,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-    WS_CHILD, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER,
+    SWP_SHOWWINDOW, WS_CAPTION, WS_CHILD, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
 };
 
 /// Z 槽自检只在进程内报一次：它是一次性的结构事实，不是每拍状态。
 #[cfg(windows)]
 static Z_SLOT_REPORTED: AtomicBool = AtomicBool::new(false);
+
+/// 前端点击悬浮球后要求它立刻退场。
+///
+/// 窗口只由监控线程移动（单一所有者，避免命令线程与轮询线程同时 `SetWindowPos` 打架），
+/// 所以命令侧只置一个请求位，真正收回去的动作发生在下一拍（≤16ms）。
+#[cfg(windows)]
+static BALL_RETRACT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// 请求悬浮球立刻收回。由「单击球 ⇒ 进里桌面」的命令在成功后调用。
+#[cfg(windows)]
+pub(crate) fn request_ball_retract() {
+    BALL_RETRACT_REQUESTED.store(true, Ordering::Release);
+}
+
+#[cfg(windows)]
+fn take_retract_request() -> bool {
+    BALL_RETRACT_REQUESTED.swap(false, Ordering::AcqRel)
+}
 
 /// 按需创建悬浮球窗口；已经存在就复用它。
 ///
@@ -248,12 +286,61 @@ fn ball_hwnd(window: &WebviewWindow) -> Result<HWND, String> {
         .map_err(|error| format!("悬浮球窗口没有原生句柄：{error}"))
 }
 
-/// 原生窗口策略的三条，一次做完。
+/// 原生窗口策略，一次做完。
+///
+/// 顺序不能换：**先去掉非客户区**（`apply_ball_ex_style`，含 `SWP_FRAMECHANGED`），
+/// **再强制尺寸**（`force_ball_size`），**最后才算窗口区域**——区域是拿窗口的实际
+/// 尺寸算的，提前算就会用上被系统夹过的旧尺寸。
 #[cfg(windows)]
 fn apply_ball_window_policy(window: &WebviewWindow, hwnd: HWND) {
     apply_ball_ex_style(hwnd);
+    force_ball_size(window, hwnd);
     refresh_ball_region(window, hwnd);
     raise_above_progman(hwnd);
+}
+
+/// 把窗口尺寸强制成设计尺寸（物理像素）。
+///
+/// ⚠ 必须显式设置，不能只靠 builder 的 `.inner_size()`：实测（0.2.0.89）窗口被创建成
+/// **202×84** 而不是 84×84（56 逻辑像素 × 1.5）。原因是创建那一刻窗口还带着 `WS_CAPTION`
+/// ——带标题栏/系统菜单的窗口，Windows 会把宽度夹到 `SM_CXMINTRACK`（本机 150% 缩放下约
+/// 204 物理像素，正是标题栏图标所需的最小宽度）。等我们把非客户区去掉后，这个夹取不会
+/// 自动消失，窗口就一直比设计尺寸宽一倍多，圆形区域也跟着被拉成椭圆。
+#[cfg(windows)]
+fn force_ball_size(window: &WebviewWindow, hwnd: HWND) {
+    let scale = ball_scale_factor(window);
+    let width = (BALL_LOGICAL_WIDTH * scale).round().max(1.0) as i32;
+    let height = (BALL_LOGICAL_HEIGHT * scale).round().max(1.0) as i32;
+    let mut current = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut current) }.is_ok()
+        && current.right - current.left == width
+        && current.bottom - current.top == height
+    {
+        return;
+    }
+    if let Err(error) = unsafe {
+        SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            width,
+            height,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+    } {
+        log::warn!("floating ball: forcing the ball size failed: {error}");
+    }
+    let mut after = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut after) }.is_ok() {
+        log::info!(
+            "floating ball: size forced to {}x{} (rect={}x{})",
+            width,
+            height,
+            after.right - after.left,
+            after.bottom - after.top
+        );
+    }
 }
 
 /// ex-style：**加** `WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`，**清** `WS_EX_APPWINDOW`。
@@ -270,26 +357,51 @@ fn apply_ball_ex_style(hwnd: HWND) {
         if desired != current {
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, desired);
         }
-        // 样式只在窗口仍隐藏时改，下一次 SWP_SHOWWINDOW 生效，因此不需要
-        // SWP_FRAMECHANGED（那会额外触发一次非客户区重算，对无边框弹窗没有收益）。
-        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-        if style & WS_CHILD.0 as isize != 0 {
-            // 顶层窗口一旦带上 WS_CHILD，就会被挂进某条父链、从此受宿主裁剪。
-            // builder 是无边框弹窗，正常不会出现；真出现就修回来并如实记账。
-            SetWindowLongPtrW(
+        // 窗口样式：必须是一个**没有任何非客户区**的顶层弹出窗口。
+        //
+        // ⚠ 实测（安装版 0.2.0.88，用户截图里能看到 "DSH Wallpaper Ball" 标题栏和一个关闭按钮）：
+        // builder 的 `.decorations(false)` 对**创建后一直没显示过**的窗口不生效——实测样式
+        // `0x04CB0000` 正是 `WS_OVERLAPPEDWINDOW` 去掉 `WS_THICKFRAME`（`resizable(false)` 的
+        // 结果）再加上 `WS_CLIPSIBLINGS`，也就是 `WS_CAPTION`（标题栏）与 `WS_SYSMENU`
+        // （关闭按钮）都还在，而 `WS_POPUP` 从未设置过。所以这里**显式定样式**，不再依赖 builder；
+        // 改完用 `SWP_FRAMECHANGED` 让外壳重算非客户区。
+        let current_style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let non_client = WS_CAPTION.0 as isize
+            | WS_SYSMENU.0 as isize
+            | WS_MINIMIZEBOX.0 as isize
+            | WS_MAXIMIZEBOX.0 as isize
+            | WS_THICKFRAME.0 as isize
+            | WS_CHILD.0 as isize; // 顶层窗口一旦带上 WS_CHILD 会被挂进父链，必须清掉
+        let desired_style = (current_style & !non_client) | WS_POPUP.0 as isize;
+        if desired_style != current_style {
+            SetWindowLongPtrW(hwnd, GWL_STYLE, desired_style);
+            if let Err(error) = SetWindowPos(
                 hwnd,
-                GWL_STYLE,
-                (style & !(WS_CHILD.0 as isize)) | WS_POPUP.0 as isize,
-            );
-            log::warn!("floating ball: style carried WS_CHILD; restored WS_POPUP");
-        } else if style & WS_POPUP.0 as isize == 0 {
-            log::warn!("floating ball: window style is not WS_POPUP (style=0x{style:X})");
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            ) {
+                log::warn!("floating ball: SWP_FRAMECHANGED after style change failed: {error}");
+            }
         }
+        // 读回：标题栏到底去掉没有，必须是日志里一眼可见的结论，而不是靠截图判断。
+        let final_style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let popup = final_style & WS_POPUP.0 as isize != 0;
+        let caption = final_style & WS_CAPTION.0 as isize != 0;
+        let sysmenu = final_style & WS_SYSMENU.0 as isize != 0;
         log::info!(
-            "floating ball: native style exstyle=0x{:X} style=0x{:X}",
+            "floating ball: native style exstyle=0x{:X} style=0x{:X} popup={popup} caption={caption} sysmenu={sysmenu}",
             GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as usize,
-            GetWindowLongPtrW(hwnd, GWL_STYLE) as usize
+            final_style as usize
         );
+        if !popup || caption || sysmenu {
+            log::warn!(
+                "floating ball: window frame is not borderless (popup={popup} caption={caption} sysmenu={sysmenu}); a title bar will be visible"
+            );
+        }
     }
 }
 
@@ -560,6 +672,11 @@ pub fn start_ball_monitor(app: AppHandle) {
         let mut geometry: Option<BallGeometry> = None;
         let mut region_size: Option<(i32, i32)> = None;
         let mut last_geometry_refresh = std::time::Instant::now();
+        let mut pop_cooldown_until: Option<std::time::Instant> = None;
+        let mut cooldown_logged = false;
+        /// 点过球之后的状态：等输入岛接管。岛一旦发布 `chat` 热区就解除；
+        /// 超时（安全阀）也解除，免得球永远不出现。
+        let mut waiting_for_island_since: Option<std::time::Instant> = None;
 
         loop {
             std::thread::sleep(std::time::Duration::from_millis(BALL_POLL_INTERVAL_MS));
@@ -635,7 +752,76 @@ pub fn start_ball_monitor(app: AppHandle) {
             };
 
             let now = std::time::Instant::now();
-            if point_inside_ball(hwnd, pointer) || cursor_over_ball(hwnd, pointer) {
+            // 输入岛已经在前面（或前端点了球、要求立刻退场）⇒ 球必须马上退场，且不再弹出。
+            //
+            // 这是用户明确提出的要求：「当输入岛处于可见状态的时候，悬浮球就不应该弹出来」。
+            // 判据来自前端发布的热区列表（含 id `chat` 即展开态），所以不需要为它再加 IPC。
+            let island_visible = windows_integration::island_visible_from_regions();
+            let retract = take_retract_request();
+            if retract {
+                // 点过球 = 把场面交给输入岛。冷却期内即使热区列表短暂没有 chat，
+                // 球也不许再冒头（原因见 BALL_POP_COOLDOWN_AFTER_CLICK_MS）。
+                pop_cooldown_until = Some(
+                    now + std::time::Duration::from_millis(BALL_POP_COOLDOWN_AFTER_CLICK_MS),
+                );
+                if waiting_for_island_since.is_none() {
+                    waiting_for_island_since = Some(now);
+                    log::info!("floating ball: waiting for the island to take over");
+                }
+            }
+            // 岛接管了就解除等待；超时也解除（安全阀），并且如实记账。
+            if let Some(since) = waiting_for_island_since {
+                if island_visible {
+                    waiting_for_island_since = None;
+                    log::info!("floating ball: island took over; handover complete");
+                } else if now.duration_since(since)
+                    >= std::time::Duration::from_millis(BALL_ISLAND_HANDOVER_TIMEOUT_MS)
+                {
+                    waiting_for_island_since = None;
+                    log::warn!(
+                        "floating ball: the island never became visible within {}ms; the ball may pop again",
+                        BALL_ISLAND_HANDOVER_TIMEOUT_MS
+                    );
+                }
+            }
+            let waiting_for_island = waiting_for_island_since.is_some();
+            let in_cooldown = pop_cooldown_until.is_some_and(|until| now < until);
+            // 冷却期内**两条弹出路径都不许走**（不只「靠近」那条）。
+            //
+            // 实测（0.2.0.91）：收回是分 6 步滑出去的（36ms），光标此刻正停在球原来的位置上，
+            // 于是「光标已在球上」那条分支在滑出过程中又把球显示出来，日志里看起来就是
+            // 「刚收回又弹出」。冷却期必须对所有弹出路径生效。
+            if in_cooldown {
+                if !cooldown_logged {
+                    cooldown_logged = true;
+                    log::info!(
+                        "floating ball: staying hidden reason=post-click-cooldown {}ms",
+                        BALL_POP_COOLDOWN_AFTER_CLICK_MS
+                    );
+                }
+            } else if cooldown_logged {
+                cooldown_logged = false;
+                log::info!("floating ball: post-click-cooldown over; the ball may pop again");
+            }
+            if shown && (island_visible || retract) {
+                if !slide_ball(hwnd, current.x, current.shown_y, current.hidden_y) {
+                    log::warn!("floating ball: slide-out failed reason=island-or-retract");
+                }
+                raise_above_progman(hwnd);
+                shown = false;
+                log::info!(
+                    "floating ball: hidden reason={} {}",
+                    if island_visible {
+                        "island-visible"
+                    } else {
+                        "retract-requested"
+                    },
+                    window_rect_text(hwnd)
+                );
+            } else if !in_cooldown
+                && !waiting_for_island
+                && (point_inside_ball(hwnd, pointer) || cursor_over_ball(hwnd, pointer))
+            {
                 last_pointer_inside = now;
                 if !shown {
                     if !slide_ball(hwnd, current.x, current.hidden_y, current.shown_y) {
@@ -672,7 +858,12 @@ pub fn start_ball_monitor(app: AppHandle) {
                         window_rect_text(hwnd)
                     );
                 }
-            } else if approaching && windows_integration::cursor_on_desktop_surface_via_label(&app) {
+            } else if approaching
+                && !island_visible
+                && !in_cooldown
+                && !waiting_for_island
+                && windows_integration::cursor_on_desktop_surface_via_label(&app)
+            {
                 // 只在桌面上弹：最大化应用的底边同样贴着屏幕下边缘，少了这一条就会在
                 // 应用上面弹出球。判据直接复用桌面宿主那条（光标下的窗口父链能走到 Progman）。
                 if !slide_ball(hwnd, current.x, current.hidden_y, current.shown_y) {

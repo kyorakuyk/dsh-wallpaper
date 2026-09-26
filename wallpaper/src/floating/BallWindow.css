@@ -1,16 +1,17 @@
-/* 悬浮球窗口（surface `ball`）的占位样式。
+/* 悬浮球窗口（surface `ball`）的样式：一个极简的小圆球。
  *
- * 窗口是 216×72 逻辑像素、无边框、透明，并且原生 `SetWindowRgn` 已经把窗口区域
- * 裁成胶囊（圆角椭圆直径 = 窗口高度）。因此这里只需要把整窗画满：
- * `100vw × 100vh` + `box-sizing: border-box`，`border-radius: 999px` 会被浏览器
- * 收敛成 36px（= 高度的一半），与原生区域是同一个形状。
+ * 窗口是 56×56 逻辑像素、无边框、透明，原生 `SetWindowRgn` 已经把窗口区域裁成
+ * 圆形（圆角椭圆直径 = 窗口高度）。所以这里把整窗画满即可：
+ * `100vw × 100vh` + `border-radius: 50%`，形状与原生区域一致。
  *
- * 两条刻意的取舍：
- * 1. **不用 `backdrop-filter`**：球是独立顶层窗口，它背后是桌面而不是本进程的其它
- *    图层，模糊没有可采样的底；而且仓库已经因为全屏 `backdrop-filter` 吃过 hover
- *    卡顿的亏（见 `styles.css` 的默认渐变主题那一段）。
- * 2. **辉光只能画在内部**：原生窗口区域会裁掉胶囊之外的一切，外发光（`0 0 24px`）
- *    在球上根本不可见，所以柔光用 `inset` 阴影 + 内部渐亮来表达。
+ * 三条刻意的取舍：
+ * 1. **不用 `backdrop-filter`**：球是独立顶层窗口，背后是桌面而不是本进程的其它图层，
+ *    模糊没有可采样的底；仓库也已因为全屏 `backdrop-filter` 吃过 hover 卡顿的亏。
+ * 2. **辉光只能画在内部**：原生区域会裁掉圆之外的一切，外发光在球上根本不可见，
+ *    柔光用 `inset` 阴影 + 内部渐亮表达。
+ * 3. **不放任何文字/图标**：用户要求「极简的一个小圆球就够了」，所以球体里没有字形，
+ *    只有一层玻璃质感与一圈描边；hover 时描边转为主题色，那是「这里是可点的」的唯一提示，
+ *    同时也是「WebView 确实收到了真实鼠标输入」的证据（球是独立顶层窗口，不靠热区推算）。
  */
 
 .ball-surface {
@@ -31,67 +32,63 @@
   touch-action: none;
 }
 
-.ball-capsule {
+.ball {
   box-sizing: border-box;
   position: relative;
-  display: flex;
+  display: block;
   width: 100vw;
   height: 100vh;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 999px;
-  /* 深色半透明胶囊；令牌缺失时用同一族的字面值兜底，避免占位阶段整块不可见。 */
-  background: color-mix(in srgb, var(--dsh-glass-fill-strong, rgba(8, 16, 29, 0.78)) 88%, transparent);
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 50%;
+  /* 深色玻璃球；令牌缺失时用同一族的字面值兜底，避免球整块不可见。 */
+  background:
+    radial-gradient(78% 62% at 50% 22%, rgba(255, 255, 255, 0.14), transparent 62%),
+    radial-gradient(120% 120% at 50% 118%, color-mix(in srgb, var(--dsh-accent, #5caeff) 42%, transparent), transparent 58%),
+    color-mix(in srgb, var(--dsh-glass-fill-strong, rgba(8, 16, 29, 0.78)) 90%, transparent);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.13),
-    inset 0 0 26px var(--dsh-glow, rgba(54, 157, 255, 0.24));
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 0 18px var(--dsh-glow, rgba(54, 157, 255, 0.24));
+  cursor: pointer;
   transition: border-color var(--dsh-duration-fast, 140ms) var(--dsh-ease-standard, ease);
+  /* 窗口永不激活（WS_EX_NOACTIVATE），所以键盘焦点环在这里没有意义。 */
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
 }
 
-/* 顶部渐亮，替代被区域裁掉的外发光。 */
-.ball-capsule::after {
+/* hover：描边转主题色。这是 WebView 收到的真事件（不是热区推算），
+ * 它不依赖窗口是否激活：`focusable(false)` 只影响激活，不影响 hover。 */
+.ball:hover {
+  border-color: color-mix(in srgb, var(--dsh-accent, #5caeff) 62%, transparent);
+}
+
+/* 按下时轻微内收，给出「已经点到」的反馈。 */
+.ball:active {
+  box-shadow:
+    inset 0 2px 8px rgba(0, 0, 0, 0.35),
+    inset 0 0 22px var(--dsh-glow, rgba(54, 157, 255, 0.3));
+}
+
+/* 内部呼吸光：外发光会被原生区域裁掉，所以用内部一层柔光表达"活着"。 */
+.ball::after {
   content: '';
   position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: radial-gradient(120% 80% at 50% 0%, rgba(255, 255, 255, 0.12), transparent 68%);
+  inset: 22%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--dsh-accent, #5caeff) 30%, transparent), transparent 78%);
   pointer-events: none;
   animation: ball-breathe 6s ease-in-out infinite;
 }
 
-/* 占位阶段唯一「确实收到真实鼠标输入」的视觉证据：hover 时描边转为主题色。
- * 这是 WebView 收到的真事件，不是热区推算——球是独立顶层窗口。
- * 它不依赖窗口是否激活（`focusable(false)` 只影响激活，不影响 hover）。 */
-.ball-capsule:hover {
-  border-color: color-mix(in srgb, var(--dsh-accent, #5caeff) 52%, transparent);
-}
-
-.ball-capsule__sigil {
-  display: grid;
-  width: 28px;
-  height: 28px;
-  place-items: center;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--dsh-accent, #5caeff) 22%, transparent);
-  box-shadow: inset 0 0 14px var(--dsh-glow, rgba(54, 157, 255, 0.24));
-}
-
-.ball-capsule__label {
-  font-size: 12px;
-  font-weight: 650;
-  line-height: 1;
-  letter-spacing: 0.06em;
-}
-
 @keyframes ball-breathe {
-  0%, 100% { opacity: 0.55; }
+  0%, 100% { opacity: 0.5; }
   50% { opacity: 1; }
 }
 
 /* 系统要求减少动态时完全不呼吸（与 `styles.css` / `tokens.css` 同一约定）。 */
 @media (prefers-reduced-motion: reduce) {
-  .ball-capsule { transition: none; }
-  .ball-capsule::after { animation: none; }
+  .ball { transition: none; }
+  .ball::after { animation: none; }
 }

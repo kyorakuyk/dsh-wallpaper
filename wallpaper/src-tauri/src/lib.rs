@@ -963,6 +963,18 @@ fn require_settings(caller: &tauri::WebviewWindow) -> Result<(), String> {
     }
 }
 
+/// 悬浮球是独立顶层窗口，只允许它请求「进里桌面」。
+///
+/// 命令表面尽量小：球没有别的能力，也不需要别的能力。
+#[cfg(not(feature = "lite"))]
+fn require_ball(caller: &tauri::WebviewWindow) -> Result<(), String> {
+    if caller.label() == floating_ball::BALL_LABEL {
+        Ok(())
+    } else {
+        Err("该命令只允许悬浮球调用。".into())
+    }
+}
+
 /// These commands expose no conversation body or system-setting write:
 /// the settings center needs a current runtime snapshot, and the wallpaper's
 /// DeepSeek entry needs to create/show one fixed, domain-restricted WebView.
@@ -2059,6 +2071,26 @@ fn update_interaction_regions(
 ) -> Result<windows_integration::InteractionRegionUpdateResult, String> {
     require_background(&caller)?;
     windows_integration::update_interaction_regions(regions, scale_factor, session, revision)
+}
+
+/// 单击悬浮球：进入里桌面（并把球收回）。
+///
+/// 这是 §1.1 拍板的「表桌面单击胶囊 = 进入里桌面 + 弹出输入岛」的原生那一半：
+/// 隐藏 Explorer 的图标层并发出 `desktop-workspace-toggle` 的 `"enter"`，
+/// `App.tsx` 收到后会展开输入岛并打开对话。**与桌面空白双击共用同一个实现**
+/// （`windows_integration::enter_inner_workspace`），两条入场路径不会分叉。
+///
+/// 球的收回走请求位，由监控线程在下一拍执行：窗口只由一个线程移动。
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+fn enter_inner_workspace_from_ball(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    require_ball(&caller)?;
+    windows_integration::enter_inner_workspace(&app)?;
+    floating_ball::request_ball_retract();
+    Ok(())
 }
 
 #[tauri::command]
@@ -3421,6 +3453,7 @@ macro_rules! register_edition_commands {
             begin_interaction_region_session,
             update_interaction_regions,
             desktop_layout_metrics,
+            enter_inner_workspace_from_ball,
             send_chat,
             cancel_chat,
             connect_harness,

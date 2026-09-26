@@ -209,9 +209,19 @@ const MAX_INTERACTION_REGIONS: usize = 128;
 const MIN_SCALE_FACTOR: f64 = 0.5;
 const MAX_SCALE_FACTOR: f64 = 8.0;
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+/// 展开态输入岛发布的热区 id（`ConversationBubble` 的 `data-interaction-region="chat"`）。
+///
+/// 原生侧靠它判断「输入岛现在是不是可见」——悬浮球要据此停止弹出（拍板要求：
+/// 岛可见时球不该冒出来）。两个文件之间的这层耦合在两端都写了注释，改名必须同步。
+pub(crate) const ISLAND_REGION_ID: &str = "chat";
+
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InteractionRegionInput {
+    /// 前端给每个热区起的名字（`data-interaction-region`）。缺失时为空串：
+    /// 老版本前端不带 id，位置判定照旧，只是「岛是否可见」会判为否。
+    #[serde(default)]
+    pub id: String,
     pub x: f64,
     pub y: f64,
     pub width: f64,
@@ -238,6 +248,12 @@ struct InteractionRegionState {
     revision: u64,
     scale_factor: f64,
     regions: Vec<PhysicalInteractionRegion>,
+    /// 最近一次发布里是否含 `ISLAND_REGION_ID`，也就是输入岛此刻是否可见。
+    ///
+    /// 悬浮球不参与热区判定（它是独立窗口，自己收鼠标），但它必须知道岛是否已经
+    /// 在前面——否则球会在岛正上方冒出来。判定就放在发布热区这一步，避免为它再开
+    /// 一条 IPC。
+    island_visible: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -610,6 +626,8 @@ pub fn update_interaction_regions(
     if !scale_factor.is_finite() || !(MIN_SCALE_FACTOR..=MAX_SCALE_FACTOR).contains(&scale_factor) {
         return Err(format!("invalid interaction scale factor: {scale_factor}"));
     }
+    // 判定要在 `into_iter()` 吃掉 regions 之前做。
+    let island_visible = regions.iter().any(|region| region.id == ISLAND_REGION_ID);
     let physical_regions: Vec<_> = regions
         .into_iter()
         .enumerate()
@@ -631,6 +649,17 @@ pub fn update_interaction_regions(
     state.revision = revision;
     state.scale_factor = scale_factor;
     state.regions = physical_regions;
+    // 岛可见性的变化必须留痕：悬浮球「岛在前面就不弹」完全建立在这个标志上，
+    // 而它只可能由前端发布热区改变——出问题时第一个要看的就是这条日志。
+    if state.island_visible != island_visible {
+        log::info!(
+            "interaction regions: island_visible={} region_count={} revision={}",
+            island_visible,
+            state.regions.len(),
+            revision
+        );
+    }
+    state.island_visible = island_visible;
     drop(state);
     Ok(InteractionRegionUpdateResult {
         revision,
@@ -651,7 +680,20 @@ pub fn begin_interaction_region_session() -> Result<u64, String> {
     state.revision = 0;
     state.scale_factor = 1.0;
     state.regions.clear();
+    // 新会话开始 = 前端重新挂载，热区清空，岛此刻不可能是可见的。
+    state.island_visible = false;
     Ok(session)
+}
+
+/// 输入岛此刻是否可见（= 最近一次发布的热区里含 `ISLAND_REGION_ID`）。
+///
+/// 悬浮球用它挡住「岛已经在前台还冒出来」的情形。列表为空、会话刚重置、前端从未
+/// 发布过，都判为否——那时岛本来就没有渲染。
+pub(crate) fn island_visible_from_regions() -> bool {
+    interaction_regions()
+        .read()
+        .map(|state| state.island_visible)
+        .unwrap_or(false)
 }
 
 #[cfg(windows)]
@@ -983,6 +1025,47 @@ pub fn restore_desktop_icons() {
     if let Err(error) = set_desktop_icons_visible(true) {
         log::warn!("未能恢复 Explorer 桌面图标：{error}");
     }
+}
+
+/// 进入里桌面：隐藏 Explorer 的图标层，并通知壁纸前端。
+///
+/// **这是进入里桌面的唯一实现**：桌面空白双击与悬浮球单击都必须走它，否则两条
+/// 入场路径会慢慢分叉（`App.tsx` 收到 `desktop-workspace-toggle` 的 `"enter"` 后
+/// 会展开输入岛并打开对话，那是 §1.1 拍板的行为）。
+/// 幂等：已经在里桌面就直接返回成功，不重复 `ShowWindow`、不重复发事件。
+#[cfg(windows)]
+pub(crate) fn enter_inner_workspace(app: &tauri::AppHandle) -> Result<(), String> {
+    if INNER_WORKSPACE_ACTIVE.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    // 先真正把图标层藏掉，成功了再承认「已进入」：顺序反了会在失败时留下
+    // 「自认为在里桌面、实际还在表桌面」的假状态。
+    set_desktop_icons_visible(false)?;
+    INNER_WORKSPACE_ACTIVE.store(true, Ordering::Release);
+    emit_to_background(app, "desktop-workspace-toggle", "enter");
+    Ok(())
+}
+
+/// 离开里桌面：恢复图标层并通知前端。与 [`enter_inner_workspace`] 对称，同样幂等。
+#[cfg(windows)]
+pub(crate) fn leave_inner_workspace(app: &tauri::AppHandle) -> Result<(), String> {
+    if !INNER_WORKSPACE_ACTIVE.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    set_desktop_icons_visible(true)?;
+    INNER_WORKSPACE_ACTIVE.store(false, Ordering::Release);
+    emit_to_background(app, "desktop-workspace-toggle", "leave");
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub(crate) fn enter_inner_workspace(_: &tauri::AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub(crate) fn leave_inner_workspace(_: &tauri::AppHandle) -> Result<(), String> {
+    Ok(())
 }
 
 /// Undo every desktop mutation this process may have left behind, from a process
@@ -2420,23 +2503,27 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                         now.duration_since(previous) <= std::time::Duration::from_millis(500)
                     }) {
                         last_blank_click = None;
-                        let entering = !INNER_WORKSPACE_ACTIVE.fetch_xor(true, Ordering::AcqRel);
-                        if let Err(error) = set_desktop_icons_visible(!entering) {
+                        // The transition itself lives in enter/leave_inner_workspace so the
+                        // double click and the floating ball cannot drift apart.
+                        let result = if INNER_WORKSPACE_ACTIVE.load(Ordering::Acquire) {
+                            leave_inner_workspace(&app)
+                        } else {
+                            enter_inner_workspace(&app)
+                        };
+                        if let Err(error) = result {
                             // If Explorer has restarted or the icon view cannot
                             // be found, preserve a truthful state and do not
                             // enter a half-working inner desktop.
-                            INNER_WORKSPACE_ACTIVE.store(false, Ordering::Release);
                             log::warn!("无法切换表/里桌面图标层：{error}");
                             continue;
                         }
                         log::info!(
                             "桌面空白双击：切换至{}桌面",
-                            if entering { "里" } else { "表" }
-                        );
-                        emit_to_background(
-                            &app,
-                            "desktop-workspace-toggle",
-                            if entering { "enter" } else { "leave" },
+                            if INNER_WORKSPACE_ACTIVE.load(Ordering::Acquire) {
+                                "里"
+                            } else {
+                                "表"
+                            }
                         );
                     } else {
                         last_blank_click = Some(now);
@@ -3864,6 +3951,28 @@ mod tests {
         assert!(!should_toggle_desktop_workspace(true, false, false));
     }
 
+    /// 无名热区：位置判定照旧，只是不会把岛判成可见。
+    fn region(x: f64, y: f64, width: f64, height: f64) -> InteractionRegionInput {
+        InteractionRegionInput {
+            id: String::new(),
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// 带 `ISLAND_REGION_ID` 的热区：展开态输入岛发布的就是它。
+    fn island_region(x: f64, y: f64, width: f64, height: f64) -> InteractionRegionInput {
+        InteractionRegionInput {
+            id: ISLAND_REGION_ID.to_string(),
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
     #[test]
     fn upgrades_a_progman_fallback_when_workerw_appears() {
         assert!(should_upgrade_wallpaper_parent(Some("Progman"), true));
@@ -3894,15 +4003,7 @@ mod tests {
     #[test]
     fn scales_logical_interaction_regions_outward_to_physical_pixels() {
         assert_eq!(
-            scale_interaction_region(
-                InteractionRegionInput {
-                    x: 10.25,
-                    y: 20.5,
-                    width: 100.1,
-                    height: 40.2,
-                },
-                1.5,
-            ),
+            scale_interaction_region(region(10.25, 20.5, 100.1, 40.2), 1.5),
             Some(PhysicalInteractionRegion {
                 left: 15,
                 top: 30,
@@ -3933,26 +4034,8 @@ mod tests {
 
     #[test]
     fn rejects_invalid_regions_and_scale_factors() {
-        assert!(scale_interaction_region(
-            InteractionRegionInput {
-                x: 0.0,
-                y: 0.0,
-                width: 0.0,
-                height: 10.0,
-            },
-            1.0,
-        )
-        .is_none());
-        assert!(scale_interaction_region(
-            InteractionRegionInput {
-                x: 0.0,
-                y: 0.0,
-                width: 10.0,
-                height: 10.0,
-            },
-            f64::NAN,
-        )
-        .is_none());
+        assert!(scale_interaction_region(region(0.0, 0.0, 0.0, 10.0), 1.0).is_none());
+        assert!(scale_interaction_region(region(0.0, 0.0, 10.0, 10.0), f64::NAN).is_none());
     }
 
     #[test]
@@ -3964,18 +4047,8 @@ mod tests {
             .expect("interaction region state")
             .revision;
         let newer = current_revision.saturating_add(100);
-        let first = update_interaction_regions(
-            vec![InteractionRegionInput {
-                x: 1.0,
-                y: 2.0,
-                width: 3.0,
-                height: 4.0,
-            }],
-            1.0,
-            session,
-            newer,
-        )
-        .expect("new region update");
+        let first = update_interaction_regions(vec![region(1.0, 2.0, 3.0, 4.0)], 1.0, session, newer)
+            .expect("new region update");
         assert!(!first.stale);
         let stale = update_interaction_regions(Vec::new(), 1.0, session, newer - 1)
             .expect("stale region update");
@@ -3990,12 +4063,7 @@ mod tests {
         let previous = begin_interaction_region_session().expect("previous region session");
         let current = begin_interaction_region_session().expect("current region session");
         let accepted = update_interaction_regions(
-            vec![InteractionRegionInput {
-                x: 5.0,
-                y: 6.0,
-                width: 30.0,
-                height: 40.0,
-            }],
+            vec![region(5.0, 6.0, 30.0, 40.0)],
             1.0,
             current,
             1,
@@ -4006,5 +4074,46 @@ mod tests {
             .expect("stale session cleanup");
         assert!(stale_cleanup.stale);
         assert_eq!(stale_cleanup.region_count, 1);
+    }
+
+    /// 悬浮球「岛可见时不弹出」的判据就挂在这条映射上：发布的热区里出现
+    /// `ISLAND_REGION_ID` ⇔ 展开态输入岛正在前面。
+    #[test]
+    fn island_visibility_follows_the_published_island_region() {
+        let _guard = REGION_TEST_LOCK.lock().expect("region test lock");
+        let session = begin_interaction_region_session().expect("region session");
+
+        update_interaction_regions(vec![region(1.0, 2.0, 3.0, 4.0)], 1.0, session, 1)
+            .expect("collapsed publish");
+        assert!(!island_visible_from_regions(), "折叠态不该被判成岛可见");
+
+        update_interaction_regions(
+            vec![
+                region(1.0, 2.0, 3.0, 4.0),
+                island_region(5.0, 6.0, 7.0, 8.0),
+            ],
+            1.0,
+            session,
+            2,
+        )
+        .expect("expanded publish");
+        assert!(island_visible_from_regions(), "展开态必须被判成岛可见");
+
+        // 收回折叠态（岛消失）后球要能重新弹出。
+        update_interaction_regions(vec![region(1.0, 2.0, 3.0, 4.0)], 1.0, session, 3)
+            .expect("collapsed publish again");
+        assert!(!island_visible_from_regions());
+
+        // 新会话（前端重挂载）会把状态清空，不能残留「岛可见」。
+        update_interaction_regions(
+            vec![island_region(1.0, 2.0, 3.0, 4.0)],
+            1.0,
+            session,
+            4,
+        )
+        .expect("expanded publish again");
+        assert!(island_visible_from_regions());
+        begin_interaction_region_session().expect("new session");
+        assert!(!island_visible_from_regions(), "新会话必须重置岛可见状态");
     }
 }

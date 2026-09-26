@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Activity, BackendMode, ChatMessage, RuntimeState, TokenUsage } from '../../domain/types.ts'
 import { Button, Glass, Icon } from '../../ui/primitives/index.ts'
-import { BACKEND_PRESENTATION, composerPlaceholder, formatCost, isBusyActivity, sessionCostSummary, turnUsageSummary } from './conversationViewModel.ts'
+import { composerPlaceholder, formatCost, isBusyActivity, sessionCostSummary, turnUsageSummary } from './conversationViewModel.ts'
 import { growHistoryWindow, historyWindow, HISTORY_RENDER_WINDOW } from './streamRender.ts'
 import { harnessStateLabel } from '../../connect/harnessLabels.ts'
 import './ConversationBubble.css'
@@ -114,7 +114,6 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const streamText = props.streamingText
   const [historyLimit, setHistoryLimit] = useState(HISTORY_RENDER_WINDOW)
   const busy = isBusyActivity(props.activity)
-  const backend = BACKEND_PRESENTATION[props.backend]
   const totalCost = sessionCostSummary(props.messages)
   const turnUsage = turnUsageSummary(props.usage, props.backend, Boolean(props.apiPricingConfigured))
   const harnessAvailability = props.harnessAvailability ?? 'offline'
@@ -195,17 +194,16 @@ export function ConversationBubble(props: ConversationBubbleProps) {
     element.scrollTop = element.scrollHeight - anchor
   }, [historyLimit])
 
-  if (props.collapsed) return <button
-    type="button"
-    className={`dsh-chat-collapsed dsh-chat-collapsed--${props.layout ?? 'floating'} dsh-chat-collapsed--${props.expandDirection ?? 'center'} dsh-theme-${props.backend === 'harness' ? 'harness' : 'deepseek'}`}
-    data-interaction-region="chat-collapsed"
-    onClick={props.onExpand}
-    aria-label="展开 AI 对话"
-  >
-    <span className="dsh-chat-collapsed__sigil"><Icon name="spark" size={15} /></span>
-    {(props.layout ?? 'floating') === 'floating' && <span className="dsh-chat-collapsed__label">{backend.shortName}</span>}
-    <Icon name="chevron-up" size={16} />
-  </button>
+  // 折叠态不在壁纸表面上渲染任何东西。
+  //
+  // 折叠态曾经是这里的一枚胶囊（`data-interaction-region="chat-collapsed"`）。但壁纸场景
+  // 画在 Explorer 图标层之下，表桌面上它**收不到任何鼠标消息**（见
+  // `docs/evidence/input-model-desktop-hit-testing.md`），那枚胶囊因此既点不到、
+  // 也不能把点击放给桌面。现在折叠态由独立顶层窗口里的悬浮球承担
+  // （`src/floating/BallWindow.tsx` + `src-tauri/src/floating_ball.rs`），
+  // 壁纸表面只负责展开态。**不要在这里恢复折叠胶囊**：那等于把"点不到的控件"再画一遍。
+  // `collapsed` 这个 prop 仍然保留，因为 `App.tsx` 还在传它。
+  if (props.collapsed) return null
 
   return <section
     className={`conversation-shell dsh-chat dsh-theme-${props.backend === 'harness' ? 'harness' : 'deepseek'} ${showHistory ? 'expanded' : ''} ${busy ? 'dsh-chat--busy' : ''} ${hovered ? 'dsh-chat--hovered' : ''} ${focused ? 'dsh-chat--focused' : ''}`}

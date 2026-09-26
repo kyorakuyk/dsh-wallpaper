@@ -60,6 +60,8 @@ fn main() {
             "hide_settings_window",
             "begin_interaction_region_session",
             "update_interaction_regions",
+            // 悬浮球单击：进入里桌面（球是独立顶层窗口，只授予它这一条命令）。
+            "enter_inner_workspace_from_ball",
             "desktop_layout_metrics",
             "send_chat",
             "cancel_chat",
