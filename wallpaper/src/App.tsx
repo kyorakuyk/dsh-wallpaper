@@ -106,6 +106,28 @@ export function canAutoSelectHarness(
 }
 
 /**
+ * 主体**彻底退出**（availability 为 `offline`）时回到左侧。
+ *
+ * 用户明确要求复位，理由很实在：**拉起 harness 的入口就在壁纸里**——模式滑槽切到 Harness
+ * 那一侧会走"没在运行就启动"的流程。不复位的话，用户想把它重新拉起来还得先手动切一次 ✗，
+ * 多一步无谓的摩擦。
+ *
+ * 记录不会因此丢：Harness 会话 id 是按日期命名的（`wallpaper-YYYY-MM-DD`），转写留在宿主的
+ * 会话存储里，切回 Harness 时会自动接上当天那个会话——"缓存最后一份记录"是结构性的。
+ *
+ * 只在 `offline` 生效：`bridge-loading` 是"正在起来"，那时把用户弹回左侧才是 bug。
+ */
+export function harnessFallbackBackend(
+  availability: RuntimeState['harness'],
+  backend: BackendMode,
+  defaultBackend: WallpaperSettings['defaultBackend'],
+): WallpaperSettings['defaultBackend'] | undefined {
+  if (backend !== 'harness' || availability !== 'offline') return undefined
+  // 配置的默认后端就是 harness 时落到网页入口，绝不停在一个已经不在运行的后端上。
+  return defaultBackend === 'harness' ? 'deepseek-web' : defaultBackend
+}
+
+/**
  * A 3080 response alone is not a usable Harness transport. Keep every
  * renderer-side selection path behind the same compatible-Bridge predicate.
  */
@@ -1312,12 +1334,13 @@ export function App({ surface = 'combined' }: AppProps) {
     if (isHarnessReady(runtime.harness) && runtime.backend !== 'harness') {
       if (canAutoSelectHarness(runtime.harness, runtime.backend, settings.autoSwitchHarness)) changeBackend('harness')
     }
-    // 主体退出后**不自动切回左侧**：既有决策是保留 Harness 会话与对话记录
-    // （`harnessAvailabilityPatch` 的提示文案就是写给这件事的），自动切走会把那份视图一起丢掉。
-    // 滑槽是否复位需要单独确认，见本轮的问题。
+    // 主体退出后复位到左侧：拉起 harness 的入口就在壁纸里，停在死掉的一侧会让用户
+    // 不得不再手动切一次 ✗。记录不会丢——会话按日期命名、转写留在宿主那边，切回去自动接上。
+    const fallback = harnessFallbackBackend(runtime.harness, runtime.backend, settings.defaultBackend)
+    if (fallback) changeBackend(fallback)
     const disconnected = harnessAvailabilityPatch(runtime.backend, runtime.harness, runtime.error)
     if (disconnected) patchRuntime(disconnected)
-  }, [runtime.harness, runtime.backend, runtime.error, settings.autoSwitchHarness])
+  }, [runtime.harness, runtime.backend, runtime.error, settings.autoSwitchHarness, settings.defaultBackend])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {

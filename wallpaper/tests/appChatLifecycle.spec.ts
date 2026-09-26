@@ -41,6 +41,7 @@ describe('App chat lifecycle isolation', () => {
       canAutoSelectHarness,
       canSelectBackend,
       harnessAvailabilityPatch,
+      harnessFallbackBackend,
       harnessSelectionUnavailableError,
     } = await import('../src/App.tsx')
     const disconnected = harnessAvailabilityPatch('harness', 'offline')
@@ -60,6 +61,13 @@ describe('App chat lifecycle isolation', () => {
     expect(canSelectBackend('web-only', 'deepseek-api')).toBe(true)
     expect(harnessSelectionUnavailableError('web-only')).toContain('未安装、未启动或不兼容')
     expect(harnessSelectionUnavailableError('offline')).toContain('未能连接')
+    // 主体**彻底退出**后滑槽要复位到左侧（拉起 harness 的入口就在壁纸里，停在死掉的一侧
+    // 会让用户不得不再手动切一次）。只在 offline 生效：bridge-loading 是"正在起来"。
+    expect(harnessFallbackBackend('offline', 'harness', 'deepseek-web')).toBe('deepseek-web')
+    expect(harnessFallbackBackend('offline', 'harness', 'harness')).toBe('deepseek-web')
+    expect(harnessFallbackBackend('bridge-loading', 'harness', 'deepseek-web')).toBeUndefined()
+    expect(harnessFallbackBackend('bridge-ready', 'harness', 'deepseek-web')).toBeUndefined()
+    expect(harnessFallbackBackend('offline', 'deepseek-web', 'deepseek-web')).toBeUndefined()
   })
 
   it('keeps an API adapter lifecycle stable while committing later request settings', async () => {
