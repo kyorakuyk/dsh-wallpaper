@@ -43,11 +43,18 @@ const BALL_POLL_INTERVAL_MS: u64 = 16;
 /// 光标离开球之后多久收回。
 const BALL_HIDE_DELAY_MS: u64 = 400;
 
-/// 「靠近底部」的纵向宽度（物理像素，从主屏下边缘往上算）。
-const BALL_TRIGGER_EDGE_PX: i32 = 6;
-
-/// 「靠近底部」的横向容差（物理像素）：以球的 x 跨度左右各外扩这么多。
-const BALL_TRIGGER_X_INFLATE_PX: i32 = 80;
+/// 「靠近球」的纵向/横向容差（物理像素）。
+///
+/// ⚠ 实测（2026-09-26，0.2.0.86，本机自动隐藏任务栏）：**不能用「屏幕最底下 6px」当热区**。
+/// 光标一到屏幕下边缘，自动隐藏任务栏就会升起接管整条底带（实测 y=1560 起
+/// `WindowFromPoint` 返回窗口类 `MSTaskSwWClass`，父链是 `Shell_TrayWnd`）；
+/// 而球的「是否在桌面表面」判据 `cursor_is_on_desktop_surface` 只认 `Progman`/`WorkerW`
+/// （`is_desktop_foreground_class`），任务栏一律判否——于是球在最需要弹出的位置上
+/// 永远弹不出来（实测 39 次采样、0 次上屏）。
+///
+/// 因此热区改为**球弹出位置所在的那个矩形向外扩一圈**：用户往屏幕下方中央移动时
+/// 必然先经过它，而该区域仍在任务栏升起线之上、属于桌面，判据可以通过。
+const BALL_TRIGGER_INFLATE_PX: i32 = 16;
 
 /// 滑入/收回的步数与每步间隔：让运动可见，而不是瞬间跳到位。
 const BALL_SLIDE_STEPS: i32 = 6;
@@ -155,8 +162,6 @@ struct BallGeometry {
     shown_y: i32,
     /// 隐藏位置：整体位于主屏之下。
     hidden_y: i32,
-    /// 主屏下边缘的 y，靠近检测用它划定「底部热区」。
-    display_bottom: i32,
 }
 
 /// 用 `desktopLayoutMetrics` + 主屏矩形算出弹出/隐藏位置。
@@ -181,7 +186,6 @@ fn compute_ball_geometry(window: &WebviewWindow) -> Option<BallGeometry> {
         x: display.x + (display.width - width) / 2,
         shown_y: display_bottom - inset_physical - height,
         hidden_y: display_bottom + BALL_HIDDEN_Y_OFFSET,
-        display_bottom,
     })
 }
 
@@ -521,14 +525,16 @@ fn cursor_over_ball(hwnd: HWND, point: POINT) -> bool {
     false
 }
 
-/// 光标是否在「底部热区」里：主屏下边缘往上 `BALL_TRIGGER_EDGE_PX`，
-/// 横向以球的 x 跨度左右各外扩 `BALL_TRIGGER_X_INFLATE_PX`。
+/// 光标是否落在「球的弹出位置外扩一圈」的矩形里。
+///
+/// 详细原因见 `BALL_TRIGGER_INFLATE_PX` 的注释：热区必须落在球真正出现的地方
+/// （任务栏升起线之上），而不是屏幕最底下那几像素。
 #[cfg(windows)]
 fn point_in_trigger(point: POINT, geometry: &BallGeometry) -> bool {
-    point.y >= geometry.display_bottom - BALL_TRIGGER_EDGE_PX
-        && point.y <= geometry.display_bottom
-        && point.x >= geometry.x - BALL_TRIGGER_X_INFLATE_PX
-        && point.x <= geometry.x + geometry.width + BALL_TRIGGER_X_INFLATE_PX
+    point.x >= geometry.x - BALL_TRIGGER_INFLATE_PX
+        && point.x <= geometry.x + geometry.width + BALL_TRIGGER_INFLATE_PX
+        && point.y >= geometry.shown_y - BALL_TRIGGER_INFLATE_PX
+        && point.y <= geometry.shown_y + geometry.height + BALL_TRIGGER_INFLATE_PX
 }
 
 /// 16ms 靠近检测：光标靠近底部 ⇒ 滑入；离开球体范围 400ms ⇒ 收回。
@@ -578,19 +584,42 @@ pub fn start_ball_monitor(app: AppHandle) {
             };
             if refresh {
                 match compute_ball_geometry(&window) {
-                    Some(next) => {
+                    Some(mut next) => {
                         if region_size != Some((next.width, next.height)) {
                             // 缩放因子变了（窗口被拖到别的 DPI，或系统改缩放）：区域要重建，
                             // 否则圆角外的透明像素会继续按旧尺寸吞点击。
                             refresh_ball_region(&window, hwnd);
                             region_size = Some((next.width, next.height));
                         }
+                        // ⚠ 显示中**不允许**被任务栏留白的变化挪动位置。
+                        //
+                        // 实测（0.2.0.87）：自动隐藏任务栏在光标靠近底部时升起，此刻
+                        // `desktop_layout_metrics` 会报 `taskbar_visible=true`，
+                        // 留白从 48 逻辑像素（72 物理）翻倍到 96（144 物理），
+                        // 于是球在弹出后自己向上跳一个任务栏高度（实测同一位置先后读到
+                        // (1118,1420)-(1442,1528) 与 (1118,1348)-(1442,1456)）。
+                        // 球之所以弹出，恰恰是因为光标碰到了底部——这条抖动必然发生。
+                        // 因此显示期间沿用弹出那一刻定下的 shown_y；真正的显示环境变化
+                        // （主屏尺寸 / 缩放）仍然重新落位。
+                        let display_changed = geometry
+                            .map(|current| {
+                                current.primary_size != next.primary_size
+                                    || (current.scale - next.scale).abs() > f64::EPSILON
+                            })
+                            .unwrap_or(true);
+                        if shown && !display_changed {
+                            if let Some(current) = geometry {
+                                if current.shown_y != next.shown_y {
+                                    next.shown_y = current.shown_y;
+                                }
+                            }
+                        }
                         let repositioned = geometry
                             .map(|current| (current.x, current.shown_y) != (next.x, next.shown_y))
                             .unwrap_or(false);
                         geometry = Some(next);
                         if repositioned && shown {
-                            // 显示中几何变了（任务栏出现/消失、主屏尺寸变化）：直接摆到新位置，
+                            // 显示中几何真的变了（主屏尺寸 / 缩放变化）：直接摆到新位置，
                             // 不做滑入动画，也不改 Z 序。
                             if !move_ball_position(hwnd, next.x, next.shown_y) {
                                 log::warn!("floating ball: reposition failed reason=geometry-changed");
