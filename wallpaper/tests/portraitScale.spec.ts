@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { PORTRAIT_ADULT_SCALE, portraitAgeScale } from '../src/persona/portraitScale.ts'
+import { PORTRAIT_ADULT_SCALE, PORTRAIT_HEAD_MATCH_SCALE, portraitAgeScale } from '../src/persona/portraitScale.ts'
 
 const wallpaperRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const source = async (relative: string): Promise<string> =>
@@ -16,11 +16,14 @@ const source = async (relative: string): Promise<string> =>
  * **等比放大**，数值来自实测（同高之下成年态头高 138px vs 幼态 151px）而不是手感。
  */
 describe('portrait body-proportion matching', () => {
-  it('scales the official adult portraits by the measured factor', () => {
-    expect(PORTRAIT_ADULT_SCALE).toBeGreaterThan(1)
-    // 138 × 1.09 ≈ 150 ≈ 151：放大后两头一样大。
-    expect(138 * PORTRAIT_ADULT_SCALE).toBeGreaterThan(149)
-    expect(138 * PORTRAIT_ADULT_SCALE).toBeLessThan(152)
+  it('scales the official adult portraits above the measured head-match point', () => {
+    // 实测基准：138 × 1.09 ≈ 150 ≈ 幼态的 151（两头一样大）。
+    expect(138 * PORTRAIT_HEAD_MATCH_SCALE).toBeGreaterThan(149)
+    expect(138 * PORTRAIT_HEAD_MATCH_SCALE).toBeLessThan(152)
+    // 用户看过之后要求"再稍微增大一些"：现在**略大于**幼态的头，个子也更明显地高。
+    expect(PORTRAIT_ADULT_SCALE).toBeGreaterThan(PORTRAIT_HEAD_MATCH_SCALE)
+    expect(138 * PORTRAIT_ADULT_SCALE).toBeGreaterThan(152)
+    expect(138 * PORTRAIT_ADULT_SCALE).toBeLessThan(170)
 
     // 只有内置的两套成年立绘被放大。
     expect(portraitAgeScale({ id: 'blue-adult' })).toBe(PORTRAIT_ADULT_SCALE)

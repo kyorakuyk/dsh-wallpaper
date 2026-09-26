@@ -8,13 +8,16 @@
  * 实测（`artifacts/persona-head.py`，按**渲染后**的像素量）：
  *   黑红那对：同高之下幼态头高 151px、成年态 138px → 成年/幼态 = 0.914
  *   蓝色那对：成年态的头被长发与裙摆挡住，脖子探不出来，量不出可靠数字，**视觉一致**
- * 所以成年态整体等比放大 9%：按 138 × 1.09 ≈ 150 ≈ 151，头一样大，而个子变高——正好是
- * "同一个角色长大了一岁"该有的样子。
+ * 1.09 = 138 × 1.09 ≈ 150 ≈ 151，是"两头一样大"的**基准值**。用户看过后要求"再稍微增大一些"，
+ * 于是取 1.15（那颗头约 159px，略大于幼态的头，个子也更明显高出一截）。要再调就改这一个数。
  *
  * 只对**内置的官方成年立绘**生效。用户导入的 JPG 立绘走 `.portrait-asset`（`object-fit:
  * cover`、圆角、底部淡出），构图由用户自己定，不该被这个系数改。
  */
-export const PORTRAIT_ADULT_SCALE = 1.09
+export const PORTRAIT_ADULT_SCALE = 1.15
+
+/** 实测得出"两头一样大"的那个基准值，留在这里是为了让上面这行可被追问。 */
+export const PORTRAIT_HEAD_MATCH_SCALE = 1.09
 
 const OFFICIAL_ADULT_PORTRAITS = new Set(['blue-adult', 'black-adult'])
 
