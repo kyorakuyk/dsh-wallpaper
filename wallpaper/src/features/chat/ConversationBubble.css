@@ -314,6 +314,8 @@
   cursor: pointer;
 }
 .dsh-chat__sigil:focus-visible { outline: none; }
+/* 提示灯熄灭态：主体不在运行时不能再显示"亮着＝已连接"。 */
+.dsh-chat__status-dot[data-ready='false'] { background: currentColor; opacity: .3; box-shadow: none; }
 .dsh-chat__backend { overflow: hidden; color: var(--dsh-text-strong); font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .dsh-chat__backend-detail { color: var(--dsh-text-faint); font-size: 10px; white-space: nowrap; }
 .dsh-chat__topbar-spacer { flex: 1; }

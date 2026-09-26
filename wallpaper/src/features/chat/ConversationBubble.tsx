@@ -54,6 +54,11 @@ export interface ConversationBubbleProps {
    * 不传时图标仍是纯装饰的 `<span>`（视觉完全一致）；传了才变成按钮。
    */
   onRaiseClientWindow?: () => void
+  /**
+   * 当前 Harness 主体是否可用。提示灯据此实时亮/灭：主体被彻底退出后灯必须灭，
+   * 而不是停在"已连接"的样子。
+   */
+  harnessReady?: boolean
   /** 选择器被禁用时，选项里显示的原因。三种"不能切换"的成因不同，文案由调用方决定。 */
   modelSwitchDisabledReason?: string
   onSelectModel?: (model: string) => void
@@ -278,7 +283,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
         <span className="dsh-chat__topbar-spacer" />
         <div className="dsh-chat__bottom-status">
         <span className={`dsh-chat__status dsh-chat__status--harness dsh-chat__status--${harnessAvailability}`} title={harnessLabel}>
-          <span className="dsh-chat__status-dot" />{harnessLabel}
+          <span className="dsh-chat__status-dot" data-ready={props.harnessReady === false ? 'false' : 'true'} />{harnessLabel}
         </span>
         <button
           type="button"

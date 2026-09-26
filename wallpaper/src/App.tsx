@@ -599,6 +599,12 @@ export function App({ surface = 'combined' }: AppProps) {
     if (!nativeRuntime.isNative) return
     let disposed = false
     if (runtime.backend === 'harness') {
+      // 主体不在运行时**不保留旧列表**：选择器要立刻变成"Harness 未运行"并禁用，
+      // 这就是"状态刷新之后实时更新模型下拉"的掉线那一半。
+      if (!isHarnessReady(runtime.harness)) {
+        setHarnessModelDir(unavailableDirectory('Harness 未运行'))
+        return () => { disposed = true }
+      }
       void nativeRuntime.harnessModels()
         .then((payload) => { if (!disposed) setHarnessModelDir(bridgeModelDirectory(payload)) })
         .catch((error) => { if (!disposed) setHarnessModelDir(unavailableDirectory(`Harness 模型目录读取失败：${String(error)}`)) })
@@ -1306,6 +1312,9 @@ export function App({ surface = 'combined' }: AppProps) {
     if (isHarnessReady(runtime.harness) && runtime.backend !== 'harness') {
       if (canAutoSelectHarness(runtime.harness, runtime.backend, settings.autoSwitchHarness)) changeBackend('harness')
     }
+    // 主体退出后**不自动切回左侧**：既有决策是保留 Harness 会话与对话记录
+    // （`harnessAvailabilityPatch` 的提示文案就是写给这件事的），自动切走会把那份视图一起丢掉。
+    // 滑槽是否复位需要单独确认，见本轮的问题。
     const disconnected = harnessAvailabilityPatch(runtime.backend, runtime.harness, runtime.error)
     if (disconnected) patchRuntime(disconnected)
   }, [runtime.harness, runtime.backend, runtime.error, settings.autoSwitchHarness])
@@ -1436,6 +1445,7 @@ export function App({ surface = 'combined' }: AppProps) {
       selectedModel={selectedModel}
       modelLabels={modelLabels}
       modelSwitchDisabledReason={modelSwitchDisabledReason}
+      harnessReady={isHarnessReady(runtime.harness)}
       onRaiseClientWindow={runtime.backend === 'harness' ? openSubjectInterface : undefined}
       onSelectModel={runtime.backend === 'deepseek-web' ? undefined : (model) => {
         if (runtime.backend === 'deepseek-api') {
