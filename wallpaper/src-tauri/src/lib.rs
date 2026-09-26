@@ -1188,7 +1188,12 @@ fn select_backend(
     state: tauri::State<'_, AppCore>,
     backend: String,
 ) -> Result<AppSnapshot, String> {
-    require_background(&caller)?;
+    // 设置中心也要能切**正在运行的那个壁纸**的 chat 模式（网页桥接 / API / Harness）——
+    // 用户实测提出的正是这条：运行中的壁纸没有 web↔api 的开关，输入岛那个开关只做
+    // Harness↔网页。这里的白名单就是那条既有边界（壁纸宿主 + 设置中心），球与网页窗口仍然不行。
+    // 切换成后照常 `emit_app_snapshot`：背景端就是靠这份快照改 `runtime.backend` 的（托盘菜单
+    // 走的也是同一条路），所以这里不需要第二条通路。
+    require_wallpaper_surface(&caller)?;
     if is_lite_edition() {
         return Err("Lite 版不提供后端或模型切换。".into());
     }

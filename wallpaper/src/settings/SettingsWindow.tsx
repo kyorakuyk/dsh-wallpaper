@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
+import type { BackendMode } from '../domain/types.ts'
 import { appCoreClient } from '../runtime/appCoreClient.ts'
 import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type ApiKeyStatus, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type HarnessEndpointScan, type HarnessTarget, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
 import { loadSettings, saveSettings, type WallpaperSettings } from './store.ts'
@@ -14,7 +15,7 @@ import {
   type HarnessClientKind,
 } from '../connect/endpoints.ts'
 import { launchOutcomeNotice, reachNeedsBrowser, subjectChoicePrompt } from '../connect/harnessSubjects.ts'
-import { SettingsPanel, type SettingsPanelHarnessStatus } from './SettingsPanel.tsx'
+import { SettingsPanel, backendModeLabel, type SettingsPanelHarnessStatus } from './SettingsPanel.tsx'
 import {
   createProbeScheduler,
   createSettingsProbeController,
@@ -123,6 +124,13 @@ export function SettingsWindow() {
   const [apiKeyBusy, setApiKeyBusy] = useState(false)
   // 可用模型列表：由「测试」/「刷新」拉取，也用于「模型」那一栏的下拉候选。
   const [apiModelCatalog, setApiModelCatalog] = useState<Array<{ id: string; name: string }>>()
+  /**
+   * 壁纸**此刻**在用的 chat 模式。
+   *
+   * 与 `settings.defaultBackend`（启动时的默认值）分开：托盘菜单、`autoSwitchHarness`、以及壁纸
+   * 自己在主体退出时的复位都会改这个值，而它们都不会回头改设置。开关显示的是这个，才等于显示事实。
+   */
+  const [liveBackend, setLiveBackend] = useState<BackendMode>()
   // A state update does not become visible to an async callback until React
   // renders again. Keep the last committed settings here so a successful
   // lock-screen request never overwrites unrelated settings changed while it
@@ -523,6 +531,27 @@ export function SettingsWindow() {
   }
 
   /**
+   * 切换 chat 模式，**并让正在运行的壁纸立刻生效**。
+   *
+   * 两件事一起做，因为它们本来就是一件事的两面：
+   * 1. `select_backend`（原生 AppCore）——背景端就是靠 `app-snapshot` 改 `runtime.backend` 的，
+   *    托盘菜单走的同一条路，所以这里不需要第二条通路；
+   * 2. 写进 `settings.defaultBackend`——它同时是**下次启动**的默认值。
+   *
+   * 不做"先存后切"两步：用户点的是"现在用哪个"，而不是"以后用哪个"。
+   */
+  const selectBackend = async (backend: BackendMode) => {
+    commitSettings({ ...settingsRef.current, defaultBackend: backend })
+    try {
+      const snapshot = await appCoreClient.selectBackend(backend)
+      if (mountedRef.current) setLiveBackend(snapshot.backend)
+      setNotice(`已切换为${backendModeLabel(backend)}，正在运行的壁纸立即生效。`)
+    } catch (error) {
+      setNotice(`切换后端失败：${String(error)}`)
+    }
+  }
+
+  /**
    * Deleting bumps the shared asset and the durable API transcript at the same
    * time; `bumpRefreshEpoch` is not involved, so nothing else resets. These
    * operations read and rewrite the encrypted archive, so they share one busy
@@ -631,12 +660,19 @@ export function SettingsWindow() {
   // First paint owns no probe at all: only the local settings and the AppCore
   // snapshot (which the "显示中央会话窗" switch needs) are read up front. The
   // visible page's own data starts on the next frame.
+  //
+  // 这份快照里的 `backend` 就是"壁纸此刻在用哪种 chat 模式"，「聊天模式」那一栏显示它。
+  // **只在打开窗口时读一次**：`app-snapshot` 是 Rust 定向发给背景端的事件
+  // （`emit_to(BACKGROUND_WINDOW_LABEL)`），"系统事件不进设置 WebView"这条边界由
+  // `tests/nativeChatBoundary.spec.ts` 钉着，不该为了一个显示值放宽它；本窗口自己切换后端时
+  // 会用它那次调用的返回值就地更新（见 `selectBackend`）。
   useEffect(() => {
     if (!appCoreClient.native) return
     void appCoreClient.snapshot().then((snapshot) => {
       if (!mountedRef.current) return
       setHarness(snapshot.harness)
       setInteractionEnabled(snapshot.interaction.enabled)
+      setLiveBackend(snapshot.backend)
     }).catch((error) => setNotice(String(error)))
   }, [])
 
@@ -808,6 +844,8 @@ export function SettingsWindow() {
       onTestApiKey={() => { void testApiKey() }}
       onRefreshApiModels={() => { void refreshApiModels() }}
       apiModelCatalog={apiModelCatalog}
+      liveBackend={liveBackend}
+      onSelectBackend={(backend) => { void selectBackend(backend) }}
       interactionEnabled={interactionEnabled}
       onSetInteractionEnabled={(enabled) => void appCoreClient.setInteractionEnabled(enabled).then((snapshot) => setInteractionEnabled(snapshot.interaction.enabled)).catch((error) => setNotice(String(error)))}
       onClose={close}

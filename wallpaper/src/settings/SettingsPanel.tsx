@@ -45,6 +45,14 @@ export interface SettingsPanelProps {
   onTestApiKey: () => void
   onRefreshApiModels: () => void
   apiModelCatalog?: Array<{ id: string; name: string }>
+  /**
+   * 壁纸此刻在用的 chat 模式（`undefined` = 还没读到快照）。
+   *
+   * 与 `settings.defaultBackend` 分开传：托盘、自动切换、主体退出后的复位都会改运行值而不改设置。
+   */
+  liveBackend?: BackendMode
+  /** 切到某个模式：设置中心会调原生 `select_backend`，正在运行的壁纸立即生效。 */
+  onSelectBackend: (backend: BackendMode) => void
   onClose: () => void
   interactionEnabled: boolean
   onSetInteractionEnabled: (enabled: boolean) => void
@@ -220,6 +228,21 @@ function displayLabel(display: DesktopDisplayInfo, index: number): string {  con
 }
 
 /**
+ * 三种 chat 模式的显示名，**一份定义**：下拉选项与切换后的提示都用它，改文案只改一处。
+ *
+ * 措辞沿用既有约定：说清"用户在选择什么"，而不是它内部怎么实现。
+ */
+export const BACKEND_MODE_OPTIONS: Array<{ value: BackendMode; label: string }> = [
+  { value: 'deepseek-web', label: 'DeepSeek 网页入口（实验）' },
+  { value: 'deepseek-api', label: 'DeepSeek API（付费）' },
+  { value: 'harness', label: 'DeepSeek Harness' },
+]
+
+export function backendModeLabel(backend: BackendMode): string {
+  return BACKEND_MODE_OPTIONS.find((option) => option.value === backend)?.label ?? backend
+}
+
+/**
  * 「模型」那一栏的候选：拉取到的目录 + **当前值**。
  *
  * 三件事都在这里说清：
@@ -344,8 +367,12 @@ export function SettingsPanel(props: SettingsPanelProps) {
       </>}
 
       {page === 'connections' && <>
-        <Card title="默认后端" description="网页桥接不会在失败时自动切换到付费 API。">
-          <Field title="启动时使用"><Choice label="启动时使用" value={settings.defaultBackend} onChange={(value) => set({ defaultBackend: value as BackendMode })} options={[{ value: 'deepseek-web', label: 'DeepSeek 网页入口（实验）' }, { value: 'deepseek-api', label: 'DeepSeek API（付费）' }, { value: 'harness', label: 'DeepSeek Harness' }]} /></Field>
+        <Card title="聊天模式" description="三选一。改的是**正在运行**的那个壁纸，同时也记作下次启动的默认值；网页桥接不会在失败时自动切到付费 API。">
+          <Field title="当前使用" detail={props.liveBackend && props.liveBackend !== settings.defaultBackend ? `壁纸此刻在用：${backendModeLabel(props.liveBackend)}（与默认值不同，可能刚被托盘或自动切换改过；此窗口打开时读取）。` : '立即切换正在运行的壁纸；此窗口打开时读取它现在用哪一种。'}>
+            {/* 值是**运行中**的那个后端，不是启动默认值：两者会分叉（托盘换后端、
+                `autoSwitchHarness` 自动切到 Harness、主体退出后壁纸自己复位），显示事实而不是意图。 */}
+            <Choice label="当前使用" value={props.liveBackend ?? settings.defaultBackend} onChange={(value) => props.onSelectBackend(value as BackendMode)} options={BACKEND_MODE_OPTIONS} />
+          </Field>
           <Field title="DSH 就绪时自动切换" detail="仅检测到兼容的壁纸 Bridge 才会切换。"><Toggle label="DSH 自动切换" checked={settings.autoSwitchHarness} onChange={(value) => set({ autoSwitchHarness: value })} /></Field>
         </Card>
                 {/*

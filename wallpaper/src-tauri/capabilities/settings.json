@@ -9,6 +9,7 @@
     "core:window:allow-start-resize-dragging",
     "dialog:allow-open",
     "allow-get-app-snapshot",
+    "allow-select-backend",
     "allow-desktop-displays",
     "allow-set-interaction-enabled",
     "allow-set-lock-screen-enabled",
