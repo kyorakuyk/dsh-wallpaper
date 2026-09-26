@@ -98,6 +98,35 @@ describe('API key entry in the settings window', () => {
     expect(panel).toContain('onClick={props.onRefreshApiModels}')
     // 模型那一栏由拉取到的目录喂候选。
     expect(panel).toContain('props.apiModelCatalog')
+    // **不能**用 `<input list>` + `<datalist>`：用户实测那个下拉在设置窗里展不开，
+    // 只有箭头在那儿摆着。用本窗口已经在用的 `Choice`（显示器背景、素材用途都是它）。
+    // 注意只断言 JSX（注释里会提到 datalist 这个名字，那是解释为什么不用它）。
+    expect(panel).not.toMatch(/<datalist/)
+    expect(panel).not.toMatch(/list="api-model-catalog"/)
+    expect(panel).toMatch(/<Choice[\s\S]{0,400}apiModelOptions\(props\.apiModelCatalog/)
+  })
+
+  it('keeps the configured model selectable even after the official names move', async () => {
+    const { apiModelOptions } = await import('../src/settings/SettingsPanel.tsx')
+
+    const options = apiModelOptions([
+      { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash' },
+      { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro' },
+    ], 'deepseek-chat')
+    // 官方改名后，用户机器上那个旧名字仍然在候选里，而且**被标出来**。
+    expect(options).toEqual([
+      { value: 'deepseek-flash', label: 'deepseek-flash · DeepSeek-V4.1-Flash' },
+      { value: 'deepseek-v4-pro', label: 'deepseek-v4-pro · DeepSeek-V4-Pro' },
+      { value: 'deepseek-chat', label: 'deepseek-chat（不在当前目录里）' },
+    ])
+
+    // 当前值本来就在目录里时不重复添加。
+    expect(apiModelOptions([{ id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro' }], 'deepseek-v4-pro'))
+      .toEqual([{ value: 'deepseek-v4-pro', label: 'deepseek-v4-pro · DeepSeek-V4-Pro' }])
+    // 目录还没拉到时，至少保证"现在配的那个"能显示出来（否则控件会退回第一个候选）。
+    expect(apiModelOptions([], 'deepseek-chat')).toEqual([{ value: 'deepseek-chat', label: 'deepseek-chat（不在当前目录里）' }])
+    // id 与显示名相同就不重复写成 "x · x"。
+    expect(apiModelOptions([{ id: 'deepseek-chat', name: 'deepseek-chat' }], '')).toEqual([{ value: 'deepseek-chat', label: 'deepseek-chat' }])
   })
 
   it('drops the API address field and keeps it as a default the API client still honours', async () => {

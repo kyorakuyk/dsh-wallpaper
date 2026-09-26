@@ -219,6 +219,30 @@ function displayLabel(display: DesktopDisplayInfo, index: number): string {  con
   return number ? `显示器 ${number}` : display.name.trim() || `显示器 ${index + 1}`
 }
 
+/**
+ * 「模型」那一栏的候选：拉取到的目录 + **当前值**。
+ *
+ * 三件事都在这里说清：
+ * 1. 显示名用「id · 官方名」（`deepseek-flash · DeepSeek-V4.1-Flash`），因为 API 认的是 id；
+ * 2. **当前值必须留在候选里**，哪怕它已经不在目录中——否则控件会退回到"第一个候选"，看起来
+ *    像设置被别人改掉了。官方改名时这条尤其重要：用户机器上多半存着一个旧名字；
+ * 3. 旧名字要**标出来**（"不在当前目录里"），而不是静默地混在新名字中间。
+ */
+export function apiModelOptions(
+  catalog: Array<{ id: string; name: string }>,
+  current: string,
+): Array<{ value: string; label: string }> {
+  const options = catalog.map((model) => ({
+    value: model.id,
+    label: model.name && model.name !== model.id ? `${model.id} · ${model.name}` : model.id,
+  }))
+  const trimmed = current.trim()
+  if (trimmed && !options.some((option) => option.value === trimmed)) {
+    options.push({ value: trimmed, label: `${trimmed}（不在当前目录里）` })
+  }
+  return options
+}
+
 export function PriceInput({
   label,
   value,
@@ -474,14 +498,17 @@ export function SettingsPanel(props: SettingsPanelProps) {
             </span>
           </Field>
           <Field title="模型" detail={props.apiModelCatalog && props.apiModelCatalog.length > 0 ? `可用模型 ${props.apiModelCatalog.length} 项，来自刚才那次拉取。` : '按「刷新」拉取可用模型；官方改名时也用它。'}>
-            <input
-              list="api-model-catalog"
+            {/* 用面板自己的 `Choice`，**不用** `input list` + `datalist` 那套原生下拉：用户实测
+                它在设置窗里根本展不开（只有箭头在那儿摆着，点不动）。`Choice` 是本窗口里已经在用
+                的下拉（显示器背景、素材用途），展开由自己控制。
+                （这里刻意不写出标签原文，测试用"源码里不许出现该标签"来钉住这条。） */}
+            <Choice
+              label="DeepSeek API 模型"
               value={settings.deepseekApi.model}
-              onChange={(e) => set({ deepseekApi: { ...settings.deepseekApi, model: e.target.value } })}
+              onChange={(model) => set({ deepseekApi: { ...settings.deepseekApi, model } })}
+              options={apiModelOptions(props.apiModelCatalog ?? [], settings.deepseekApi.model)}
+              emptyMessage={props.apiModelCatalog && props.apiModelCatalog.length > 0 ? undefined : '还没有拉取到模型列表，先按「刷新」。'}
             />
-            <datalist id="api-model-catalog">
-              {(props.apiModelCatalog ?? []).map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
-            </datalist>
           </Field>
           <Field title="输入价格" detail="人民币／每百万 input tokens。输入、输出价格都配置后，才会显示本轮和会话估算费用。"><PriceInput label="输入价格（人民币每百万 tokens）" value={settings.deepseekApi.priceInputPerMillion} onChange={(priceInputPerMillion) => set({ deepseekApi: { ...settings.deepseekApi, priceInputPerMillion } })} /></Field>
           <Field title="输出价格" detail="人民币／每百万 output tokens。留空不会伪造零费用；缓存 token 没有单独价格时会标为估算。"><PriceInput label="输出价格（人民币每百万 tokens）" value={settings.deepseekApi.priceOutputPerMillion} onChange={(priceOutputPerMillion) => set({ deepseekApi: { ...settings.deepseekApi, priceOutputPerMillion } })} /></Field>
