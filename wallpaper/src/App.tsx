@@ -16,6 +16,7 @@ import {
   bridgeModelDirectory,
   modelIdsFor,
   modelUnavailableReason,
+  selectedModelFor,
   unavailableDirectory,
   type ModelDirectory,
 } from './connect/modelDirectory.ts'
@@ -675,14 +676,8 @@ export function App({ surface = 'combined' }: AppProps) {
     }
     return () => { disposed = true }
   }, [runtime.backend, runtime.harness, settings.deepseekApi.baseUrl])
-  // 选择器当前值：**空字符串必须当作"没有值"**。
-  //
-  // 这里以前用 `??`，而 `??` 只在 null/undefined 时回退——宿主/桥接把模型报成空串时，
-  // 空串会直接穿过去，`<select value="">` 又没有任何 option 匹配它，浏览器就把这个框
-  // 显示成**空白**（可访问性树里读到 `ValuePattern.Value = ''`，用户看到的就是"没有任何选项"，
-  // 尽管选项其实在 DOM 里、控件也是 enabled）。改成"取第一个非空候选"。
-  const firstNonEmpty = (...candidates: Array<string | undefined>) =>
-    candidates.find((candidate): candidate is string => Boolean(candidate?.trim()))
+  // 选择器当前值：**空字符串必须当作"没有值"**——这条规则连同上一条串值的教训一起搬进了
+  // `connect/modelDirectory.ts::selectedModelFor`，那里也是它被回归测试钉住的地方。
   // 「桌面会话」左侧那枚小图标（点击行为见 ConversationBubble，视觉不变）：单击拉起
   // **当前主体的可视化窗口**。
   //
@@ -725,14 +720,17 @@ export function App({ surface = 'combined' }: AppProps) {
       }
     })()
   }, [settings.dshLaunch])
-  const selectedModel = runtime.backend === 'deepseek-api'
-    ? firstNonEmpty(apiModelChoice, settings.deepseekApi.model, modelOptions[0])
-    : runtime.backend === 'harness'
-      // 从来没选过时落到**宿主自己的当前模型**（实测是 deepseek-flash），
-      // 而不是共用的 `runtime.model`——那可能带着 API 的 `deepseek-chat`。
-      ? firstNonEmpty(harnessModelChoice, persistedHarnessModel, harnessModelDir.kind === 'unavailable' ? undefined : harnessModelDir.current, modelOptions[0])
-      // 网页入口不显示模型 id：它的模型由 DeepSeek 页面决定。
-      : undefined
+  // 选择器当前值由 `connect/modelDirectory.ts::selectedModelFor` 一处决定：那条规则连着两次
+  // 被"后端之间串了值"咬到（共用的 `runtime.model`），所以它必须在能被测到的地方，而不是散
+  // 在这里的嵌套三元里。空串按"没有值"处理的原因也写在那个函数上。
+  const selectedModel = selectedModelFor({
+    backend: runtime.backend,
+    chosen: runtime.backend === 'deepseek-api' ? apiModelChoice : harnessModelChoice,
+    persisted: persistedHarnessModel,
+    configured: settings.deepseekApi.model,
+    directory: runtime.backend === 'deepseek-api' ? apiModelDir : harnessModelDir,
+    ids: modelOptions,
+  })
   // The WorkerW host is permanently desktop-sized. Both the floating window
   // and the taskbar capsule now use CSS placement inside that one viewport.
   const interactionDirection = 'center' as const

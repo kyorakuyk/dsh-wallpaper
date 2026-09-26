@@ -6,6 +6,7 @@ import {
   currentModelOf,
   modelIdsFor,
   modelUnavailableReason,
+  selectedModelFor,
   unavailableDirectory,
 } from '../src/connect/modelDirectory.ts'
 
@@ -123,5 +124,92 @@ describe('api model directory (endpoint payload)', () => {
     expect(modelIdsFor(directory, undefined, 'deepseek-reasoner')).toEqual(['deepseek-reasoner'])
     expect(currentModelOf(directory, 'deepseek-chat')).toBe('deepseek-chat')
     expect(modelUnavailableReason(directory)).toBe('端点模型列表读取失败：网络不可达')
+  })
+})
+
+/**
+ * 每个后端只读自己那份事实。
+ *
+ * 这条规则连着两次被同一个 bug 咬到：`runtime.model` 是三个后端共用的一份状态，于是 API 的
+ * `deepseek-chat` 出现在别的后端的选择器里，而 Harness 自己那份目录（宿主实测报
+ * `deepseek-flash`）反而被盖掉。这里钉的就是"没有一层回退跨过后端边界"。
+ */
+describe('the model a backend shows', () => {
+  const hostCatalog = bridgeModelDirectory({
+    supported: true,
+    current: { provider: 'deepseek-official', model: 'deepseek-flash' },
+    models: [
+      { id: 'deepseek-flash', name: 'DeepSeek-Flash' },
+      { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro' },
+    ],
+  })
+
+  it('falls back to the host\u2019s own current model when nothing was ever chosen', () => {
+    // 从没选过时显示**宿主自己的当前模型**，不是共用的 runtime.model（那可能带着 API 的值）。
+    expect(selectedModelFor({ backend: 'harness', directory: hostCatalog, ids: ['deepseek-flash', 'deepseek-v4-pro'] }))
+      .toBe('deepseek-flash')
+  })
+
+  it('never lets one backend\u2019s model id reach another one', () => {
+    // API 的配置值只属于 API：Harness 侧读的是它自己的目录与选择，`configured` 在这条路上
+    // 根本不是一个输入，所以它既不能回显，也盖不掉宿主报的当前模型。
+    expect(selectedModelFor({
+      backend: 'harness',
+      configured: 'deepseek-chat',
+      directory: hostCatalog,
+      ids: ['deepseek-flash'],
+    })).toBe('deepseek-flash')
+    // 但没有任何 Harness 事实时，也绝不会把 API 的配置值当成 Harness 的模型。
+    expect(selectedModelFor({ backend: 'harness', directory: unavailableDirectory('Harness 未运行'), ids: [] }))
+      .toBeUndefined()
+    // 网页入口的模型由 DeepSeek 页面决定：给一个 id 就是编的。
+    expect(selectedModelFor({ backend: 'deepseek-web', configured: 'deepseek-chat', ids: ['deepseek-chat'] }))
+      .toBeUndefined()
+  })
+
+  it('prefers what the user chose, then what was remembered, then the host', () => {
+    expect(selectedModelFor({
+      backend: 'harness',
+      chosen: 'deepseek-v4-pro',
+      persisted: 'deepseek-flash',
+      directory: hostCatalog,
+      ids: ['deepseek-flash', 'deepseek-v4-pro'],
+    })).toBe('deepseek-v4-pro')
+    expect(selectedModelFor({
+      backend: 'harness',
+      persisted: 'deepseek-v4-pro',
+      directory: hostCatalog,
+      ids: ['deepseek-flash', 'deepseek-v4-pro'],
+    })).toBe('deepseek-v4-pro')
+  })
+
+  it('treats an empty answer as no answer, for every layer', () => {
+    // 空串穿到 `<select value="">` 上时没有任何 option 匹配它，控件会画成**空白**（实测
+    // 可访问性树里读到 `ValuePattern.Value = ''`），所以每一层都必须当它没有值。
+    expect(selectedModelFor({
+      backend: 'harness',
+      chosen: '   ',
+      persisted: '',
+      directory: { kind: 'enumerated', current: '  ', models: [] },
+      ids: ['deepseek-flash'],
+    })).toBe('deepseek-flash')
+    expect(selectedModelFor({ backend: 'deepseek-api', configured: '', ids: ['deepseek-chat'] }))
+      .toBe('deepseek-chat')
+  })
+
+  it('reads the endpoint\u2019s own answer for the API backend', () => {
+    const endpoint = apiModelDirectory({ supported: true, models: [{ id: 'deepseek-chat', name: 'deepseek-chat' }] }, 'deepseek-reasoner')
+    expect(selectedModelFor({
+      backend: 'deepseek-api',
+      configured: 'deepseek-reasoner',
+      directory: endpoint,
+      ids: ['deepseek-reasoner', 'deepseek-chat'],
+    })).toBe('deepseek-reasoner')
+    // 读取失败时连端点的"当前值"都不摆出来——那时它只是残留。
+    expect(selectedModelFor({
+      backend: 'deepseek-api',
+      directory: unavailableDirectory('端点模型列表读取失败'),
+      ids: [],
+    })).toBeUndefined()
   })
 })

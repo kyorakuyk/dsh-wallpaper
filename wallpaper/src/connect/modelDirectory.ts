@@ -114,3 +114,50 @@ export function apiModelDirectory(payload: unknown, configured?: string): ModelD
 export function unavailableDirectory(reason: string): ModelDirectory {
   return { kind: 'unavailable', reason }
 }
+
+/**
+ * 一个非空候选：空串当作"没有值"，**不是**当作一个值。
+ *
+ * `??` 只在 null/undefined 时回退，而宿主/桥接完全可能把模型报成空串；空串穿到
+ * `<select value="">` 上没有任何 option 匹配它，浏览器就把这个框画成空白（实测可访问性树里读到
+ * `ValuePattern.Value = ''`），用户看到的是"没有任何选项"，尽管选项其实在 DOM 里。
+ */
+function firstNonEmpty(...candidates: Array<string | undefined>): string | undefined {
+  return candidates.find((candidate): candidate is string => Boolean(candidate?.trim()))
+}
+
+/**
+ * 选择器当前该显示哪个模型 id，**按后端分别决定**。
+ *
+ * 抽成纯函数是因为这条规则连着两次被同一个 bug 咬到，而且两次都不是"少写了一层回退"，是
+ * **后端之间串了值**：`runtime.model` 是三个后端共用的一份状态，于是 API 的 `deepseek-chat`
+ * 会出现在网页/Harness 的选择器里，而 Harness 自己那份目录（宿主实测报的是 `deepseek-flash`）
+ * 反而被盖掉。所以每个后端只读自己那份事实，**没有一层回退跨过后端边界**：
+ *
+ * - `harness`：壁纸里选过的 > 上次持久化的 > **宿主自己报的当前模型** > 目录里的第一个；
+ * - `deepseek-api`：按端点选的 > 设置里配的 > 端点名单的第一个；
+ * - `deepseek-web`：`undefined`——它的模型由 DeepSeek 页面决定，显示一个 id 会是编的。
+ */
+export function selectedModelFor(options: {
+  backend: 'deepseek-web' | 'deepseek-api' | 'harness'
+  /** 壁纸这次运行期间选的（最先）。 */
+  chosen?: string
+  /** 上次持久化的选择（Harness 用）。 */
+  persisted?: string
+  /** 配置里的模型（API 用）。 */
+  configured?: string
+  /** 该后端自己的目录。 */
+  directory?: ModelDirectory
+  /** 该后端可选项的 id，按顺序。 */
+  ids?: readonly string[]
+}): string | undefined {
+  // 目录是 `unavailable` 时不摆出任何 id：那时连被问的对象都没有，"当前模型"只是残留。
+  const fromDirectory = options.directory?.kind === 'unavailable' ? undefined : options.directory?.current
+  if (options.backend === 'harness') {
+    return firstNonEmpty(options.chosen, options.persisted, fromDirectory, options.ids?.[0])
+  }
+  if (options.backend === 'deepseek-api') {
+    return firstNonEmpty(options.chosen, options.configured, fromDirectory, options.ids?.[0])
+  }
+  return undefined
+}
