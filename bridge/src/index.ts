@@ -479,6 +479,24 @@ function json(res: ServerResponse, status: number, value: unknown): void {
   res.end(JSON.stringify(value))
 }
 
+/**
+ * 从 `sessionPersistence.list()` 的快照里取出"可见会话 id 集合"。
+ *
+ * 抽成纯函数是为了能直接测：它决定"这条会话还在不在"，判错一次就会把用户的活会话判死，
+ * 或者把消息继续发进已归档的会话。任何读不懂的形状一律跳过；不是数组则回答"不可知"。
+ */
+export function visibleSessionIdSet(all: unknown): Set<string> | undefined {
+  if (!Array.isArray(all)) return undefined
+  const ids = new Set<string>()
+  for (const snapshot of all) {
+    if (snapshot === null || typeof snapshot !== 'object') continue
+    const record = snapshot as Record<string, unknown>
+    const candidate = record.id ?? record.sessionId
+    if (typeof candidate === 'string' && candidate.trim()) ids.add(candidate.trim())
+  }
+  return ids
+}
+
 function malformed(res: ServerResponse, error: unknown, logger: { warn(message: string): void }): void {
   const reference = errorReference(error)
   logger.warn(`wallpaper bridge request rejected (${reference})`)
@@ -932,6 +950,35 @@ export function apply(ctx: Context, config: Config = {}): void {
     const get = (ctx as Context & { get?: (name: string) => unknown }).get
     return typeof get === 'function' && get.call(ctx, 'sessionPersistence') !== undefined
   }
+
+  /**
+   * DSH 侧"此刻可见的已存会话"。
+   *
+   * 归档一个会话之后，它就从可见集合里消失了（DSH 自己的注释写得很直白：`list()` 返回
+   * "one snapshot **per visible** stored session"）—— 而**我们的活句柄还在**：这不是错误、
+   * 不会掉线，灯照旧是绿的，于是消息发进一个再也看不见的会话里。用户实测报的"桌面端归档后
+   * 吞输入"就是这条。
+   *
+   * 读不到（服务缺席或读失败）时返回 `undefined`，语义是**不可知**：调用方据此不做任何判断。
+   * 宁可像以前一样工作，也不要因为一次读失败就把一个好好的会话判死。
+   */
+  const visibleStoredSessionIds = async (): Promise<Set<string> | undefined> => {
+    const get = (ctx as Context & { get?: (name: string) => unknown }).get
+    if (typeof get !== 'function') return undefined
+    const service = get.call(ctx, 'sessionPersistence') as { list?: unknown } | undefined
+    if (!service || typeof service.list !== 'function') return undefined
+    try {
+      const all = await (service.list as () => Promise<unknown>).call(service)
+      return visibleSessionIdSet(all)
+    } catch {
+      return undefined
+    }
+  }
+
+  /** 工作区登记 + 可见性：**两个都满足**才算"这条会话还在"。 */
+  const storedAndVisible = (workspace: DesktopWorkspace, sessionId: string, visible: Set<string> | undefined): boolean =>
+    workspace.sessionIds.some((id) => String(id) === sessionId) && (!visible || visible.has(sessionId))
+
   let token = ''
   let tokenFailure: string | undefined
   // Token provisioning is the first detached asynchronous work this plugin
@@ -1365,15 +1412,18 @@ export function apply(ctx: Context, config: Config = {}): void {
             // check instead of accepting any well-shaped DSH session ID.
             const workspace = await ensureDesktopWorkspace(host, config)
             stage = 'session-identity'
+            // 可见性只在**每个请求开头读一次**：归档一个会话之后，用户期望的是"下次说话时
+            // 自动换一条新的"，而不是继续往看不见的那条里发（用户实测报的"吞输入"）。
+            const visible = await visibleStoredSessionIds()
             const dailyId = localDailyWallpaperSessionId()
             const recoveredDailyId = recoveredDailyWallpaperSessionId(dailyId)
             const recoveredDailyExists = automaticDailySession
-              && workspace.sessionIds.some((sessionId) => String(sessionId) === recoveredDailyId)
+              && storedAndVisible(workspace, recoveredDailyId, visible)
             const id = automaticDailySession
               ? (recoveredDailyExists ? recoveredDailyId : dailyId)
               : requestedResume || requested || `wallpaper-${randomUUID()}`
             if (!isSafeSessionId(id)) return json(res, 400, { error: 'invalid-session-id' })
-            const ownedResume = workspace.sessionIds.some((sessionId) => String(sessionId) === id)
+            const ownedResume = storedAndVisible(workspace, id, visible)
             // An unmatched resume ID is rewritten to a fresh session before the
             // live lookup, so a client that simply reconnects must resolve to
             // the live handle it already owns rather than being told the
@@ -1518,6 +1568,17 @@ export function apply(ctx: Context, config: Config = {}): void {
 
           const entry = live.get(route.sessionId)
           if (!entry) return json(res, 404, { error: 'session-not-live', sessionId: route.sessionId })
+
+          // 归档的会话在我们这边**看不出任何异常**：句柄还在、灯还是绿的。所以在服务任何一条
+          // 会话路由之前先核对一次可见性；确认不可见就丢掉句柄，并用一个可区分的错误回答，
+          // 让壁纸知道该换一条新会话了 —— 而不是继续往黑洞里发消息（用户实测报的"吞输入"）。
+          const stillVisible = await visibleStoredSessionIds()
+          if (stillVisible && !stillVisible.has(route.sessionId)) {
+            live.delete(route.sessionId)
+            await entry.handle.dispose().catch(() => undefined)
+            wctx.logger.info?.(`wallpaper bridge: session ${route.sessionId} is no longer visible (archived); released`)
+            return json(res, 409, { error: 'session-archived', sessionId: route.sessionId })
+          }
 
           if (route.kind === 'history') {
             if (req.method !== 'GET') return json(res, 405, { error: 'method-not-allowed' })
