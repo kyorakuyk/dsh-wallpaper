@@ -2406,7 +2406,10 @@ async fn harness_set_model(
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
 async fn api_models(caller: tauri::WebviewWindow, base_url: String) -> Result<serde_json::Value, String> {
-    require_background(&caller)?;
+    // 两个界面都要用这一份目录：壁纸端的模型选择器（Harness 兼容端点）与设置中心的
+    // 「测试／刷新」（用户要在那里看到"现在有哪些模型"）。**不是**放宽给球或网页窗口——
+    // 它仍然只认这两个表面，`require_wallpaper_surface` 就是这条边界。
+    require_wallpaper_surface(&caller)?;
     chat::api_models(base_url).await
 }
 
