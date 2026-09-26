@@ -548,8 +548,8 @@ export function App({ surface = 'combined' }: AppProps) {
   // 端点没有 /models、或还没连上）退化成"只显示当前模型"，并且**把原因说出来**，
   // 不再拿一串假的 id 充数。三种情况的区别由 `modelDirectory.ts` 归一。
   const modelOptions = useMemo(() => {
-    if (runtime.backend === 'deepseek-api') return modelIdsFor(apiModelDir, apiModelChoice, settings.deepseekApi.model)
-    if (runtime.backend === 'harness') return modelIdsFor(harnessModelDir, harnessModelChoice, runtime.model)
+    if (runtime.backend === 'deepseek-api') return modelIdsFor(apiModelDir, settings.deepseekApi.model, apiModelChoice)
+    if (runtime.backend === 'harness') return modelIdsFor(harnessModelDir, runtime.model, harnessModelChoice)
     return [...new Set([runtime.model].filter((model): model is string => Boolean(model?.trim())))]
   }, [runtime.backend, runtime.model, harnessModelDir, apiModelDir, apiModelChoice, harnessModelChoice, settings.deepseekApi.model])
   // 枚举到的显示名（DeepSeek-Flash 之类）替掉裸 id；没枚举到就显示 id 本身。
@@ -581,11 +581,19 @@ export function App({ surface = 'combined' }: AppProps) {
     }
     return () => { disposed = true }
   }, [runtime.backend, runtime.harness, settings.deepseekApi.baseUrl])
+  // 选择器当前值：**空字符串必须当作"没有值"**。
+  //
+  // 这里以前用 `??`，而 `??` 只在 null/undefined 时回退——宿主/桥接把模型报成空串时，
+  // 空串会直接穿过去，`<select value="">` 又没有任何 option 匹配它，浏览器就把这个框
+  // 显示成**空白**（可访问性树里读到 `ValuePattern.Value = ''`，用户看到的就是"没有任何选项"，
+  // 尽管选项其实在 DOM 里、控件也是 enabled）。改成"取第一个非空候选"。
+  const firstNonEmpty = (...candidates: Array<string | undefined>) =>
+    candidates.find((candidate): candidate is string => Boolean(candidate?.trim()))
   const selectedModel = runtime.backend === 'deepseek-api'
-    ? apiModelChoice
+    ? firstNonEmpty(apiModelChoice, settings.deepseekApi.model, modelOptions[0])
     : runtime.backend === 'harness'
-      ? harnessModelChoice ?? runtime.model ?? modelOptions[0]
-      : runtime.model
+      ? firstNonEmpty(harnessModelChoice, runtime.model, modelOptions[0])
+      : firstNonEmpty(runtime.model)
   // The WorkerW host is permanently desktop-sized. Both the floating window
   // and the taskbar capsule now use CSS placement inside that one viewport.
   const interactionDirection = 'center' as const

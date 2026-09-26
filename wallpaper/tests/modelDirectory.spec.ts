@@ -39,8 +39,23 @@ describe('harness model directory (bridge payload)', () => {
       ],
     })
     expect(canSwitchModel(directory)).toBe(true)
-    expect(modelIdsFor(directory, undefined, 'deepseek-v4-pro')).toEqual(['deepseek-v4-pro', 'deepseek-flash'])
+    // 当前模型排在最前：`<select>` 在没有匹配值时回退到第一个 option。
+    expect(modelIdsFor(directory, undefined, 'deepseek-v4-pro')).toEqual(['deepseek-flash', 'deepseek-v4-pro'])
     expect(modelUnavailableReason(directory)).toBeUndefined()
+  })
+
+  it('treats an empty string as "no value" so the box cannot render blank', () => {
+    // 实测：宿主把模型报成空串时 `??` 会放它过去，`<select value="">` 没有匹配项，
+    // 浏览器就把控件显示成空白（可访问性树里读到 `ValuePattern.Value = ''`），
+    // 用户看到的就是"没有任何选项"——而选项其实在 DOM 里、控件也是 enabled。
+    const directory = bridgeModelDirectory({
+      supported: true,
+      current: { provider: 'deepseek-official', model: 'deepseek-flash' },
+      models: [{ id: 'deepseek-flash', name: 'DeepSeek-Flash' }],
+    })
+    expect(modelIdsFor(directory, '', '')).toEqual(['deepseek-flash'])
+    expect(currentModelOf(directory, '')).toBe('deepseek-flash')
+    expect(currentModelOf(unavailableDirectory('读取失败'), '')).toBeUndefined()
   })
 
   it('treats an unsupported host as "current model only", never as "no models"', () => {

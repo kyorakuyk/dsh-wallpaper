@@ -30,8 +30,12 @@ export type ModelDirectory =
 
 /** 宿主/端点在"不支持枚举"时也报出的当前模型，用来兜住选择器的显示值。 */
 export function currentModelOf(directory: ModelDirectory, fallback?: string): string | undefined {
-  if (directory.kind === 'unavailable') return fallback
-  return directory.current || fallback
+  // 空串按"没有值"处理：`<select value="">` 又没有任何 option 匹配它时，浏览器会把这个
+  // 控件显示成空白（实测可访问性树里读到 `ValuePattern.Value = ''`），用户看到的就是
+  // "没有任何选项"——尽管选项其实在 DOM 里、控件也是 enabled。
+  const usable = fallback?.trim() ? fallback : undefined
+  if (directory.kind === 'unavailable') return usable
+  return directory.current || usable
 }
 
 /**
@@ -42,7 +46,9 @@ export function currentModelOf(directory: ModelDirectory, fallback?: string): st
  */
 export function modelIdsFor(directory: ModelDirectory, fallbackCurrent?: string, chosen?: string): string[] {
   const ids = directory.kind === 'enumerated' ? directory.models.map((model) => model.id) : []
-  return [...new Set([chosen, currentModelOf(directory, fallbackCurrent), ...ids].filter((id): id is string => Boolean(id?.trim())))]
+  // 顺序有意是**当前模型在前**：`<select>` 在 value 没有匹配项时会回退到第一个 option，
+  // 于是最坏情况也只是退化成"当前模型"，而不是一个空白框。
+  return [...new Set([currentModelOf(directory, fallbackCurrent), chosen, ...ids].filter((id): id is string => Boolean(id?.trim())))]
 }
 
 /** 是否可以真的切换（决定选择器是否禁用）。 */
