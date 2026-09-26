@@ -250,7 +250,25 @@ function desktopWorkspaceTitle(config: Config): string {
 }
 
 function desktopWorkspacePath(config: Config): string {
-  return resolve(config.workspacePath?.trim() || config.cwd?.trim() || join(configuredTokenRoot(config), 'workspace', 'dsh-wallpaper-desktop'))
+  return resolve(config.workspacePath?.trim() || config.cwd?.trim() || defaultDesktopWorkspacePath(config))
+}
+
+/** 壁纸的打包标识，也就是它数据目录的名字。 */
+export const WALLPAPER_DATA_DIRECTORY_NAME = 'com.dsh.wallpaper'
+/** 桌面会话目录名：工作区目录与它在 DSH 里的标题同名。 */
+export const DESKTOP_WORKSPACE_DIRECTORY_NAME = '桌面会话'
+
+/**
+ * 工作区默认落在**壁纸自己的数据目录**下，而不是 DSH 那边、也不是安装目录。
+ *
+ * * 安装目录不行：MSIX 的安装目录运行时可写但**每次升级整个被替换** —— 写在那里的东西必丢；
+ * * 数据目录刚好满足全部要求：运行时可写、升级保留、卸载也留得下（用户明确要求"卸载之后
+ *   也要保留桌面会话的数据"）。固定位置 + 固定名字，缺失时重建同名目录即可。
+ */
+export function defaultDesktopWorkspacePath(config: Config, localAppData = process.env.LOCALAPPDATA): string {
+  const root = localAppData?.trim()
+  if (root) return join(root, WALLPAPER_DATA_DIRECTORY_NAME, DESKTOP_WORKSPACE_DIRECTORY_NAME)
+  return join(configuredTokenRoot(config), 'workspace', DESKTOP_WORKSPACE_DIRECTORY_NAME)
 }
 
 /** The wallpaper bridge is intentionally local-only, including every
@@ -302,9 +320,14 @@ function recoveredDailyWallpaperSessionId(sessionId: string): string {
 
 async function ensureDesktopWorkspace(registry: HostAdapter, config: Config): Promise<DesktopWorkspace> {
   const title = desktopWorkspaceTitle(config)
-  const existing = registry.workspaces().find((workspace) => workspace.title === title)
-  if (existing) return existing
   const path = desktopWorkspacePath(config)
+  // 按**路径**认领，而不是按标题：标题认领会让工作区停在"第一次创建时那个目录"上，
+  // 用户改了位置也没用；而位置一旦丢失（比如工作区被删），标题认领会静默在一个别的地方
+  // 重建同名工作区 —— 用户看到的还是「桌面会话」，目录却不是他以为的那个。
+  const samePath = (candidate: string) => resolve(candidate).toLowerCase() === path.toLowerCase()
+  const existing = registry.workspaces().find((workspace) => samePath(workspace.path))
+  if (existing) return existing
+  // 目录不存在就重建一个**同名**目录，标题仍是「桌面会话」。
   await mkdir(path, { recursive: true })
   return registry.createWorkspace(path, title)
 }
