@@ -3128,7 +3128,7 @@ pub async fn harness_presets(state: tauri::State<'_, ChatState>) -> Result<Value
     let token = read_bridge_token()?;
     let client = bridge_request_client()?;
     let response = auth(
-        client.get(harness_url(port, "/control/presets")),
+        client.get(harness_url(harness_query_port(&state), "/control/presets")),
         &token,
     )
     .send()
@@ -3152,6 +3152,31 @@ pub async fn harness_presets(state: tauri::State<'_, ChatState>) -> Result<Value
 /// "this host cannot be asked" apart from "this host offers nothing".
 /// The endpoint is read from the *session*, exactly like `harness_presets`, so
 /// the answer describes the subject actually in use (检出 / 桌面 / 官壳).
+/// 该向哪台宿主问"与本次会话无关"的问题（模式目录、模型目录）。
+///
+/// `harness_port()` 只在**建立会话时**被设置，没有会话时会退回默认端口（3080）——那里没有
+/// 桥接。于是"刚打开壁纸、还没开始对话"时，模型目录和模式目录一律读不到（实测：前端提示
+/// "DSH bridge 模型目录读取失败"，原生日志里连一行请求记录都没有，因为连接直接被拒绝）。
+/// 这种情况下要用**发现到的端点**：它才是这台机器上正在运行的那台宿主。
+fn harness_query_port(state: &ChatState) -> u16 {
+    let live_session = state
+        .harness_session
+        .lock()
+        .map(|guard| guard.is_some())
+        .unwrap_or(false);
+    if live_session {
+        return state.harness_port();
+    }
+    #[cfg(not(feature = "lite"))]
+    {
+        crate::harness_endpoint_port()
+    }
+    #[cfg(feature = "lite")]
+    {
+        DEFAULT_HARNESS_PORT
+    }
+}
+
 /// 模型目录的摘要，只用于日志：前端"下拉里没有选项"时，第一个要看的就是枚举到底拿到了什么。
 fn summarise_model_payload(value: &Value) -> String {
     let supported = value.get("supported").and_then(Value::as_bool);
@@ -3181,13 +3206,35 @@ fn summarise_model_payload(value: &Value) -> String {
 }
 
 pub async fn harness_models(state: tauri::State<'_, ChatState>) -> Result<Value, String> {
-    let port = state.harness_port();
-    let token = read_bridge_token()?;
-    let client = bridge_request_client()?;
-    let response = auth(client.get(harness_url(port, "/control/models")), &token)
+    let port = harness_query_port(&state);
+    // 这三步原先都是哑的：令牌读不到、客户端建不起来、连接被拒绝，前端只会看到同一句
+    // "模型目录读取失败"，而日志里一行都没有——"命令没被调用"和"调用了但请求没发出去"
+    // 无法区分。每一步都留痕。
+    log::info!("harness models: querying port {port}");
+    let token = match read_bridge_token() {
+        Ok(token) => token,
+        Err(error) => {
+            log::warn!("harness models: bridge token unavailable: {error}");
+            return Err(error);
+        }
+    };
+    let client = match bridge_request_client() {
+        Ok(client) => client,
+        Err(error) => {
+            log::warn!("harness models: request client unavailable: {error}");
+            return Err(error);
+        }
+    };
+    let response = match auth(client.get(harness_url(port, "/control/models")), &token)
         .send()
         .await
-        .map_err(|_| generic_harness_error("模型目录读取"))?;
+    {
+        Ok(response) => response,
+        Err(error) => {
+            log::warn!("harness models: request to port {port} failed: {error}");
+            return Err(generic_harness_error("模型目录读取"));
+        }
+    };
     if !response.status().is_success() {
         let status = response.status().as_u16();
         log::info!("harness models: HTTP {status}");
