@@ -628,7 +628,50 @@ pub fn open_loopback_url(port: u16, path: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::RaiseOutcome;
+    use super::{wait_for_process_exit, RaiseOutcome};
+
+    /// An exit has to be an *event*, and this measures that it is.
+    ///
+    /// Ignored by default because it starts and kills a throwaway process of its own —
+    /// never one the user is running. What it pins is the difference the user felt: the
+    /// watcher must report the exit within milliseconds of it happening, because the
+    /// alternative (a poll) is what made the light and the switch reset lag behind the
+    /// window closing.
+    ///
+    /// `cargo test --lib -- --ignored --nocapture this_machine_reports_a_process_exit_as_an_event`
+    #[test]
+    #[ignore = "starts and kills a throwaway process to time the exit watcher"]
+    fn this_machine_reports_a_process_exit_as_an_event() {
+        use std::time::{Duration, Instant};
+
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/c", "ping -n 60 127.0.0.1 > nul"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn a throwaway process");
+        let pid = child.id();
+        let watcher = std::thread::spawn(move || {
+            // Blocks on the handle; it returns when the process is gone.
+            wait_for_process_exit(pid);
+            Instant::now()
+        });
+        // Let the waiter reach its wait, then take the process away.
+        std::thread::sleep(Duration::from_millis(300));
+        let killed_at = Instant::now();
+        let _ = std::process::Command::new("taskkill.exe")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .output();
+        let _ = child.wait();
+        let noticed_at = watcher.join().expect("the watcher thread");
+        let reaction = noticed_at.saturating_duration_since(killed_at);
+        println!("the watcher noticed the exit {reaction:?} after the process was killed");
+        assert!(
+            reaction < Duration::from_secs(1),
+            "an exit must be reported as an event, not at the next poll: {reaction:?}"
+        );
+    }
 
     /// The outcome codes are a contract with the renderer, which maps each to its
     /// own wording. Keeping them pinned prevents a rename from silently turning
