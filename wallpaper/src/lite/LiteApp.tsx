@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { SleepScene } from '../scenes/SleepScene.tsx'
 import { WakeScene } from '../scenes/WakeScene.tsx'
-import { releaseNativeBootstrap } from './native.ts'
+import { reportNativeBootstrapReady } from '../native/bootstrapHandoff.ts'
 import { liteRuntime } from './runtime.ts'
 import { LiteIdleScene } from './LiteIdleScene.tsx'
 import { assetUrl, DEFAULT_LITE_SETTINGS, LITE_BACKGROUND_OPTIONS, LITE_PORTRAIT_OPTIONS, loadLiteSettings, normalizeLiteSettings } from './settings.ts'
@@ -26,6 +26,7 @@ export function LiteApp() {
   const [phase, setPhase] = useState<LitePhase>('booting')
   const [customBackground, setCustomBackground] = useState<string>()
   const [customPortrait, setCustomPortrait] = useState<string>()
+  const [nativeHandoffGeneration, setNativeHandoffGeneration] = useState<number>()
   const settingsRef = useRef(settings)
   const settingsLoadRef = useRef<Promise<LiteSettings>>()
   const phaseRef = useRef(phase)
@@ -74,6 +75,31 @@ export function LiteApp() {
 
   useEffect(() => {
     if (!('__TAURI_INTERNALS__' in window)) return
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void listen<number>('native-handoff-generation', (event) => {
+      setNativeHandoffGeneration((current) => Math.max(current ?? 0, event.payload))
+    }).then((dispose) => {
+      if (disposed) dispose()
+      else unlisten = dispose
+    }).catch((error) => console.warn('lite native hand-off generation listener failed', error))
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return
+    let disposed = false
+    void liteNative.nativeBootstrapGeneration().then((generation) => {
+      if (!disposed) setNativeHandoffGeneration((current) => Math.max(current ?? 0, generation))
+    }).catch((error) => console.warn('lite native hand-off generation query failed', error))
+    return () => { disposed = true }
+  }, [phase])
+
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return
     return listenUntilDisposed<LiteSettings>(
       (emit) => listen<LiteSettings>('settings-changed', (event) => emit(event.payload)),
       (payload) => setSettings(normalizeLiteSettings(payload)),
@@ -97,17 +123,15 @@ export function LiteApp() {
   }, [settings.background, settings.portrait])
 
   useEffect(() => {
-    if (!('__TAURI_INTERNALS__' in window) || phase !== 'idle') return
-    let first = 0
-    let second = 0
-    first = requestAnimationFrame(() => {
-      second = requestAnimationFrame(() => { void releaseNativeBootstrap() })
-    })
-    return () => {
-      cancelAnimationFrame(first)
-      cancelAnimationFrame(second)
-    }
-  }, [phase])
+    if (!('__TAURI_INTERNALS__' in window) || phase !== 'idle' || nativeHandoffGeneration === undefined) return
+    const controller = new AbortController()
+    void reportNativeBootstrapReady(nativeHandoffGeneration, liteNative, { signal: controller.signal })
+      .then((released) => {
+        if (!released && !controller.signal.aborted) console.warn('lite native hand-off remains covered until its host or renderer is ready')
+      })
+      .catch((error) => console.warn('lite native hand-off readiness check failed', error))
+    return () => controller.abort()
+  }, [nativeHandoffGeneration, phase])
 
   const background = LITE_BACKGROUND_OPTIONS.find((option) => option.id === settings.background) ?? LITE_BACKGROUND_OPTIONS[0]
   const portrait = LITE_PORTRAIT_OPTIONS.find((option) => option.id === settings.portrait) ?? LITE_PORTRAIT_OPTIONS[0]
@@ -172,7 +196,7 @@ export function LiteApp() {
   if (phase === 'booting' || phase === 'locked') {
     scene = <SleepScene persona={persona} mode="system" quiet />
   } else if (phase === 'waking') {
-    scene = <WakeScene persona={persona} startIndex={1} enabled={settings.animationsEnabled && !settings.skipWakeAnimation} speed={settings.animationSpeed} onFirstWakeFrame={() => { void releaseNativeBootstrap() }} onWakeDone={wakeDone} />
+    scene = <WakeScene persona={persona} startIndex={1} handoffGeneration={nativeHandoffGeneration} enabled={settings.animationsEnabled && !settings.skipWakeAnimation} speed={settings.animationSpeed} onFirstWakeFrame={(generation) => reportNativeBootstrapReady(generation, liteNative, { verifySceneImages: false })} onWakeDone={wakeDone} />
   } else {
     scene = <LiteIdleScene persona={persona} backgroundUrl={backgroundUrl} />
   }

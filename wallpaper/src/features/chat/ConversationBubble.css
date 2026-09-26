@@ -330,13 +330,13 @@
   height: 25px;
   place-items: center;
   flex: 0 0 auto;
-  border: 1px solid color-mix(in srgb, var(--dsh-accent) 38%, transparent);
+  border: 0;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--dsh-accent) 15%, transparent);
-  box-shadow: 0 0 18px var(--dsh-glow);
+  background: transparent;
+  box-shadow: none;
   color: var(--dsh-accent-soft);
-  /* 这枚图标同时是"打开可视化窗口"的按钮。下面几行只是把 `<button>` 的浏览器默认样式
-     抹平，让它和原来的 `<span>` **看起来完全一样**（用户明确要求视觉不变）。 */
+  /* 裸图标：无外圈、无底色、无光晕，和中央会话窗（persistent）那一份完全一致；胶囊态曾经
+     画成"描边+底色+光晕"的圆章，用户实测要求"不要外侧的圈了"。以下把 <button> 的默认样式抹平。 */
   padding: 0;
   appearance: none;
   font: inherit;
@@ -459,7 +459,7 @@
 .dsh-chat[data-persistent='true'] .dsh-chat__topbar .dsh-chat__usage-rail { flex: 1 1 300px; min-width: 0; justify-content: center; flex-wrap: wrap; white-space: normal; }
 .dsh-chat[data-persistent='true'] .dsh-chat__topbar .dsh-chat__topbar-spacer { flex: 1 1 12px; min-width: 8px; }
 .dsh-chat[data-persistent='true'] .dsh-chat__identity { gap: 7px; }
-.dsh-chat[data-persistent='true'] .dsh-chat__sigil { width: 19px; height: 19px; border: 0; background: transparent; box-shadow: none; }
+.dsh-chat[data-persistent='true'] .dsh-chat__sigil { width: 19px; height: 19px; }
 .dsh-chat[data-persistent='true'] .dsh-chat__backend { font-size: 13px; letter-spacing: .02em; }
 .dsh-chat[data-persistent='true'] .dsh-chat__backend-detail { display: inline; font-size: 11px; }
 .dsh-chat__preset { padding-left: 9px; border-left: 1px solid color-mix(in srgb, var(--dsh-text-strong) 14%, transparent); color: var(--dsh-text-faint); font-size: 11px; white-space: nowrap; }

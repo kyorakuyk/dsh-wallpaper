@@ -11,8 +11,12 @@ async function invokeNative<T>(command: string, args?: Record<string, unknown>):
   return invoke<T>(command, args)
 }
 
-export async function releaseNativeBootstrap(): Promise<void> {
-  await invokeNative('release_native_bootstrap')
+export async function nativeBootstrapGeneration(): Promise<number> {
+  return invokeNative<number>('native_bootstrap_generation')
+}
+
+export async function releaseNativeBootstrap(generation: number): Promise<boolean> {
+  return invokeNative<boolean>('release_native_bootstrap', { generation })
 }
 
 export async function lockScreenDiagnostics(): Promise<LockScreenDiagnostics> {

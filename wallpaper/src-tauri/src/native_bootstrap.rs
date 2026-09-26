@@ -32,8 +32,8 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 #[cfg(windows)]
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateCompatibleDC, DeleteDC, DeleteObject, EndPaint, HDC, InvalidateRect,
-    SelectObject, SetStretchBltMode, StretchBlt, HALFTONE, HBITMAP, HGDIOBJ, PAINTSTRUCT, SRCCOPY,
+    BeginPaint, CreateCompatibleDC, DeleteDC, DeleteObject, EndPaint, InvalidateRect, SelectObject,
+    SetStretchBltMode, StretchBlt, HALFTONE, HBITMAP, HDC, HGDIOBJ, PAINTSTRUCT, SRCCOPY,
 };
 #[cfg(windows)]
 use windows::Win32::Graphics::GdiPlus::{
@@ -49,15 +49,17 @@ use windows::Win32::System::Threading::{
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClassNameW, GetClientRect, GetParent,
-    GetWindowLongPtrW, IsWindow, IsWindowVisible, PostMessageW, RegisterClassExW, SetParent,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, CREATESTRUCTW, GWLP_USERDATA, HWND_BOTTOM,
-    SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNA, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
-    WM_ERASEBKGND, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WNDCLASSEXW, WS_CHILD, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    GetWindow, GetWindowLongPtrW, IsWindow, IsWindowVisible, PostMessageW, RegisterClassExW,
+    SetParent, SetWindowLongPtrW, SetWindowPos, ShowWindow, CREATESTRUCTW, GWLP_USERDATA,
+    GW_HWNDPREV, HWND_BOTTOM, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNA, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_APP, WM_ERASEBKGND, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WNDCLASSEXW,
+    WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
 };
 
 #[cfg(windows)]
-use crate::windows_integration::{desktop_displays, request_wallpaper_worker, visible_wallpaper_worker};
+use crate::windows_integration::{
+    desktop_displays, request_wallpaper_worker, visible_wallpaper_worker,
+};
 
 #[cfg(windows)]
 const BOOTSTRAP_CLASS: PCWSTR = w!("DSHWallpaperNativeBootstrap");
@@ -116,7 +118,17 @@ const OUTCOME_READY: u8 = 6;
 #[cfg(windows)]
 const BOOTSTRAP_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(20);
 #[cfg(windows)]
-static BOOTSTRAP_WATCHDOG: OnceLock<Arc<(Mutex<bool>, Condvar)>> = OnceLock::new();
+static BOOTSTRAP_WATCHDOG: OnceLock<Arc<(Mutex<WatchdogState>, Condvar)>> = OnceLock::new();
+#[cfg(windows)]
+static BOOTSTRAP_WATCHDOG_THREAD_STARTED: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
+static HANDOFF_STATE: OnceLock<Mutex<crate::native_handoff::NativeHandoffState>> = OnceLock::new();
+
+#[cfg(windows)]
+struct WatchdogState {
+    generation: u64,
+    deadline: Option<Instant>,
+}
 
 #[cfg(windows)]
 struct BootstrapWindowState {
@@ -139,6 +151,81 @@ const SLEEP_ASSET: &str = "personas/wake-frames/variant-anima/sleep.png";
 const WAKE_ASSET: &str = "personas/wake-frames/variant-anima/frame-2-eyes.png";
 
 #[cfg(windows)]
+fn handoff_state() -> &'static Mutex<crate::native_handoff::NativeHandoffState> {
+    HANDOFF_STATE.get_or_init(|| Mutex::new(crate::native_handoff::NativeHandoffState::default()))
+}
+
+#[cfg(windows)]
+fn begin_handoff() -> u64 {
+    let generation = handoff_state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .begin();
+    record_startup_diagnostic(&format!(
+        "event=handoff-generation generation={generation} phase=awaiting-scene"
+    ));
+    generation
+}
+
+#[cfg(windows)]
+fn lock_handoff() -> u64 {
+    let generation = handoff_state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lock();
+    disarm_watchdog();
+    record_startup_diagnostic(&format!(
+        "event=handoff-generation generation={generation} phase=locked"
+    ));
+    generation
+}
+
+#[cfg(windows)]
+pub fn generation() -> u64 {
+    handoff_state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .generation()
+}
+
+#[cfg(windows)]
+pub(crate) fn invalidate_pending_handoff() -> Option<u64> {
+    let generation = handoff_state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .invalidate_pending()?;
+    arm_watchdog(generation);
+    record_startup_diagnostic(&format!(
+        "event=handoff-generation generation={generation} phase=awaiting-scene reason=host-changed"
+    ));
+    Some(generation)
+}
+
+#[cfg(windows)]
+fn is_pending_generation(generation: u64) -> bool {
+    handoff_state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_pending(generation)
+}
+
+#[cfg(windows)]
+fn is_locked_generation(generation: u64) -> bool {
+    handoff_state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_locked(generation)
+}
+
+#[cfg(windows)]
+fn is_released_generation(generation: u64) -> bool {
+    handoff_state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_released(generation)
+}
+
+#[cfg(windows)]
 fn elapsed_ms() -> u128 {
     BOOTSTRAP_STARTED
         .get()
@@ -156,7 +243,7 @@ fn startup_diagnostic_path() -> Option<PathBuf> {
 }
 
 #[cfg(windows)]
-fn record_startup_diagnostic(event: &str) {
+pub(crate) fn record_startup_diagnostic(event: &str) {
     let Some(path) = startup_diagnostic_path() else {
         return;
     };
@@ -253,10 +340,10 @@ fn display_regions_from_bounds(
     };
     let mut regions = Vec::with_capacity(displays.len());
     for display in displays {
-        let left = (i64::from(display.bounds.x) - i64::from(virtual_left))
-            .clamp(0, i64::from(width));
-        let top = (i64::from(display.bounds.y) - i64::from(virtual_top))
-            .clamp(0, i64::from(height));
+        let left =
+            (i64::from(display.bounds.x) - i64::from(virtual_left)).clamp(0, i64::from(width));
+        let top =
+            (i64::from(display.bounds.y) - i64::from(virtual_top)).clamp(0, i64::from(height));
         let right = (left + i64::from(display.bounds.width)).clamp(0, i64::from(width));
         let bottom = (top + i64::from(display.bounds.height)).clamp(0, i64::from(height));
         if right > left && bottom > top {
@@ -301,14 +388,12 @@ unsafe fn paint_bitmap_cover(
     let target_aspect = i64::from(target_width) * i64::from(bitmap_height);
     let source_aspect = i64::from(target_height) * i64::from(bitmap_width);
     let (source_width, source_height) = if target_aspect >= source_aspect {
-        let height = (i64::from(target_height) * i64::from(bitmap_width)
-            / i64::from(target_width))
-        .clamp(1, i64::from(bitmap_height)) as i32;
+        let height = (i64::from(target_height) * i64::from(bitmap_width) / i64::from(target_width))
+            .clamp(1, i64::from(bitmap_height)) as i32;
         (bitmap_width, height)
     } else {
-        let width = (i64::from(target_width) * i64::from(bitmap_height)
-            / i64::from(target_height))
-        .clamp(1, i64::from(bitmap_width)) as i32;
+        let width = (i64::from(target_width) * i64::from(bitmap_height) / i64::from(target_height))
+            .clamp(1, i64::from(bitmap_width)) as i32;
         (width, bitmap_height)
     };
     let source_left = (bitmap_width - source_width) / 2;
@@ -498,33 +583,60 @@ unsafe extern "system" fn bootstrap_window_proc(
         WM_ERASEBKGND => LRESULT(1),
         SHOW_WAKE_MESSAGE => {
             let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut BootstrapWindowState;
-            if !state_ptr.is_null() {
+            let generation = wparam.0 as u64;
+            if is_pending_generation(generation) && !state_ptr.is_null() {
                 (*state_ptr).show_wake = (*state_ptr).wake_bitmap.is_some();
+                let _ = ShowWindow(hwnd, SW_SHOWNA);
+                let _ = InvalidateRect(Some(hwnd), None, false);
+                record_startup_diagnostic(&format!(
+                    "event=native-wake-cover-shown generation={generation}"
+                ));
             }
-            let _ = ShowWindow(hwnd, SW_SHOWNA);
-            let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
         }
         SHOW_SLEEP_MESSAGE => {
             let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut BootstrapWindowState;
-            if !state_ptr.is_null() {
+            let generation = wparam.0 as u64;
+            if is_locked_generation(generation) && !state_ptr.is_null() {
                 (*state_ptr).show_wake = false;
+                let _ = ShowWindow(hwnd, SW_SHOWNA);
+                let _ = InvalidateRect(Some(hwnd), None, false);
+                record_startup_diagnostic(&format!(
+                    "event=native-sleep-cover-shown generation={generation}"
+                ));
             }
-            let _ = ShowWindow(hwnd, SW_SHOWNA);
-            let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
         }
         HIDE_MESSAGE => {
             let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut BootstrapWindowState;
-            if !state_ptr.is_null() {
+            let generation = wparam.0 as u64;
+            if is_released_generation(generation) && !state_ptr.is_null() {
                 (*state_ptr).show_wake = false;
+                let _ = ShowWindow(hwnd, SW_HIDE);
+                restore_startup_priority();
+                record_startup_diagnostic(&format!(
+                    "event=native-cover-hidden generation={generation}"
+                ));
+                log::info!("native bootstrap hidden after {} ms", elapsed_ms());
             }
-            let _ = ShowWindow(hwnd, SW_HIDE);
-            restore_startup_priority();
-            log::info!("native bootstrap hidden after {} ms", elapsed_ms());
             LRESULT(0)
         }
         DESTROY_MESSAGE => {
+            let generation = wparam.0 as u64;
+            if generation != 0 {
+                if !handoff_state()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .expire(generation)
+                {
+                    return LRESULT(0);
+                }
+            } else {
+                handoff_state()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .destroy();
+            }
             log::info!("native bootstrap destroyed after {} ms", elapsed_ms());
             let _ = ShowWindow(hwnd, SW_HIDE);
             let _ = DestroyWindow(hwnd);
@@ -584,6 +696,9 @@ pub fn prepare() {
         return;
     }
     let _ = BOOTSTRAP_STARTED.set(Instant::now());
+    let generation = begin_handoff();
+    record_startup_diagnostic("event=process-entry");
+    record_startup_diagnostic("event=native-prepare-start");
     let Some(path) = find_asset(SLEEP_ASSET, "LockScreenSleep.png") else {
         remember_outcome(OUTCOME_ASSET_MISSING, "outcome=asset-missing");
         log::warn!("native bootstrap skipped: packaged sleep image not found");
@@ -601,6 +716,10 @@ pub fn prepare() {
     };
     let parent = parent_code(worker);
     BOOTSTRAP_PARENT.store(parent, Ordering::Release);
+    record_startup_diagnostic(&format!(
+        "event=native-parent-selected parent={}",
+        parent_label(parent)
+    ));
     let (bitmap, width, height) = match load_bitmap(&path) {
         Ok(bitmap) => bitmap,
         Err(error) => {
@@ -732,9 +851,10 @@ pub fn prepare() {
         width,
         height
     );
+    record_startup_diagnostic("event=native-cover-visible");
     // The hand-off layer is now visible above the desktop, so start the
     // fallback that removes it if the renderer never reports its own frame.
-    arm_watchdog();
+    arm_watchdog(generation);
 }
 
 /// Rebind the native first-frame child after Explorer creates the real
@@ -841,11 +961,12 @@ pub fn reattach_to_workerw() -> Result<bool, String> {
 /// so the earliest `prepare()` log can be lost. Emit the measured ready time
 /// once the application logger is live.
 #[cfg(windows)]
-pub fn report_ready() {
+pub fn report_tauri_ready() {
+    // This is called from Tauri's setup callback, before the React renderer has
+    // reported a frame. Keep it as a lifecycle marker only: settling the
+    // watchdog here used to disable the last-resort cover timeout too early.
+    record_startup_diagnostic("event=tauri-setup-ready");
     if !BOOTSTRAP_READY_REPORTED.swap(true, Ordering::AcqRel) {
-        // The renderer painted its own first frame, so the hand-off window no
-        // longer needs the watchdog fallback.
-        settle_watchdog();
         let ready_ms = BOOTSTRAP_READY_MS.load(Ordering::Acquire);
         let outcome = BOOTSTRAP_OUTCOME.load(Ordering::Acquire);
         let parent = BOOTSTRAP_PARENT.load(Ordering::Acquire);
@@ -877,79 +998,227 @@ pub fn report_ready() {
 }
 
 #[cfg(windows)]
-pub fn release() -> Result<(), String> {
-    // A renderer-driven release is the normal path, so the watchdog stops
-    // waiting here instead of firing later against an already hidden window.
-    settle_watchdog();
+pub fn release(generation: u64, background_raw: isize) -> Result<bool, String> {
+    if is_released_generation(generation) {
+        record_startup_diagnostic(&format!(
+            "event=handoff-release-idempotent generation={generation}"
+        ));
+        return Ok(true);
+    }
+    if !is_pending_generation(generation) {
+        record_startup_diagnostic(&format!(
+            "event=handoff-release-rejected generation={generation} current={} reason=stale",
+            self::generation()
+        ));
+        return Ok(false);
+    }
+    record_startup_diagnostic(&format!(
+        "event=renderer-ready-signal generation={generation}"
+    ));
     let raw = BOOTSTRAP_HWND.load(Ordering::Acquire);
     if raw == 0 {
+        let released = handoff_state()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .release(generation);
+        settle_watchdog(generation);
         restore_startup_priority();
-        return Ok(());
+        return Ok(released || is_released_generation(generation));
     }
-    unsafe {
+    let cover = HWND(raw as *mut _);
+    let background = HWND(background_raw as *mut _);
+    let mut cover_client = RECT::default();
+    let mut background_client = RECT::default();
+    let cover_parent = unsafe { GetParent(cover) }.ok();
+    let background_parent = unsafe { GetParent(background) }.ok();
+    let cover_valid = unsafe { IsWindow(Some(cover)).as_bool() }
+        && unsafe { IsWindowVisible(cover).as_bool() }
+        && unsafe { GetClientRect(cover, &mut cover_client).is_ok() };
+    let background_valid = unsafe { IsWindow(Some(background)).as_bool() }
+        && unsafe { IsWindowVisible(background).as_bool() }
+        && unsafe { GetClientRect(background, &mut background_client).is_ok() };
+    let preceding_sibling = unsafe { GetWindow(background, GW_HWNDPREV) }
+        .ok()
+        .filter(|hwnd| !hwnd.0.is_null());
+    let dimensions_match = cover_client.right - cover_client.left
+        == background_client.right - background_client.left
+        && cover_client.bottom - cover_client.top
+            == background_client.bottom - background_client.top;
+    let host_class = cover_parent.and_then(window_class);
+    let host_valid = matches!(host_class.as_deref(), Some("Progman") | Some("WorkerW"));
+    let ready = cover_valid
+        && background_valid
+        && cover_parent.is_some()
+        && cover_parent == background_parent
+        && host_valid
+        && dimensions_match
+        && preceding_sibling == Some(cover);
+    if !ready {
+        record_startup_diagnostic(&format!(
+            "event=handoff-release-deferred generation={generation} cover_visible={} webview_visible={} same_parent={} parent={} dimensions_match={} z_order_match={}",
+            cover_valid,
+            background_valid,
+            cover_parent == background_parent,
+            host_class.as_deref().unwrap_or("unknown"),
+            dimensions_match,
+            preceding_sibling == Some(cover)
+        ));
+        return Ok(false);
+    }
+
+    record_startup_diagnostic(&format!(
+        "event=scene-prepared generation={generation} host={} size={}x{} images=renderer-confirmed",
+        host_class.as_deref().unwrap_or("unknown"),
+        cover_client.right - cover_client.left,
+        cover_client.bottom - cover_client.top
+    ));
+
+    let released = handoff_state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .release(generation);
+    if !released {
+        return Ok(is_released_generation(generation));
+    }
+    record_startup_diagnostic(&format!(
+        "event=renderer-requested-cover-release generation={generation} host={} size={}x{}",
+        host_class.as_deref().unwrap_or("unknown"),
+        cover_client.right - cover_client.left,
+        cover_client.bottom - cover_client.top
+    ));
+    if let Err(error) = unsafe {
         PostMessageW(
-            Some(HWND(raw as *mut _)),
+            Some(cover),
             HIDE_MESSAGE,
-            WPARAM(0),
+            WPARAM(generation as usize),
             LPARAM(0),
         )
+    } {
+        handoff_state()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .restore_pending(generation);
+        return Err(format!("无法释放原生首帧层：{error}"));
     }
-    .map_err(|error| format!("无法释放原生首帧层：{error}"))
+    settle_watchdog(generation);
+    Ok(true)
 }
 
-/// Begin watching the native hand-off window.
-///
-/// The renderer normally reports its first frame within a few hundred
-/// milliseconds. If it never does (WebView2 failed to start, the surface was
-/// relaunched into a broken profile, or `releaseNativeBootstrap` was never
-/// called), the hand-off window would otherwise sit above the desktop with no
-/// event that could ever remove it. This watchdog destroys it after
-/// `BOOTSTRAP_WATCHDOG_TIMEOUT` and records the reason in the startup log.
-///
-/// The watcher exits as soon as `release()`/`destroy()` reports the window is
-/// gone, so a healthy launch pays one short-lived thread and one condition
-/// variable.
 #[cfg(windows)]
-fn arm_watchdog() {
+pub(crate) fn window_handle() -> Option<HWND> {
+    let raw = BOOTSTRAP_HWND.load(Ordering::Acquire);
+    (raw != 0).then_some(HWND(raw as *mut _))
+}
+
+/// Arm one reusable condition-variable waiter for the current hand-off epoch.
+/// It sleeps while disarmed, so later unlocks regain the same bounded fallback
+/// without adding a timer or a thread per lock/unlock cycle.
+#[cfg(windows)]
+fn arm_watchdog(generation: u64) {
     let shared = BOOTSTRAP_WATCHDOG
-        .get_or_init(|| Arc::new((Mutex::new(false), Condvar::new())))
+        .get_or_init(|| {
+            Arc::new((
+                Mutex::new(WatchdogState {
+                    generation: 0,
+                    deadline: None,
+                }),
+                Condvar::new(),
+            ))
+        })
         .clone();
-    if shared.0.lock().map(|settled| *settled).unwrap_or(true) {
+    {
+        let mut state = shared
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.generation = generation;
+        state.deadline = Some(Instant::now() + BOOTSTRAP_WATCHDOG_TIMEOUT);
+    }
+    shared.1.notify_all();
+
+    if BOOTSTRAP_WATCHDOG_THREAD_STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
-    std::thread::Builder::new()
+    let worker_shared = shared.clone();
+    if std::thread::Builder::new()
         .name("dsh-bootstrap-watchdog".into())
         .spawn(move || {
-            let (lock, condvar) = &*shared;
-            let Ok(guard) = lock.lock() else { return };
-            let Ok((settled, timeout)) = condvar.wait_timeout_while(
-                guard,
-                BOOTSTRAP_WATCHDOG_TIMEOUT,
-                |settled| !*settled,
-            ) else {
-                return;
-            };
-            if *settled {
-                return;
+            let (lock, condvar) = &*worker_shared;
+            let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            loop {
+                let Some(deadline) = state.deadline else {
+                    state = condvar.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+                    continue;
+                };
+                let generation = state.generation;
+                let now = Instant::now();
+                if now < deadline {
+                    let waited = condvar.wait_timeout(state, deadline - now);
+                    state = match waited {
+                        Ok((next, _)) => next,
+                        Err(error) => error.into_inner().0,
+                    };
+                    continue;
+                }
+                if state.generation != generation || state.deadline != Some(deadline) {
+                    continue;
+                }
+                state.deadline = None;
+                drop(state);
+                if is_pending_generation(generation) {
+                    record_startup_diagnostic(&format!(
+                        "outcome=watchdog-timeout generation={generation} detail=renderer-not-ready"
+                    ));
+                    log::warn!(
+                        "native bootstrap watchdog: generation {} did not become ready within {} s; destroying its hand-off layer",
+                        generation,
+                        BOOTSTRAP_WATCHDOG_TIMEOUT.as_secs()
+                    );
+                    if let Some(hwnd) = window_handle() {
+                        let _ = unsafe {
+                            PostMessageW(
+                                Some(hwnd),
+                                DESTROY_MESSAGE,
+                                WPARAM(generation as usize),
+                                LPARAM(0),
+                            )
+                        };
+                    }
+                }
+                state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             }
-            drop(timeout);
-            record_startup_diagnostic("outcome=watchdog-timeout detail=bootstrap-not-released");
-            log::warn!(
-                "native bootstrap watchdog: renderer did not report a frame within {} s; releasing the hand-off layer",
-                BOOTSTRAP_WATCHDOG_TIMEOUT.as_secs()
-            );
-            let _ = destroy();
         })
-        .ok();
+        .is_err()
+    {
+        BOOTSTRAP_WATCHDOG_THREAD_STARTED.store(false, Ordering::Release);
+        record_startup_diagnostic("event=watchdog-start-failed");
+    }
 }
 
-/// Mark the hand-off window as finished so the watchdog stops waiting.
 #[cfg(windows)]
-fn settle_watchdog() {
+fn settle_watchdog(generation: u64) {
     if let Some(shared) = BOOTSTRAP_WATCHDOG.get() {
-        if let Ok(mut settled) = shared.0.lock() {
-            *settled = true;
+        let mut state = shared
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.generation == generation {
+            state.deadline = None;
         }
+        drop(state);
+        shared.1.notify_all();
+    }
+}
+
+#[cfg(windows)]
+fn disarm_watchdog() {
+    if let Some(shared) = BOOTSTRAP_WATCHDOG.get() {
+        let mut state = shared
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.deadline = None;
+        drop(state);
         shared.1.notify_all();
     }
 }
@@ -959,7 +1228,11 @@ fn settle_watchdog() {
 /// `release()` only hides it so a later lock/unlock can reuse it.
 #[cfg(windows)]
 pub fn destroy() -> Result<(), String> {
-    settle_watchdog();
+    disarm_watchdog();
+    handoff_state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .destroy();
     let raw = BOOTSTRAP_HWND.load(Ordering::Acquire);
     if raw == 0 {
         restore_startup_priority();
@@ -981,15 +1254,18 @@ pub fn destroy() -> Result<(), String> {
 /// frame. Keeping the HWND alive makes this useful for every subsequent
 /// lock/unlock cycle, not only the first process launch.
 #[cfg(windows)]
-pub fn start_wake() -> Result<(), String> {    let raw = BOOTSTRAP_HWND.load(Ordering::Acquire);
+pub fn start_wake() -> Result<(), String> {
+    let generation = begin_handoff();
+    let raw = BOOTSTRAP_HWND.load(Ordering::Acquire);
     if raw == 0 {
         return Ok(());
     }
+    arm_watchdog(generation);
     unsafe {
         PostMessageW(
             Some(HWND(raw as *mut _)),
             SHOW_WAKE_MESSAGE,
-            WPARAM(0),
+            WPARAM(generation as usize),
             LPARAM(0),
         )
     }
@@ -999,6 +1275,7 @@ pub fn start_wake() -> Result<(), String> {    let raw = BOOTSTRAP_HWND.load(Ord
 /// Reset the hand-off layer to the sleep frame for lock/suspend transitions.
 #[cfg(windows)]
 pub fn show_sleep() -> Result<(), String> {
+    let generation = lock_handoff();
     let raw = BOOTSTRAP_HWND.load(Ordering::Acquire);
     if raw == 0 {
         return Ok(());
@@ -1007,7 +1284,7 @@ pub fn show_sleep() -> Result<(), String> {
         PostMessageW(
             Some(HWND(raw as *mut _)),
             SHOW_SLEEP_MESSAGE,
-            WPARAM(0),
+            WPARAM(generation as usize),
             LPARAM(0),
         )
     }
@@ -1018,7 +1295,7 @@ pub fn show_sleep() -> Result<(), String> {
 pub fn prepare() {}
 
 #[cfg(not(windows))]
-pub fn report_ready() {}
+pub fn report_tauri_ready() {}
 
 #[cfg(not(windows))]
 pub fn reattach_to_workerw() -> Result<bool, String> {
@@ -1032,9 +1309,22 @@ pub fn boost_startup_priority() {}
 pub fn restore_startup_priority() {}
 
 #[cfg(not(windows))]
-pub fn release() -> Result<(), String> {
-    Ok(())
+pub fn generation() -> u64 {
+    0
 }
+
+#[cfg(not(windows))]
+pub(crate) fn invalidate_pending_handoff() -> Option<u64> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn release(_: u64, _: isize) -> Result<bool, String> {
+    Ok(true)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn record_startup_diagnostic(_: &str) {}
 
 #[cfg(not(windows))]
 pub fn destroy() -> Result<(), String> {
@@ -1114,11 +1404,21 @@ mod tests {
 
         assert_eq!(regions.len(), 2);
         assert_eq!(
-            (regions[0].left, regions[0].top, regions[0].right, regions[0].bottom),
+            (
+                regions[0].left,
+                regions[0].top,
+                regions[0].right,
+                regions[0].bottom
+            ),
             (0, 0, 1920, 1080)
         );
         assert_eq!(
-            (regions[1].left, regions[1].top, regions[1].right, regions[1].bottom),
+            (
+                regions[1].left,
+                regions[1].top,
+                regions[1].right,
+                regions[1].bottom
+            ),
             (1920, 120, 4480, 1560)
         );
     }
@@ -1133,7 +1433,12 @@ mod tests {
 
         assert_eq!(regions.len(), 1);
         assert_eq!(
-            (regions[0].left, regions[0].top, regions[0].right, regions[0].bottom),
+            (
+                regions[0].left,
+                regions[0].top,
+                regions[0].right,
+                regions[0].bottom
+            ),
             (0, 0, 1280, 1024)
         );
     }
@@ -1143,7 +1448,12 @@ mod tests {
         let regions = display_regions_from_bounds(&[], 4480, 1600);
         assert_eq!(regions.len(), 1);
         assert_eq!(
-            (regions[0].left, regions[0].top, regions[0].right, regions[0].bottom),
+            (
+                regions[0].left,
+                regions[0].top,
+                regions[0].right,
+                regions[0].bottom
+            ),
             (0, 0, 4480, 1600)
         );
     }

@@ -683,8 +683,8 @@ pub fn start_ball_monitor(app: AppHandle) {
         let mut last_geometry_refresh = std::time::Instant::now();
         let mut pop_cooldown_until: Option<std::time::Instant> = None;
         let mut cooldown_logged = false;
-        /// 点过球之后的状态：等输入岛接管。岛一旦发布 `chat` 热区就解除；
-        /// 超时（安全阀）也解除，免得球永远不出现。
+        // 点过球之后的状态：等输入岛接管。岛一旦发布 `chat` 热区就解除；
+        // 超时（安全阀）也解除，免得球永远不出现。
         let mut waiting_for_island_since: Option<std::time::Instant> = None;
 
         loop {
