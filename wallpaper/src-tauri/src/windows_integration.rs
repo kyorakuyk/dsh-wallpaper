@@ -2337,6 +2337,23 @@ fn cursor_is_on_desktop_surface(background: HWND) -> bool {
     false
 }
 
+/// 「光标是否落在桌面表面」这条判据供其它模块复用时的薄封装。
+///
+/// 悬浮球的靠近检测需要它：只有光标下的窗口属于桌面（父链能走到 Progman）时
+/// 才允许弹出，否则最大化应用盖住桌面时球会从应用底边冒出来。
+/// 这里刻意**不**重算一遍桌面宿主规则——`cursor_is_on_desktop_surface` 是
+/// 表/里桌面双击判定唯一可用的判据，两处各写一份迟早会漂移。
+///
+/// 悬浮球只存在于完整版（`floating_ball` 模块本身也按 edition 收窄），所以这个
+/// 薄封装在 Lite 构建里没有调用者，一并收窄以保持 Lite 门禁的警告数与之前一致。
+#[cfg(all(windows, not(feature = "lite")))]
+pub(crate) fn cursor_on_desktop_surface_via_label(app: &tauri::AppHandle) -> bool {
+    app.get_webview_window(BACKGROUND_WINDOW_LABEL)
+        .and_then(|window| window.hwnd().ok())
+        .map(|handle| cursor_is_on_desktop_surface(HWND(handle.0)))
+        .unwrap_or(false)
+}
+
 #[cfg(windows)]
 fn cursor_hits_interaction_region(root_hwnd: HWND) -> bool {
     let mut cursor = POINT::default();

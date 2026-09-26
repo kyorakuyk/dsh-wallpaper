@@ -18,6 +18,11 @@ mod harness_launch;
 #[cfg(not(feature = "lite"))]
 mod harness_catalog;
 mod desktop_fallback;
+// 悬浮球是「折叠态胶囊」的新家，而胶囊只属于完整版；它的创建/监控也只挂在完整版
+// 的 setup 块里。像上面 api_persistence / chat 那样按 edition 收窄，否则整个模块
+// 在 Lite 构建里全部不可达，会给 Lite 门禁凭空加一串 dead_code 警告。
+#[cfg(not(feature = "lite"))]
+mod floating_ball;
 mod lock_screen_backup;
 mod native_bootstrap;
 mod native_handoff;
@@ -3526,6 +3531,13 @@ fn run_with_edition(lite: bool) {
                 windows_integration::start_foreground_monitor(app.handle().clone());
                 windows_integration::start_desktop_workspace_monitor(app.handle().clone());
                 start_harness_monitor(app.handle().clone());
+                // 悬浮球（interaction-handover §3.1 的增量 1）：独立顶层窗口，
+                // 平时停在屏幕之外，鼠标靠近底边才滑入。它是人工入口而不是常驻
+                // 服务，因此创建失败只记日志，绝不打断启动链（也绝不 `?`）。
+                match floating_ball::ensure_ball(app.handle()) {
+                    Ok(_) => floating_ball::start_ball_monitor(app.handle().clone()),
+                    Err(error) => log::warn!("floating ball unavailable: {error}"),
+                }
             }
             // Keep an enabled pre-StartupTask installation running across a
             // package update. The migration is best-effort and leaves the

@@ -31,6 +31,9 @@
       }
       #root:not(:empty) + #boot-surface { opacity: 0; }
       html[data-surface='settings'] #boot-surface { display: none; }
+      /* The floating-ball window is 216x72 and fully transparent, so the
+         full-size lock-screen cover must never paint inside it. */
+      html[data-surface='ball'] #boot-surface { display: none; }
     </style>
   </head>
   <body>

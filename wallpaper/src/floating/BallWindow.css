@@ -1,0 +1,97 @@
+/* 悬浮球窗口（surface `ball`）的占位样式。
+ *
+ * 窗口是 216×72 逻辑像素、无边框、透明，并且原生 `SetWindowRgn` 已经把窗口区域
+ * 裁成胶囊（圆角椭圆直径 = 窗口高度）。因此这里只需要把整窗画满：
+ * `100vw × 100vh` + `box-sizing: border-box`，`border-radius: 999px` 会被浏览器
+ * 收敛成 36px（= 高度的一半），与原生区域是同一个形状。
+ *
+ * 两条刻意的取舍：
+ * 1. **不用 `backdrop-filter`**：球是独立顶层窗口，它背后是桌面而不是本进程的其它
+ *    图层，模糊没有可采样的底；而且仓库已经因为全屏 `backdrop-filter` 吃过 hover
+ *    卡顿的亏（见 `styles.css` 的默认渐变主题那一段）。
+ * 2. **辉光只能画在内部**：原生窗口区域会裁掉胶囊之外的一切，外发光（`0 0 24px`）
+ *    在球上根本不可见，所以柔光用 `inset` 阴影 + 内部渐亮来表达。
+ */
+
+.ball-surface {
+  box-sizing: border-box;
+  display: grid;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  place-items: center;
+  overflow: hidden;
+  background: transparent;
+  color: var(--dsh-text-strong, rgba(248, 251, 255, 0.98));
+  font-family: var(--dsh-font-sans, "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif);
+  /* 悬浮球不是文档：不接受文本选择，也不参与页面缩放手势。 */
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+
+.ball-capsule {
+  box-sizing: border-box;
+  position: relative;
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  /* 深色半透明胶囊；令牌缺失时用同一族的字面值兜底，避免占位阶段整块不可见。 */
+  background: color-mix(in srgb, var(--dsh-glass-fill-strong, rgba(8, 16, 29, 0.78)) 88%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.13),
+    inset 0 0 26px var(--dsh-glow, rgba(54, 157, 255, 0.24));
+  transition: border-color var(--dsh-duration-fast, 140ms) var(--dsh-ease-standard, ease);
+}
+
+/* 顶部渐亮，替代被区域裁掉的外发光。 */
+.ball-capsule::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(120% 80% at 50% 0%, rgba(255, 255, 255, 0.12), transparent 68%);
+  pointer-events: none;
+  animation: ball-breathe 6s ease-in-out infinite;
+}
+
+/* 占位阶段唯一「确实收到真实鼠标输入」的视觉证据：hover 时描边转为主题色。
+ * 这是 WebView 收到的真事件，不是热区推算——球是独立顶层窗口。
+ * 它不依赖窗口是否激活（`focusable(false)` 只影响激活，不影响 hover）。 */
+.ball-capsule:hover {
+  border-color: color-mix(in srgb, var(--dsh-accent, #5caeff) 52%, transparent);
+}
+
+.ball-capsule__sigil {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--dsh-accent, #5caeff) 22%, transparent);
+  box-shadow: inset 0 0 14px var(--dsh-glow, rgba(54, 157, 255, 0.24));
+}
+
+.ball-capsule__label {
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: 0.06em;
+}
+
+@keyframes ball-breathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+/* 系统要求减少动态时完全不呼吸（与 `styles.css` / `tokens.css` 同一约定）。 */
+@media (prefers-reduced-motion: reduce) {
+  .ball-capsule { transition: none; }
+  .ball-capsule::after { animation: none; }
+}

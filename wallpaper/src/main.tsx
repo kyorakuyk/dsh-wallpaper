@@ -5,6 +5,7 @@ import { App } from './App.tsx'
 import './styles.css'
 import { currentSurface } from './surface.ts'
 import { SettingsWindow } from './settings/SettingsWindow.tsx'
+import { BallWindow } from './floating/BallWindow.tsx'
 
 const el = document.getElementById('root')
 if (el === null) throw new Error('missing #root')
@@ -13,11 +14,21 @@ if (el === null) throw new Error('missing #root')
 // the desktop host and WebView2 may then report a stale/rewritten URL; the
 // Tauri window label remains the authoritative identity.
 const nativeLabel = '__TAURI_INTERNALS__' in window ? getCurrentWindow().label : undefined
-const surface = nativeLabel === 'background' || nativeLabel === 'settings'
-  ? nativeLabel
+// 悬浮球窗口的原生标签是 `floating-ball`，对外是独立 surface `ball`（与 surface.ts 同一映射）。
+const nativeSurface = nativeLabel === 'floating-ball' ? 'ball' : nativeLabel
+const surface = nativeSurface === 'background' || nativeSurface === 'settings' || nativeSurface === 'ball'
+  ? nativeSurface
   : currentSurface()
 document.documentElement.dataset.surface = surface
 // The single WorkerW host owns both the scene and conversation UI. A second
 // reparented WebView2 host was removed because it caused duplicate scenes,
-// frame flashes and placement races.
-createRoot(el).render(surface === 'settings' ? <SettingsWindow /> : <App surface="combined" />)
+// frame flashes and placement races. The floating ball is the exception: it is
+// its own top-level window (never a child of the desktop host) and it renders
+// only the collapsed capsule.
+createRoot(el).render(
+  surface === 'settings'
+    ? <SettingsWindow />
+    : surface === 'ball'
+      ? <BallWindow />
+      : <App surface="combined" />,
+)
