@@ -563,11 +563,22 @@ export function App({ surface = 'combined' }: AppProps) {
     if (harnessModelDir.kind === 'enumerated' && !harnessModelDir.models.some((model) => model.id === saved)) return undefined
     return saved
   }, [settings.harnessModel.model, harnessModelDir])
+  // 选择器里能选的模型：**每个后端只认自己的来源**。
+  //
+  // 这里踩过一次真实的坑：`runtime.model` 是三个后端**共用**的一个字段，API 侧把它写成
+  // `deepseek-chat`（那是 API 自己的模型 id，服务端会映射到 flash）之后，切到网页/Harness 时
+  // 这个值还在，于是网页端右下角会显示一个 Harness 目录里根本不存在的 `deepseek-chat`。
+  // 网页入口的模型由 DeepSeek 页面决定，壁纸这边没有可选项——给空列表比给一个错的 id 诚实。
   const modelOptions = useMemo(() => {
     if (runtime.backend === 'deepseek-api') return modelIdsFor(apiModelDir, settings.deepseekApi.model, apiModelChoice)
-    if (runtime.backend === 'harness') return modelIdsFor(harnessModelDir, persistedHarnessModel ?? runtime.model, harnessModelChoice)
-    return [...new Set([runtime.model].filter((model): model is string => Boolean(model?.trim())))]
-  }, [runtime.backend, runtime.model, harnessModelDir, apiModelDir, apiModelChoice, harnessModelChoice, persistedHarnessModel, settings.deepseekApi.model])
+    if (runtime.backend === 'harness') {
+      // 宿主自己的当前模型（枚举结果里的 `current`）优先于共用的 `runtime.model`：
+      // 后者可能带着别的后端的值，而 `current` 一定来自这台 Harness 宿主。
+      const hostCurrent = harnessModelDir.kind === 'unavailable' ? undefined : harnessModelDir.current
+      return modelIdsFor(harnessModelDir, persistedHarnessModel ?? hostCurrent, harnessModelChoice)
+    }
+    return []
+  }, [runtime.backend, harnessModelDir, apiModelDir, apiModelChoice, harnessModelChoice, persistedHarnessModel, settings.deepseekApi.model])
   // 枚举到的显示名（DeepSeek-Flash 之类）替掉裸 id；没枚举到就显示 id 本身。
   const modelLabels = useMemo(() => {
     const directory = runtime.backend === 'deepseek-api' ? apiModelDir : harnessModelDir
@@ -608,8 +619,11 @@ export function App({ surface = 'combined' }: AppProps) {
   const selectedModel = runtime.backend === 'deepseek-api'
     ? firstNonEmpty(apiModelChoice, settings.deepseekApi.model, modelOptions[0])
     : runtime.backend === 'harness'
-      ? firstNonEmpty(harnessModelChoice, persistedHarnessModel, runtime.model, modelOptions[0])
-      : firstNonEmpty(runtime.model)
+      // 从来没选过时落到**宿主自己的当前模型**（实测是 deepseek-flash），
+      // 而不是共用的 `runtime.model`——那可能带着 API 的 `deepseek-chat`。
+      ? firstNonEmpty(harnessModelChoice, persistedHarnessModel, harnessModelDir.kind === 'unavailable' ? undefined : harnessModelDir.current, modelOptions[0])
+      // 网页入口不显示模型 id：它的模型由 DeepSeek 页面决定。
+      : undefined
   // The WorkerW host is permanently desktop-sized. Both the floating window
   // and the taskbar capsule now use CSS placement inside that one viewport.
   const interactionDirection = 'center' as const
