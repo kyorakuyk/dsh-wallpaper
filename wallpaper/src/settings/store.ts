@@ -47,6 +47,17 @@ export interface ApiSettings {
   priceOutputPerMillion?: number
 }
 
+export interface HarnessModelSettings {
+  /**
+   * 上次在壁纸里选的 Harness 模型 id。
+   *
+   * 作用是**回显**：壁纸重启后模型选择器要显示上次用的那个，而不是宿主报的当前值。
+   * 只在宿主目录里仍然有它时才采用——宿主可能已经不再提供该模型，那时按"没记住"处理
+   * 而不是把一个不存在的 id 摆进选择器。
+   */
+  model?: string
+}
+
 export interface DshLaunchSettings {
   rootPath?: string
   profile: string
@@ -134,6 +145,8 @@ export interface WallpaperSettings {
   conversationBlur: number
   multiScreen: MultiScreenSettings
   deepseekApi: ApiSettings
+  /** 壁纸端记住的 Harness 模型选择（用于重启后回显）。 */
+  harnessModel: HarnessModelSettings
   dshLaunch: DshLaunchSettings
 }
 
@@ -163,6 +176,7 @@ export const DEFAULT_SETTINGS: WallpaperSettings = {
   conversationBlur: 19,
   multiScreen: { enabled: false, backgrounds: {} },
   deepseekApi: { baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
+  harnessModel: {},
   dshLaunch: { profile: 'desktop', autoStartWithWallpaper: false, trustedCommandForAutoStart: false },
 }
 
@@ -289,6 +303,7 @@ export function normalizeSettings(raw: unknown): WallpaperSettings {
     conversationBlur: boundedNumber(value.conversationBlur, DEFAULT_SETTINGS.conversationBlur, 0, 40),
     multiScreen: normalizeMultiScreenSettings(value.multiScreen),
     deepseekApi: normalizeApiSettings(value.deepseekApi),
+    harnessModel: normalizeHarnessModelSettings(value.harnessModel),
     dshLaunch: normalizeDshLaunchSettings(value.dshLaunch),
   }
 }
@@ -455,6 +470,17 @@ function normalizeApiSettings(value: unknown): ApiSettings {
     priceInputPerMillion: normalizedPrice(raw.priceInputPerMillion),
     priceOutputPerMillion: normalizedPrice(raw.priceOutputPerMillion),
   }
+}
+
+function normalizeHarnessModelSettings(value: unknown): HarnessModelSettings {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {}
+  const candidate = (value as Record<string, unknown>).model
+  // 空串等同于"没记住"：选择器的 value 若是空串而没有被选中的项，浏览器会把这个控件
+  // 画成空白（实测过），所以这里不能把一个空 id 存下来。
+  if (typeof candidate !== 'string') return {}
+  const model = candidate.trim()
+  if (model.length === 0 || model.length > MAX_SETTINGS_STRING) return {}
+  return { model }
 }
 
 export function loadSettings(): WallpaperSettings {

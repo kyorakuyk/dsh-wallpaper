@@ -25,7 +25,7 @@ import { MultiScreenWakeScene } from './scenes/MultiScreenWakeScene.tsx'
 import { SleepScene } from './scenes/SleepScene.tsx'
 import { WakeScene } from './scenes/WakeScene.tsx'
 import { INITIAL_RUNTIME_STATE, reduceRuntime } from './scenes/stateMachine.ts'
-import { BACKGROUND_OPTIONS, applyBubbleOverrides, assetUrl, loadSettings, localCalendarDay, normalizeReceivedSettings, resumeConversationId, saveConversationPointer, type WallpaperSettings } from './settings/store.ts'
+import { BACKGROUND_OPTIONS, applyBubbleOverrides, assetUrl, loadSettings, localCalendarDay, normalizeReceivedSettings, resumeConversationId, saveConversationPointer, saveSettings, type WallpaperSettings } from './settings/store.ts'
 import { nativeRuntime, type DesktopDisplayInfo, type ManagedDshAutostart, type NativeSendOptions } from './native/runtime.ts'
 import { reportNativeBootstrapReady } from './native/bootstrapHandoff.ts'
 import { listen } from '@tauri-apps/api/event'
@@ -553,11 +553,21 @@ export function App({ surface = 'combined' }: AppProps) {
   // 宿主自己的目录（经桥接转发），三种执行主体各自问自己的宿主；问不到时（老版本宿主、
   // 端点没有 /models、或还没连上）退化成"只显示当前模型"，并且**把原因说出来**，
   // 不再拿一串假的 id 充数。三种情况的区别由 `modelDirectory.ts` 归一。
+  // 记住的选择，但只在这台宿主**仍然提供它**时采用。
+  //
+  // 回显上次用的模型是用户要的行为；可宿主可能已经不再提供它（换了模型目录、换了主体），
+  // 那种情况下按"没记住"处理，否则选择器会摆出一个宿主根本不认识的 id。
+  const persistedHarnessModel = useMemo(() => {
+    const saved = settings.harnessModel.model?.trim()
+    if (!saved) return undefined
+    if (harnessModelDir.kind === 'enumerated' && !harnessModelDir.models.some((model) => model.id === saved)) return undefined
+    return saved
+  }, [settings.harnessModel.model, harnessModelDir])
   const modelOptions = useMemo(() => {
     if (runtime.backend === 'deepseek-api') return modelIdsFor(apiModelDir, settings.deepseekApi.model, apiModelChoice)
-    if (runtime.backend === 'harness') return modelIdsFor(harnessModelDir, runtime.model, harnessModelChoice)
+    if (runtime.backend === 'harness') return modelIdsFor(harnessModelDir, persistedHarnessModel ?? runtime.model, harnessModelChoice)
     return [...new Set([runtime.model].filter((model): model is string => Boolean(model?.trim())))]
-  }, [runtime.backend, runtime.model, harnessModelDir, apiModelDir, apiModelChoice, harnessModelChoice, settings.deepseekApi.model])
+  }, [runtime.backend, runtime.model, harnessModelDir, apiModelDir, apiModelChoice, harnessModelChoice, persistedHarnessModel, settings.deepseekApi.model])
   // 枚举到的显示名（DeepSeek-Flash 之类）替掉裸 id；没枚举到就显示 id 本身。
   const modelLabels = useMemo(() => {
     const directory = runtime.backend === 'deepseek-api' ? apiModelDir : harnessModelDir
@@ -598,7 +608,7 @@ export function App({ surface = 'combined' }: AppProps) {
   const selectedModel = runtime.backend === 'deepseek-api'
     ? firstNonEmpty(apiModelChoice, settings.deepseekApi.model, modelOptions[0])
     : runtime.backend === 'harness'
-      ? firstNonEmpty(harnessModelChoice, runtime.model, modelOptions[0])
+      ? firstNonEmpty(harnessModelChoice, persistedHarnessModel, runtime.model, modelOptions[0])
       : firstNonEmpty(runtime.model)
   // The WorkerW host is permanently desktop-sized. Both the floating window
   // and the taskbar capsule now use CSS placement inside that one viewport.
@@ -1384,6 +1394,9 @@ export function App({ surface = 'combined' }: AppProps) {
           patchRuntime({ model })
         } else {
           setHarnessModelChoice(model)
+          // 持久化：下次启动要**回显这次选的模型**，而不是宿主报的当前值。
+          // 写进设置后其它 WebView（设置中心等）会通过 `settings-changed` 收到同一份值。
+          saveSettings({ ...settings, harnessModel: { model } })
           setConversationGeneration((value) => value + 1)
           patchRuntime({ model, provider: 'deepseek-official', activity: 'idle' })
         }
