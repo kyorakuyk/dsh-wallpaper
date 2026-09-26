@@ -34,6 +34,13 @@ const SHELL_START_POLL: std::time::Duration = std::time::Duration::from_millis(2
 /// How long a started shell is given to *paint*, which happens after it starts
 /// listening. Same order of magnitude as the start timeout, for the same reason.
 const UI_WINDOW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+/// How long a single-instance shell is given to act on its own focus request before
+/// the fallback takes over.
+///
+/// Short on purpose: this route is the *fast* one. It is a no-op while the client is
+/// still booting (its focus path is installed after the instance lock, measured), so
+/// waiting here would only delay the path that does work.
+const SHELL_FOCUS_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1_500);
 
 /// What the wallpaper did, in the renderer's vocabulary.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -403,28 +410,86 @@ pub(crate) fn ensure_ui(
         };
     }
 
-    let mut raise = reveal(port, kind);
-    // (S6.1) When a client's window cannot be resolved directly, ask a single-instance
-    // shell to do it itself: launching its alias again makes it focus the window it
-    // already owns (second-instance -> focusOwner). This is the belt to the braces - it
-    // never depends on finding the window, which matters because the owning process is
-    // not always one this application may inspect. Limited to shells that hold the
-    // lock: for a client without one, the same action opens a second window instead.
-    if raise.outcome == "no-window" && kind == HarnessTargetKind::EmbeddedShell {
-        if let Some(aumid) = subject_id.trim().strip_prefix(SHELL_ID_PREFIX) {
-            if let Some(shell) = known_shell(aumid) {
-                if shell.single_instance && spawn_alias(&shell.alias, shell.aumid) {
-                    log::info!("harness shell asked to focus its own window: aumid={}", shell.aumid);
-                    raise = reveal(port, kind);
+    let shell = subject_id
+        .trim()
+        .strip_prefix(SHELL_ID_PREFIX)
+        .and_then(known_shell);
+    // (S6.1, measured) A single-instance shell is asked to focus its *own* window
+    // first, and only then does this application try to bring the window forward.
+    //
+    // The order is the fix for "raising the window is slow and it comes up
+    // unresponsive": the desktop wallpaper is not the foreground process, so Windows
+    // refuses its `SetForegroundWindow` — while the shell itself is entitled to make
+    // that change, and its `second-instance` handler is exactly that request. Doing it
+    // the other way round also meant waiting out a window poll before the request that
+    // was going to work was even made.
+    let raise = match &shell {
+        Some(shell) if shell.single_instance => {
+            if let Some(raised) = ask_shell_to_focus(shell, port) {
+                log::info!(
+                    "harness shell focused its own window: aumid={} outcome={}",
+                    shell.aumid,
+                    raised.outcome
+                );
+                raised
+            } else {
+                // Its focus path is not installed yet (it is still booting) or it owns
+                // no window after all: fall back to resolving the window ourselves.
+                let resolved = reveal(port, kind);
+                // The client is up by now, so the request can land where it could not
+                // before — but only ask once, and only when there is a window to focus.
+                if resolved.outcome != "no-window" {
+                    log::info!(
+                        "harness shell asked to focus again after its boot: aumid={}",
+                        shell.aumid
+                    );
+                    spawn_alias(&shell.alias, shell.aumid);
                 }
+                resolved
             }
         }
-    }
+        // A client without the lock has no such request: launching it again opens a
+        // second window, so this application's own window work is the only route (§6.1).
+        _ => reveal(port, kind),
+    };
     HarnessUiOutcome {
         outcome: raise.outcome.into(),
         kind,
         started,
         start_outcome,
+    }
+}
+
+/// Ask a single-instance shell to bring its own window forward.
+///
+/// The request *is* the alias launch: the shell's own `second-instance` handler turns a
+/// second launch into "focus the window I already own", and it is the only participant
+/// entitled to make that foreground change. Our own re-resolution afterwards is how the
+/// result becomes an outcome code — the request itself reports nothing.
+///
+/// `None` means "not decidable yet" (the request could not be made, or no window
+/// appeared within [`SHELL_FOCUS_TIMEOUT`]), which sends the caller down its fallback
+/// rather than claiming a raise that did not happen.
+fn ask_shell_to_focus(
+    shell: &crate::harness_targets::ShellApp,
+    port: u16,
+) -> Option<crate::client_window::RaiseOutcome> {
+    if !spawn_alias(&shell.alias, shell.aumid) {
+        return None;
+    }
+    let deadline = std::time::Instant::now() + SHELL_FOCUS_TIMEOUT;
+    loop {
+        let raise = crate::client_window::raise_client_window(port);
+        if raise.outcome != "no-window" {
+            // `raise-refused` lands here too, and it is a success for this route: the
+            // window exists and is being focused by the client itself, which is the
+            // part Windows was refusing *us*.
+            return Some(raise);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(SHELL_START_POLL);
     }
 }
 

@@ -212,6 +212,14 @@ const SHELL_APPS: &[ShellAppSpec] = &[
         default_ports: &[43120],
         // Measured: no single-instance lock, no tray, no hidden start. A second
         // launch opens a second window, so none of those may be assumed (§2.3).
+        //
+        // Re-measured 2026-09-27 by scanning this build's `resources/app.asar` for
+        // `requestSingleInstanceLock`, `second-instance`, `focusPrimaryWindow`,
+        // `window-all-closed` and `Tray`: all five are absent, so this stays false.
+        // It is load-bearing — `harness_launch` asks a single-instance shell to focus
+        // its own window *first* and only uses this application's window work as the
+        // fallback, so flipping this flag without re-measuring would make 「打开」 open
+        // a second client instead of showing the one that is running.
         single_instance: false,
         can_start_hidden: false,
     },
