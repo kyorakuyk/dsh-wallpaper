@@ -13,7 +13,7 @@ import {
   subjectEndpointPorts,
   type HarnessClientKind,
 } from '../connect/endpoints.ts'
-import { launchOutcomeNotice, subjectChoicePrompt } from '../connect/harnessSubjects.ts'
+import { launchOutcomeNotice, reachNeedsBrowser, subjectChoicePrompt } from '../connect/harnessSubjects.ts'
 import { SettingsPanel, type SettingsPanelHarnessStatus } from './SettingsPanel.tsx'
 import {
   createProbeScheduler,
@@ -326,7 +326,7 @@ export function SettingsWindow() {
           ?? '启动失败，请查看日志中的启动记录。')
         return
       }
-      if (clientRaiseAction(kind) === 'browser' || ensured.outcome === 'no-window') {
+      if (reachNeedsBrowser(ensured.outcome)) {
         // No window exists for this shape; the browser is its interface, and it is
         // now confirmed to be answering (this action started it if it was not). The
         // address is resolved among the subject's own ports, because 0 above

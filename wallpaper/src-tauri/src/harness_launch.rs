@@ -452,6 +452,15 @@ pub(crate) fn ensure_ui(
         // second window, so this application's own window work is the only route (§6.1).
         _ => reveal(port, kind),
     };
+    // One line for the whole action, because "I pressed it and nothing happened" is
+    // otherwise indistinguishable from "the press never reached here" — the raise
+    // itself has nothing to log, and the renderer's report is not readable from
+    // outside. The subject is named by class, never by path.
+    log::info!(
+        "harness ui: subject={} port={port} kind={kind:?} started={started} outcome={}",
+        if shell.is_some() { "shell" } else if subject_id.trim().is_empty() { "endpoint-only" } else { "checkout" },
+        raise.outcome
+    );
     HarnessUiOutcome {
         outcome: raise.outcome.into(),
         kind,
@@ -759,5 +768,54 @@ mod tests {
         let _ = std::process::Command::new("taskkill.exe")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .output();
+    }
+
+    /// What 「拉起 UI」 actually sees for the **official shell**, read-only.
+    ///
+    /// Ignored by default, and deliberately weaker than the two tests above: it starts
+    /// nothing and stops nothing. It only reports what this machine's live shell looks
+    /// like from here — whether the port answers, which process owns it, whether a
+    /// window can be resolved for it, and what a raise attempt answers — because that is
+    /// the half of this feature a unit test cannot see and the half that broke when the
+    /// official shell's window stopped coming forward.
+    ///
+    /// `--nocapture` prints each line; run it while the official client is running:
+    /// `cargo test --lib -- --ignored --nocapture this_machine_reports_what_raising_the_official_shell_would_do`
+    #[test]
+    #[ignore = "reads this machine's live official shell; starts nothing and stops nothing"]
+    fn this_machine_reports_what_raising_the_official_shell_would_do() {
+        let port = 19387;
+        println!("listening on {port}: {}", crate::client_window::endpoint_is_listening(port));
+        let owner = crate::client_window::endpoint_process_id(port);
+        println!("owner pid: {owner:?}");
+        if let Some(pid) = owner {
+            println!("owner alive: {}", crate::client_window::process_is_alive(pid));
+        }
+        println!("resolve window: {:?}", crate::client_window::window_for_endpoint(port));
+        // This is the part that changes what is on screen: it asks Windows to show and
+        // focus the window it resolved. That is precisely the action under test.
+        println!("raise: {:?}", crate::client_window::raise_client_window(port));
+        // And the same question `ensure_ui` asks first, with the same subject id the
+        // settings store holds for this client.
+        println!(
+            "plan: {:?}",
+            plan_launch("shell:com.deepseek.dsh", "desktop", None, LaunchTrigger::Manual)
+        );
+        // Then the whole action the button performs, on the shell that is already
+        // running: it starts nothing, and the alias request only asks the shell to
+        // focus the window it owns.
+        let state = crate::ManagedDshState::default();
+        let ui = ensure_ui(
+            "shell:com.deepseek.dsh",
+            port,
+            "desktop",
+            None,
+            &state,
+        );
+        println!("ensure_ui: {ui:?}");
+        println!(
+            "port after ensure_ui is still listening: {}",
+            crate::client_window::endpoint_is_listening(port)
+        );
     }
 }

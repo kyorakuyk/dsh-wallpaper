@@ -8,9 +8,9 @@ import type { BackendMode, ChatMessage, ChatQuestion, RuntimeState, TokenUsage }
 import { personaIdFor, resolveModelTier } from './domain/modelTier.ts'
 import { isHarnessReady } from './connect/harness.ts'
 import { monitorHarnessEndpoint } from './connect/harnessEndpoint.ts'
-import { clientRaiseAction, endpointScopeOf, subjectClientKind, subjectEndpointPorts } from './connect/endpoints.ts'
+import { endpointScopeOf, subjectEndpointPorts } from './connect/endpoints.ts'
 import { HARNESS_STATE_DETAILS } from './connect/harnessLabels.ts'
-import { isEmbeddedShellSubject } from './connect/harnessSubjects.ts'
+import { isEmbeddedShellSubject, reachNeedsBrowser } from './connect/harnessSubjects.ts'
 import {
   apiModelDirectory,
   bridgeModelDirectory,
@@ -679,14 +679,14 @@ export function App({ surface = 'combined' }: AppProps) {
   // 选择器当前值：**空字符串必须当作"没有值"**——这条规则连同上一条串值的教训一起搬进了
   // `connect/modelDirectory.ts::selectedModelFor`，那里也是它被回归测试钉住的地方。
   // 「桌面会话」左侧那枚小图标（点击行为见 ConversationBubble，视觉不变）：单击拉起
-  // **当前主体的可视化窗口**。
+  // **当前主体的可视化窗口**。它在**每个后端**都一样可用（用户原话："把每个样式的
+  // 「桌面会话」左边的小图标做成拉起对应可视化窗口的快捷键"）——之前只在 Harness 模式下接上
+  // 了回调，于是网页模式下它是一枚纯图标：点了什么都不发生，看起来就是"按钮拉不起来窗口"。
   //
-  // 规则与设置中心「连接」页那套完全一致，关键是**不能只调 raise**：
-  //   · 主体没在运行时先把它启动（与设置页一致）；
-  //   · 官壳/第三方桌面客户端有自己的窗口 → 拉到前台；
-  //   · **检出（CLI/webui 形态）根本没有窗口，它实际的壳子是浏览器里的 loopback 页面**
-  //     → 按 `no-window` / `clientRaiseAction === 'browser'` 交给默认浏览器打开。
-  // 成功静默（岛里没有提示区），只有失败才写进运行状态。
+  // 规则与设置中心「打开」那套完全一致，关键是**不能只调 raise**：主体没在运行时先把它启动；
+  // 官壳/第三方桌面客户端有自己的窗口 → 拉到前台；**检出（CLI/webui 形态）根本没有窗口** →
+  // 交给默认浏览器打开。走哪条路由**原生的结果**决定（`no-window`），不由这里猜主体形态：
+  // 什么都没配置时没有形态可读，猜出来的"无窗口"会让浏览器抢在窗口之前被打开。
   const openSubjectInterface = useCallback(() => {
     void (async () => {
       try {
@@ -705,7 +705,7 @@ export function App({ surface = 'combined' }: AppProps) {
           profile: launch.profile,
           command: launch.command,
         })
-        if (clientRaiseAction(subjectClientKind(subjectId) ?? 'official-web') === 'browser' || ensured.outcome === 'no-window') {
+        if (reachNeedsBrowser(ensured.outcome)) {
           const live = port > 0
             ? port
             : (await nativeRuntime.scanHarnessEndpoints([...ports])).find((item) => item.bridgeFound)?.port
@@ -1563,7 +1563,10 @@ export function App({ surface = 'combined' }: AppProps) {
       // 黄灯的来源有两处，因为两条路各自算：原生监控（它能看到端口主人的进程是否还活着）
       // 把 `harnessProbing` 随快照发下来；浏览器预览那条路自己在本地探针里判断。
       harnessSuspect={(harnessProbing || runtime.harnessProbing === true) && isHarnessReady(runtime.harness)}
-      onRaiseClientWindow={runtime.backend === 'harness' ? openSubjectInterface : undefined}
+      // 每个后端都接上：它是"拉起当前主体可视化窗口"的快捷键，与岛上当前是哪个后端无关
+      // （用户要求的是"每个样式"都有这个按钮）。没有主体可拉时，原生会退到"这个端点上
+      // 应答的那台"，所以网页模式下点击也不会落空。
+      onRaiseClientWindow={openSubjectInterface}
       onSelectModel={runtime.backend === 'deepseek-web' ? undefined : (model) => {
         if (runtime.backend === 'deepseek-api') {
           setApiModelChoice(model)

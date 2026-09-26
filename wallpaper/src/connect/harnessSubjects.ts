@@ -51,6 +51,25 @@ export function subjectDetail(target: HarnessTarget): string {
 }
 
 /**
+ * Whether a 「拉起 UI」 result means the browser is the only interface left.
+ *
+ * Decided from what native *did*, never from the subject's shape. The raise answers
+ * `no-window` for exactly the clients that own no resolvable window, which is the
+ * same question the shape was being asked — and the shape is *unknown* in the one
+ * case that matters: a wallpaper with no subject stored has no shape to read, so the
+ * renderer fell back to "windowless", opened a browser, and never asked for the
+ * window that was there. That is what made the small icon do nothing for a wallpaper
+ * whose subject was not configured (or configured as a tree).
+ *
+ * Everything else means a window was found: `raised`, or `raise-refused` when Windows
+ * declined the foreground change while the window was still restored. Both are a
+ * success for the user's purpose — "show me that client" — and neither needs a browser.
+ */
+export function reachNeedsBrowser(outcome: string): boolean {
+  return outcome === 'no-window'
+}
+
+/**
  * The prompt for §4.3, or `null` when there is nothing to ask.
  *
  * More than one source tree means the wallpaper cannot know which one the user
