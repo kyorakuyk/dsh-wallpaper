@@ -71,6 +71,46 @@ pub(crate) fn endpoint_process_id(port: u16) -> Option<u32> {
     listener_pid(port)
 }
 
+#[cfg(not(windows))]
+pub(crate) fn endpoint_process_id(_port: u16) -> Option<u32> {
+    // No kernel table to read off Windows, so the wallpaper has no owner to watch.
+    // `None` is the honest answer: "unproven", not "dead".
+    None
+}
+
+/// Whether a process id still names a live process.
+///
+/// `OpenProcess` succeeding is *not* proof: the id stays resolvable while any handle
+/// to it is open anywhere, so a process that has already exited can still be named.
+/// The exit code is the check that separates "running" from "the id is merely still
+/// in the kernel's table", which is the difference between "the subject exited" and
+/// "the subject is hung" — two conditions the wallpaper must not confuse, because
+/// only the first one is a reason to give up on the subject.
+#[cfg(windows)]
+pub fn process_is_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::STILL_ACTIVE;
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+        let mut code: u32 = 0;
+        let alive = GetExitCodeProcess(handle, &mut code).is_ok()
+            && code == STILL_ACTIVE.0 as u32;
+        let _ = windows::Win32::Foundation::CloseHandle(handle);
+        alive
+    }
+}
+
+#[cfg(not(windows))]
+pub fn process_is_alive(_pid: u32) -> bool {
+    // Nothing about a pid's liveness is knowable off Windows, and "dead" is the
+    // answer that would make the wallpaper give up on a live subject.
+    true
+}
+
 /// The process id that owns a listening TCP port on loopback, if any.
 ///
 /// Queried from the kernel's own table rather than by launching `netstat`, so it

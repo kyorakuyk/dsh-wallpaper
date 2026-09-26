@@ -805,6 +805,11 @@ export function App({ surface = 'combined' }: AppProps) {
           ? liveChat.activity
           : snapshot.activity,
         harness: snapshot.harness,
+        // The reason and the amber light are part of the same diagnostic; dropping them
+        // here while the availability came through is how a state with no explanation
+        // reached the island.
+        harnessReasonCode: snapshot.harnessReasonCode,
+        harnessProbing: snapshot.harnessProbing === true,
         historyExpanded: snapshot.interaction.historyExpanded,
         error: snapshot.error,
       })
@@ -1495,7 +1500,9 @@ export function App({ surface = 'combined' }: AppProps) {
       modelLabels={modelLabels}
       modelSwitchDisabledReason={modelSwitchDisabledReason}
       harnessReady={isHarnessReady(runtime.harness)}
-      harnessSuspect={harnessProbing && isHarnessReady(runtime.harness)}
+      // 黄灯的来源有两处，因为两条路各自算：原生监控（它能看到端口主人的进程是否还活着）
+      // 把 `harnessProbing` 随快照发下来；浏览器预览那条路自己在本地探针里判断。
+      harnessSuspect={(harnessProbing || runtime.harnessProbing === true) && isHarnessReady(runtime.harness)}
       onRaiseClientWindow={runtime.backend === 'harness' ? openSubjectInterface : undefined}
       onSelectModel={runtime.backend === 'deepseek-web' ? undefined : (model) => {
         if (runtime.backend === 'deepseek-api') {

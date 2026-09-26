@@ -2984,10 +2984,10 @@ mod dsh_autostart_tests {
 #[cfg(not(feature = "lite"))]
 mod harness_status_tests {
     use super::{
-        apply_endpoint_scope, compatible_harness_bridge_status, diagnose_harness_bridge_status,
-        fetch_harness_status_at, harness_endpoint_port, probe_current_endpoint,
-        root_probe_availability, HarnessEndpointState, HARNESS_DEFAULT_PORT,
-        HARNESS_ENDPOINT_PORTS,
+        advance_harness_monitor, apply_endpoint_scope, compatible_harness_bridge_status,
+        diagnose_harness_bridge_status, fetch_harness_status_at, harness_endpoint_port,
+        probe_current_endpoint, root_probe_availability, HarnessEndpointState, HarnessMonitorState,
+        HARNESS_DEFAULT_PORT, HARNESS_ENDPOINT_PORTS, HARNESS_UNPROVEN_EXIT_MS,
     };
     use crate::app_core::HarnessAvailability;
     use serde_json::json;
@@ -3197,6 +3197,126 @@ mod harness_status_tests {
         candidates_of(state)
     }
 
+    /// The user's four phases, as transitions: connect, suspend, confirm, fall back.
+    ///
+    /// `advance_harness_monitor` is pure precisely so this can be checked without a
+    /// live client — it is the function that decides when somebody's session is
+    /// allowed to be taken away from them.
+    #[test]
+    fn a_connected_subject_is_suspended_before_it_is_declared_dead() {
+        let mut state = HarnessMonitorState::default();
+        // Two agreeing probes: one is a timing artefact.
+        let (next, publish) = advance_harness_monitor(state, HarnessAvailability::BridgeReady, None, 0);
+        assert!(!publish, "a single ready probe must not publish");
+        state = next;
+        let (state, publish) = advance_harness_monitor(state, HarnessAvailability::BridgeReady, None, 0);
+        assert!(publish);
+        assert_eq!(state.available, HarnessAvailability::BridgeReady);
+
+        // One failure is not a verdict: the light goes amber, the state does not move,
+        // so the switch, the model list and the session are untouched.
+        let (state, publish) = advance_harness_monitor(state, HarnessAvailability::Offline, Some(true), 1_000);
+        assert!(publish);
+        assert!(state.probing);
+        assert_eq!(
+            state.available,
+            HarnessAvailability::BridgeReady,
+            "a suspended subject must stay usable"
+        );
+
+        // It stays suspended for as long as anything proves the process is alive.
+        let (state, _) = advance_harness_monitor(state, HarnessAvailability::Offline, Some(true), 1_000 + HARNESS_UNPROVEN_EXIT_MS * 10);
+        assert!(state.probing);
+        assert_eq!(state.available, HarnessAvailability::BridgeReady);
+    }
+
+    #[test]
+    fn a_proven_exit_is_the_verdict_that_does_not_wait() {
+        let mut state = HarnessMonitorState::default();
+        for _ in 0..2 {
+            state = advance_harness_monitor(state, HarnessAvailability::BridgeReady, None, 0).0;
+        }
+        assert_eq!(state.available, HarnessAvailability::BridgeReady);
+
+        // The first unproven failure only suspends...
+        let (state, _) = advance_harness_monitor(state, HarnessAvailability::Offline, Some(false), 0);
+        assert!(state.probing);
+        // ...and the second one, with the owner's process gone, is death — no window.
+        let (state, publish) = advance_harness_monitor(state, HarnessAvailability::Offline, Some(false), 5_000);
+        assert!(publish);
+        assert!(!state.probing);
+        assert_eq!(state.available, HarnessAvailability::Offline);
+    }
+
+    #[test]
+    fn without_evidence_the_window_decides_as_it_always_did() {
+        let mut state = HarnessMonitorState::default();
+        for _ in 0..2 {
+            state = advance_harness_monitor(state, HarnessAvailability::BridgeReady, None, 0).0;
+        }
+        // No owner to watch: three failures and the whole window before red, which is
+        // the behaviour a subject we could never identify keeps.
+        let mut now = 0;
+        for _ in 0..3 {
+            let (next, _) = advance_harness_monitor(state, HarnessAvailability::Offline, None, now);
+            state = next;
+            now += 1_000;
+        }
+        assert!(state.probing, "the window has not elapsed yet");
+        let (state, publish) = advance_harness_monitor(state, HarnessAvailability::Offline, None, HARNESS_UNPROVEN_EXIT_MS + 1);
+        assert!(publish);
+        assert!(!state.probing);
+        assert_eq!(state.available, HarnessAvailability::Offline);
+    }
+
+    #[test]
+    fn a_bridge_that_was_never_connected_reports_what_it_sees() {
+        // The diagnostic states have to reach the UI: with nothing connected there is
+        // no session to protect, so the observed state is published as it comes.
+        for observed in [
+            HarnessAvailability::WebOnly,
+            HarnessAvailability::BridgeLoading,
+            HarnessAvailability::BridgeAuthUnavailable,
+            HarnessAvailability::BridgeIncompatible,
+        ] {
+            let (state, publish) = advance_harness_monitor(
+                HarnessMonitorState::default(),
+                observed,
+                Some(false),
+                0,
+            );
+            assert!(publish, "{observed:?} must be published");
+            assert!(!state.probing);
+            assert_eq!(state.available, observed);
+        }
+        // The one case that publishes nothing: it was already offline.
+        let (state, publish) = advance_harness_monitor(
+            HarnessMonitorState::default(),
+            HarnessAvailability::Offline,
+            Some(false),
+            0,
+        );
+        assert!(!publish);
+        assert!(!state.probing);
+        assert_eq!(state.available, HarnessAvailability::Offline);
+    }
+
+    #[test]
+    fn a_recovery_needs_two_answers_after_a_suspension() {
+        let mut state = HarnessMonitorState::default();
+        for _ in 0..2 {
+            state = advance_harness_monitor(state, HarnessAvailability::BridgeReady, None, 0).0;
+        }
+        let (state, _) = advance_harness_monitor(state, HarnessAvailability::Offline, Some(true), 500);
+        let (state, publish) = advance_harness_monitor(state, HarnessAvailability::BridgeReady, None, 1_000);
+        assert!(!publish, "the amber light must not clear on one lucky probe");
+        assert!(state.probing);
+        let (state, publish) = advance_harness_monitor(state, HarnessAvailability::BridgeReady, None, 5_000);
+        assert!(publish);
+        assert!(!state.probing);
+        assert_eq!(state.available, HarnessAvailability::BridgeReady);
+    }
+
     #[test]
     #[ignore = "requires a live client on 19387 or 3080"]
     fn auto_mode_discovers_a_live_endpoint_on_this_machine() {
@@ -3211,8 +3331,8 @@ mod harness_status_tests {
         eprintln!("current endpoint {port} -> {status}");
         // Crucially this must NOT be the default when something else is live, so
         // assert discovery by running the real probe and reporting what it found.
-        let discovered = rt.block_on(probe_current_endpoint());
-        eprintln!("after discovery -> {discovered} (port now {})", harness_endpoint_port());
+        let (answered, discovered) = rt.block_on(probe_current_endpoint());
+        eprintln!("after discovery -> port {answered} {discovered} (candidates {})", harness_endpoint_port());
         assert!(
             discovered.get("availability").and_then(serde_json::Value::as_str) != Some("offline")
                 || port != HARNESS_DEFAULT_PORT,
@@ -3504,39 +3624,43 @@ fn harness_endpoint_window(caller: tauri::WebviewWindow, port: u16) -> Result<bo
 /// silent substitution the frozen rule forbids for any reason. When nothing is
 /// configured the permitted set *is* the shipped priority order, which is the one
 /// case where "whichever client answers" is what the user asked for.
+///
+/// Returns the port that answered along with its status, because the caller needs to
+/// know *whose* process to watch: the owner of that port is the subject, and its
+/// liveness is what separates "exited" from "hung".
 #[cfg(not(feature = "lite"))]
-async fn probe_current_endpoint() -> serde_json::Value {
+async fn probe_current_endpoint() -> (u16, serde_json::Value) {
     let candidates = harness_endpoint_candidates();
     let configured = harness_endpoint_configured();
-    let mut first: Option<serde_json::Value> = None;
-    let mut present: Option<serde_json::Value> = None;
+    let mut first: Option<(u16, serde_json::Value)> = None;
+    let mut present: Option<(u16, serde_json::Value)> = None;
     for port in candidates {
         let status = fetch_harness_status_at(port).await;
         if harness_status_is_ready(&status) {
             // Keep talking to the instance that answered: "connected ⇒ sticky".
             note_endpoint_in_use(port);
-            return status;
+            return (port, status);
         }
         if harness_status_is_present(&status) && present.is_none() {
-            present = Some(status.clone());
+            present = Some((port, status.clone()));
         }
         if first.is_none() {
-            first = Some(status);
+            first = Some((port, status));
         }
     }
     // Nothing permitted is usable. A Bridge that answered but is not ready is the
     // more specific diagnosis, so it wins over a bare "nothing there"; otherwise the
     // first permitted port's own status is reported, and the reason code says which
     // of the two situations this is.
-    let mut status = present
+    let (port, mut status) = present
         .or(first)
-        .unwrap_or_else(|| serde_json::json!({ "availability": "offline" }));
+        .unwrap_or((harness_endpoint_port(), serde_json::json!({ "availability": "offline" })));
     if status.get("availability").and_then(serde_json::Value::as_str) == Some("offline") {
         status["reasonCode"] = serde_json::Value::String(
             if configured { "subject-offline" } else { "no-endpoint" }.to_string(),
         );
     }
-    status
+    (port, status)
 }
 
 /// Whether a status document proves a Bridge is there, even if it is not usable.
@@ -3553,15 +3677,110 @@ fn harness_status_is_ready(status: &serde_json::Value) -> bool {
     status.get("availability").and_then(serde_json::Value::as_str) == Some("bridge-ready")
 }
 
+/// How long "not answering" may last before the subject is called dead *when there is
+/// nothing to prove it with*.
+///
+/// The renderer has its own copy of this number (`HARNESS_SUSPECT_GRACE_MS`) because
+/// the browser preview runs its own loop; that copy is the display window. This one is
+/// the verdict, and only this one decides when the switch is allowed to reset.
+#[cfg(not(feature = "lite"))]
+const HARNESS_UNPROVEN_EXIT_MS: u64 = 60_000;
+
+/// What one probe means for the published Harness state.
+///
+/// Pulled out of the loop and kept pure because this is where the user's four phases
+/// live, and getting a transition wrong is invisible until it has already reset
+/// somebody's session:
+///
+/// * a Bridge that answers twice in a row is connected, and a single slow probe can
+///   never flicker the switch off;
+/// * a Bridge that *was* connected and stops answering is **suspended**, not lost:
+///   `available` is left exactly as it was, so the mode switch, the model list and the
+///   session keep treating the subject as present, and only the light changes;
+/// * the suspension ends in one of two ways — the process that answered is **proven
+///   gone** (the only immediate proof of death), or, when there is no proof to be had,
+///   the window above expires.
+#[cfg(not(feature = "lite"))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct HarnessMonitorState {
+    /// A compatible Bridge has been seen at least once, so a failure now means "lost",
+    /// not "never there".
+    connected_once: bool,
+    successes: u8,
+    failures: u8,
+    /// The published availability. While `probing` is set it is deliberately the
+    /// *previous* value.
+    available: HarnessAvailability,
+    probing: bool,
+    /// When the current suspension began, in the caller's clock.
+    suspect_since_ms: Option<u64>,
+}
+
+#[cfg(not(feature = "lite"))]
+fn advance_harness_monitor(
+    mut state: HarnessMonitorState,
+    observed: HarnessAvailability,
+    owner_alive: Option<bool>,
+    now_ms: u64,
+) -> (HarnessMonitorState, bool) {
+    let before = (state.available, state.probing);
+    if observed == HarnessAvailability::BridgeReady {
+        state.successes = state.successes.saturating_add(1);
+        state.failures = 0;
+        state.suspect_since_ms = None;
+        // Two consecutive ready answers, for the same reason a failure needs more than
+        // one: a single probe is a timing artefact, not a state.
+        if state.successes >= 2 {
+            state.connected_once = true;
+            state.probing = false;
+            state.available = HarnessAvailability::BridgeReady;
+        }
+    } else {
+        state.failures = state.failures.saturating_add(1);
+        state.successes = 0;
+        let exited = owner_alive == Some(false);
+        if !state.connected_once {
+            // Nothing was ever connected here, so this is simply what the endpoint
+            // says: "no Bridge", "web-only", or a Bridge still loading. Publishing it
+            // is what makes those diagnostics reachable at all.
+            state.probing = false;
+            state.available = observed;
+        } else if exited && state.failures >= 2 {
+            // Proof of death: the process that owned the port is gone. Two readings
+            // first, so a probe that simply raced the process's exit cannot decide it.
+            state.probing = false;
+            state.available = HarnessAvailability::Offline;
+        } else {
+            // Unproven: suspend. The light goes amber, nothing else moves.
+            state.probing = true;
+            let since = *state.suspect_since_ms.get_or_insert(now_ms);
+            if owner_alive.is_none()
+                && state.failures >= 3
+                && now_ms.saturating_sub(since) >= HARNESS_UNPROVEN_EXIT_MS
+            {
+                // Nothing can prove the subject is alive, and it has been silent for the
+                // whole window: fall back to the verdict that the evidence-free case has
+                // always used.
+                state.probing = false;
+                state.available = HarnessAvailability::Offline;
+            }
+        }
+    }
+    let publish = (state.available, state.probing) != before;
+    (state, publish)
+}
+
 #[cfg(not(feature = "lite"))]
 fn start_harness_monitor(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let mut consecutive_successes = 0u8;
-        let mut consecutive_failures = 0u8;
-        let mut last = HarnessAvailability::Offline;
+        let mut monitor = HarnessMonitorState::default();
+        // Who owned the port the last time it answered: the only process whose exit
+        // proves the subject itself is gone.
+        let mut owner_pid: Option<u32> = None;
+        let started = std::time::Instant::now();
         let mut last_reason: Option<String> = None;
         loop {
-            let status = probe_current_endpoint().await;
+            let (port, status) = probe_current_endpoint().await;
             if let Ok(mut cache) = harness_status_cache().write() {
                 *cache = status.clone();
             }
@@ -3583,41 +3802,46 @@ fn start_harness_monitor(app: tauri::AppHandle) {
                 Some("web-only") => HarnessAvailability::WebOnly,
                 _ => HarnessAvailability::Offline,
             };
-            // A compatible Bridge is the only successful probe. Every other
-            // state, including `web-only` and `bridge-loading`, remains useful
-            // diagnostic information but must settle through the same failure
-            // path so a stale ready state cannot keep Harness selectable after
-            // the bridge disappears.
-            let bridge_ready = observed == HarnessAvailability::BridgeReady;
-            let changed = last != observed || last_reason != reason;
-            let settled = if bridge_ready {
-                consecutive_successes = consecutive_successes.saturating_add(1);
-                consecutive_failures = 0;
-                consecutive_successes >= 2
-            } else {
-                consecutive_failures = consecutive_failures.saturating_add(1);
-                consecutive_successes = 0;
-                consecutive_failures >= 3
+            if observed == HarnessAvailability::BridgeReady {
+                // Remember whose port answers, so a later silence can be told apart
+                // from a later *exit*. Kept when a probe fails: that is exactly when it
+                // is needed.
+                owner_pid = client_window::endpoint_process_id(port).or(owner_pid);
+            }
+            let owner_alive = owner_pid.map(client_window::process_is_alive);
+            let now_ms = started.elapsed().as_millis() as u64;
+            let (next, publish) = advance_harness_monitor(monitor, observed, owner_alive, now_ms);
+            monitor = next;
+            // The reason belongs to the *reported* state: a suspension shows the
+            // endpoint's own last reason, and a confirmed exit says so, because "the
+            // process is gone" and "it is not answering" need different user actions.
+            let reason_for_state = match (monitor.available, owner_alive) {
+                (HarnessAvailability::Offline, Some(false)) if monitor.failures >= 2 => {
+                    Some("subject-exited".to_string())
+                }
+                _ => reason.clone(),
             };
-            if changed && settled {
+            if publish || reason_for_state != last_reason {
                 log::info!(
-                    "harness availability changed: {:?} -> {:?} (reason {:?})",
-                    last,
-                    observed,
-                    reason
+                    "harness availability: {:?} (probing {}, owner {:?} alive {:?}, reason {:?})",
+                    monitor.available,
+                    monitor.probing,
+                    owner_pid,
+                    owner_alive,
+                    reason_for_state
                 );
-                last = observed;
-                last_reason = reason.clone();
+                last_reason = reason_for_state.clone();
                 if let Some(core) = app.try_state::<AppCore>() {
                     let snapshot = core.dispatch(AppAction::SetHarnessDiagnostic {
-                        availability: observed,
-                        reason_code: reason,
+                        availability: monitor.available,
+                        reason_code: reason_for_state,
+                        probing: monitor.probing,
                     });
                     emit_app_snapshot(&app, &snapshot);
                 }
             }
             // A resident wallpaper must not hammer a dead loopback port. A
-            // single cadence also keeps the two stabilisation thresholds
+            // single cadence also keeps the stabilisation thresholds
             // comparable in wall-clock time.
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }

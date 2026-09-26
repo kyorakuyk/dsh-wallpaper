@@ -94,5 +94,13 @@ export interface RuntimeState {
   harness: import('../connect/harness.ts').HarnessAvailability
   /** Stable, non-sensitive reason for a non-ready Harness state. */
   harnessReasonCode?: string
+  /**
+   * 一个就绪过的后端失联了，但还没到"确认掉线"的程度。
+   *
+   * 与 `harness` **分开**是有意的：这时 `harness` 仍然是 `bridge-ready`，滑槽、模型列表和
+   * 会话都还按"它还在"处理 ✓，只有提示灯变黄 ✓。原生化之后这个事实由原生监控给出（它会看
+   * 那个端口的进程是否还活着），浏览器预览那条路自己算。
+   */
+  harnessProbing?: boolean
   error?: string
 }

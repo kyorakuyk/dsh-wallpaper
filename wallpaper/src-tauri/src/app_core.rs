@@ -113,6 +113,12 @@ pub struct AppSnapshot {
     /// Stable, non-sensitive reason for a non-ready Harness state. It never
     /// carries an exception body, a path, or a token.
     pub harness_reason_code: Option<String>,
+    /// A Bridge that was ready is not answering, and its death is not confirmed.
+    ///
+    /// The one fact the renderer cannot work out for itself: it decides the amber
+    /// light, while `harness` deliberately stays `bridge-ready` so the mode switch,
+    /// the model list and the session keep treating the subject as present.
+    pub harness_probing: bool,
     pub wallpaper_host: WallpaperHostStatus,
     pub interaction: InteractionState,
     /// When true, message content must not be rendered by either WebView.
@@ -129,6 +135,7 @@ impl Default for AppSnapshot {
             activity: Activity::Idle,
             harness: HarnessAvailability::Offline,
             harness_reason_code: None,
+            harness_probing: false,
             wallpaper_host: WallpaperHostStatus::default(),
             interaction: InteractionState::default(),
             privacy_screen: false,
@@ -155,7 +162,12 @@ pub enum AppAction {
     SetHarnessAvailability(HarnessAvailability),
     /// Sets the availability and its reason code together, so a diagnostic can
     /// never be published without the state it explains.
-    SetHarnessDiagnostic { availability: HarnessAvailability, reason_code: Option<String> },
+    SetHarnessDiagnostic {
+        availability: HarnessAvailability,
+        reason_code: Option<String>,
+        /// True while a ready Bridge is failing without confirmed death.
+        probing: bool,
+    },
     SetWallpaperHost(WallpaperHostStatus),
     AuthRequired,
     AuthReady,
@@ -241,10 +253,12 @@ impl AppCore {
             AppAction::SetHarnessAvailability(availability) => {
                 state.harness = availability;
                 state.harness_reason_code = None;
+                state.harness_probing = false;
             }
-            AppAction::SetHarnessDiagnostic { availability, reason_code } => {
+            AppAction::SetHarnessDiagnostic { availability, reason_code, probing } => {
                 state.harness = availability;
                 state.harness_reason_code = reason_code;
+                state.harness_probing = probing;
             }
             AppAction::SetWallpaperHost(status) => state.wallpaper_host = status,
             AppAction::AuthRequired => {

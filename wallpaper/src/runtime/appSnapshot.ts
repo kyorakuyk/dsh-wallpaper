@@ -32,6 +32,14 @@ export interface AppSnapshot {
   harness: HarnessAvailability
   /** Stable, non-sensitive reason for a non-ready Harness state. */
   harnessReasonCode?: string
+  /**
+   * A Bridge that was ready is not answering, and its death is not confirmed.
+   *
+   * Optional because it was added after the first snapshots: an older native side
+   * simply omits it, and the renderer then shows no amber light rather than inventing
+   * a suspicion of its own.
+   */
+  harnessProbing?: boolean
   wallpaperHost: WallpaperHostSnapshot
   interaction: InteractionSnapshot
   privacyScreen: boolean
