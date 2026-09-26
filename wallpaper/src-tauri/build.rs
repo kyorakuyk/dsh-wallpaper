@@ -62,6 +62,10 @@ fn main() {
             "update_interaction_regions",
             // 悬浮球单击：进入里桌面（球是独立顶层窗口，只授予它这一条命令）。
             "enter_inner_workspace_from_ball",
+            // 输入岛的「X」：离开里桌面。与桌面双击共用同一个原生实现——同一条状态迁移只能
+            // 有一份，否则前端把界面搬回表桌面、原生那个事实原地不动，球就会一直以为岛还占着
+            // 场面（实测：点 X 之后球再也弹不出来、也唤不起输入岛）。
+            "leave_inner_workspace",
             "desktop_layout_metrics",
             "send_chat",
             "cancel_chat",

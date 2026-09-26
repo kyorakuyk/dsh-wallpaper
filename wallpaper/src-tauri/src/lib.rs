@@ -2101,6 +2101,24 @@ fn enter_inner_workspace_from_ball(
     Ok(())
 }
 
+/// 离开里桌面：输入岛右上角的「X」走这条命令。
+///
+/// **必须落回原生**，因为"现在在不在里桌面"是原生的事实（`INNER_WORKSPACE_ACTIVE`）：
+/// 前端自己把界面搬回表桌面，原生那个事实会原地不动——实测后果很实在，点 X 之后
+/// 悬浮球再也弹不出来、点球也唤不起输入岛（`enter_inner_workspace` 看到"已经在里桌面"
+/// 就直接返回，`desktop-workspace-toggle` 的 `enter` 事件根本不会发出去）。
+///
+/// 与桌面空白双击那条路**共用同一个实现**，状态迁移也就只有一份。
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+fn leave_inner_workspace(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    require_background(&caller)?;
+    windows_integration::leave_inner_workspace(&app)
+}
+
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
 fn desktop_layout_metrics(
@@ -4011,6 +4029,7 @@ macro_rules! register_edition_commands {
             update_interaction_regions,
             desktop_layout_metrics,
             enter_inner_workspace_from_ball,
+            leave_inner_workspace,
             send_chat,
             cancel_chat,
             connect_harness,

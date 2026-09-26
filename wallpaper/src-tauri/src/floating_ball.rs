@@ -348,12 +348,18 @@ fn force_ball_size(window: &WebviewWindow, hwnd: HWND) {
 /// 与 contract §3.1 的窗口配方一致：工具窗（不进任务栏、不进 Alt-Tab）+ 永不激活
 /// （球永远不抢前台）。**不加** `WS_EX_TOPMOST`（球要待在普通应用之下），
 /// **不加** `WS_EX_TRANSPARENT`（球本身必须收得到鼠标）。
+///
+/// 幂等，而且**每次弹出都会再断言一次**（见监控线程的两条显示路径）：用户实测回报过
+/// "单击球之后球内部出现最小化/恢复/关闭的状态栏"——正是标题栏回来了。样式断言只在创建时
+/// 做一次是不够的：只要有任何一条路径让窗口重新带上非客户区，用户看到的就是一个带标题栏的球。
+/// 代价是两次 `GetWindowLongPtr`，只在真的不一致时才写样式，所以重复调用不会产生日志噪音。
 #[cfg(windows)]
 fn apply_ball_ex_style(hwnd: HWND) {
     unsafe {
         let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         let desired = (current | WS_EX_TOOLWINDOW.0 as isize | WS_EX_NOACTIVATE.0 as isize)
             & !(WS_EX_APPWINDOW.0 as isize);
+        let mut corrected = desired != current;
         if desired != current {
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, desired);
         }
@@ -374,6 +380,7 @@ fn apply_ball_ex_style(hwnd: HWND) {
             | WS_CHILD.0 as isize; // 顶层窗口一旦带上 WS_CHILD 会被挂进父链，必须清掉
         let desired_style = (current_style & !non_client) | WS_POPUP.0 as isize;
         if desired_style != current_style {
+            corrected = true;
             SetWindowLongPtrW(hwnd, GWL_STYLE, desired_style);
             if let Err(error) = SetWindowPos(
                 hwnd,
@@ -392,11 +399,13 @@ fn apply_ball_ex_style(hwnd: HWND) {
         let popup = final_style & WS_POPUP.0 as isize != 0;
         let caption = final_style & WS_CAPTION.0 as isize != 0;
         let sysmenu = final_style & WS_SYSMENU.0 as isize != 0;
-        log::info!(
-            "floating ball: native style exstyle=0x{:X} style=0x{:X} popup={popup} caption={caption} sysmenu={sysmenu}",
-            GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as usize,
-            final_style as usize
-        );
+        if corrected {
+            log::info!(
+                "floating ball: window frame corrected exstyle=0x{:X} style=0x{:X} popup={popup} caption={caption} sysmenu={sysmenu}",
+                GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as usize,
+                final_style as usize
+            );
+        }
         if !popup || caption || sysmenu {
             log::warn!(
                 "floating ball: window frame is not borderless (popup={popup} caption={caption} sysmenu={sysmenu}); a title bar will be visible"
@@ -824,6 +833,9 @@ pub fn start_ball_monitor(app: AppHandle) {
             {
                 last_pointer_inside = now;
                 if !shown {
+                    // 弹出前再断言一次"没有非客户区"：用户实测回报过球里出现最小化/恢复/关闭的
+                    // 状态栏（= 标题栏回来了），而窗口样式不该有任何一条路径能悄悄改回来。
+                    apply_ball_ex_style(hwnd);
                     if !slide_ball(hwnd, current.x, current.hidden_y, current.shown_y) {
                         log::warn!("floating ball: slide-in failed");
                     }
@@ -866,6 +878,8 @@ pub fn start_ball_monitor(app: AppHandle) {
             {
                 // 只在桌面上弹：最大化应用的底边同样贴着屏幕下边缘，少了这一条就会在
                 // 应用上面弹出球。判据直接复用桌面宿主那条（光标下的窗口父链能走到 Progman）。
+                // 弹出前再断言一次"没有非客户区"，理由见另一条显示路径上的同一句。
+                apply_ball_ex_style(hwnd);
                 if !slide_ball(hwnd, current.x, current.hidden_y, current.shown_y) {
                     log::warn!("floating ball: slide-in failed");
                 }

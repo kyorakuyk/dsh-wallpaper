@@ -8,6 +8,7 @@
     "core:event:allow-unlisten",
     "allow-get-app-snapshot",
     "allow-native-bootstrap-generation",
+    "allow-leave-inner-workspace",
     "allow-desktop-displays",
     "allow-select-backend",
     "allow-dispatch-app-action",

@@ -4,7 +4,7 @@ import { NativeChatAdapter } from './chat/nativeAdapter.ts'
 import { DeepSeekWebAdapter } from './chat/deepseekWebAdapter.ts'
 import type { ChatAdapter } from './chat/adapter.ts'
 import { ConversationBubble } from './chat/ConversationBubble.tsx'
-import type { BackendMode, ChatMessage, ChatQuestion, RuntimeState, TokenUsage } from './domain/types.ts'
+import type { BackendMode, ChatMessage, ChatQuestion, ModelTier, RuntimeState, TokenUsage } from './domain/types.ts'
 import { personaIdFor, resolveModelTier } from './domain/modelTier.ts'
 import { isHarnessReady } from './connect/harness.ts'
 import { monitorHarnessEndpoint } from './connect/harnessEndpoint.ts'
@@ -165,6 +165,35 @@ export function isHarnessTransitioning(state: {
   probing: boolean
 }): boolean {
   return state.starting || state.probing || state.availability === 'bridge-loading'
+}
+
+/**
+ * 驱动立绘形态的那个模型。
+ *
+ * 用户实测 bug：Harness 里切到 pro → 立绘成年；切到网页再切回来 → 立绘变幼年，而选择器里
+ * 仍然是 pro。原因是形态原来读的是 `runtime.model`，而它会被新后端的 `model` 事件覆盖：
+ * Harness 重连时宿主报的是**它自己的**当前模型，未必是壁纸这次会话选定的那个。
+ *
+ * 所以形态跟**选择器显示的那个模型**走（用户原话："立绘切换应当和模型切换共享一个生命周期"）：
+ * 它来自壁纸自己的选择与持久化，也正是这次会话真正要用的模型。网页入口是唯一例外——它的模型
+ * 由 DeepSeek 页面决定，壁纸没有选择，只能读页面报回来的值。
+ */
+export function portraitTierModel(
+  backend: BackendMode,
+  pageModel: string | undefined,
+  selectedModel: string | undefined,
+): string | undefined {
+  return backend === 'deepseek-web' ? pageModel : selectedModel
+}
+
+/**
+ * 事件带来的层级，只有"知道的"才写回运行状态。
+ *
+ * 原生侧的 `model` 事件固定带 `unknown`（它不解释模型名，规则在渲染端），照抄会把
+ * "上一次的层级"这个兜底归零——那是立绘在切后端时跳回幼年的另一半原因。
+ */
+export function tierPatchFromEvent(tier: ModelTier | undefined): Pick<RuntimeState, 'modelTier'> | Record<string, never> {
+  return tier && tier !== 'unknown' ? { modelTier: tier } : {}
 }
 
 /**
@@ -612,16 +641,10 @@ export function App({ surface = 'combined' }: AppProps) {
       .catch((error) => patchRuntime({ error: String(error) }))
   }
 
-  const tier = resolveModelTier(runtime.backend, runtime.provider, runtime.model, settings.modelTierRules, runtime.modelTier)
-  const persona = registry.get(personaIdFor(runtime.backend, tier))
-  const bubbles = applyBubbleOverrides(persona.bubbles, settings.bubbleOverrides)
+  // 背景与立绘形态无关，留在这里；**形态那一串（tier / persona / 立绘槽位）搬到了模型选择之后**，
+  // 因为它现在读的是"选择器正在显示的那个模型"，而那个值要到后面才算得出来。
   const background = BACKGROUND_OPTIONS.find((item) => item.id === settings.background)
-  const personaSlot: AppearanceSlot = runtime.backend === 'harness'
-    ? tier === 'pro' ? 'persona.harness.pro' : 'persona.harness.flash'
-    : tier === 'pro' ? 'persona.deepseek.pro' : 'persona.deepseek.flash'
-  const resolvedPersona = resolvedAssets[personaSlot]
   const resolvedBackground = resolvedAssets['desktop.background']
-  const modelLabel = runtime.model ?? (tier === 'pro' ? 'Pro · 成年形态' : 'Flash · 幼年形态')
   const multiScreenActive = settings.multiScreen.enabled && desktopDisplays.length > 1
   const displayVirtualBounds = useMemo(() => virtualDesktopBounds(desktopDisplays), [desktopDisplays])
   const conversationDisplayId = preferredDisplayId(desktopDisplays, settings.multiScreen.conversationDisplayId)
@@ -760,6 +783,32 @@ export function App({ surface = 'combined' }: AppProps) {
     directory: runtime.backend === 'deepseek-api' ? apiModelDir : harnessModelDir,
     ids: modelOptions,
   })
+  /**
+   * 立绘形态要跟着**模型选择**走，而不是跟着某个后端"顺手报回来的模型"走。
+   *
+   * 实测 bug：Harness 里切到 pro → 立绘成年；切到网页再切回来 → 立绘变幼年，而下拉列表里
+   * 仍然是 pro。原因是这条判断原来读的是 `runtime.model`，而它会被新后端的 `model` 事件覆盖
+   * （Harness 重连时宿主报的是它自己的当前模型，未必是壁纸这次会话实际用的那个）。
+   *
+   * 用户的要求是"立绘切换和模型切换共享一个生命周期，做好持久化"。所以这里读的正是
+   * **选择器显示的那个模型**（`selectedModel`）：它来自壁纸自己的选择与持久化
+   * （`settings.harnessModel.model` / `settings.deepseekApi.model`），也正是这次会话真正要用的
+   * 模型——重启后先按持久化的值立绘，不必等宿主回报。规则本身在 `portraitTierModel` 上。
+   */
+  const tier = resolveModelTier(
+    runtime.backend,
+    runtime.provider,
+    portraitTierModel(runtime.backend, runtime.model, selectedModel),
+    settings.modelTierRules,
+    runtime.modelTier,
+  )
+  const persona = registry.get(personaIdFor(runtime.backend, tier))
+  const bubbles = applyBubbleOverrides(persona.bubbles, settings.bubbleOverrides)
+  const personaSlot: AppearanceSlot = runtime.backend === 'harness'
+    ? tier === 'pro' ? 'persona.harness.pro' : 'persona.harness.flash'
+    : tier === 'pro' ? 'persona.deepseek.pro' : 'persona.deepseek.flash'
+  const resolvedPersona = resolvedAssets[personaSlot]
+  const modelLabel = runtime.model ?? (tier === 'pro' ? 'Pro · 成年形态' : 'Flash · 幼年形态')
   /**
    * 黄灯：中间态，规则见 `isHarnessTransitioning`（纯函数，可测）。两个来源各自算：原生监控
    * 把 `harnessProbing` 随快照发下来（它能看到端口属主的进程是否还活着），浏览器预览那条路
@@ -1229,7 +1278,15 @@ export function App({ surface = 'combined' }: AppProps) {
         }
       }
       if (event.type === 'usage') setUsage(event)
-      if (event.type === 'model') patchRuntime({ model: event.model, provider: event.provider, modelTier: event.tier, reasoningEffort: event.effort })
+      if (event.type === 'model') {
+        // 形态只由**知道的**层级改写（原生侧带的是 `unknown`），见 `tierPatchFromEvent`。
+        patchRuntime({
+          model: event.model,
+          provider: event.provider,
+          reasoningEffort: event.effort,
+          ...tierPatchFromEvent(event.tier),
+        })
+      }
       if (event.type === 'auth-required') {
         if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current.activity = 'idle'
         baseDispatch({ type: 'AUTH_REQUIRED' }); dispatchCore('set-activity', { value: 'idle' }); dispatchCore('auth-required')
@@ -1680,10 +1737,21 @@ export function App({ surface = 'combined' }: AppProps) {
           if (isCurrent()) patchRuntime({ activity: 'idle', error: String(error) })
         })
       }}
-      // 「X」= 离开里桌面（和表/里桌面双击回到表桌面是同一条路径）：悬浮布局回到表桌面并保持
-      // 展开，停靠布局回到表桌面并收回胶囊。它以前是 `() => undefined`——按钮画出来了、点了
-      // 什么都不发生，用户实测报的就是这个。
-      onClose={leaveInnerWorkspace}
+      // 「X」= 离开里桌面。**交给原生**（`leave_inner_workspace`），不在这里自己搬界面：
+      // "现在在不在里桌面"是原生的事实（图标层、悬浮球的判据都看它），前端自己搬会让那个事实
+      // 原地不动——实测后果是点完 X 之后悬浮球再也弹不出来、点球也唤不起输入岛（原生以为还
+      // 在里桌面，`enter` 直接被幂等短路，事件根本不发）。真正的界面迁移由原生的
+      // `desktop-workspace-toggle: leave` 事件驱动，与桌面空白双击**同一条路**。
+      //
+      // 表桌面上没有"离开"可言（原生那边本来就不在里桌面，也不会发事件），那时这个按钮就是
+      // "把展开的岛收回胶囊"，由前端自己收。
+      onClose={() => {
+        if (workspace === 'front') {
+          leaveInnerWorkspace()
+          return
+        }
+        void nativeRuntime.leaveInnerWorkspace().catch((error) => patchRuntime({ error: `离开里桌面失败：${String(error)}` }))
+      }}
     />
     : null
 

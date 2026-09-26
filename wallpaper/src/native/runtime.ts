@@ -294,6 +294,15 @@ export interface NativeRuntime {
    * silent substitution the connection path forbids.
    */
   setHarnessEndpointScope(scope: HarnessEndpointScope): Promise<HarnessEndpointScopeResult>
+  /**
+   * Leave the inner desktop — the island's 「X」.
+   *
+   * Native owns the fact "are we in the inner desktop": it hides and restores Explorer's
+   * icon layer, and the floating ball's own pop-out rule keys off it. So the island asks
+   * native instead of moving the interface by itself; the transition then arrives as the
+   * same `desktop-workspace-toggle: leave` event the desktop double-click produces.
+   */
+  leaveInnerWorkspace(): Promise<void>
   /** Which local ports host a wallpaper Bridge, in the native layer's order. */
   scanHarnessEndpoints(extraPorts?: readonly number[]): Promise<HarnessEndpointScan[]>
   /**
@@ -639,6 +648,17 @@ export const nativeRuntime: NativeRuntime = {
       subjectId: scope.subjectId ?? null,
       extraPorts: scope.extraPorts ? [...scope.extraPorts] : [],
     })
+  },
+  /**
+   * Ask native to leave the inner desktop, restoring Explorer's icon layer.
+   *
+   * A failure here is worth showing: without it the desktop stays in "inner" state and
+   * the floating ball will not pop out again.
+   */
+  async leaveInnerWorkspace() {
+    if (!await tauriAvailable()) return
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('leave_inner_workspace')
   },
   /**
    * Ask the native side to bring a desktop client's window forward.
