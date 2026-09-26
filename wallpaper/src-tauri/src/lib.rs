@@ -1908,6 +1908,16 @@ fn save_api_key(caller: tauri::WebviewWindow, key: String) -> Result<(), String>
 ///
 /// 回答里**永远没有明文**：脱敏在原生侧做完，渲染端拿到的最多是一串点和首尾几个字符。
 /// 没有 Key 时返回 `present: false`，而不是报错——"还没配"是正常状态。
+#[cfg(all(windows, not(feature = "lite")))]
+fn api_key_status_from_store() -> Result<serde_json::Value, String> {
+    let entry = keyring::Entry::new("dsh-wallpaper", "deepseek-api")
+        .map_err(|_| "无法访问 Windows 凭据管理器。请检查系统凭据服务后重试。".to_string())?;
+    match entry.get_password() {
+        Ok(key) => Ok(serde_json::json!({ "present": true, "masked": mask_api_key(&key) })),
+        Err(_) => Ok(serde_json::json!({ "present": false })),
+    }
+}
+
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
 fn api_key_status(caller: tauri::WebviewWindow) -> Result<serde_json::Value, String> {
@@ -1917,12 +1927,7 @@ fn api_key_status(caller: tauri::WebviewWindow) -> Result<serde_json::Value, Str
 
     #[cfg(windows)]
     {
-        let entry = keyring::Entry::new("dsh-wallpaper", "deepseek-api")
-            .map_err(|_| "无法访问 Windows 凭据管理器。请检查系统凭据服务后重试。".to_string())?;
-        match entry.get_password() {
-            Ok(key) => Ok(serde_json::json!({ "present": true, "masked": mask_api_key(&key) })),
-            Err(_) => Ok(serde_json::json!({ "present": false })),
-        }
+        api_key_status_from_store()
     }
 
     #[cfg(not(windows))]
@@ -1965,6 +1970,39 @@ mod api_credential_tests {
         assert_eq!(mask_api_key("abcdef"), "••••••");
         // 再长一点只留最后两个字符。
         assert_eq!(mask_api_key("abcdefghi"), "•••••••hi");
+    }
+
+    /// 真机探针：设置中心那个「测试」按钮背后就是这一次调用（`/models` 要密钥，200 即密钥可用，
+    /// 返回体就是可用模型列表）。忽略是刻意的：它要联网，而且依赖这台机器真的存了 Key。
+    ///
+    /// `cargo test --lib api_credential -- --ignored --nocapture`
+    #[test]
+    #[ignore = "calls the real DeepSeek API with this machine's stored key"]
+    fn this_machine_reports_what_testing_the_stored_api_key_would_answer() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let status = crate::api_key_status_from_store();
+        match &status {
+            Ok(value) => eprintln!("stored key: {value}"),
+            Err(error) => eprintln!("stored key unreadable: {error}"),
+        }
+        let answer = rt.block_on(crate::chat::api_models("https://api.deepseek.com".into()));
+        match &answer {
+            Ok(payload) => {
+                let models = payload.get("models").and_then(serde_json::Value::as_array);
+                eprintln!(
+                    "models -> supported={} count={}",
+                    payload.get("supported").and_then(serde_json::Value::as_bool).unwrap_or(false),
+                    models.map(Vec::len).unwrap_or(0)
+                );
+                for model in models.unwrap_or(&vec![]).iter().take(12) {
+                    eprintln!("  {} / {}", model.get("id").and_then(serde_json::Value::as_str).unwrap_or("?"), model.get("name").and_then(serde_json::Value::as_str).unwrap_or("?"));
+                }
+            }
+            Err(error) => eprintln!("models rejected -> {error}"),
+        }
     }
 }
 
