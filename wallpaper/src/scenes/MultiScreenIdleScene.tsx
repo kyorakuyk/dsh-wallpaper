@@ -11,6 +11,7 @@ import { memo, useMemo } from 'react'
 import type { PersonaManifest } from '../persona/types.ts'
 import { Bubble } from '../ui/Bubble.tsx'
 import { placeholderPortrait } from '../ui/whale.ts'
+import { portraitAgeScale } from '../persona/portraitScale.ts'
 import type { DesktopDisplayInfo } from '../native/runtime.ts'
 import { displayCssRect, virtualDesktopBounds } from '../runtime/displayLayout.ts'
 import { usePortraitEnvironmentBlend } from './usePortraitEnvironmentBlend.ts'
@@ -83,6 +84,7 @@ const ScreenPortrait = memo(function ScreenPortrait({ display, virtualBounds, pe
         ['--portrait-ambient-length' as string]: `${portraitAmbientLength}%`,
         ['--portrait-ambient-strength' as string]: portraitAmbientStrength.toFixed(2),
         ['--portrait-alpha-mask' as string]: `url("${image}")`,
+        ['--portrait-age-scale' as string]: String(portraitAgeScale(persona)),
       }}
     >
       <img

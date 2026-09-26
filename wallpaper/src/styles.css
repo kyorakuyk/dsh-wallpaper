@@ -424,14 +424,24 @@
   cursor: pointer;
   transition: transform 0.25s ease;
   isolation: isolate;
+  /* 体型适配系数：场景按形态设定（内置成年立绘 = 1.09，其余一律 1，见 persona/portraitScale.ts）。
+     缩放加在**槽位**上而不是只加在图上：槽位的 `getBoundingClientRect`（多屏那份热区就是它）
+     会跟着长大，于是"点头顶也能点到"；而立绘与它的氛围层一起被缩放，不会错位。 */
+  --portrait-age-scale: 1;
+  transform: scale(var(--portrait-age-scale));
+  /* 从底部放大：脚底不动，头顶抬高——个子长高，而不是整体上浮。 */
+  transform-origin: bottom center;
 }
 
-.portrait-slot:hover { transform: translateY(-6px) scale(1.02); }
+/* 悬停的抬升必须**叠加**在这个系数上：只写 `scale(1.02)` 会让成年态一悬停就丢掉放大，画面会跳。 */
+.portrait-slot:hover { transform: translateY(-6px) scale(calc(1.02 * var(--portrait-age-scale))); }
 
 /* Lite intentionally has no desktop interaction surface; keep the portrait
    in the same right-side composition without hover/click affordances. */
 .lite-portrait-slot { cursor: default; pointer-events: none; }
-.lite-portrait-slot:hover { transform: none; }
+/* 不写 `transform: none`：那会把体型适配系数一起抹掉（Lite 也默认用成年立绘），
+   而这里要表达的只是"没有悬停抬升"。 */
+.lite-portrait-slot:hover { transform: scale(var(--portrait-age-scale)); }
 
 .portrait {
   width: 100%;
@@ -514,6 +524,11 @@
 /* 气泡在立绘内：定位在立绘上方（大肥鱼头部附近） */
 .portrait-slot > .bubble {
   z-index:3;
+  /* 气泡在槽位里，会跟着槽一起被放大——但它是**文字**：用反比缩放把尺寸还原，
+     只留下"随头顶一起抬高"。抬高的量正好等于立绘放大的量（两者同在一个被缩放的槽里），
+     所以气泡与头顶的间距不变，不会贴到头上。 */
+  transform: translateX(-50%) scale(calc(1 / var(--portrait-age-scale)));
+  transform-origin: bottom center;
   top: -10%;
   left: 50%;
   max-width: min(320px, 28vw);
