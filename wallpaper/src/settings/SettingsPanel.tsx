@@ -228,18 +228,40 @@ function displayLabel(display: DesktopDisplayInfo, index: number): string {  con
 }
 
 /**
- * 三种 chat 模式的显示名，**一份定义**：下拉选项与切换后的提示都用它，改文案只改一处。
- *
- * 措辞沿用既有约定：说清"用户在选择什么"，而不是它内部怎么实现。
+ * 后端 → 显示名。三种都在：提示语与"此刻在用哪一格"仍然会遇到 Harness（托盘、自动切换、
+ * 主体退出后的复位都可能把壁纸切过去），缺一个就会退化成内部 id。
  */
-export const BACKEND_MODE_OPTIONS: Array<{ value: BackendMode; label: string }> = [
-  { value: 'deepseek-web', label: 'DeepSeek 网页入口（实验）' },
-  { value: 'deepseek-api', label: 'DeepSeek API（付费）' },
-  { value: 'harness', label: 'DeepSeek Harness' },
+export const BACKEND_MODE_LABELS: Record<BackendMode, string> = {
+  'deepseek-web': 'DeepSeek 网页入口（实验）',
+  'deepseek-api': 'DeepSeek API（付费）',
+  harness: 'DeepSeek Harness',
+}
+
+/**
+ * 「聊天模式」下拉里的候选：**只有两种聊天后端**。
+ *
+ * Harness 刻意不在这里（用户要求从这个下拉里删掉它）：它不是"换一个聊天后端"，而是
+ * "换一个主体来对话"——连不连、什么时候连，由桌面上的那个开关以及「DSH 就绪时自动切换」管，
+ * 在这里再给一个入口只会让两条路互相打架。
+ */
+export const CHAT_MODE_OPTIONS: Array<{ value: BackendMode; label: string }> = [
+  { value: 'deepseek-web', label: BACKEND_MODE_LABELS['deepseek-web'] },
+  { value: 'deepseek-api', label: BACKEND_MODE_LABELS['deepseek-api'] },
 ]
 
+/**
+ * 候选 + **当前值**。
+ *
+ * 当前值可能是 Harness：那时它必须留在候选里并标出来源，否则 `Choice` 会退回第一个候选，
+ * 控件显示成"网页入口"而壁纸其实在 Harness 上——一个会骗人的开关。
+ */
+export function chatModeOptions(current: BackendMode): Array<{ value: BackendMode; label: string }> {
+  if (CHAT_MODE_OPTIONS.some((option) => option.value === current)) return [...CHAT_MODE_OPTIONS]
+  return [...CHAT_MODE_OPTIONS, { value: current, label: `${BACKEND_MODE_LABELS[current]}（由桌面开关切换）` }]
+}
+
 export function backendModeLabel(backend: BackendMode): string {
-  return BACKEND_MODE_OPTIONS.find((option) => option.value === backend)?.label ?? backend
+  return BACKEND_MODE_LABELS[backend] ?? backend
 }
 
 /**
@@ -368,10 +390,12 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
       {page === 'connections' && <>
         <Card title="聊天模式" description="三选一。改的是**正在运行**的那个壁纸，同时也记作下次启动的默认值；网页桥接不会在失败时自动切到付费 API。">
-          <Field title="当前使用" detail={props.liveBackend && props.liveBackend !== settings.defaultBackend ? `壁纸此刻在用：${backendModeLabel(props.liveBackend)}（与默认值不同，可能刚被托盘或自动切换改过；此窗口打开时读取）。` : '立即切换正在运行的壁纸；此窗口打开时读取它现在用哪一种。'}>
+          <Field title="当前使用" detail={props.liveBackend && props.liveBackend !== settings.defaultBackend ? `壁纸此刻在用：${backendModeLabel(props.liveBackend)}（与默认值不同，可能刚被托盘或自动切换改过；此窗口打开时读取）。Harness 不在这里切换。` : '立即切换正在运行的壁纸；此窗口打开时读取它现在用哪一种。Harness 由桌面上的那个开关切换。'}>
             {/* 值是**运行中**的那个后端，不是启动默认值：两者会分叉（托盘换后端、
-                `autoSwitchHarness` 自动切到 Harness、主体退出后壁纸自己复位），显示事实而不是意图。 */}
-            <Choice label="当前使用" value={props.liveBackend ?? settings.defaultBackend} onChange={(value) => props.onSelectBackend(value as BackendMode)} options={BACKEND_MODE_OPTIONS} />
+                `autoSwitchHarness` 自动切到 Harness、主体退出后壁纸自己复位），显示事实而不是意图。
+                当前值是 Harness 时它也留在候选里（标注"由桌面开关切换"），否则这个控件会显示成
+                网页入口而壁纸其实在 Harness 上。 */}
+            <Choice label="当前使用" value={props.liveBackend ?? settings.defaultBackend} onChange={(value) => props.onSelectBackend(value as BackendMode)} options={chatModeOptions(props.liveBackend ?? settings.defaultBackend)} />
           </Field>
           <Field title="DSH 就绪时自动切换" detail="仅检测到兼容的壁纸 Bridge 才会切换。"><Toggle label="DSH 自动切换" checked={settings.autoSwitchHarness} onChange={(value) => set({ autoSwitchHarness: value })} /></Field>
         </Card>

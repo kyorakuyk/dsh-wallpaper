@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { BACKEND_MODE_OPTIONS, backendModeLabel } from '../src/settings/SettingsPanel.tsx'
+import { BACKEND_MODE_LABELS, CHAT_MODE_OPTIONS, backendModeLabel, chatModeOptions } from '../src/settings/SettingsPanel.tsx'
 
 const wallpaperRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const source = async (relative: string): Promise<string> =>
@@ -13,14 +13,24 @@ const source = async (relative: string): Promise<string> =>
  *
  * 用户实测的问题："我们目前没有给运行中的壁纸设置切换 chat 模式的开关（web 桥接和 api）"。
  * 输入岛那个开关只做 Harness↔网页，而设置里那一栏原来叫「启动时使用」——**只影响下次启动**，
- * 点了它对正在跑的壁纸没有任何作用。这个开关现在两侧都管：切当下，也记住下次启动用哪个。
+ * 点了它对正在跑的壁纸没有任何作用。这个开关现在两侧都管：切当下，也记住下次启动用哪个，
+ * 而且**只管两种聊天后端**：Harness 由桌面上的那个开关负责（用户要求从这个下拉里删掉它）。
  */
 describe('the chat-mode switch in the settings centre', () => {
-  it('offers all three modes from one place', () => {
-    expect(BACKEND_MODE_OPTIONS.map((option) => option.value)).toEqual(['deepseek-web', 'deepseek-api', 'harness'])
-    // 提示语与下拉共用同一份文案。
-    expect(backendModeLabel('deepseek-api')).toBe(BACKEND_MODE_OPTIONS[1]!.label)
+  it('lists the two chat backends, and Harness only when that is what is running', () => {
+    // 下拉里只有两种聊天后端。
+    expect(CHAT_MODE_OPTIONS.map((option) => option.value)).toEqual(['deepseek-web', 'deepseek-api'])
+    expect(chatModeOptions('deepseek-api').map((option) => option.value)).toEqual(['deepseek-web', 'deepseek-api'])
+    // 当前值是 Harness 时**必须**留下它并标注来源：否则控件会退回第一个候选，显示成"网页入口"
+    // 而壁纸其实在 Harness 上——一个会骗人的开关。
+    expect(chatModeOptions('harness')).toEqual([
+      { value: 'deepseek-web', label: BACKEND_MODE_LABELS['deepseek-web'] },
+      { value: 'deepseek-api', label: BACKEND_MODE_LABELS['deepseek-api'] },
+      { value: 'harness', label: 'DeepSeek Harness（由桌面开关切换）' },
+    ])
+    // 标签表仍然覆盖三种（提示语里会遇到 Harness）。
     expect(backendModeLabel('harness')).toBe('DeepSeek Harness')
+    expect(backendModeLabel('deepseek-api')).toBe(BACKEND_MODE_LABELS['deepseek-api'])
   })
 
   it('switches the running wallpaper, not just the next launch', async () => {
@@ -36,8 +46,11 @@ describe('the chat-mode switch in the settings centre', () => {
     // 面板把这一栏接到那个 handler 上，并且**显示运行中的值**（不是启动默认值）。
     expect(panel).toContain('onChange={(value) => props.onSelectBackend(value as BackendMode)}')
     expect(panel).toContain('value={props.liveBackend ?? settings.defaultBackend}')
-    // 文案要直说"立即生效"，不能再写"启动时使用"。
+    // 候选来自 `chatModeOptions`（两种聊天后端 + 必要时标注的当前值），不是写死的三项。
+    expect(panel).toContain('chatModeOptions(props.liveBackend ?? settings.defaultBackend)')
+    // 文案要直说"立即生效"，不能再写"启动时使用"，而且要说明 Harness 不在这里切。
     expect(panel).toContain('立即切换正在运行的壁纸')
+    expect(panel).toContain('Harness 由桌面上的那个开关切换')
     expect(panel).not.toContain('title="启动时使用"')
   })
 
