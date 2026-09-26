@@ -69,6 +69,10 @@
   pointer-events: none;
 }
 
+/* 消息轨道：与输入岛（`.dsh-chat__card`）用**同一套面板材质**。
+   以前这里是一条顶部渐隐的 gradient，所以消息看起来直接铺在壁纸上（用户报的"图一"：
+   没有容器、文字浮在桌面）。现在给它和卡片同款的边框、丙烯填充与背景模糊，只保留
+   "从卡片下抽出来"的几何（宽度、上圆角、底部藏进卡片、无下边框），因此输入岛本身不变。 */
 .dsh-chat__history-wrap {
   position: relative;
   z-index: -1;
@@ -76,12 +80,14 @@
   margin: 0 auto -18px;
   padding-bottom: 24px;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--dsh-text-strong) 10%, transparent);
+  border: 1px solid rgba(255, 255, 255, 0.16);
   border-bottom: 0;
   border-radius: 28px 28px 0 0;
-  background: linear-gradient(180deg, transparent 0%, color-mix(in srgb, var(--dsh-glass-fill-strong) 10%, transparent) 46%, color-mix(in srgb, var(--dsh-glass-fill-strong) calc(var(--dsh-chat-acrylic-opacity, .74) * 32%), transparent) 100%);
-  box-shadow: inset 0 1px 0 rgba(232,250,255,.06);
-  backdrop-filter: blur(12px) saturate(110%);
+  background:
+    linear-gradient(180deg, rgba(235, 250, 255, .05), transparent 30%),
+    color-mix(in srgb, var(--dsh-glass-fill-strong) calc(var(--dsh-chat-acrylic-opacity, .74) * 100%), transparent);
+  box-shadow: inset 0 1px 0 rgba(232,250,255,.08), 0 18px 48px rgba(0,0,0,.20);
+  backdrop-filter: blur(34px) saturate(132%);
   animation: dsh-chat-history-in var(--dsh-duration-slow) var(--dsh-ease-expressive);
 }
 
@@ -98,8 +104,9 @@
   pointer-events: none;
 }
 .dsh-chat__history-wrap::before { top: 1px; background: linear-gradient(var(--dsh-glass-fill-strong), transparent); border-radius: inherit; }
-.dsh-chat__history-wrap::before { background: linear-gradient(180deg, rgba(4,13,27,.02), transparent 88%); }
-.dsh-chat__history-wrap::after { bottom: 23px; background: linear-gradient(transparent, color-mix(in srgb, var(--dsh-glass-fill-strong) 28%, transparent)); }
+.dsh-chat__history-wrap::before { top: 1px; background: linear-gradient(180deg, transparent, rgba(4,13,27,.12) 88%); }
+/* 轨道现在是不透明面板了，底部这条"提亮"必须跟着变淡，否则会在面板里切出一条亮带。 */
+.dsh-chat__history-wrap::after { bottom: 23px; background: linear-gradient(transparent, rgba(4,13,27,.28)); }
 
 .dsh-chat__history {
   position: relative;
