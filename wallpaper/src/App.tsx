@@ -391,6 +391,12 @@ export function App({ surface = 'combined' }: AppProps) {
     return () => document.removeEventListener("pointerdown", reportIslandClick, true)
   }, [])
   const [workspace, setWorkspace] = useState<DesktopWorkspace>('front')
+  // Long-lived listeners read the workspace through a ref (same reason as
+  // `settingsRef`): a captured value would be stale by the time the snapshot
+  // arrives, and choosing front/inner is exactly what decides whether the
+  // docked interaction surface may be collapsed.
+  const workspaceRef = useRef<DesktopWorkspace>('front')
+  workspaceRef.current = workspace
   const [innerHistoryExpanded, setInnerHistoryExpanded] = useState(false)
   const [expandedBottomInset, setExpandedBottomInset] = useState(48)
   const [desktopDisplays, setDesktopDisplays] = useState<DesktopDisplayInfo[]>([])
@@ -705,7 +711,16 @@ export function App({ surface = 'combined' }: AppProps) {
         setInteractionState('expanded')
       }
       if (!snapshot.interaction.desktopForeground || snapshot.privacyScreen) {
-        if (settingsRef.current.interactionLayout === 'taskbar-docked') setInteractionState('collapsed')
+        // 只在**表桌面**把交互面收回胶囊。
+        //
+        // 里桌面里岛本身就是主界面。实测：点悬浮球进来后，这条判断紧接着把
+        // `interactionState` 收回 `collapsed`，于是岛只出现一帧
+        // （原生日志里 `island_visible` 立刻 true→false，DOM 里连问候语都消失），
+        // 用户看到的就是"进了里桌面但输入岛没出现"。
+        // 桌面是否前台本来就是为"表桌面上盖着应用"准备的条件，在里桌面并不成立。
+        if (settingsRef.current.interactionLayout === 'taskbar-docked' && workspaceRef.current === 'front') {
+          setInteractionState('collapsed')
+        }
       }
     }
     // The subscription is owned by the helper: if this effect is torn down
