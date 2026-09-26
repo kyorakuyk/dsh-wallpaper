@@ -59,6 +59,12 @@ export interface ConversationBubbleProps {
    * 而不是停在"已连接"的样子。
    */
   harnessReady?: boolean
+  /**
+   * 黄灯：桥接**就绪过**，现在失联但还没判死。
+   *
+   * 用户要的中间态：先挂起 + 提速探测，别一次瞬发就复位滑槽。
+   */
+  harnessSuspect?: boolean
   /** 选择器被禁用时，选项里显示的原因。三种"不能切换"的成因不同，文案由调用方决定。 */
   modelSwitchDisabledReason?: string
   onSelectModel?: (model: string) => void
@@ -283,7 +289,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
         <span className="dsh-chat__topbar-spacer" />
         <div className="dsh-chat__bottom-status">
         <span className={`dsh-chat__status dsh-chat__status--harness dsh-chat__status--${harnessAvailability}`} title={harnessLabel}>
-          <span className="dsh-chat__status-dot" data-ready={props.harnessReady === false ? 'false' : 'true'} />{harnessLabel}
+          <span className="dsh-chat__status-dot" data-ready={props.harnessReady === false ? 'false' : props.harnessSuspect ? 'suspect' : 'true'} />{harnessLabel}
         </span>
         <button
           type="button"

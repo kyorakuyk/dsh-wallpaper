@@ -24,6 +24,13 @@ export interface HarnessStatus {
   availability: HarnessAvailability
   /** Stable, non-sensitive reason for a non-ready state. */
   reasonCode?: string
+  /**
+   * 一个**就绪过的**桥接正在失联，但还没到"确认掉线"的窗口。
+   *
+   * 用户要的是这个中间态可见（灯变黄、先挂起），而 `availability` 保持不变：这样滑槽、模型
+   * 列表、会话都还按"它还在"处理 ✓，不会因为一次瞬发就复位 ✗。
+   */
+  probing?: boolean
   bridgeVersion?: string
   /** Non-sensitive build identifier, so an old installed Bridge is identifiable. */
   bridgeBuild?: string
@@ -224,6 +231,35 @@ export async function fetchHarnessStatus(baseUrl = harnessBaseUrl()): Promise<Ha
   } catch { return { availability: 'offline' } }
 }
 
+/**
+ * 探针节奏与判定窗口集中在这里——用户要的"三个数"一处就能调。
+ *
+ * 设计意图（用户指定）：壁纸刚打开时**高频握手**，尽快匹配到刚上线的后端；几分钟没呼应就
+ * 进**待机**低频（没配自启、用户也没手动拉起时的常态）；连上后**低频保活**；一旦失联立刻
+ * **提速**确认，好把"瞬发抖动"和"真死"分开。
+ */
+export const HARNESS_PROBE_MS = {
+  /** 启动后的高频握手。 */
+  startup: 2_000,
+  /** 待机：只为"上线即被匹配"，不烧资源。 */
+  standby: 30_000,
+  /** 已连接：低频保活。 */
+  connected: 15_000,
+  /** 疑似挂起：立刻提速。 */
+  suspect: 2_000,
+} as const
+
+/** 高频握手的窗口长度；超过它仍未连上就转待机。 */
+export const HARNESS_STARTUP_WINDOW_MS = 3 * 60_000
+
+/**
+ * 失联后多久才判定"确认掉线"。
+ *
+ * 这段时间里灯是黄的、滑槽不复位——后端重启常要十几秒到一分钟，太早判死会让滑槽在眼前
+ * 反复复位。超过它才红灯 + 复位 + 回到启动态。
+ */
+export const HARNESS_SUSPECT_GRACE_MS = 60_000
+
 export function monitorHarness(onChange: (status: HarnessStatus) => void, probe: () => Promise<HarnessStatus> = fetchHarnessStatus): { stop(): void; pollNow(): Promise<HarnessStatus> } {
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -231,6 +267,10 @@ export function monitorHarness(onChange: (status: HarnessStatus) => void, probe:
   let successes = 0
   let failures = 0
   let current: HarnessAvailability = 'offline'
+  // 相位时间戳：决定"多久探一次"，以及"还没连上是不是已经过了高频握手的窗口"。
+  const startedAt = Date.now()
+  let readyAt: number | undefined
+  let suspectSince: number | undefined
   const pollNow = async (): Promise<HarnessStatus> => {
     if (inFlight) return { availability: current }
     inFlight = true
@@ -250,17 +290,33 @@ export function monitorHarness(onChange: (status: HarnessStatus) => void, probe:
     // Bridge, so a single slow probe cannot flicker the mode switch.
     if (isHarnessReady(status.availability)) {
       successes += 1; failures = 0
+      suspectSince = undefined
+      readyAt = Date.now()
       if (successes >= 2 && current !== status.availability) { current = status.availability; onChange(status) }
       else if (current === status.availability) onChange(status)
     } else {
       failures += 1; successes = 0
+      // ④ 疑似挂起：就绪过的桥接失联了，但还在宽限窗口内——**先挂起，不判定死亡**。
+      // 这一路刻意不改 `availability`（滑槽、模型列表、会话都还按"它还在"处理），
+      // 只把 `probing` 抖出来让灯变黄；超过宽限窗口才落到下面的"确认掉线"。
+      if (readyAt !== undefined && suspectSince === undefined) suspectSince = Date.now()
+      if (suspectSince !== undefined && Date.now() - suspectSince < HARNESS_SUSPECT_GRACE_MS) {
+        const probing = { ...status, probing: true }
+        onChange(probing)
+        return probing
+      }
       if (failures >= 3 && current !== status.availability) { current = status.availability; onChange(status) }
     }
     return status
   }
+  // 四档节奏：启动高频握手 → 几分钟没呼应转待机 → 连上后低频保活 → 疑似挂起立刻提速。
+  const nextInterval = () => {
+    if (isHarnessReady(current)) return suspectSince !== undefined ? HARNESS_PROBE_MS.suspect : HARNESS_PROBE_MS.connected
+    return Date.now() - startedAt < HARNESS_STARTUP_WINDOW_MS ? HARNESS_PROBE_MS.startup : HARNESS_PROBE_MS.standby
+  }
   const schedule = () => {
     if (stopped) return
-    timer = setTimeout(async () => { await pollNow(); schedule() }, current === 'offline' ? 2000 : 5000)
+    timer = setTimeout(async () => { await pollNow(); schedule() }, nextInterval())
   }
   void pollNow().finally(schedule)
   return { stop() { stopped = true; if (timer) clearTimeout(timer) }, pollNow }

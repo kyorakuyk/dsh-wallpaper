@@ -388,6 +388,8 @@ export function App({ surface = 'combined' }: AppProps) {
   const [harnessModelChoice, setHarnessModelChoice] = useState<string | undefined>()
   // 枚举出来的模型目录。初始是"还没查"，不是"没有模型"——区别见 connect/modelDirectory.ts。
   const [harnessModelDir, setHarnessModelDir] = useState<ModelDirectory>({ kind: 'unavailable', reason: '正在读取 Harness 模型目录…' })
+  /** 就绪过的桥接正在失联（黄灯），但还没到"确认掉线"。 */
+  const [harnessProbing, setHarnessProbing] = useState(false)
   const [apiModelDir, setApiModelDir] = useState<ModelDirectory>({ kind: 'unavailable', reason: '正在读取端点模型目录…' })
   const [interactionState, setInteractionState] = useState<'collapsed' | 'expanded'>('collapsed')
   const [interactionEnabled, setInteractionEnabled] = useState(true)
@@ -1322,6 +1324,9 @@ export function App({ surface = 'combined' }: AppProps) {
         if (isHarnessReady(status.availability) && runtimeRef.current.backend !== 'harness') {
           if (canAutoSelectHarness(status.availability, runtimeRef.current.backend, settings.autoSwitchHarness)) changeBackend('harness')
         }
+        // 黄灯：就绪过的桥接正在失联但还没判死（`probing`）。此时**不改** availability，
+        // 所以滑槽、模型列表、会话都还按"它还在"处理 ✓——只有灯变色 ✓。
+        setHarnessProbing(status.probing === true)
         const disconnected = harnessAvailabilityPatch(runtimeRef.current.backend, status.availability, runtimeRef.current.error)
         if (disconnected) patchRuntime(disconnected)
       },
@@ -1469,6 +1474,7 @@ export function App({ surface = 'combined' }: AppProps) {
       modelLabels={modelLabels}
       modelSwitchDisabledReason={modelSwitchDisabledReason}
       harnessReady={isHarnessReady(runtime.harness)}
+      harnessSuspect={harnessProbing && isHarnessReady(runtime.harness)}
       onRaiseClientWindow={runtime.backend === 'harness' ? openSubjectInterface : undefined}
       onSelectModel={runtime.backend === 'deepseek-web' ? undefined : (model) => {
         if (runtime.backend === 'deepseek-api') {

@@ -316,6 +316,9 @@
 .dsh-chat__sigil:focus-visible { outline: none; }
 /* 提示灯熄灭态：主体不在运行时不能再显示"亮着＝已连接"。 */
 .dsh-chat__status-dot[data-ready='false'] { background: currentColor; opacity: .3; box-shadow: none; }
+/* 黄灯：就绪过的桥接失联、但还在宽限窗口内（"先挂起，别急着判死"）。 */
+.dsh-chat__status-dot[data-ready='suspect'] { background: #e8b048; animation: dsh-chat-status-probe 1.1s ease-in-out infinite; }
+@keyframes dsh-chat-status-probe { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
 .dsh-chat__backend { overflow: hidden; color: var(--dsh-text-strong); font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .dsh-chat__backend-detail { color: var(--dsh-text-faint); font-size: 10px; white-space: nowrap; }
 .dsh-chat__topbar-spacer { flex: 1; }
