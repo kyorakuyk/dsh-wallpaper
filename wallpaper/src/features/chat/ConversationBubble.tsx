@@ -106,6 +106,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const [hovered, setHovered] = useState(false)
   const [focused, setFocused] = useState(false)
   const [commandMenuOpen, setCommandMenuOpen] = useState(false)
+  const [modelMenuOpen, setModelMenuOpen] = useState(false)
   const historyRef = useRef<HTMLDivElement>(null)
   const historyAutoScrollRef = useRef(true)
   // Streaming history is prepended to the DOM when the user asks for earlier
@@ -362,21 +363,35 @@ export function ConversationBubble(props: ConversationBubbleProps) {
         </div> : null}
         {props.permission && <label className="dsh-chat__permission-picker">◈<select aria-label="选择权限" value={props.permission.current} onChange={(event) => props.onSelectPermission?.(event.target.value)}>{props.permission.options.map((permission) => <option key={permission} value={permission}>{permission}</option>)}</select></label>}
         {(!props.onSelectModel || !props.modelOptions?.length) && <span className="dsh-chat__meta"><Icon name="model" size={13} /><span className="dsh-chat__model">{props.modelLabel}</span></span>}
+        {/* 模型选择器是**岛内自绘**的下拉，不是原生 `<select>`。
+            原生 `<select>` 的弹层是 Chromium 创建的独立窗口，在这个窗口里弹不出来——实测
+            框里已经显示 `DeepSeek-V41-Flash`（枚举成功、有多个选项），点开却没有任何列表。
+            自绘列表不依赖系统弹层，也顺带和岛里的命令菜单保持同一套外观。 */}
         <label className="dsh-chat__model-picker" title={props.modelSwitchDisabledReason ?? (props.onSelectModel ? '切换模型' : '当前后端不支持在壁纸中切换模型')}>
           <Icon name="model" size={13} />
-          <select
+          <button
+            type="button"
+            className="dsh-chat__model-button"
             aria-label="切换模型"
-            value={props.selectedModel ?? ''}
-            /* 没有可切换项时也要禁用：只有一项的下拉点开等于什么都没有（实测用户就是这样——
-               框里显示着模型名、点开却没有列表）。原因放在 title 里，不占地方。 */
+            aria-haspopup="listbox"
+            aria-expanded={modelMenuOpen}
             disabled={!props.onSelectModel || !props.modelOptions?.length || Boolean(props.modelSwitchDisabledReason)}
-            onChange={(event) => props.onSelectModel?.(event.target.value)}
+            onClick={() => setModelMenuOpen((value) => !value)}
           >
-            {/* 禁用时说明**为什么**：枚举不到（老版本宿主 / 端点没有该路由）、还没连上、
-                或网页入口由页面决定，是三件不同的事，不该都写成"模型不可切换"。 */}
-            {!props.modelOptions?.length && <option value="">{props.modelSwitchDisabledReason ?? '模型不可切换'}</option>}
-            {props.modelOptions?.map((model) => <option key={model} value={model}>{props.modelLabels?.[model] ?? model}</option>)}
-          </select>
+            {props.modelSwitchDisabledReason && !props.modelOptions?.length
+              ? props.modelSwitchDisabledReason
+              : props.modelLabels?.[props.selectedModel ?? ''] ?? props.selectedModel ?? '模型不可切换'}
+          </button>
+          {modelMenuOpen && props.modelOptions?.length ? <div className="dsh-chat__model-menu" role="listbox" aria-label="选择模型">
+            {props.modelOptions.map((model) => <button
+              key={model}
+              type="button"
+              role="option"
+              aria-selected={model === props.selectedModel}
+              className={`dsh-chat__model-option${model === props.selectedModel ? ' is-current' : ''}`}
+              onClick={() => { setModelMenuOpen(false); props.onSelectModel?.(model) }}
+            >{props.modelLabels?.[model] ?? model}</button>)}
+          </div> : null}
         </label>
       </footer>
     </Glass>

@@ -356,13 +356,23 @@
 .dsh-chat__turn-usage,
 .dsh-chat__session-cost { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
 .dsh-chat__turn-usage[data-usage-available='false'] { color: var(--dsh-text-faint); }
-.dsh-chat__model-picker { display: inline-flex; min-width: 0; align-items: center; gap: 4px; padding: 3px 6px; border: 1px solid color-mix(in srgb, var(--dsh-text-strong) 10%, transparent); border-radius: 8px; color: var(--dsh-text-faint); background: rgba(255,255,255,.025); }
+.dsh-chat__model-picker { position: relative; display: inline-flex; min-width: 0; align-items: center; gap: 4px; padding: 3px 6px; border: 1px solid color-mix(in srgb, var(--dsh-text-strong) 10%, transparent); border-radius: 8px; color: var(--dsh-text-faint); background: rgba(255,255,255,.025); }
 .dsh-chat__permission-picker { display: inline-flex; align-items: center; gap: 4px; color: var(--dsh-text-faint); }
 .dsh-chat__permission-picker select { border: 0; outline: 0; background: transparent; color: inherit; font: inherit; font-size: 10px; }
 .dsh-chat__model-picker:focus-within { border-color: color-mix(in srgb, var(--dsh-accent-soft) 42%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsh-accent) 12%, transparent); }
 .dsh-chat__model-picker select { min-width: 0; max-width: 150px; border: 0; outline: 0; background: transparent; color: var(--dsh-text-muted); font: inherit; font-size: 10px; cursor: pointer; }
 .dsh-chat__model-picker select:disabled { cursor: default; opacity: .62; }
 .dsh-chat__model-picker option { background: #102034; color: #eaf6ff; }
+/* 岛内自绘的模型下拉（与命令菜单同源，向上展开）。原生 <select> 的弹层是独立窗口，
+   在这个贴着屏幕底边的窗口里弹不出来，所以选择器不再依赖它。 */
+.dsh-chat__model-button { min-width: 0; max-width: 150px; overflow: hidden; border: 0; outline: 0; background: transparent; color: var(--dsh-text-muted); font: inherit; font-size: 10px; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
+.dsh-chat__model-button[aria-expanded='true'] { color: var(--dsh-text); }
+.dsh-chat__model-button:disabled { cursor: default; opacity: .62; }
+.dsh-chat__model-menu { position: absolute; z-index: 30; right: 0; bottom: calc(100% + 8px); display: grid; width: max-content; min-width: 150px; max-width: min(320px, calc(100vw - 36px)); gap: 2px; padding: 7px; border: 1px solid color-mix(in srgb, var(--dsh-text-strong) 15%, transparent); border-radius: 14px; background: color-mix(in srgb, #10213a 92%, transparent); box-shadow: 0 18px 44px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.08); backdrop-filter: blur(24px) saturate(130%); }
+.dsh-chat__model-option { padding: 6px 10px; border: 0; border-radius: 9px; background: transparent; color: var(--dsh-text-muted); font: inherit; font-size: 11px; text-align: left; white-space: nowrap; cursor: pointer; }
+.dsh-chat__model-option:hover { background: rgba(255,255,255,.07); color: var(--dsh-text); }
+.dsh-chat__model-option.is-current { color: var(--dsh-accent-soft); }
+.dsh-chat__model-option.is-current::after { content: ' ✓'; }
 .dsh-chat__usage-rail { display: flex; min-height: 20px; align-items: center; justify-content: center; gap: 9px; padding: 4px 18px 0; color: var(--dsh-text-faint); font-size: 10px; pointer-events: none; }
 .dsh-chat__usage-rail .dsh-chat__turn-usage,
 .dsh-chat__usage-rail .dsh-chat__session-cost { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }

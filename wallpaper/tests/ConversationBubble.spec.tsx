@@ -125,10 +125,14 @@ describe('ConversationBubble', () => {
 
     expect(html).toContain('aria-label="切换模型"')
     expect(html).toContain('deepseek-v4-flash')
-    expect(html).toContain('deepseek-v4-pro')
-    expect(html).toContain('会话记录')
     expect(html).toContain('dsh-chat__command-menu-button')
     expect(html).not.toContain('dsh-chat__meta')
+    // 选择器是岛内自绘的下拉（原生 <select> 的弹层这个窗口弹不出来），所以：
+    // 初始渲染只有一枚按钮，选项列表按需展开——静态标记里不应出现第二个模型。
+    expect(html).toContain('aria-haspopup="listbox"')
+    expect(html).toContain('aria-expanded="false"')
+    expect(html).not.toContain('deepseek-v4-pro')
+    expect(html).not.toContain('dsh-chat__model-menu')
   })
 
   it('keeps the offline DSH switch clickable and offers setup when no path is configured', () => {
