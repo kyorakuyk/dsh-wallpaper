@@ -245,6 +245,11 @@ export interface NativeRuntime {
    * `supported: false` = 宿主不具备枚举能力，不是"没有模型"。
    */
   harnessModels(): Promise<{ supported: boolean; provider?: string; current?: { provider: string; model: string }; models?: Array<{ id: string; name: string }> }>
+  /**
+   * 把选定的模型推给 Harness 宿主（宿主存进自己的设置，跨宿主重启生效）。
+   * 宿主不具备该能力时拒绝——壁纸自己那次会话仍然用选定模型。
+   */
+  harnessSetModel(model: string): Promise<{ provider: string; model: string }>
   /** DeepSeek API 兼容端点自报的模型目录（`/models`）。 */
   apiModels(baseUrl: string): Promise<{ supported: boolean; models?: Array<{ id: string; name: string }> }>
   setHarnessPermission(permission: string): Promise<void>
@@ -504,6 +509,10 @@ export const nativeRuntime: NativeRuntime = {
   async apiModels(baseUrl) {
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<{ supported: boolean; models?: Array<{ id: string; name: string }> }>('api_models', { baseUrl })
+  },
+  async harnessSetModel(model) {
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<{ provider: string; model: string }>('harness_set_model', { model })
   },
   async setHarnessPermission(permission) {
     const { invoke } = await import('@tauri-apps/api/core')

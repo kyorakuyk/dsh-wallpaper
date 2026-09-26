@@ -2319,6 +2319,18 @@ async fn harness_models(
     chat::harness_models(state).await
 }
 
+/// 把壁纸选定的模型推给 Harness 宿主，使宿主默认模型与壁纸一致。
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+async fn harness_set_model(
+    caller: tauri::WebviewWindow,
+    state: tauri::State<'_, chat::ChatState>,
+    model: String,
+) -> Result<serde_json::Value, String> {
+    require_background(&caller)?;
+    chat::harness_set_model(state, model).await
+}
+
 /// 枚举 DeepSeek API 端点自己列出的模型（兼容接口的 `/models`）。
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
@@ -3492,6 +3504,7 @@ macro_rules! register_edition_commands {
             harness_set_preset,
             harness_controls,
             harness_models,
+            harness_set_model,
             api_models,
             harness_set_permission,
             api_history,

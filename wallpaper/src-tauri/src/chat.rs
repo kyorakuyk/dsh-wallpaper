@@ -3253,6 +3253,55 @@ pub async fn harness_models(state: tauri::State<'_, ChatState>) -> Result<Value,
     Ok(payload)
 }
 
+/// 把壁纸选定的模型推给宿主，让宿主的默认模型跟着走。
+///
+/// 同步方向是"壁纸端为源"：这样从 DSH 界面开的新会话也用同一个模型，宿主重启后依然如此
+/// （宿主把选择存进自己的设置）。宿主不具备持久化能力时桥接回 501，这里如实报错——壁纸
+/// 自己那次会话仍然用选定模型，所以这只是"同步没做成"，不是聊天不可用。
+pub async fn harness_set_model(
+    state: tauri::State<'_, ChatState>,
+    model: String,
+) -> Result<Value, String> {
+    let model = model.trim().to_owned();
+    if model.is_empty() {
+        return Err("模型不能为空。".into());
+    }
+    let port = harness_query_port(&state);
+    let token = match read_bridge_token() {
+        Ok(token) => token,
+        Err(error) => {
+            log::warn!("harness set model: bridge token unavailable: {error}");
+            return Err(error);
+        }
+    };
+    let client = bridge_request_client()?;
+    let response = match auth(client.post(harness_url(port, "/control/models")), &token)
+        .json(&serde_json::json!({ "model": model }))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            log::warn!("harness set model: request to port {port} failed: {error}");
+            return Err(generic_harness_error("模型同步"));
+        }
+    };
+    let status = response.status();
+    if !status.is_success() {
+        // 501 是宿主不支持同步（没有 saveSelection），与"请求失败"区分开。
+        log::warn!("harness set model: HTTP {} for {model}", status.as_u16());
+        return Err(harness_http_error(status, "model"));
+    }
+    let payload = bounded_bridge_json::<Value>(
+        response,
+        MAX_HARNESS_SESSION_RESPONSE_BYTES,
+        "DSH bridge 返回了无法识别的模型同步结果。",
+    )
+    .await?;
+    log::info!("harness set model (port {port}): {model} -> {payload}");
+    Ok(payload)
+}
+
 /// Enumerate the models the configured DeepSeek API endpoint offers.
 ///
 /// `/models` is part of the compatible API surface, so the list is the

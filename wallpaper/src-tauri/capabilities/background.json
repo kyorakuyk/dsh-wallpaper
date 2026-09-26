@@ -33,6 +33,7 @@
     "allow-harness-set-preset",
     "allow-harness-controls",
     "allow-harness-models",
+    "allow-harness-set-model",
     "allow-api-models",
     "allow-harness-set-permission",
     "allow-api-history",

@@ -116,6 +116,15 @@ export type HostEventName = 'session/event' | 'agent/error' | 'agent/disposed' |
 export interface HostAdapter {
   defaultModel(): DefaultModelSelection
   /**
+   * Push the wallpaper's model choice into the host's own default selection.
+   *
+   * Resolves `false` when the host cannot persist a selection (no
+   * `saveSelection`): the caller then leaves the host alone instead of believing
+   * it changed. The write goes through the host's settings, so it survives a host
+   * restart and applies to sessions started anywhere, not only in the wallpaper.
+   */
+  setDefaultModel(selection: DefaultModelSelection, allowed: readonly string[]): Promise<boolean>
+  /**
    * Enumerate the models the host can actually run right now.
    *
    * Deliberately **not** a required service: `llm` is probed as an optional
@@ -216,6 +225,7 @@ export function createHostAdapter(ctx: Context): HostAdapter {
 
   const agentDefaultModel = scope.agentDefaultModel as {
     currentSelection(): DefaultModelSelection
+    saveSelection?(next: DefaultModelSelection): Promise<void>
   }
   const agentPresets = scope.agentPresets as {
     readonly defaultId?: string
@@ -253,6 +263,20 @@ export function createHostAdapter(ctx: Context): HostAdapter {
         'agentDefaultModel.currentSelection() result',
       )
       return { provider: selection.provider, model: selection.model }
+    },
+
+    setDefaultModel: async (selection, allowed) => {
+      // A host without a settings-backed selection cannot be synchronised, and
+      // saying so is the point: the wallpaper's own per-session choice still
+      // applies, so this is a capability gap, not a failure.
+      const save = agentDefaultModel.saveSelection
+      if (typeof save !== 'function') return false
+      // The model must be one the host just enumerated. Accepting an unknown id
+      // would put the host's default into a state its own picker cannot leave,
+      // and the caller's list is the host's own answer, not Bridge policy.
+      if (allowed.length > 0 && !allowed.includes(selection.model)) return false
+      await save.call(agentDefaultModel, selection)
+      return true
     },
 
     presetDirectory: () => agentPresets.list(),

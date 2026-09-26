@@ -74,6 +74,9 @@ fn main() {
             // Bridge, the API side reads the compatible endpoint's own /models list.
             "harness_models",
             "api_models",
+            // Pushes the wallpaper's model choice into the host, so the host's default
+            // model follows the wallpaper instead of the two drifting apart.
+            "harness_set_model",
             "harness_set_permission",
             // Verifies that the renderer's island pointerdown is a real user click before any
             // keyboard handover may act on it (repair plan 3.A).

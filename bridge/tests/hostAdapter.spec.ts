@@ -283,3 +283,47 @@ describe('model catalog discovery', () => {
     expect((await adapter.modelDirectory()).supported).toBe(false)
   })
 })
+
+/**
+ * 同步的方向是"壁纸端为源、宿主跟随"：壁纸选了什么，宿主的默认模型就变成什么，
+ * 这样从 DSH 界面开的新会话也用同一个模型。宿主没有 setter 时要**明说做不到**，
+ * 而不是假装成功——壁纸自己那次会话的模型仍然生效，所以这是能力缺口，不是失败。
+ */
+describe('pushing the model choice to the host', () => {
+  const withSave = () => {
+    const saveSelection = vi.fn(async () => undefined)
+    const scope = validScope()
+    scope.agentDefaultModel = {
+      currentSelection: () => ({ provider: 'deepseek-account', model: 'deepseek-flash' }),
+      saveSelection,
+    }
+    return { scope, saveSelection }
+  }
+
+  it('writes the selection through the host so the host persists it', async () => {
+    const { scope, saveSelection } = withSave()
+    const adapter = createHostAdapter(asContext(scope))
+    expect(await adapter.setDefaultModel({ provider: 'deepseek-account', model: 'deepseek-v4-pro' }, ['deepseek-flash', 'deepseek-v4-pro'])).toBe(true)
+    expect(saveSelection).toHaveBeenCalledWith({ provider: 'deepseek-account', model: 'deepseek-v4-pro' })
+  })
+
+  it('refuses a model the host does not offer, without touching the host', async () => {
+    // 接受一个宿主目录里没有的 id，会把宿主的默认模型推进它自己的选择器都退不出来的状态。
+    const { scope, saveSelection } = withSave()
+    const adapter = createHostAdapter(asContext(scope))
+    expect(await adapter.setDefaultModel({ provider: 'deepseek-account', model: 'deepseek-v5' }, ['deepseek-flash'])).toBe(false)
+    expect(saveSelection).not.toHaveBeenCalled()
+  })
+
+  it('reports that it cannot synchronise when the host has no setter', async () => {
+    const adapter = createHostAdapter(asContext(validScope()))
+    expect(await adapter.setDefaultModel({ provider: 'deepseek-account', model: 'deepseek-flash' }, [])).toBe(false)
+  })
+
+  it('accepts any id when the host cannot enumerate (nothing to validate against)', async () => {
+    const { scope, saveSelection } = withSave()
+    const adapter = createHostAdapter(asContext(scope))
+    expect(await adapter.setDefaultModel({ provider: 'deepseek-account', model: 'anything' }, [])).toBe(true)
+    expect(saveSelection).toHaveBeenCalledOnce()
+  })
+})

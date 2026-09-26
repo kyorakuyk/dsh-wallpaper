@@ -1397,6 +1397,10 @@ export function App({ surface = 'combined' }: AppProps) {
           // 持久化：下次启动要**回显这次选的模型**，而不是宿主报的当前值。
           // 写进设置后其它 WebView（设置中心等）会通过 `settings-changed` 收到同一份值。
           saveSettings({ ...settings, harnessModel: { model } })
+          // 同步给宿主：宿主把默认模型改成这个（写进它自己的设置，跨宿主重启生效），
+          // 于是从 DSH 界面开的新会话也用同一个模型。失败不打扰用户——壁纸这次会话已经用
+          // 上了选定模型，这只是"没同步成"，原生日志里有原因。
+          void nativeRuntime.harnessSetModel(model).catch(() => undefined)
           setConversationGeneration((value) => value + 1)
           patchRuntime({ model, provider: 'deepseek-official', activity: 'idle' })
         }

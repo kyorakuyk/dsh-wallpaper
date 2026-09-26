@@ -574,7 +574,7 @@ describe('wallpaper bridge HTTP routes', () => {
 
     const rejected = await call(controlRoute, request('GET', `${API_PREFIX}/control/models`))
     expect(rejected.status).toBe(401)
-    const wrongVerb = await call(controlRoute, request('POST', `${API_PREFIX}/control/models`, {}, `Bearer ${token}`))
+    const wrongVerb = await call(controlRoute, request('PUT', `${API_PREFIX}/control/models`, {}, `Bearer ${token}`))
     expect(wrongVerb.status).toBe(405)
     const listed = await call(controlRoute, request('GET', `${API_PREFIX}/control/models`, undefined, `Bearer ${token}`))
     expect(listed.status).toBe(200)
@@ -584,6 +584,25 @@ describe('wallpaper bridge HTTP routes', () => {
     // "cannot be asked" answer rather than a fabricated empty catalog.
     expect(payload.supported).toBe(false)
     expect(payload.models).toEqual([])
+  })
+
+  it('pushes the selected model to the host, and says so when it cannot', async () => {
+    // 同步（壁纸端为源）：这条写入路由让宿主的默认模型跟随壁纸的选择，跨宿主重启生效。
+    // 宿主没有持久化能力时必须回 501，而不是 200——客户端不能以为"已经同步了"。
+    const harness = await createHarness()
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+    const controlRoute = harness.routes.get(`${API_PREFIX}/control`)
+    await call(statusRoute, request('GET', `${API_PREFIX}/status`))
+    const token = (await readFile(harness.tokenFile, 'utf8')).trim()
+
+    const unauthenticated = await call(controlRoute, request('POST', `${API_PREFIX}/control/models`, { model: 'deepseek-v4-pro' }))
+    expect(unauthenticated.status).toBe(401)
+    const empty = await call(controlRoute, request('POST', `${API_PREFIX}/control/models`, { model: '   ' }, `Bearer ${token}`))
+    expect(empty.status).toBe(400)
+    expect(JSON.parse(empty.body).error).toBe('model-required')
+    const unsupported = await call(controlRoute, request('POST', `${API_PREFIX}/control/models`, { model: 'deepseek-v4-pro' }, `Bearer ${token}`))
+    expect(unsupported.status).toBe(501)
+    expect(JSON.parse(unsupported.body).error).toBe('model-selection-unsupported')
   })
 
   it('owns one dated session inside the desktop workspace and resumes it while live', async () => {

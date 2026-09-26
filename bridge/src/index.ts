@@ -1223,6 +1223,25 @@ export function apply(ctx: Context, config: Config = {}): void {
         const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname
         try {
           if (pathname === `${API_PREFIX}/control/models`) {
+          if (req.method === 'POST') {
+            // Changing the host's default model is what keeps the wallpaper and
+            // the host in step: a session started from the DSH UI afterwards uses
+            // the same model the wallpaper shows. The host persists it itself.
+            const body = await readJson(req)
+            const model = typeof body.model === 'string' ? body.model.trim() : ''
+            if (!model) return json(res, 400, { error: 'model-required' })
+            const directory = await host.modelDirectory()
+            const provider = typeof body.provider === 'string' && body.provider.trim()
+              ? body.provider.trim()
+              : (directory.current?.provider ?? '')
+            if (!provider) return json(res, 400, { error: 'model-provider-unknown' })
+            const applied = await host.setDefaultModel(
+              { provider, model },
+              directory.supported ? directory.models.map((entry) => entry.id) : [],
+            )
+            if (!applied) return json(res, 501, { error: 'model-selection-unsupported' })
+            return json(res, 200, { provider, model })
+          }
           if (req.method !== 'GET') return json(res, 405, { error: 'method-not-allowed' })
           // The host's own catalog, never a Bridge-side guess: a picker listing
           // ids the host would reject is worse than a picker with one row.
