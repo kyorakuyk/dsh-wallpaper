@@ -152,6 +152,49 @@ describe('ConversationBubble', () => {
     expect(html).not.toMatch(/class="dsh-chat__mode-switch"[^>]*disabled/)
   })
 
+  it('labels a kept transcript as the previous Harness session', () => {
+    // 壁纸因主体退出自己复位时保留轨道里的转写（用户要求"缓存**进会话轨道**"）。一段
+    // 来路不明的记录会让人以为它是当前后端的，所以要说清它是什么、什么时候回来。
+    const kept = renderToStaticMarkup(<ConversationBubble
+      backend="deepseek-web"
+      activity="idle"
+      modelLabel="deepseek-chat"
+      messages={[{ id: 'message-1', role: 'assistant', content: '上次的回答', createdAt: 1 }]}
+      streamingText=""
+      historyExpanded
+      keptTranscript
+      {...callbacks}
+    />)
+    expect(kept).toContain('dsh-chat__history-note')
+    expect(kept).toContain('上次的 Harness 会话')
+    expect(kept).toContain('上次的回答')
+
+    // 正常情况（没有保留转写）轨道里不该出现这行旁白。
+    const fresh = renderToStaticMarkup(<ConversationBubble
+      backend="deepseek-web"
+      activity="idle"
+      modelLabel="deepseek-chat"
+      messages={[{ id: 'message-1', role: 'assistant', content: '当前后端的回答', createdAt: 1 }]}
+      streamingText=""
+      historyExpanded
+      {...callbacks}
+    />)
+    expect(fresh).not.toContain('dsh-chat__history-note')
+
+    // 标了却没有任何记录可看时也没有旁白：没有什么需要解释的。
+    const empty = renderToStaticMarkup(<ConversationBubble
+      backend="deepseek-web"
+      activity="idle"
+      modelLabel="deepseek-chat"
+      messages={[]}
+      streamingText=""
+      historyExpanded
+      keptTranscript
+      {...callbacks}
+    />)
+    expect(empty).not.toContain('dsh-chat__history-note')
+  })
+
   it('keeps the switch usable while a start is still in flight', () => {
     // A start can take the whole 45-second readiness window. Dimming the only switch
     // on the island for that long is what made it look stuck: no way back, no way to

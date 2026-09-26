@@ -142,6 +142,21 @@
 }
 .dsh-chat__history-earlier:hover { color: var(--dsh-text); background: rgba(255, 255, 255, 0.1); }
 
+/*
+ * 保留转写时轨道顶部的那行说明。
+ *
+ * 它读起来像旁白而不是一条消息：不参与消息的排版与淡出，也不带任何角色语义，用户不会误以为
+ * 它是某个人说的话。视觉上刻意轻——它是注释，不是内容。
+ */
+.dsh-chat__history-note {
+  margin: 0;
+  padding: 6px 12px;
+  border-left: 2px solid color-mix(in srgb, var(--dsh-text-strong) 22%, transparent);
+  color: var(--dsh-text-faint);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
 .dsh-chat__message { display: grid; max-width: 86%; gap: 5px; margin: 0; padding: 0; background: transparent; }
 .dsh-chat__history > .dsh-chat__message {
   --history-fade: clamp(.58, calc(.68 + (var(--message-index, 0) * .045)), .98);

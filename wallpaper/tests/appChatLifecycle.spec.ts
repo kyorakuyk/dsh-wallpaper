@@ -70,6 +70,21 @@ describe('App chat lifecycle isolation', () => {
     expect(harnessFallbackBackend('offline', 'deepseek-web', 'deepseek-web')).toBeUndefined()
   })
 
+  it('moves the switch back only when the wallpaper itself moved it away', async () => {
+    const { shouldReturnToHarness } = await import('../src/App.tsx')
+
+    // 主体退出后壁纸自己复位过：它回来时，滑槽要自己拨回去（用户原话：再次联通之后要以
+    // harness 后端为准）。复位期间保留的那段转写属于同一个会话——会话按日期命名、转写留在
+    // 宿主那边，所以拨回去接上的就是同一段记录。
+    expect(shouldReturnToHarness('bridge-ready', 'deepseek-web', true)).toBe(true)
+    // 用户自己拨到左侧的：壁纸没有打断他，也就不该反过来打断他。
+    expect(shouldReturnToHarness('bridge-ready', 'deepseek-web', false)).toBe(false)
+    // 还没就绪、或者本来就在 Harness 上：无事可做。
+    expect(shouldReturnToHarness('bridge-loading', 'deepseek-web', true)).toBe(false)
+    expect(shouldReturnToHarness('offline', 'deepseek-web', true)).toBe(false)
+    expect(shouldReturnToHarness('bridge-ready', 'harness', true)).toBe(false)
+  })
+
   it('keeps an API adapter lifecycle stable while committing later request settings', async () => {
     const { apiAdapterOptionsFromSettings, chatAdapterLifecycleKey, updateApiAdapterOptions } = await import('../src/App.tsx')
     const first = {

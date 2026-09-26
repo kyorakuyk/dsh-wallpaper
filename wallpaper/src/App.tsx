@@ -128,6 +128,23 @@ export function harnessFallbackBackend(
 }
 
 /**
+ * 主体回来之后，壁纸是否可以自己把滑槽拨回 Harness。
+ *
+ * `autoResetByWallpaper` 是这条规则的全部要害：只有**壁纸自己**把滑槽复位过，它才可以把滑槽
+ * 拨回去。用户手动拨过去的情况，壁纸既没打断他，也不该反过来打断他。
+ *
+ * 复位保留的是**转写**：转写留在宿主那边（会话按日期命名），所以拨回来时自动接上同一个会话，
+ * 轨道里那段记录说的就是同一个会话。
+ */
+export function shouldReturnToHarness(
+  availability: RuntimeState['harness'],
+  backend: BackendMode,
+  autoResetByWallpaper: boolean,
+): boolean {
+  return autoResetByWallpaper && backend !== 'harness' && isHarnessReady(availability)
+}
+
+/**
  * A 3080 response alone is not a usable Harness transport. Keep every
  * renderer-side selection path behind the same compatible-Bridge predicate.
  */
@@ -432,6 +449,19 @@ export function App({ surface = 'combined' }: AppProps) {
   const [nativeHandoffGeneration, setNativeHandoffGeneration] = useState<number>()
   const harnessLaunchPendingRef = useRef(false)
   const harnessLaunchStartedAtRef = useRef<number>()
+  /**
+   * 壁纸自己把滑槽复位过（主体退出），因此它有权在主体回来后自己拨回去。
+   *
+   * 只在**我们自己**复位时置位：用户自己拨到左侧时，壁纸没有打断他，也就不该反过来打断他。
+   * 用户手动选后端会清掉它。ref 与 state 各司其职：ref 给事件回调读（浏览器预览那条路的闭包
+   * 是旧的），state 给渲染读（轨道里那条"上次的 Harness 会话"要用它）。
+   */
+  const autoResetFromHarnessRef = useRef(false)
+  const [autoResetFromHarness, setAutoResetFromHarness] = useState(false)
+  const markAutoResetFromHarness = (value: boolean) => {
+    autoResetFromHarnessRef.current = value
+    setAutoResetFromHarness(value)
+  }
   const adapterRef = useRef<ChatAdapter>(new PreviewAdapter(settings.defaultBackend))
   const chatActivityRef = useRef<{ adapter: ChatAdapter; backend: BackendMode; activity: RuntimeState['activity'] }>()
   // Chat activity actions are emitted from event callbacks without awaiting
@@ -1348,7 +1378,11 @@ export function App({ surface = 'combined' }: AppProps) {
       onChange: ({ status }) => {
         patchRuntime({ harness: status.availability, model: status.model ?? runtimeRef.current.model, provider: status.provider ?? runtimeRef.current.provider, reasoningEffort: status.reasoningEffort })
         if (isHarnessReady(status.availability) && runtimeRef.current.backend !== 'harness') {
-          if (canAutoSelectHarness(status.availability, runtimeRef.current.backend, settings.autoSwitchHarness)) changeBackend('harness')
+          if (canAutoSelectHarness(status.availability, runtimeRef.current.backend, settings.autoSwitchHarness)
+            || shouldReturnToHarness(status.availability, runtimeRef.current.backend, autoResetFromHarnessRef.current)) {
+            markAutoResetFromHarness(false)
+            changeBackend('harness', { automatic: true })
+          }
         }
         // 黄灯：就绪过的桥接正在失联但还没判死（`probing`）。此时**不改** availability，
         // 所以滑槽、模型列表、会话都还按"它还在"处理 ✓——只有灯变色 ✓。
@@ -1363,12 +1397,21 @@ export function App({ surface = 'combined' }: AppProps) {
   useEffect(() => {
     if (!appCoreClient.native) return
     if (isHarnessReady(runtime.harness) && runtime.backend !== 'harness') {
-      if (canAutoSelectHarness(runtime.harness, runtime.backend, settings.autoSwitchHarness)) changeBackend('harness')
+      if (canAutoSelectHarness(runtime.harness, runtime.backend, settings.autoSwitchHarness)
+        || shouldReturnToHarness(runtime.harness, runtime.backend, autoResetFromHarnessRef.current)) {
+        markAutoResetFromHarness(false)
+        changeBackend('harness', { automatic: true })
+      }
     }
     // 主体退出后复位到左侧：拉起 harness 的入口就在壁纸里，停在死掉的一侧会让用户
     // 不得不再手动切一次 ✗。记录不会丢——会话按日期命名、转写留在宿主那边，切回去自动接上。
+    // 复位时**保留轨道里的转写**：用户看到的是"上次的 Harness 会话"，而不是一片空白；
+    // `autoResetFromHarnessRef` 同时记下"这次是壁纸复位的"，主体回来后由它自己拨回去。
     const fallback = harnessFallbackBackend(runtime.harness, runtime.backend, settings.defaultBackend)
-    if (fallback) changeBackend(fallback)
+    if (fallback) {
+      markAutoResetFromHarness(true)
+      changeBackend(fallback, { keepTranscript: true, automatic: true })
+    }
     const disconnected = harnessAvailabilityPatch(runtime.backend, runtime.harness, runtime.error)
     if (disconnected) patchRuntime(disconnected)
   }, [runtime.harness, runtime.backend, runtime.error, settings.autoSwitchHarness, settings.defaultBackend])
@@ -1383,7 +1426,22 @@ export function App({ surface = 'combined' }: AppProps) {
     window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey)
   }, [runtime.phase, settings])
 
-  const changeBackend = (backend: WallpaperSettings['defaultBackend']) => {
+  /**
+   * Switch the backend, and decide what happens to what is on screen.
+   *
+   * `keepTranscript` is for the one transition the user did not ask for: when the
+   * subject exits and the wallpaper resets the switch, wiping the rail would take the
+   * record away at the exact moment it is the only thing left of the session. The
+   * transcript is not lost either way — the host keeps the day-named session — but
+   * "it is still there somewhere" is not the same as still being on screen.
+   *
+   * `automatic` marks a move the wallpaper made by itself, which is what entitles it
+   * to move back when the subject returns; a manual choice clears that claim.
+   */
+  const changeBackend = (
+    backend: WallpaperSettings['defaultBackend'],
+    options?: { keepTranscript?: boolean; automatic?: boolean },
+  ) => {
     if (!canSelectBackend(runtimeRef.current.harness, backend)) {
       // Do not construct a native Harness adapter or issue a Tauri selection
       // for a bare port-3080 observation. Leave the current transcript and
@@ -1391,10 +1449,11 @@ export function App({ surface = 'combined' }: AppProps) {
       patchRuntime({ activity: 'idle', error: harnessSelectionUnavailableError(runtimeRef.current.harness) })
       return
     }
+    if (!options?.automatic) markAutoResetFromHarness(false)
     // Clear backend-scoped UI immediately. The effect below repeats this while
     // creating the next adapter, which prevents one paint of API usage or a
     // partial answer under the newly selected backend label.
-    setMessages([])
+    if (!options?.keepTranscript) setMessages([])
     setStreamingText('')
     setUsage(undefined)
     activeBackendRef.current = backend
@@ -1489,6 +1548,9 @@ export function App({ surface = 'combined' }: AppProps) {
       }}
       onConfigureHarness={() => { void nativeRuntime.openSettingsWindow().catch((error) => patchRuntime({ error: String(error) })) }}
       onSelectBackend={changeBackend}
+      // 保留下来的是**上一个后端**的转写（壁纸因主体退出自己复位时才发生），所以它只在
+      // 已经不在 Harness 上、而且确实有记录可看时才标注来历。
+      keptTranscript={autoResetFromHarness && runtime.backend !== 'harness' && messages.length > 0}
       presetOptions={presetOptions}
       selectedPreset={selectedPreset}
       onSelectPreset={messages.length === 0 ? (preset) => { void nativeRuntime.setHarnessPreset(preset).then(() => setSelectedPreset(preset)).catch((error) => patchRuntime({ error: String(error) })) } : undefined}

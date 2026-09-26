@@ -43,6 +43,13 @@ export interface ConversationBubbleProps {
   onSelectBackend?: (backend: BackendMode) => void
   onStartHarness?: () => void
   onConfigureHarness?: () => void
+  /**
+   * 轨道里这份转写属于**上一个**后端（壁纸因主体退出自己复位时保留下来），不是当前后端。
+   *
+   * 保留转写是用户明确要求的："缓存**进会话轨道**"。只留数据不说明来历，用户看到的是一段
+   * 来路不明的记录；所以轨道顶部会有一行说明它是什么、什么时候会回来。
+   */
+  keptTranscript?: boolean
   harnessStarting?: boolean
   modelOptions?: readonly string[]
   selectedModel?: string
@@ -249,6 +256,9 @@ export function ConversationBubble(props: ConversationBubbleProps) {
         }}
         onWheel={(event) => event.stopPropagation()}
       >
+        {props.keptTranscript && props.messages.length > 0 && <p className="dsh-chat__history-note">
+          上次的 Harness 会话（后端已退出）。它重新上线后会自动回到这段记录；你也可以现在就在左侧继续对话。
+        </p>}
         {historyView.hasEarlier && <button type="button" className="dsh-chat__history-earlier" onClick={loadEarlier}>
           加载更早的 {historyView.hidden} 条记录
         </button>}
