@@ -48,6 +48,12 @@ export interface ConversationBubbleProps {
   selectedModel?: string
   /** 模型 id → 显示名（宿主枚举出来的 `DeepSeek-Flash` 之类）。缺省时直接显示 id。 */
   modelLabels?: Record<string, string>
+  /**
+   * 「桌面会话」左侧那枚小图标的单击行为：拉起当前主体的可视化窗口。
+   *
+   * 不传时图标仍是纯装饰的 `<span>`（视觉完全一致）；传了才变成按钮。
+   */
+  onRaiseClientWindow?: () => void
   /** 选择器被禁用时，选项里显示的原因。三种"不能切换"的成因不同，文案由调用方决定。 */
   modelSwitchDisabledReason?: string
   onSelectModel?: (model: string) => void
@@ -249,7 +255,11 @@ export function ConversationBubble(props: ConversationBubbleProps) {
 
     <header className="dsh-chat__topbar">
         <div className="dsh-chat__identity">
-          <span className="dsh-chat__sigil"><Icon name="spark" size={14} /></span>
+          {/* 这枚小图标同时是「打开当前主体的可视化窗口」的按钮。视觉刻意与原样一致：
+              没有回调时仍渲染 `<span>`，有回调才变 `<button>`，两者共用同一个 class。 */}
+          {props.onRaiseClientWindow
+            ? <button type="button" className="dsh-chat__sigil" title="打开可视化窗口" aria-label="打开可视化窗口" onClick={props.onRaiseClientWindow}><Icon name="spark" size={14} /></button>
+            : <span className="dsh-chat__sigil"><Icon name="spark" size={14} /></span>}
           <span className="dsh-chat__backend">桌面会话</span>
           <span className="dsh-chat__backend-detail">{today}</span>
         </div>

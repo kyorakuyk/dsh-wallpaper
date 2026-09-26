@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { PreviewAdapter } from './chat/mockAdapter.ts'
 import { NativeChatAdapter } from './chat/nativeAdapter.ts'
 import { DeepSeekWebAdapter } from './chat/deepseekWebAdapter.ts'
@@ -8,6 +8,7 @@ import type { BackendMode, ChatMessage, ChatQuestion, RuntimeState, TokenUsage }
 import { personaIdFor, resolveModelTier } from './domain/modelTier.ts'
 import { isHarnessReady } from './connect/harness.ts'
 import { monitorHarnessEndpoint } from './connect/harnessEndpoint.ts'
+import { clientRaiseAction } from './connect/endpoints.ts'
 import { HARNESS_STATE_DETAILS } from './connect/harnessLabels.ts'
 import { isEmbeddedShellSubject } from './connect/harnessSubjects.ts'
 import {
@@ -616,6 +617,40 @@ export function App({ surface = 'combined' }: AppProps) {
   // 尽管选项其实在 DOM 里、控件也是 enabled）。改成"取第一个非空候选"。
   const firstNonEmpty = (...candidates: Array<string | undefined>) =>
     candidates.find((candidate): candidate is string => Boolean(candidate?.trim()))
+  // 「桌面会话」左侧那枚小图标（点击行为见 ConversationBubble，视觉不变）：单击拉起
+  // **当前主体的可视化窗口**。
+  //
+  // 规则与设置中心「连接」页那套完全一致，关键是**不能只调 raise**：
+  //   · 主体没在运行时先把它启动（与设置页一致）；
+  //   · 官壳/第三方桌面客户端有自己的窗口 → 拉到前台；
+  //   · **检出（CLI/webui 形态）根本没有窗口，它实际的壳子是浏览器里的 loopback 页面**
+  //     → 按 `no-window` / `clientRaiseAction === 'browser'` 交给默认浏览器打开。
+  // 成功静默（岛里没有提示区），只有失败才写进运行状态。
+  const openSubjectInterface = useCallback(() => {
+    void (async () => {
+      try {
+        const pinned = settings.dshLaunch.endpointPort
+        const endpoints = await nativeRuntime.scanHarnessEndpoints(pinned ? [pinned] : [])
+        const current = endpoints.find((item) => item.port === pinned) ?? endpoints[0]
+        const port = pinned ?? current?.port ?? 0
+        const ensured = await nativeRuntime.ensureHarnessUi({
+          targetId: settings.dshLaunch.subjectId ?? settings.dshLaunch.rootPath,
+          port,
+          profile: settings.dshLaunch.profile,
+          command: settings.dshLaunch.command,
+        })
+        if (clientRaiseAction(current?.kind ?? 'official-web') === 'browser' || ensured.outcome === 'no-window') {
+          if (port > 0) await nativeRuntime.openClientInBrowser(port)
+          return
+        }
+        if (ensured.started && ensured.outcome === 'not-running') {
+          patchRuntime({ error: 'DSH 主体启动失败，请查看日志中的启动记录。' })
+        }
+      } catch (error) {
+        patchRuntime({ error: `打开可视化窗口失败：${String(error)}` })
+      }
+    })()
+  }, [settings.dshLaunch])
   const selectedModel = runtime.backend === 'deepseek-api'
     ? firstNonEmpty(apiModelChoice, settings.deepseekApi.model, modelOptions[0])
     : runtime.backend === 'harness'
@@ -1401,6 +1436,7 @@ export function App({ surface = 'combined' }: AppProps) {
       selectedModel={selectedModel}
       modelLabels={modelLabels}
       modelSwitchDisabledReason={modelSwitchDisabledReason}
+      onRaiseClientWindow={runtime.backend === 'harness' ? openSubjectInterface : undefined}
       onSelectModel={runtime.backend === 'deepseek-web' ? undefined : (model) => {
         if (runtime.backend === 'deepseek-api') {
           setApiModelChoice(model)

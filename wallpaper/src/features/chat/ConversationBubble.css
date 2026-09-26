@@ -306,7 +306,14 @@
   background: color-mix(in srgb, var(--dsh-accent) 15%, transparent);
   box-shadow: 0 0 18px var(--dsh-glow);
   color: var(--dsh-accent-soft);
+  /* 这枚图标同时是"打开可视化窗口"的按钮。下面几行只是把 `<button>` 的浏览器默认样式
+     抹平，让它和原来的 `<span>` **看起来完全一样**（用户明确要求视觉不变）。 */
+  padding: 0;
+  appearance: none;
+  font: inherit;
+  cursor: pointer;
 }
+.dsh-chat__sigil:focus-visible { outline: none; }
 .dsh-chat__backend { overflow: hidden; color: var(--dsh-text-strong); font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .dsh-chat__backend-detail { color: var(--dsh-text-faint); font-size: 10px; white-space: nowrap; }
 .dsh-chat__topbar-spacer { flex: 1; }
