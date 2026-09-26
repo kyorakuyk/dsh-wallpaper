@@ -36,6 +36,7 @@ import { beginInteractionRegionSession, collectInteractionRegions, publishIntera
 import type { AppearanceSlot } from './appearance/theme/index.ts'
 import { nativeAppearance } from './native/appearance.ts'
 import { appCoreClient } from './runtime/appCoreClient.ts'
+import { suppressNativeContextMenu } from './runtime/contextMenu.ts'
 import { shouldApplyAppSnapshot } from './runtime/appSnapshot.ts'
 import type { DesktopWorkspace } from './runtime/desktopWorkspace.ts'
 import { WidgetHost } from './widgets/WidgetHost.tsx'
@@ -443,6 +444,13 @@ export function App({ surface = 'combined' }: AppProps) {
   //
   // A report, not a trigger. The native command re-checks the physical left button and
   // the window under the cursor, so this cannot become an unverified activation path.
+  useEffect(() => {
+    if (!nativeRuntime.isNative) return
+    // 桌面不是网页：背景插画上的右键会弹出 Chromium 的"图像另存为/复制图像链接/更多工具"，
+    // 用户明确要求冻结它。输入框里的菜单保留（见 `runtime/contextMenu.ts`）。
+    return suppressNativeContextMenu()
+  }, [])
+
   useEffect(() => {
     if (!nativeRuntime.isNative) return
     const reportIslandClick = (event: PointerEvent) => {
@@ -1672,7 +1680,10 @@ export function App({ surface = 'combined' }: AppProps) {
           if (isCurrent()) patchRuntime({ activity: 'idle', error: String(error) })
         })
       }}
-      onClose={() => undefined}
+      // 「X」= 离开里桌面（和表/里桌面双击回到表桌面是同一条路径）：悬浮布局回到表桌面并保持
+      // 展开，停靠布局回到表桌面并收回胶囊。它以前是 `() => undefined`——按钮画出来了、点了
+      // 什么都不发生，用户实测报的就是这个。
+      onClose={leaveInnerWorkspace}
     />
     : null
 

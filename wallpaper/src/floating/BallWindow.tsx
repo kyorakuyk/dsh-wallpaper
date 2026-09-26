@@ -19,8 +19,12 @@
 import '../ui/tokens/tokens.css'
 import './BallWindow.css'
 import { invoke } from '@tauri-apps/api/core'
+import { useEffect } from 'react'
+import { suppressNativeContextMenu } from '../runtime/contextMenu.ts'
 
 export function BallWindow() {
+  // 球也是壁纸的一部分：右键它不该弹出"图像另存为/更多工具"那一套网页菜单。
+  useEffect(() => suppressNativeContextMenu(), [])
   return (
     <button
       type="button"

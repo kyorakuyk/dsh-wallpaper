@@ -71,23 +71,24 @@
 
 /* 消息轨道：**透明**——和输入岛一样让壁纸透出来。
    上一版我把它做成了不透明面板（错的方向 ✗）：以前它是一条顶部渐隐的 gradient，
-   问题只是"渐隐"（顶端透明→底端 32%），于是消息看起来没有容器；现在保留边框与圆角
-   作为轨道轮廓，但**不画填充**，所以材质观感和输入岛一致、壁纸照样透出来。
+   问题只是"渐隐"（顶端透明→底端 32%），于是消息看起来没有容器；中间又试过保留边框与圆角
+   当轨道轮廓。最终定的是**连边框也不画**：壁纸照样透出来，容器感由间距和位置提供。
+   停靠胶囊与中央玻璃悬浮**共用这一套**——用户实测"胶囊的轨道还没变成和中央悬浮一样"，
+   所以这里是唯一一份定义，`[data-persistent='true']` 只再补它自己需要的差异（z 序）。
    想给它一点点材质时，把 `transparent` 换成
    `color-mix(in srgb, var(--dsh-glass-fill-strong) calc(var(--dsh-chat-acrylic-opacity, .74) * 35%), transparent)` 即可。 */
 .dsh-chat__history-wrap {
   position: relative;
   z-index: -1;
-  width: calc(100% - 28px);
-  margin: 0 auto -18px;
-  padding-bottom: 24px;
+  width: calc(100% - clamp(12px, 4vw, 58px));
+  margin: 0 auto -1px;
+  padding: 0;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--dsh-text-strong) 14%, transparent);
-  border-bottom: 0;
-  border-radius: 28px 28px 0 0;
+  border: 0;
+  border-radius: 0;
   background: transparent;
-  box-shadow: inset 0 1px 0 rgba(232,250,255,.06);
-  backdrop-filter: blur(6px) saturate(108%);
+  box-shadow: none;
+  backdrop-filter: none;
   animation: dsh-chat-history-in var(--dsh-duration-slow) var(--dsh-ease-expressive);
 }
 
@@ -114,14 +115,17 @@
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 10px;
   width: 100%;
   max-height: calc(100vh - 236px);
-  padding: 34px 30px 42px;
+  padding: 10px 6px 20px;
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
   scrollbar-width: thin;
+  /* 轨道是透明的，所以原来给"半透明薄片"收边的渐隐蒙版必须收掉：留着只会在消息上切一条带子。 */
+  mask-image: none;
+  -webkit-mask-image: none;
 }
 
 .dsh-chat__empty { display: grid; justify-items: center; gap: 8px; padding: 50px 24px 62px; color: var(--dsh-text-muted); text-align: center; }
@@ -483,8 +487,8 @@
 }
 .dsh-chat[data-persistent='true'] .dsh-chat__textarea { min-height: 78px; padding: 8px 0; font-size: clamp(14px, 1vw, 16px); }
 .dsh-chat[data-persistent='true'] .dsh-chat__footer { min-height: 35px; padding: 0 18px 12px; opacity: .9; }
-.dsh-chat[data-persistent='true'] .dsh-chat__history-wrap { z-index: 1; width: calc(100% - clamp(12px, 4vw, 58px)); margin: 0 auto -1px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; backdrop-filter: none; }
-.dsh-chat[data-persistent='true'] .dsh-chat__history { max-height: calc(100vh - 340px); gap: 10px; padding: 10px 6px 20px; overflow: auto; mask-image: none; -webkit-mask-image: none; }
+/* 悬浮布局只需要把轨道抬到卡片之上（它自己的层级关系不同）；材质与几何由上面那一份定义。 */
+.dsh-chat[data-persistent='true'] .dsh-chat__history-wrap { z-index: 1; }
 .dsh-chat[data-persistent='true'] .dsh-chat__message { max-width: 92%; gap: 3px; padding: 8px 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
 .dsh-chat[data-persistent='true'] .dsh-chat__message-body { padding: 0; border: 0; background: transparent; font-size: clamp(13px, .95vw, 15px); }
 .dsh-chat[data-persistent='true'] .dsh-chat__message--user { background: transparent; }
