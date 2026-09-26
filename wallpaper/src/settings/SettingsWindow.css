@@ -1,5 +1,8 @@
 html[data-surface='settings'], html[data-surface='settings'] body, html[data-surface='settings'] #root { width: 100%; height: 100%; margin: 0; background: transparent !important; overflow: hidden; }
-.settings-window { box-sizing: border-box; width: 100%; height: 100%; padding: 0; color: var(--dsh-text); font-family: var(--dsh-font-sans); background: #0d1625; }
+/* 根节点必须保持透明：圆角由「DWM 的系统默认圆角 + `.settings-app` 的同半径 CSS 圆角」
+ * 一起决定。这里若再铺一层不透明底色，就会把内层圆角盖成方角——用户看到的"尖角"就是
+ * 这一行以前写着 `background: #0d1625` 造成的。 */
+.settings-window { box-sizing: border-box; width: 100%; height: 100%; padding: 0; color: var(--dsh-text); font-family: var(--dsh-font-sans); background: transparent; }
 .settings-window__notice { position: fixed; z-index: 20; top: 18px; left: 50%; display: flex; align-items: flex-start; gap: 14px; width: min(70%, 760px); padding: 10px 12px 10px 14px; border: 1px solid rgba(115,211,176,.34); border-radius: 12px; background: rgba(15,43,39,.96); box-shadow: 0 16px 42px rgba(0,0,0,.32); transform: translateX(-50%); animation: settings-notice-in .18s ease-out; pointer-events: auto; }
 .settings-window__notice span { flex: 1; min-width: 0; line-height: 1.42; }
 .settings-window__notice button { flex: 0 0 auto; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px; background: rgba(255,255,255,.05); color: inherit; cursor: pointer; font-size: 20px; line-height: 1; }
