@@ -78,6 +78,20 @@ describe('native chat boundary', () => {
     }
   })
 
+  it('allows only wallpaper hosts to query their native hand-off generation', async () => {
+    const [build, background, settings, liteBackground] = await Promise.all([
+      readNative('build.rs'),
+      readCapability('background'),
+      readCapability('settings'),
+      readFile(resolve(nativeRoot, 'capabilities/lite-background.json'), 'utf8').then((source) => JSON.parse(source) as { permissions?: unknown }),
+    ])
+
+    expect(build).toContain('"native_bootstrap_generation"')
+    expect(permissions(background)).toContain('allow-native-bootstrap-generation')
+    expect(permissions(liteBackground)).toContain('allow-native-bootstrap-generation')
+    expect(permissions(settings)).not.toContain('allow-native-bootstrap-generation')
+  })
+
   it('uses explicit least-privilege core permissions for both WebViews', async () => {
     const [background, settings] = await Promise.all([readCapability('background'), readCapability('settings')])
 

@@ -10,13 +10,15 @@ import type { DesktopDisplayInfo } from '../native/runtime.ts'
 import { displayCssRect, virtualDesktopBounds } from '../runtime/displayLayout.ts'
 import { placeholderPortrait } from '../ui/whale.ts'
 import { WAKE_FRAME_DURATIONS, useWakeFramePreload, wakeFrameSources } from './WakeScene.tsx'
+import { decodeImageSource } from '../native/bootstrapHandoff.ts'
 import './MultiScreenWakeScene.css'
 
 export interface MultiScreenWakeSceneProps {
   displays: readonly DesktopDisplayInfo[]
   persona: PersonaManifest
   onWakeDone: () => void
-  onFirstWakeFrame?: () => void
+  onFirstWakeFrame?: (generation: number) => void | boolean | Promise<void | boolean>
+  handoffGeneration?: number
   startIndex?: number
   enabled?: boolean
   speed?: number
@@ -27,6 +29,7 @@ export function MultiScreenWakeScene({
   persona,
   onWakeDone,
   onFirstWakeFrame,
+  handoffGeneration,
   startIndex = 0,
   enabled = true,
   speed = 1,
@@ -34,10 +37,11 @@ export function MultiScreenWakeScene({
   const frames = wakeFrameSources(persona)
   const initialIndex = Math.min(Math.max(0, startIndex), Math.max(0, frames.length - 1))
   const [index, setIndex] = useState(initialIndex)
+  const [fallbackToStatic, setFallbackToStatic] = useState(false)
   const frameIndexRef = useRef(initialIndex)
   const onWakeDoneRef = useRef(onWakeDone)
   const onFirstWakeFrameRef = useRef(onFirstWakeFrame)
-  const firstWakeFrameReportedRef = useRef(false)
+  const reportedGenerationRef = useRef<number>()
   onWakeDoneRef.current = onWakeDone
   onFirstWakeFrameRef.current = onFirstWakeFrame
 
@@ -50,18 +54,34 @@ export function MultiScreenWakeScene({
   useWakeFramePreload(frames, enabled && hasFrames)
 
   useEffect(() => {
-    if (!hasFrames || index < 1 || firstWakeFrameReportedRef.current) return
-    firstWakeFrameReportedRef.current = true
+    if (!hasFrames || index < 1 || handoffGeneration === undefined || reportedGenerationRef.current === handoffGeneration) return
+    const generation = handoffGeneration
+    const source = fallbackToStatic ? image : frames[index]
+    if (!source) return
+    let cancelled = false
     let first = 0
     let second = 0
-    first = requestAnimationFrame(() => {
-      second = requestAnimationFrame(() => onFirstWakeFrameRef.current?.())
+    void decodeImageSource(source).then((ready) => {
+      if (cancelled) return
+      if (!ready) {
+        if (!fallbackToStatic) setFallbackToStatic(true)
+        return
+      }
+      first = requestAnimationFrame(() => {
+        second = requestAnimationFrame(() => {
+          if (cancelled) return
+          void Promise.resolve(onFirstWakeFrameRef.current?.(generation)).then((released) => {
+            if (!cancelled && released !== false) reportedGenerationRef.current = generation
+          }).catch((error) => console.warn('multi-screen wake frame hand-off callback failed', error))
+        })
+      })
     })
     return () => {
+      cancelled = true
       cancelAnimationFrame(first)
       cancelAnimationFrame(second)
     }
-  }, [hasFrames, index])
+  }, [fallbackToStatic, frames, handoffGeneration, hasFrames, image, index])
 
   useEffect(() => {
     if (!enabled) {
@@ -92,7 +112,7 @@ export function MultiScreenWakeScene({
       style={displayCssRect(display, virtualBounds)}
       data-display-id={display.id}
     >
-      {hasFrames ? frames.map((frame, frameNumber) => <img
+      {hasFrames && !fallbackToStatic ? frames.map((frame, frameNumber) => <img
         key={frame}
         className={`multi-screen-wake-frame ${frameNumber === index ? 'active' : ''}`}
         src={frame}
@@ -100,7 +120,7 @@ export function MultiScreenWakeScene({
         draggable={false}
       />) : <img className={`multi-screen-wake-art multi-screen-wake-art-${Math.min(index, 3)}`} src={image} alt="苏醒的鲸鱼娘" draggable={false} />}
     </div>) : <div className="multi-screen-wake-surface multi-screen-wake-surface--virtual">
-      {hasFrames ? frames.map((frame, frameNumber) => <img
+      {hasFrames && !fallbackToStatic ? frames.map((frame, frameNumber) => <img
         key={frame}
         className={`multi-screen-wake-frame ${frameNumber === index ? 'active' : ''}`}
         src={frame}

@@ -4,13 +4,15 @@ import { useEffect, useRef, useState } from 'react'
 import type { PersonaManifest } from '../persona/types.ts'
 import { placeholderPortrait } from '../ui/whale.ts'
 import { assetUrl } from '../runtime/assets.ts'
+import { decodeImageSource } from '../native/bootstrapHandoff.ts'
 
 export interface WakeSceneProps {
   persona: PersonaManifest
   /** 动画播完回调 → 状态机 'wakeDone' */
   onWakeDone: () => void
   /** Called after the first non-sleep frame has had a browser paint opportunity. */
-  onFirstWakeFrame?: () => void
+  onFirstWakeFrame?: (generation: number) => void | boolean | Promise<void | boolean>
+  handoffGeneration?: number
   /** The lock screen already showed sleep.png, so unlocks may begin at frame 2. */
   startIndex?: number
   enabled?: boolean
@@ -34,35 +36,6 @@ export function wakeFrameSources(persona: PersonaManifest): string[] {
     : DEFAULT_WAKE_FRAMES
 }
 
-const FRAME_PRELOAD_TIMEOUT = 1200
-
-function preloadFrame(src: string): Promise<void> {
-  return new Promise((resolve) => {
-    const image = new Image()
-    let settled = false
-    const finish = () => {
-      if (settled) return
-      settled = true
-      window.clearTimeout(timeout)
-      resolve()
-    }
-    const timeout = window.setTimeout(finish, FRAME_PRELOAD_TIMEOUT)
-    image.onload = () => {
-      if (typeof image.decode !== 'function') {
-        finish()
-        return
-      }
-      void image.decode().catch(() => undefined).then(finish)
-    }
-    image.onerror = finish
-    image.src = src
-    if (image.complete) {
-      if (typeof image.decode === 'function') void image.decode().catch(() => undefined).then(finish)
-      else finish()
-    }
-  })
-}
-
 /** Warm subsequent frames without delaying the first visible wake frame. */
 export function useWakeFramePreload(frames: readonly string[], enabled: boolean): void {
   useEffect(() => {
@@ -74,43 +47,60 @@ export function useWakeFramePreload(frames: readonly string[], enabled: boolean)
       // the animation forever.
       for (const frame of frames.slice(1)) {
         if (cancelled) return
-        await preloadFrame(frame)
+        await decodeImageSource(frame)
       }
     })()
     return () => { cancelled = true }
   }, [enabled, frames])
 }
 
-export function WakeScene({ persona, onWakeDone, onFirstWakeFrame, startIndex = 0, enabled = true, speed = 1 }: WakeSceneProps) {
+export function WakeScene({ persona, onWakeDone, onFirstWakeFrame, handoffGeneration, startIndex = 0, enabled = true, speed = 1 }: WakeSceneProps) {
   const frames = wakeFrameSources(persona)
   const initialIndex = Math.min(Math.max(0, startIndex), Math.max(0, frames.length - 1))
   const [index, setIndex] = useState(initialIndex)
   const [img] = useState(() =>
     persona.assets.wake ?? placeholderPortrait(persona.kind, 'wake'),
   )
+  const [fallbackToStatic, setFallbackToStatic] = useState(false)
   const hasFrames = frames.length > 1
   const frameIndexRef = useRef(initialIndex)
   const onWakeDoneRef = useRef(onWakeDone)
   const onFirstWakeFrameRef = useRef(onFirstWakeFrame)
-  const firstWakeFrameReportedRef = useRef(false)
+  const reportedGenerationRef = useRef<number>()
   onWakeDoneRef.current = onWakeDone
   onFirstWakeFrameRef.current = onFirstWakeFrame
 
   useWakeFramePreload(frames, enabled && hasFrames)
 
   useEffect(() => {
-    if (!hasFrames || index < 1 || firstWakeFrameReportedRef.current) return
-    firstWakeFrameReportedRef.current = true
+    if (!hasFrames || index < 1 || handoffGeneration === undefined || reportedGenerationRef.current === handoffGeneration) return
+    const generation = handoffGeneration
+    const source = fallbackToStatic ? img : frames[index]
+    if (!source) return
+    let cancelled = false
     let first = 0
     let second = 0
-    first = requestAnimationFrame(() => {
-      second = requestAnimationFrame(() => onFirstWakeFrameRef.current?.())
+    void decodeImageSource(source).then(async (ready) => {
+      if (cancelled) return
+      if (!ready) {
+        if (!fallbackToStatic) setFallbackToStatic(true)
+        return
+      }
+      first = requestAnimationFrame(() => {
+        second = requestAnimationFrame(() => {
+          if (cancelled) return
+          void Promise.resolve(onFirstWakeFrameRef.current?.(generation)).then((released) => {
+            if (!cancelled && released !== false) reportedGenerationRef.current = generation
+          }).catch((error) => console.warn('wake frame hand-off callback failed', error))
+        })
+      })
     })
     return () => {
+      cancelled = true
       cancelAnimationFrame(first)
       cancelAnimationFrame(second)
     }
-  }, [hasFrames, index])
+  }, [fallbackToStatic, frames, handoffGeneration, hasFrames, img, index])
 
   useEffect(() => {
     if (!enabled) {
@@ -140,7 +130,7 @@ export function WakeScene({ persona, onWakeDone, onFirstWakeFrame, startIndex = 
       className="scene scene-wake"
       style={{ ['--persona-primary' as string]: persona.theme.primary }}
     >
-      {hasFrames ? (
+      {hasFrames && !fallbackToStatic ? (
         <>
           {/* 帧序列动画：每帧淡入切换 */}
           {frames.map((f, i) => (

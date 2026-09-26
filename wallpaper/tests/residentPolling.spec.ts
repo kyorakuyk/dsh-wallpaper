@@ -85,19 +85,27 @@ describe('native exit lifecycle', () => {
 
   it('gives the native hand-off window a watchdog for a frontend that never reports', async () => {
     const bootstrap = await readNative('src/native_bootstrap.rs')
+    const handoff = await readNative('src/native_handoff.rs')
 
     expect(bootstrap).toContain('BOOTSTRAP_WATCHDOG_TIMEOUT')
-    expect(bootstrap).toContain('fn arm_watchdog()')
-    expect(bootstrap).toContain('fn settle_watchdog()')
+    expect(bootstrap).toContain('fn arm_watchdog(generation: u64)')
+    expect(bootstrap).toContain('fn settle_watchdog(generation: u64)')
+    expect(bootstrap).toContain('fn disarm_watchdog()')
+    expect(bootstrap).toContain('BOOTSTRAP_WATCHDOG_THREAD_STARTED')
     expect(bootstrap).toContain('pub fn destroy()')
-    // Armed only after the hand-off window actually exists...
-    expect(bootstrap).toMatch(/arm_watchdog\(\);\s*\n\}/)
-    // ...and disarmed by both the renderer's frame report and a release.
-    expect(bootstrap).toMatch(/BOOTSTRAP_READY_REPORTED\.swap\(true, Ordering::AcqRel\)[\s\S]{0,400}settle_watchdog\(\)/)
-    expect(bootstrap).toMatch(/pub fn release\(\) -> Result<\(\), String> \{[\s\S]{0,200}settle_watchdog\(\)/)
-    // On timeout it destroys rather than hiding, and records why.
+    // Startup, later unlocks, and host changes arm the same epoch-aware wait.
+    expect(bootstrap).toMatch(/arm_watchdog\(generation\);/)
+    expect(bootstrap).toContain('arm_watchdog(generation)')
+    // A successful renderer hand-off settles only its own generation.
+    expect(bootstrap).toContain('pub fn release(generation: u64, background_raw: isize)')
+    expect(bootstrap).toContain('settle_watchdog(generation)')
+    // The state machine rejects late frames and stale watchdog expirations.
+    expect(handoff).toContain('pub(crate) fn release(&mut self, generation: u64) -> bool')
+    expect(handoff).toContain('pub(crate) fn expire(&mut self, generation: u64) -> bool')
+    expect(handoff).toContain('an_old_frame_cannot_release_after_lock_and_unlock')
+    // On timeout it posts a generation-scoped destroy and records why.
     expect(bootstrap).toContain('outcome=watchdog-timeout')
-    expect(bootstrap).toMatch(/outcome=watchdog-timeout[\s\S]{0,400}destroy\(\)/)
+    expect(bootstrap).toContain('DESTROY_MESSAGE')
     expect(bootstrap).toContain('pub fn destroy() -> Result<(), String> {\n    Ok(())\n}')
   })
 })

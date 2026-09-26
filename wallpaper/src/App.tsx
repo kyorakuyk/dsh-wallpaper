@@ -895,7 +895,7 @@ export function App({ surface = 'combined' }: AppProps) {
   useEffect(() => {
     if (!nativeRuntime.isNative || runtime.phase !== 'idle' || nativeHandoffGeneration === undefined) return
     const controller = new AbortController()
-    void reportNativeBootstrapReady(nativeHandoffGeneration, { signal: controller.signal })
+    void reportNativeBootstrapReady(nativeHandoffGeneration, nativeRuntime, { signal: controller.signal })
       .then((released) => {
         if (!released && !controller.signal.aborted) console.warn('native hand-off remains covered until its host or renderer is ready')
       })
@@ -1564,7 +1564,7 @@ export function App({ surface = 'combined' }: AppProps) {
         handoffGeneration: nativeHandoffGeneration,
         enabled: settings.animationsEnabled && !settings.skipWakeAnimation,
         speed: settings.animationSpeed,
-        onFirstWakeFrame: (generation: number) => reportNativeBootstrapReady(generation, { verifySceneImages: false }),
+        onFirstWakeFrame: (generation: number) => reportNativeBootstrapReady(generation, nativeRuntime, { verifySceneImages: false }),
         onWakeDone: () => { baseDispatch({ type: 'WAKE_DONE' }); dispatchCore('wake-done') },
       }
       return multiScreenActive
