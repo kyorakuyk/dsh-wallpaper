@@ -8,3 +8,15 @@ html[data-surface='settings'], html[data-surface='settings'] body, html[data-sur
 .settings-window__notice button { flex: 0 0 auto; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px; background: rgba(255,255,255,.05); color: inherit; cursor: pointer; font-size: 20px; line-height: 1; }
 .settings-window__notice button:hover, .settings-window__notice button:focus-visible { background: rgba(255,255,255,.14); outline: none; }
 @keyframes settings-notice-in { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* 缩放边条：原生非客户区已去掉，缩放由渲染层发起（原因见 SettingsWindow.tsx 的注释）。
+ * 只占贴边 6 逻辑像素（角 12），中间区域完全不遮挡，面板内的控件照常点击。 */
+.settings-resize { position: fixed; z-index: 30; }
+.settings-resize--n { top: 0; left: 12px; right: 12px; height: 6px; cursor: ns-resize; }
+.settings-resize--s { bottom: 0; left: 12px; right: 12px; height: 6px; cursor: ns-resize; }
+.settings-resize--w { left: 0; top: 12px; bottom: 12px; width: 6px; cursor: ew-resize; }
+.settings-resize--e { right: 0; top: 12px; bottom: 12px; width: 6px; cursor: ew-resize; }
+.settings-resize--nw { top: 0; left: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+.settings-resize--ne { top: 0; right: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+.settings-resize--sw { bottom: 0; left: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+.settings-resize--se { bottom: 0; right: 0; width: 12px; height: 12px; cursor: nwse-resize; }

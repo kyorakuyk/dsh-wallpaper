@@ -1094,6 +1094,14 @@ fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
         .decorations(false)
         .resizable(true)
         .transparent(true)
+        // WebView 的**背衬底色**必须是面板深色，不能留默认的白。
+        //
+        // 起因（用户实测）：快速拖动窗口时会出现白色虚影。原因是窗口被做成透明之后，
+        // CSS 根节点也是透明的，于是 WebView2 自己的默认底色（白）成了"还没画上内容
+        // 的地方"的底色——拖动/重绘跟不上时那片区域就闪白。
+        // 现在背衬是 #0d1625：来不及重绘时露出来的是深色，与面板几乎无差别；
+        // 圆角处 CSS 曲线之外的那几像素也由 DWM 的系统圆角裁掉，不会露出方形。
+        .background_color(tauri::window::Color(0x0d, 0x16, 0x25, 0xff))
         .focusable(true)
         .skip_taskbar(false)
         .visible(false)

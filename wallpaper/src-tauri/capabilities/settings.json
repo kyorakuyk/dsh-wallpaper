@@ -6,6 +6,7 @@
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
+    "core:window:allow-start-resize-dragging",
     "dialog:allow-open",
     "allow-get-app-snapshot",
     "allow-desktop-displays",

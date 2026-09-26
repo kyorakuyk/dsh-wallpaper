@@ -22,6 +22,51 @@ import type { AppearanceSlot } from '../appearance/theme/index.ts'
 import './SettingsWindow.css'
 
 
+/**
+ * 缩放方向。`@tauri-apps/api` 把 `ResizeDirection` 声明成模块内局部类型、并不导出，
+ * 所以从 API 自身推导，避免抄一份联合类型再跟它漂移。
+ */
+type ResizeDirection = Parameters<ReturnType<typeof getCurrentWindow>['startResizeDragging']>[0]
+
+/**
+ * 缩放边条：窗口的非客户区已被去掉（原生 `WM_NCCALCSIZE` 归零），Windows 因此不再提供
+ * "拖边改大小"的命中区；而 WebView2 渲染窗口属于另一个进程、铺满整个客户区，鼠标命中测试
+ * 归它，父窗口的 `WM_NCHITTEST` 永远不会被问到。所以缩放必须由**渲染层**发起，
+ * 与标题栏拖动（`start_settings_drag` → `startDragging`）走同一条路。
+ *
+ * 只在贴边 6 逻辑像素（角上 12）生效，与原生窗口的缩放带手感一致；
+ * 中间区域完全不遮挡，面板里的控件照常点击。
+ */
+const RESIZE_HANDLES: Array<[ResizeDirection, string]> = [
+  ['North', 'n'],
+  ['South', 's'],
+  ['West', 'w'],
+  ['East', 'e'],
+  ['NorthWest', 'nw'],
+  ['NorthEast', 'ne'],
+  ['SouthWest', 'sw'],
+  ['SouthEast', 'se'],
+]
+
+function ResizeHandles() {
+  return <>
+    {RESIZE_HANDLES.map(([direction, suffix]) => (
+      <div
+        key={direction}
+        className={`settings-resize settings-resize--${suffix}`}
+        aria-hidden="true"
+        onPointerDown={(event) => {
+          if (event.button !== 0) return
+          event.preventDefault()
+          // 失败不必打扰用户：窗口没在缩放态是视觉问题，不是数据问题。
+          void getCurrentWindow().startResizeDragging(direction).catch(() => undefined)
+        }}
+      />
+    ))}
+  </>
+}
+
+
 export function SettingsWindow() {
   const [settings, setSettings] = useState<WallpaperSettings>(() => loadSettings())
   const [page, setPage] = useState<SettingsPage>('general')
@@ -586,6 +631,7 @@ export function SettingsWindow() {
   }
 
   return <main className="settings-window">
+    <ResizeHandles />
     {notice && <div className="settings-window__notice" role="status"><span>{notice}</span><button type="button" aria-label="关闭通知" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); setNotice(undefined) }}>×</button></div>}
     <SettingsPanel
       settings={settings}

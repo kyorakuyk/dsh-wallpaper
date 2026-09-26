@@ -930,8 +930,17 @@ unsafe extern "system" fn settings_window_subclass(
     // 系统圆角与阴影（`DwmExtendFrameIntoClientArea(-1)` 就是为无框架窗口保留这些而设的），
     // 而系统圆角半径与 `.settings-app` 的 8px 一致，两道弧重合。
     //
-    // 代价与补偿：框架消失后 Windows 不再提供边框拖拽，所以下面用 `WM_NCHITTEST`
-    // 自己把可缩放的那一圈找回来（否则窗口就不能改大小了）。
+    // 代价与补偿：框架消失后 Windows 不再提供"拖边改大小"，所以缩放改由**渲染层**发起
+    // （`SettingsWindow.tsx` 的 `.settings-resize-*` 边条调 `startResizeDragging`）。
+    // 为什么不能像过去那样靠窗口自己的命中测试：WebView2 渲染窗口属于**另一个进程**、
+    // 铺满整个客户区，鼠标命中测试归它，父窗口的 `WM_NCHITTEST` 根本不会被问到——
+    // 这与桌面输入模型里那条实测结论是同一个原因（见
+    // `docs/evidence/input-model-desktop-hit-testing.md`）。下面 `resize_edge` 只在
+    // 客户区之外/未被 WebView 覆盖的地方还会被用到，留着作为兜底。
+    //
+    // **Lite 版不加**：Lite 的设置界面是另一条工作流的文件，没有配套的边条，
+    // 去掉框架会让它既没边框也不能缩放。
+    #[cfg(not(feature = "lite"))]
     if message == WM_NCCALCSIZE && wparam.0 != 0 {
         return LRESULT(0);
     }
