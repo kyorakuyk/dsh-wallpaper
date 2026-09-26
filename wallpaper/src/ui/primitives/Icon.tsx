@@ -2,7 +2,11 @@ import type { SVGAttributes } from 'react'
 
 export type IconName = 'arrow-up' | 'check' | 'chevron-up' | 'close' | 'export' | 'history' | 'image' | 'import' | 'inbox' | 'lock' | 'message' | 'model' | 'palette' | 'refresh' | 'spark' | 'stop'
 
-const paths: Record<IconName, string> = {
+/**
+ * 字形本身，按名字索引。导出是为了让**不是普通 `<Icon>` 的场景**复用同一份路径
+ * ——例如悬浮球要把"消息"画进自己那张同时含玻璃与墨圈的 SVG 里，而不是再抄一遍 `d`。
+ */
+export const iconPaths: Record<IconName, string> = {
   'arrow-up': 'M12 19V5m0 0-6 6m6-6 6 6',
   check: 'm5 12 4 4L19 6',
   'chevron-up': 'm6 15 6-6 6 6',
@@ -26,6 +30,6 @@ export interface IconProps extends SVGAttributes<SVGElement> { name: IconName; s
 
 export function Icon({ name, size = 18, ...props }: IconProps) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-    <path d={paths[name]} />
+    <path d={iconPaths[name]} />
   </svg>
 }

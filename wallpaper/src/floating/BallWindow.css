@@ -1,19 +1,17 @@
-/* 悬浮球窗口（surface `ball`）的样式：一枚**扁平**的圆形"消息"按钮。
+/* 悬浮球窗口（surface `ball`）的样式：**玻璃碟 + 黑笔圈 + 黑笔"消息"**。
  *
- * 窗口是 56×56 逻辑像素、无边框、透明，原生 `SetWindowRgn` 已经把窗口区域裁成
- * 圆形（圆角椭圆直径 = 窗口高度）。所以这里把整窗画满即可：
- * `100vw × 100vh` + `border-radius: 50%`，形状与原生区域一致。
+ * 形状全部由 `BallWindow.tsx` 里那张 SVG 画完（路径、甚至手绘感都是它的事）；
+ * 这里只负责窗口底面、墨色与交互反馈。四条取舍，都是踩过的坑：
  *
- * 造型取舍（本轮按用户要求改判）：
- * 1. **扁平**：一层实色 + 一枚字形。没有玻璃渐变、没有模糊、没有内外发光——
- *    球的职责是"被认出是一个可以说话的入口"，材质感在这里没有信息量。
- * 2. **不用 `backdrop-filter`**：球是独立顶层窗口，背后是桌面而不是本进程的其它图层，
+ * 1. **`.ball` 自己不画任何东西**——不设 `background`、不设 `border`。球是独立顶层窗口，
+ *    原生 `SetWindowRgn` 的圆形区域是 1bit 掩码、**没有抗锯齿**：只要图形画到窗口边缘，
+ *    那道阶梯硬边就会露出来（用户实测报的"毛边"）。图形由 SVG 画在离边缘 2px 的里侧，
+ *    区域裁掉的只有透明像素，真正的边界是 SVG 自己的抗锯齿圆边。
+ * 2. **平面玻璃，不是透镜**：玻璃只是一层**均匀**的半透明色，没有径向渐变、没有内发光。
+ *    用户明确要求这次不要鱼眼效果。
+ * 3. **不用 `backdrop-filter`**：球是独立顶层窗口，背后是桌面而不是本进程的其它图层，
  *    模糊没有可采样的底；仓库也已因为全屏 `backdrop-filter` 吃过 hover 卡顿的亏。
- * 3. **内嵌"消息"图标**（`ui/primitives/Icon.tsx` 的 `message`）：早期要求是"极简小圆球、
- *    球里不要图标"，但一枚没有语义的圆球要靠猜；用户本轮要求画上图标让意图一眼可见。
- * 4. **反馈只在颜色/位移上**：hover 提亮、按下内收；原来那层"内部呼吸光"属于玻璃质感，
- *    一并去掉（球本身现在就是一个自解释的按钮）。
- * 5. 字形用深色压在亮底上（对比度约 7:1），比白字压亮蓝/亮红更清楚，也不挑主题色。
+ * 4. **墨色只在这里定义一次**：`--ball-ink` 同时喂给墨圈和字形，两者是"同一支笔"。
  */
 
 .ball-surface {
@@ -42,32 +40,65 @@
   margin: 0;
   padding: 0;
   place-items: center;
+  /* 窗口底面完全透明：可见的一切都来自下面那张 SVG。 */
   border: 0;
-  border-radius: 50%;
-  /* 扁平实色。令牌缺失时给同族字面值兜底，避免球整块不可见。 */
-  background: var(--dsh-accent, #5caeff);
-  color: var(--dsh-accent-ink, #07121f);
+  background: transparent;
   cursor: pointer;
-  transition:
-    filter var(--dsh-duration-fast, 140ms) var(--dsh-ease-standard, ease),
-    transform var(--dsh-duration-fast, 140ms) var(--dsh-ease-standard, ease);
+  transition: transform var(--dsh-duration-fast, 140ms) var(--dsh-ease-standard, ease);
   /* 窗口永不激活（WS_EX_NOACTIVATE），所以键盘焦点环在这里没有意义。 */
   outline: none;
   -webkit-appearance: none;
   appearance: none;
+
+  /* —— 记在玻璃上的墨 ——
+     近黑的墨色（不是纯黑：纯黑在玻璃上看不出"墨"的层次），同一支笔画圈和字。 */
+  --ball-ink: #0b0d10;
+  /* 平面玻璃：一层均匀的半透明冷色。没有渐变，所以不会出现透镜/鱼眼的明暗过渡。 */
+  --ball-glass: rgba(226, 240, 255, 0.16);
 }
 
-/* hover：提亮并轻微放大。这是 WebView 收到的真事件（不是热区推算），
+.ball__ink {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* 墨线自身的抗锯齿交给 SVG；这里不让浏览器再插值一次。 */
+  shape-rendering: geometricPrecision;
+}
+
+/* 玻璃碟：单一透明色，等宽描边与它同色（避免外沿出现一圈比盘面更亮的细线）。 */
+.ball__glass {
+  fill: var(--ball-glass);
+  stroke: var(--ball-glass);
+  stroke-width: 0.8;
+}
+
+/* 墨圈：外/内两条手绘轮廓用 evenodd 填成实心圈——"最外层是一圈黑笔"。 */
+.ball__ring {
+  fill: var(--ball-ink);
+  stroke: var(--ball-ink);
+  stroke-width: 0.6;
+  stroke-linejoin: round;
+}
+
+/* 墨字：黑笔描边、圆头圆角；线宽比设计系统那枚稍粗，像笔尖压出来的。 */
+.ball__message {
+  fill: none;
+  stroke: var(--ball-ink);
+  stroke-width: 2.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* hover：整枚球轻轻提亮、放大一点。这是 WebView 收到的真事件（不是热区推算），
  * 它不依赖窗口是否激活：`focusable(false)` 只影响激活，不影响 hover。 */
 .ball:hover {
-  filter: brightness(1.12);
+  filter: brightness(1.08);
   transform: scale(1.04);
 }
 
 /* 按下：内收一点，给出"已经点到"的反馈。 */
 .ball:active {
-  filter: brightness(0.94);
-  transform: scale(0.93);
+  transform: scale(0.94);
 }
 
 /* 系统要求减少动态时不做位移（与 `styles.css` / `tokens.css` 同一约定）。 */
