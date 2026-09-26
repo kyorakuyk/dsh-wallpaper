@@ -3152,6 +3152,34 @@ pub async fn harness_presets(state: tauri::State<'_, ChatState>) -> Result<Value
 /// "this host cannot be asked" apart from "this host offers nothing".
 /// The endpoint is read from the *session*, exactly like `harness_presets`, so
 /// the answer describes the subject actually in use (检出 / 桌面 / 官壳).
+/// 模型目录的摘要，只用于日志：前端"下拉里没有选项"时，第一个要看的就是枚举到底拿到了什么。
+fn summarise_model_payload(value: &Value) -> String {
+    let supported = value.get("supported").and_then(Value::as_bool);
+    let provider = value.get("provider").and_then(Value::as_str);
+    let current = value
+        .get("current")
+        .and_then(|current| current.get("model"))
+        .and_then(Value::as_str);
+    let models = value.get("models").and_then(Value::as_array);
+    let ids = models
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.get("id").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .unwrap_or_default();
+    format!(
+        "supported={:?} provider={:?} current={:?} count={} ids=[{}]",
+        supported,
+        provider,
+        current,
+        models.map(Vec::len).unwrap_or(0),
+        ids
+    )
+}
+
 pub async fn harness_models(state: tauri::State<'_, ChatState>) -> Result<Value, String> {
     let port = state.harness_port();
     let token = read_bridge_token()?;
@@ -3161,14 +3189,21 @@ pub async fn harness_models(state: tauri::State<'_, ChatState>) -> Result<Value,
         .await
         .map_err(|_| generic_harness_error("模型目录读取"))?;
     if !response.status().is_success() {
+        let status = response.status().as_u16();
+        log::info!("harness models: HTTP {status}");
         return Err(harness_http_error(response.status(), "models"));
     }
-    bounded_bridge_json::<Value>(
+    let payload = bounded_bridge_json::<Value>(
         response,
         MAX_HARNESS_SESSION_RESPONSE_BYTES,
         "DSH bridge 返回了无法识别的模型目录。",
     )
-    .await
+    .await?;
+    log::info!(
+        "harness models (port {port}): {}",
+        summarise_model_payload(&payload)
+    );
+    Ok(payload)
 }
 
 /// Enumerate the models the configured DeepSeek API endpoint offers.
@@ -3231,9 +3266,12 @@ pub async fn api_models(base_url: String) -> Result<Value, String> {
                 .collect::<Vec<_>>()
         });
     let Some(models) = models else {
+        log::info!("api models: endpoint returned no `data` array; reporting unsupported");
         return Ok(serde_json::json!({ "supported": false, "models": [] }));
     };
-    Ok(serde_json::json!({ "supported": true, "models": models }))
+    let payload = serde_json::json!({ "supported": true, "models": models });
+    log::info!("api models: {}", summarise_model_payload(&payload));
+    Ok(payload)
 }
 
 pub async fn harness_set_preset(

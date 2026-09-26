@@ -362,12 +362,14 @@ export function ConversationBubble(props: ConversationBubbleProps) {
         </div> : null}
         {props.permission && <label className="dsh-chat__permission-picker">◈<select aria-label="选择权限" value={props.permission.current} onChange={(event) => props.onSelectPermission?.(event.target.value)}>{props.permission.options.map((permission) => <option key={permission} value={permission}>{permission}</option>)}</select></label>}
         {(!props.onSelectModel || !props.modelOptions?.length) && <span className="dsh-chat__meta"><Icon name="model" size={13} /><span className="dsh-chat__model">{props.modelLabel}</span></span>}
-        <label className="dsh-chat__model-picker" title={props.onSelectModel ? '切换模型' : '当前后端不支持在壁纸中切换模型'}>
+        <label className="dsh-chat__model-picker" title={props.modelSwitchDisabledReason ?? (props.onSelectModel ? '切换模型' : '当前后端不支持在壁纸中切换模型')}>
           <Icon name="model" size={13} />
           <select
             aria-label="切换模型"
             value={props.selectedModel ?? ''}
-            disabled={!props.onSelectModel || !props.modelOptions?.length}
+            /* 没有可切换项时也要禁用：只有一项的下拉点开等于什么都没有（实测用户就是这样——
+               框里显示着模型名、点开却没有列表）。原因放在 title 里，不占地方。 */
+            disabled={!props.onSelectModel || !props.modelOptions?.length || Boolean(props.modelSwitchDisabledReason)}
             onChange={(event) => props.onSelectModel?.(event.target.value)}
           >
             {/* 禁用时说明**为什么**：枚举不到（老版本宿主 / 端点没有该路由）、还没连上、
