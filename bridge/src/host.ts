@@ -79,6 +79,32 @@ export interface CommandDescriptor {
   readonly input?: { readonly hint: string }
 }
 
+/**
+ * One entry of the host's own model catalog, already reduced to what a picker
+ * needs. The host names its models (`DeepSeek-Flash`); the id is what actually
+ * goes on the wire, so both travel together and a caller never has to guess one
+ * from the other.
+ */
+export interface HostModelInfo {
+  readonly id: string
+  readonly name: string
+  readonly description?: string
+}
+
+/**
+ * The host's model catalog for one provider route.
+ *
+ * `supported` is explicit instead of "an empty array means unknown": a host that
+ * genuinely offers nothing and a host that cannot be asked are different
+ * situations, and a selector must not present the second as the first.
+ */
+export interface HostModelDirectory {
+  readonly supported: boolean
+  readonly provider: string
+  readonly current: DefaultModelSelection
+  readonly models: readonly HostModelInfo[]
+}
+
 /** Host events the Bridge subscribes to. */
 export type HostEventName = 'session/event' | 'agent/error' | 'agent/disposed' | 'approval/request'
 
@@ -89,6 +115,16 @@ export type HostEventName = 'session/event' | 'agent/error' | 'agent/disposed' |
  */
 export interface HostAdapter {
   defaultModel(): DefaultModelSelection
+  /**
+   * Enumerate the models the host can actually run right now.
+   *
+   * Deliberately **not** a required service: `llm` is probed as an optional
+   * Cordis service (see `createHostAdapter`), so a DSH build that predates it
+   * still mounts the Bridge and reports `supported: false` here instead of
+   * failing the whole plugin. The wallpaper turns that into "one current model,
+   * no switching" rather than a list of ids that would be rejected later.
+   */
+  modelDirectory(): Promise<HostModelDirectory>
   presetDirectory(): Promise<readonly AgentPresetDirectory[]>
   defaultPresetId(): string
   mountPreset(agentContext: Context, preset: string): Promise<void>
@@ -220,6 +256,49 @@ export function createHostAdapter(ctx: Context): HostAdapter {
     },
 
     presetDirectory: () => agentPresets.list(),
+
+    modelDirectory: async () => {
+      // The catalog lives on the host's LLM seam (`ctx.llm.listModels`), which is
+      // an *optional* service here on purpose: it is discovered with `get()`, not
+      // injected, so a host without it still mounts the Bridge. Everything about
+      // this member is therefore allowed to be absent, and the answer says which
+      // situation the caller is in.
+      const get = (ctx as Context & { get?: (name: string) => unknown }).get
+      const llm = typeof get === 'function' ? asRecord(get.call(ctx, 'llm')) : undefined
+      const selection = agentDefaultModel.currentSelection()
+      const current = { provider: selection.provider, model: selection.model }
+      if (!llm || !hasFunction(llm, 'listModels')) {
+        return { supported: false, provider: current.provider, current, models: [] }
+      }
+      const listed = await (llm.listModels as (provider: string) => Promise<unknown>)
+        .call(llm, current.provider)
+        .catch(() => undefined)
+      // A catalog the host refuses to enumerate (its own `INVALID_CATALOG`, a
+      // provider route that is not registered) degrades to "unsupported" rather
+      // than failing the request: the caller then shows the current model only,
+      // which is true, instead of an error message about a picker.
+      if (listed === undefined) {
+        return { supported: false, provider: current.provider, current, models: [] }
+      }
+      const models: HostModelInfo[] = []
+      if (Array.isArray(listed)) {
+        for (const entry of listed) {
+          const record = asRecord(entry)
+          // Ids and names are the host's to spell; a malformed entry is skipped
+          // rather than allowed to become an unmatchable option in the picker.
+          if (typeof record?.id !== 'string' || record.id.length === 0) continue
+          const name = typeof record.name === 'string' && record.name.length > 0 ? record.name : record.id
+          models.push({
+            id: record.id,
+            name,
+            ...(typeof record.description === 'string' && record.description.length > 0
+              ? { description: record.description }
+              : {}),
+          })
+        }
+      }
+      return { supported: true, provider: current.provider, current, models }
+    },
 
     defaultPresetId: () => {
       // `defaultId` is a getter that reads live settings, so it is read on every

@@ -10,6 +10,14 @@ import { isHarnessReady } from './connect/harness.ts'
 import { monitorHarnessEndpoint } from './connect/harnessEndpoint.ts'
 import { HARNESS_STATE_DETAILS } from './connect/harnessLabels.ts'
 import { isEmbeddedShellSubject } from './connect/harnessSubjects.ts'
+import {
+  apiModelDirectory,
+  bridgeModelDirectory,
+  modelIdsFor,
+  modelUnavailableReason,
+  unavailableDirectory,
+  type ModelDirectory,
+} from './connect/modelDirectory.ts'
 import { PersonaRegistry } from './persona/registry.ts'
 import { IdleScene } from './scenes/IdleScene.tsx'
 import { MultiScreenIdleScene } from './scenes/MultiScreenIdleScene.tsx'
@@ -355,6 +363,9 @@ export function App({ surface = 'combined' }: AppProps) {
   const [conversationGeneration, setConversationGeneration] = useState(0)
   const [apiModelChoice, setApiModelChoice] = useState(settings.deepseekApi.model)
   const [harnessModelChoice, setHarnessModelChoice] = useState<string | undefined>()
+  // 枚举出来的模型目录。初始是"还没查"，不是"没有模型"——区别见 connect/modelDirectory.ts。
+  const [harnessModelDir, setHarnessModelDir] = useState<ModelDirectory>({ kind: 'unavailable', reason: '正在读取 Harness 模型目录…' })
+  const [apiModelDir, setApiModelDir] = useState<ModelDirectory>({ kind: 'unavailable', reason: '正在读取端点模型目录…' })
   const [interactionState, setInteractionState] = useState<'collapsed' | 'expanded'>('collapsed')
   const [interactionEnabled, setInteractionEnabled] = useState(true)
   // The composer draft lives here rather than in the bubble because returning to
@@ -528,12 +539,48 @@ export function App({ surface = 'combined' }: AppProps) {
         : undefined
     return [display.id, url] as const
   })), [desktopDisplays, resolvedBackground, settings.background, settings.multiScreen.backgrounds])
+  // 可切换模型的来源是**枚举出来的**，不是硬编码的 id 列表。
+  //
+  // 以前这里写死了三个候选（`deepseek-v4-flash-vision-exp` / `deepseek-v4-flash` /
+  // `deepseek-v4-pro`），而宿主真实目录是 `deepseek-flash`、`deepseek-v4-pro`——前两个
+  // 根本不存在，用户选了也只会被拒绝，看起来就是"匹配不到模型列表"。现在名单来自
+  // 宿主自己的目录（经桥接转发），三种执行主体各自问自己的宿主；问不到时（老版本宿主、
+  // 端点没有 /models、或还没连上）退化成"只显示当前模型"，并且**把原因说出来**，
+  // 不再拿一串假的 id 充数。三种情况的区别由 `modelDirectory.ts` 归一。
   const modelOptions = useMemo(() => {
-    const unique = (models: Array<string | undefined>) => [...new Set(models.filter((model): model is string => Boolean(model?.trim())))]
-    if (runtime.backend === 'deepseek-api') return unique([apiModelChoice, settings.deepseekApi.model, 'deepseek-chat', 'deepseek-reasoner'])
-    if (runtime.backend === 'harness') return unique([harnessModelChoice, runtime.model, 'deepseek-v4-flash-vision-exp', 'deepseek-v4-flash', 'deepseek-v4-pro'])
-    return unique([runtime.model])
-  }, [apiModelChoice, harnessModelChoice, runtime.backend, runtime.model, settings.deepseekApi.model])
+    if (runtime.backend === 'deepseek-api') return modelIdsFor(apiModelDir, apiModelChoice, settings.deepseekApi.model)
+    if (runtime.backend === 'harness') return modelIdsFor(harnessModelDir, harnessModelChoice, runtime.model)
+    return [...new Set([runtime.model].filter((model): model is string => Boolean(model?.trim())))]
+  }, [runtime.backend, runtime.model, harnessModelDir, apiModelDir, apiModelChoice, harnessModelChoice, settings.deepseekApi.model])
+  // 枚举到的显示名（DeepSeek-Flash 之类）替掉裸 id；没枚举到就显示 id 本身。
+  const modelLabels = useMemo(() => {
+    const directory = runtime.backend === 'deepseek-api' ? apiModelDir : harnessModelDir
+    if (directory.kind !== 'enumerated') return undefined
+    return Object.fromEntries(directory.models.map((model) => [model.id, model.name]))
+  }, [runtime.backend, harnessModelDir, apiModelDir])
+  const modelSwitchDisabledReason = useMemo(() => {
+    // 网页入口的模型由 DeepSeek 页面自己决定，与"枚举不到"是两件事，文案必须分开。
+    if (runtime.backend === 'deepseek-web') return '网页入口的模型由 DeepSeek 页面决定'
+    return modelUnavailableReason(runtime.backend === 'deepseek-api' ? apiModelDir : harnessModelDir)
+  }, [runtime.backend, harnessModelDir, apiModelDir])
+
+  // 枚举当前可切换的模型：Harness 侧问宿主（经桥接转发），API 侧问端点自己的 `/models`。
+  // 读取失败不打扰用户（没有 toast）：目录进入 `unavailable`，选择器禁用并把原因写在选项里。
+  // 依赖里带上 `runtime.harness`：宿主晚一点才连上时，名单要跟着刷新一次。
+  useEffect(() => {
+    if (!nativeRuntime.isNative) return
+    let disposed = false
+    if (runtime.backend === 'harness') {
+      void nativeRuntime.harnessModels()
+        .then((payload) => { if (!disposed) setHarnessModelDir(bridgeModelDirectory(payload)) })
+        .catch((error) => { if (!disposed) setHarnessModelDir(unavailableDirectory(`Harness 模型目录读取失败：${String(error)}`)) })
+    } else if (runtime.backend === 'deepseek-api') {
+      void nativeRuntime.apiModels(settingsRef.current.deepseekApi.baseUrl)
+        .then((payload) => { if (!disposed) setApiModelDir(apiModelDirectory(payload, settingsRef.current.deepseekApi.model)) })
+        .catch((error) => { if (!disposed) setApiModelDir(unavailableDirectory(`端点模型列表读取失败：${String(error)}`)) })
+    }
+    return () => { disposed = true }
+  }, [runtime.backend, runtime.harness, settings.deepseekApi.baseUrl])
   const selectedModel = runtime.backend === 'deepseek-api'
     ? apiModelChoice
     : runtime.backend === 'harness'
@@ -1305,6 +1352,8 @@ export function App({ surface = 'combined' }: AppProps) {
       onSelectPermission={(permission) => { void nativeRuntime.setHarnessPermission(permission).then(() => setHarnessControls((value) => value ? { ...value, permission: { ...value.permission, current: permission } } : value)).catch((error) => patchRuntime({ error: String(error) })) }}
       modelOptions={modelOptions}
       selectedModel={selectedModel}
+      modelLabels={modelLabels}
+      modelSwitchDisabledReason={modelSwitchDisabledReason}
       onSelectModel={runtime.backend === 'deepseek-web' ? undefined : (model) => {
         if (runtime.backend === 'deepseek-api') {
           setApiModelChoice(model)

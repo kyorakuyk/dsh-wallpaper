@@ -562,6 +562,30 @@ describe('wallpaper bridge HTTP routes', () => {
     })
   })
 
+  it('lists the host model catalog for an authenticated local wallpaper client', async () => {
+    // The catalog is the host's own answer. The route exists to hand it to the
+    // wallpaper, which stops guessing model ids: a hardcoded list is exactly how
+    // the picker ended up offering ids the host would reject.
+    const harness = await createHarness()
+    const statusRoute = harness.routes.get(`${API_PREFIX}/status`)
+    const controlRoute = harness.routes.get(`${API_PREFIX}/control`)
+    await call(statusRoute, request('GET', `${API_PREFIX}/status`))
+    const token = (await readFile(harness.tokenFile, 'utf8')).trim()
+
+    const rejected = await call(controlRoute, request('GET', `${API_PREFIX}/control/models`))
+    expect(rejected.status).toBe(401)
+    const wrongVerb = await call(controlRoute, request('POST', `${API_PREFIX}/control/models`, {}, `Bearer ${token}`))
+    expect(wrongVerb.status).toBe(405)
+    const listed = await call(controlRoute, request('GET', `${API_PREFIX}/control/models`, undefined, `Bearer ${token}`))
+    expect(listed.status).toBe(200)
+    const payload = JSON.parse(listed.body) as { supported: boolean; provider: string; current: { model: string }; models: Array<{ id: string }> }
+    expect(payload).toMatchObject({ provider: 'default-provider', current: { model: 'default-model' } })
+    // The fixture host exposes no `llm` service, so this must be the explicit
+    // "cannot be asked" answer rather than a fabricated empty catalog.
+    expect(payload.supported).toBe(false)
+    expect(payload.models).toEqual([])
+  })
+
   it('owns one dated session inside the desktop workspace and resumes it while live', async () => {
     const harness = await createHarness(true)
     const statusRoute = harness.routes.get(`${API_PREFIX}/status`)

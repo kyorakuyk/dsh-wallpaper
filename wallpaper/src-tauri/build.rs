@@ -70,6 +70,10 @@ fn main() {
             "harness_presets",
             "harness_set_preset",
             "harness_controls",
+            // Model enumeration: the Harness side forwards the host's catalog through the
+            // Bridge, the API side reads the compatible endpoint's own /models list.
+            "harness_models",
+            "api_models",
             "harness_set_permission",
             // Verifies that the renderer's island pointerdown is a real user click before any
             // keyboard handover may act on it (repair plan 3.A).

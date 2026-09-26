@@ -1222,6 +1222,13 @@ export function apply(ctx: Context, config: Config = {}): void {
         if (!bearerAuthorized(req.headers.authorization, token)) return json(res, 401, { error: 'unauthorized' })
         const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname
         try {
+          if (pathname === `${API_PREFIX}/control/models`) {
+          if (req.method !== 'GET') return json(res, 405, { error: 'method-not-allowed' })
+          // The host's own catalog, never a Bridge-side guess: a picker listing
+          // ids the host would reject is worse than a picker with one row.
+          const directory = await host.modelDirectory()
+          return json(res, 200, directory)
+          }
           if (pathname === `${API_PREFIX}/control/presets`) {
           if (req.method !== 'GET') return json(res, 405, { error: 'method-not-allowed' })
           const presets = await host.presetDirectory()

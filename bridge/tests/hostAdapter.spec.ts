@@ -210,3 +210,76 @@ describe('version reporting stays factual', () => {
     }
   })
 })
+
+/**
+ * The model catalog has three possible shapes in the wild, and the picker's
+ * behaviour depends on telling them apart: the host enumerates its catalog, the
+ * host exposes only the current selection, or the host cannot be asked at all.
+ * `supported` is what carries that distinction — an empty list must never be
+ * read as "nothing is available".
+ */
+describe('model catalog discovery', () => {
+  const withLlm = (listModels: () => Promise<unknown>) => {
+    const scope = validScope()
+    scope.get = (name: string) => (name === 'llm' ? { listModels } : undefined)
+    return scope
+  }
+
+  it('reports unsupported (not empty) when the host has no llm service', async () => {
+    // The stock fixture has no `get`, i.e. a DSH build that predates the seam.
+    const adapter = createHostAdapter(asContext(validScope()))
+    expect(await adapter.modelDirectory()).toEqual({
+      supported: false,
+      provider: 'deepseek-official',
+      current: { provider: 'deepseek-official', model: 'deepseek-flash' },
+      models: [],
+    })
+  })
+
+  it('enumerates the host catalog with the id and the display name', async () => {
+    const adapter = createHostAdapter(asContext(withLlm(async () => [
+      { provider: 'deepseek-official', id: 'deepseek-flash', name: 'DeepSeek-Flash' },
+      { provider: 'deepseek-official', id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', description: 'Pro' },
+    ])))
+    expect(await adapter.modelDirectory()).toEqual({
+      supported: true,
+      provider: 'deepseek-official',
+      current: { provider: 'deepseek-official', model: 'deepseek-flash' },
+      models: [
+        { id: 'deepseek-flash', name: 'DeepSeek-Flash' },
+        { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', description: 'Pro' },
+      ],
+    })
+  })
+
+  it('drops entries the picker could never submit, and falls back to the id as a name', async () => {
+    const adapter = createHostAdapter(asContext(withLlm(async () => [
+      { provider: 'deepseek-official', id: 'deepseek-flash' },
+      { provider: 'deepseek-official', name: 'No id' },
+      { provider: 'deepseek-official', id: '', name: 'Empty id' },
+      'not-an-object',
+    ])))
+    const directory = await adapter.modelDirectory()
+    // An option without an id would be rendered but rejected by the host later.
+    expect(directory.models).toEqual([{ id: 'deepseek-flash', name: 'deepseek-flash' }])
+  })
+
+  it('degrades to unsupported when the host refuses to enumerate', async () => {
+    // The LLM seam throws `INVALID_CATALOG` for an unregistered route; a picker
+    // must fall back to "current model only" instead of surfacing that error.
+    const adapter = createHostAdapter(asContext(withLlm(async () => { throw new Error('INVALID_CATALOG') })))
+    expect(await adapter.modelDirectory()).toEqual({
+      supported: false,
+      provider: 'deepseek-official',
+      current: { provider: 'deepseek-official', model: 'deepseek-flash' },
+      models: [],
+    })
+  })
+
+  it('still mounts when the host exposes an llm service without listModels', async () => {
+    const scope = validScope()
+    scope.get = (name: string) => (name === 'llm' ? {} : undefined)
+    const adapter = createHostAdapter(asContext(scope))
+    expect((await adapter.modelDirectory()).supported).toBe(false)
+  })
+})

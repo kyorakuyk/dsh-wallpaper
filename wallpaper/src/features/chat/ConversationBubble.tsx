@@ -46,6 +46,10 @@ export interface ConversationBubbleProps {
   harnessStarting?: boolean
   modelOptions?: readonly string[]
   selectedModel?: string
+  /** 模型 id → 显示名（宿主枚举出来的 `DeepSeek-Flash` 之类）。缺省时直接显示 id。 */
+  modelLabels?: Record<string, string>
+  /** 选择器被禁用时，选项里显示的原因。三种"不能切换"的成因不同，文案由调用方决定。 */
+  modelSwitchDisabledReason?: string
   onSelectModel?: (model: string) => void
   presetOptions?: readonly { id: string; name?: string; broken?: string }[]
   selectedPreset?: string
@@ -366,8 +370,10 @@ export function ConversationBubble(props: ConversationBubbleProps) {
             disabled={!props.onSelectModel || !props.modelOptions?.length}
             onChange={(event) => props.onSelectModel?.(event.target.value)}
           >
-            {!props.modelOptions?.length && <option value="">模型不可切换</option>}
-            {props.modelOptions?.map((model) => <option key={model} value={model}>{model}</option>)}
+            {/* 禁用时说明**为什么**：枚举不到（老版本宿主 / 端点没有该路由）、还没连上、
+                或网页入口由页面决定，是三件不同的事，不该都写成"模型不可切换"。 */}
+            {!props.modelOptions?.length && <option value="">{props.modelSwitchDisabledReason ?? '模型不可切换'}</option>}
+            {props.modelOptions?.map((model) => <option key={model} value={model}>{props.modelLabels?.[model] ?? model}</option>)}
           </select>
         </label>
       </footer>

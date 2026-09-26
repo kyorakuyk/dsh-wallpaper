@@ -32,6 +32,8 @@
     "allow-harness-presets",
     "allow-harness-set-preset",
     "allow-harness-controls",
+    "allow-harness-models",
+    "allow-api-models",
     "allow-harness-set-permission",
     "allow-api-history",
     "allow-list-api-conversations",

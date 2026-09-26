@@ -842,6 +842,20 @@ fn api_completion_url(base_url: &str) -> Result<reqwest::Url, String> {
     Ok(url)
 }
 
+/// The model-list route on the same endpoint the key was configured for.
+///
+/// Built from [`normalized_api_base_url`] for the same reason the completion
+/// route is: the bearer key must never be sent to a host that policy would not
+/// accept, and the route is joined as a path so a query string cannot change the
+/// authority.
+fn api_models_url(base_url: &str) -> Result<reqwest::Url, String> {
+    let normalized = normalized_api_base_url(base_url)?;
+    let mut url = reqwest::Url::parse(&normalized).map_err(|_| "DeepSeek API 地址无效。")?;
+    let path = url.path().trim_end_matches('/').to_owned();
+    url.set_path(&format!("{path}/models"));
+    Ok(url)
+}
+
 fn api_request_messages(history: Vec<ApiMessage>, user_text: &str) -> Result<Vec<Value>, String> {
     let user_bytes = user_text.as_bytes().len();
     if user_bytes > MAX_API_REQUEST_CONTEXT_BYTES {
@@ -3129,6 +3143,97 @@ pub async fn harness_presets(state: tauri::State<'_, ChatState>) -> Result<Value
         "DSH bridge 返回了无法识别的模式目录。",
     )
     .await
+}
+
+/// Enumerate the models the connected Harness host can run right now.
+///
+/// The catalog is host-owned: the Bridge asks the host's LLM seam and reports
+/// `supported: false` when that seam is absent, so the wallpaper can tell
+/// "this host cannot be asked" apart from "this host offers nothing".
+/// The endpoint is read from the *session*, exactly like `harness_presets`, so
+/// the answer describes the subject actually in use (检出 / 桌面 / 官壳).
+pub async fn harness_models(state: tauri::State<'_, ChatState>) -> Result<Value, String> {
+    let port = state.harness_port();
+    let token = read_bridge_token()?;
+    let client = bridge_request_client()?;
+    let response = auth(client.get(harness_url(port, "/control/models")), &token)
+        .send()
+        .await
+        .map_err(|_| generic_harness_error("模型目录读取"))?;
+    if !response.status().is_success() {
+        return Err(harness_http_error(response.status(), "models"));
+    }
+    bounded_bridge_json::<Value>(
+        response,
+        MAX_HARNESS_SESSION_RESPONSE_BYTES,
+        "DSH bridge 返回了无法识别的模型目录。",
+    )
+    .await
+}
+
+/// Enumerate the models the configured DeepSeek API endpoint offers.
+///
+/// `/models` is part of the compatible API surface, so the list is the
+/// endpoint's own answer rather than a hardcoded pair of ids. A gateway that
+/// does not implement the route is reported as unsupported (not as a failure):
+/// the picker then keeps showing the configured model alone.
+pub async fn api_models(base_url: String) -> Result<Value, String> {
+    let url = api_models_url(&base_url)?;
+    let key_entry = keyring::Entry::new("dsh-wallpaper", "deepseek-api")
+        .map_err(|_| "无法访问 Windows 凭据管理器。请检查系统凭据服务后重试。".to_string())?;
+    let key = key_entry
+        .get_password()
+        .map_err(|_| "未在 Windows 凭据管理器配置 API Key".to_string())?;
+    let client = api_stream_client()?;
+    let response = client
+        .get(url)
+        .bearer_auth(key)
+        .send()
+        .await
+        .map_err(|_| generic_api_error("连接"))?;
+    let status = response.status();
+    if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+        return Ok(serde_json::json!({ "supported": false, "models": [] }));
+    }
+    if !status.is_success() {
+        return Err(format!(
+            "DeepSeek API 拒绝读取模型列表（HTTP {}）。请检查访问密钥与账户状态后重试。",
+            status.as_u16()
+        ));
+    }
+    let payload = bounded_bridge_json::<Value>(
+        response,
+        MAX_HARNESS_SESSION_RESPONSE_BYTES,
+        "DeepSeek API 返回了无法识别的模型列表。",
+    )
+    .await?;
+    // OpenAI-compatible endpoints answer `{ data: [{ id, ... }] }`; anything else
+    // is reported as unsupported rather than guessed at.
+    let models = payload
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    let id = entry.get("id").and_then(Value::as_str)?.trim();
+                    if id.is_empty() {
+                        return None;
+                    }
+                    let name = entry
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or(id);
+                    Some(serde_json::json!({ "id": id, "name": name }))
+                })
+                .collect::<Vec<_>>()
+        });
+    let Some(models) = models else {
+        return Ok(serde_json::json!({ "supported": false, "models": [] }));
+    };
+    Ok(serde_json::json!({ "supported": true, "models": models }))
 }
 
 pub async fn harness_set_preset(

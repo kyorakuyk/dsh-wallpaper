@@ -2305,6 +2305,28 @@ async fn harness_controls(
     chat::harness_controls(state).await
 }
 
+/// 枚举当前 Harness 主体（检出 / 桌面 / 官壳）可用的模型。
+///
+/// 名单由宿主提供、经桥接转发；宿主没有该能力时桥接报 `supported: false`，
+/// 前端据此退化成"只显示当前模型"，而不是摆一串会被拒绝的 id。
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+async fn harness_models(
+    caller: tauri::WebviewWindow,
+    state: tauri::State<'_, chat::ChatState>,
+) -> Result<serde_json::Value, String> {
+    require_background(&caller)?;
+    chat::harness_models(state).await
+}
+
+/// 枚举 DeepSeek API 端点自己列出的模型（兼容接口的 `/models`）。
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+async fn api_models(caller: tauri::WebviewWindow, base_url: String) -> Result<serde_json::Value, String> {
+    require_background(&caller)?;
+    chat::api_models(base_url).await
+}
+
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
 async fn harness_set_permission(
@@ -3469,6 +3491,8 @@ macro_rules! register_edition_commands {
             harness_presets,
             harness_set_preset,
             harness_controls,
+            harness_models,
+            api_models,
             harness_set_permission,
             api_history,
             list_api_conversations,

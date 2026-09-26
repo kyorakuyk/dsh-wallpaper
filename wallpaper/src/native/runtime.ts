@@ -240,6 +240,13 @@ export interface NativeRuntime {
   harnessPresets(): Promise<Array<{ id: string; name?: string; description?: string; trust: 'system' | 'user'; broken?: string; isDefault: boolean }>>
   setHarnessPreset(preset: string): Promise<void>
   harnessControls(): Promise<{ permission: { current: string; options: string[] }; commands: Array<{ name: string; description: string; input?: { hint: string } }> }>
+  /**
+   * 当前 Harness 主体可用的模型目录（宿主提供、经桥接转发）。
+   * `supported: false` = 宿主不具备枚举能力，不是"没有模型"。
+   */
+  harnessModels(): Promise<{ supported: boolean; provider?: string; current?: { provider: string; model: string }; models?: Array<{ id: string; name: string }> }>
+  /** DeepSeek API 兼容端点自报的模型目录（`/models`）。 */
+  apiModels(baseUrl: string): Promise<{ supported: boolean; models?: Array<{ id: string; name: string }> }>
   setHarnessPermission(permission: string): Promise<void>
   apiHistory(conversationId: string, limit?: number): Promise<ApiHistoryPage>
   listApiConversations(): Promise<ApiConversationListing>
@@ -489,6 +496,14 @@ export const nativeRuntime: NativeRuntime = {
   async harnessControls() {
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<{ permission: { current: string; options: string[] }; commands: Array<{ name: string; description: string; input?: { hint: string } }> }>('harness_controls')
+  },
+  async harnessModels() {
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<{ supported: boolean; provider?: string; current?: { provider: string; model: string }; models?: Array<{ id: string; name: string }> }>('harness_models')
+  },
+  async apiModels(baseUrl) {
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<{ supported: boolean; models?: Array<{ id: string; name: string }> }>('api_models', { baseUrl })
   },
   async setHarnessPermission(permission) {
     const { invoke } = await import('@tauri-apps/api/core')
