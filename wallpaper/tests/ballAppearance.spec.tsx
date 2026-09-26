@@ -79,6 +79,10 @@ describe('the floating ball', () => {
     // 墨与玻璃各一份定义。
     expect(ball).toMatch(/--ball-ink:\s*#0b0d10/)
     expect(ball).toContain('--ball-glass:')
+    // **玻璃必须糊得够实**：球不能 `backdrop-filter`（独立顶层窗口没有可采样的底），
+    // 所以背后那个窗口的标题栏只能靠不透明度挡住——用户实测报过它从球身里透出来。
+    const glassAlpha = Number(ball.match(/--ball-glass:\s*rgba\([^)]*?,\s*(0?\.\d+|1)\)/)![1])
+    expect(glassAlpha, '玻璃不透明度低于 0.8 时，背后的标题栏会重新读得出来').toBeGreaterThanOrEqual(0.8)
     // 平面玻璃 = 一层均匀的半透明色；透镜效应来自渐变/发光，这里一个都不许有。
     expect(css).not.toContain('gradient')
     expect(css).not.toContain('backdrop-filter')
