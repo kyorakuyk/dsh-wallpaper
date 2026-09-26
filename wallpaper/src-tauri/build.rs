@@ -45,7 +45,9 @@ fn main() {
             "launch_translucent_tb",
             "open_translucent_tb_install",
             "open_windows_lock_screen_settings",
-            "prompt_for_api_key",
+            // 设置中心直接输入 API Key（取代了原来的系统凭据对话框）。
+            "save_api_key",
+            "api_key_status",
             "show_deepseek_login",
             "native_bootstrap_generation",
             "release_native_bootstrap",

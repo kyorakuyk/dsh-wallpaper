@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import { appCoreClient } from '../runtime/appCoreClient.ts'
-import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type HarnessEndpointScan, type HarnessTarget, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
+import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type ApiKeyStatus, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type HarnessEndpointScan, type HarnessTarget, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
 import { loadSettings, saveSettings, type WallpaperSettings } from './store.ts'
 import {
   clientRaiseAction,
@@ -116,6 +116,13 @@ export function SettingsWindow() {
   const [deepseekWebAdapterConfig, setDeepseekWebAdapterConfig] = useState<DeepSeekWebAdapterConfigStatus>()
   const [apiHistory, setApiHistory] = useState<ApiConversationListing>()
   const [apiHistoryBusy, setApiHistoryBusy] = useState(false)
+  // 访问密钥：输入框里是**待保存**的草稿，脱敏串是**已保存**的那一条。
+  // 两者刻意分开：草稿一旦保存就清空，免得"输入框里还留着 Key、看起来像没生效"。
+  const [apiKeyDraft, setApiKeyDraft] = useState('')
+  const [apiKeyStatus, setApiKeyStatus] = useState<ApiKeyStatus>()
+  const [apiKeyBusy, setApiKeyBusy] = useState(false)
+  // 可用模型列表：由「测试」/「刷新」拉取，也用于「模型」那一栏的下拉候选。
+  const [apiModelCatalog, setApiModelCatalog] = useState<Array<{ id: string; name: string }>>()
   // A state update does not become visible to an async callback until React
   // renders again. Keep the last committed settings here so a successful
   // lock-screen request never overwrites unrelated settings changed while it
@@ -177,6 +184,12 @@ export function SettingsWindow() {
     const timer = window.setTimeout(() => setNotice(undefined), delay)
     return () => window.clearTimeout(timer)
   }, [notice])
+
+  useEffect(() => {
+    // 打开设置就要看到"现在存的是哪一条"（脱敏）。模型目录不在这里拉：它需要一次网络请求，
+    // 交给用户按「测试」或「刷新」，免得开窗就打网络。
+    void readApiKeyStatus()
+  }, [])
 
   const refreshAppearance = () => void Promise.all([nativeAppearance.getState(), nativeAppearance.listAssets()])
     .then(([snapshot, assets]) => {
@@ -434,6 +447,78 @@ export function SettingsWindow() {
       setNotice('网页适配器配置已恢复默认。')
     } catch (error) {
       setNotice(`网页适配器配置恢复失败：${String(error)}`)
+    }
+  }
+
+  /**
+   * 访问密钥的三件事，都在设置中心里完成：
+   *
+   * - 「测试」：拿输入框里的（没有就用已保存的）去调 `/models`。**这一步同时就是"拉取可用
+   *   模型列表"**——DeepSeek 的 `/models` 需要密钥，200 就等于"密钥可用"，而它的返回体正是
+   *   模型目录，不需要第二次请求（用户要求"可用模型列表也在此刻拉取更新"）。
+   * - 测试成功时把输入框里的 Key 存进凭据管理器：能通过测试的才值得保存。
+   * - 「刷新」：只重拉模型目录，不动密钥——官方改名时用它（用户原话："防止官方的模型命名又有变动"）。
+   */
+  const readApiKeyStatus = async () => {
+    try {
+      const status = await nativeRuntime.apiKeyStatus()
+      if (mountedRef.current) setApiKeyStatus(status)
+    } catch (error) {
+      if (mountedRef.current) setNotice(`读取访问密钥状态失败：${String(error)}`)
+    }
+  }
+
+  const refreshApiModelCatalog = async (): Promise<boolean> => {
+    try {
+      const catalog = await nativeRuntime.apiModels(settingsRef.current.deepseekApi.baseUrl)
+      if (!mountedRef.current) return true
+      if (!catalog.supported) {
+        setNotice('该 API 地址不提供模型列表（HTTP 404/405）。')
+        return false
+      }
+      const models = catalog.models ?? []
+      setApiModelCatalog(models)
+      return true
+    } catch (error) {
+      if (mountedRef.current) setNotice(`读取模型列表失败：${String(error)}`)
+      return false
+    }
+  }
+
+  const testApiKey = async () => {
+    if (apiKeyBusy) return
+    const draft = apiKeyDraft.trim()
+    if (!draft && !apiKeyStatus?.present) {
+      setNotice('请先填入 DeepSeek API Key。')
+      return
+    }
+    setApiKeyBusy(true)
+    try {
+      if (draft) {
+        await nativeRuntime.saveApiKey(draft)
+        setApiKeyDraft('')
+      }
+      const ok = await refreshApiModelCatalog()
+      if (!ok) return
+      await readApiKeyStatus()
+      setNotice(draft ? 'API Key 已保存到 Windows 凭据管理器，模型列表已更新。' : '已保存的 API Key 可用，模型列表已更新。')
+    } catch (error) {
+      setNotice(`API Key 保存失败：${String(error)}`)
+    } finally {
+      if (mountedRef.current) setApiKeyBusy(false)
+    }
+  }
+
+  /**
+   * 只刷新目录：密钥不动，因此也不需要"有没有 Key"这一层判断——`/models` 自己会回答。
+   */
+  const refreshApiModels = async () => {
+    if (apiKeyBusy) return
+    setApiKeyBusy(true)
+    try {
+      if (await refreshApiModelCatalog()) setNotice('模型列表已刷新。')
+    } finally {
+      if (mountedRef.current) setApiKeyBusy(false)
     }
   }
 
@@ -716,9 +801,13 @@ export function SettingsWindow() {
       onRefreshDeepSeekWebAdapterConfig={refreshDeepSeekWebAdapterConfig}
       onOpenDeepSeekWebAdapterConfig={() => { void openDeepSeekWebAdapterConfig() }}
       onResetDeepSeekWebAdapterConfig={() => { void resetDeepSeekWebAdapterConfig() }}
-      onConfigureApiKey={() => void nativeRuntime.promptForApiKeyCredential()
-        .then((saved) => { if (saved) setNotice('DeepSeek API Key 已更新到 Windows 凭据管理器。') })
-        .catch((error) => setNotice(String(error)))}
+      apiKeyDraft={apiKeyDraft}
+      onApiKeyDraftChange={setApiKeyDraft}
+      apiKeyStatus={apiKeyStatus}
+      apiKeyBusy={apiKeyBusy}
+      onTestApiKey={() => { void testApiKey() }}
+      onRefreshApiModels={() => { void refreshApiModels() }}
+      apiModelCatalog={apiModelCatalog}
       interactionEnabled={interactionEnabled}
       onSetInteractionEnabled={(enabled) => void appCoreClient.setInteractionEnabled(enabled).then((snapshot) => setInteractionEnabled(snapshot.interaction.enabled)).catch((error) => setNotice(String(error)))}
       onClose={close}

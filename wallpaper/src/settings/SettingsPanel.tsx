@@ -5,7 +5,7 @@ import { BACKGROUND_OPTIONS, MAX_PRICE_PER_MILLION, normalizedPrice, type Wallpa
 import { type SettingsPage } from './settingsProbes.ts'
 import type { AppearanceAssetSummary } from '../features/appearance/appearanceViewModel.ts'
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
-import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, LockScreenDiagnostics, ManagedDshStatus, ApiConversationListing } from '../native/runtime.ts'
+import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, LockScreenDiagnostics, ManagedDshStatus, ApiConversationListing, ApiKeyStatus } from '../native/runtime.ts'
 import { preferredDisplayId } from '../runtime/displayLayout.ts'
 import { harnessStateLabel } from '../connect/harnessLabels.ts'
 import type { AutostartStatus, HarnessEndpointScan, HarnessTarget } from '../native/runtime.ts'
@@ -33,7 +33,18 @@ export interface SettingsPanelProps {
   harnessStatus: SettingsPanelHarnessStatus
   onChange: (settings: WallpaperSettings) => void
   onRequestDeepSeekLogin: () => void
-  onConfigureApiKey: () => void
+  /**
+   * 访问密钥：待保存的草稿、已保存那一条的脱敏形态、可用模型列表，以及三个动作。
+   *
+   * 草稿与脱敏串分开传：输入框里是"要保存的"，下面那行是"已经存好的"。
+   */
+  apiKeyDraft: string
+  onApiKeyDraftChange: (value: string) => void
+  apiKeyStatus?: ApiKeyStatus
+  apiKeyBusy: boolean
+  onTestApiKey: () => void
+  onRefreshApiModels: () => void
+  apiModelCatalog?: Array<{ id: string; name: string }>
   onClose: () => void
   interactionEnabled: boolean
   onSetInteractionEnabled: (enabled: boolean) => void
@@ -436,9 +447,42 @@ export function SettingsPanel(props: SettingsPanelProps) {
         </Card>
         <Card title="DeepSeek 网页入口（实验）" description="在应用内持久 WebView2 中打开 DeepSeek 页面，登录后可从桌面会话窗发送消息。"><Field title="页面" detail="页面和登录状态由独立 WebView2 配置目录保存；本应用不读取、复制或记录 Cookie。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开应用内页面</button></Field><Field title="网页适配器配置" detail={props.deepseekWebAdapterConfig ? `${props.deepseekWebAdapterConfig.source === 'local' ? '本地 override' : '内置默认'} · ${props.deepseekWebAdapterConfig.adapterVersion} · ${props.deepseekWebAdapterConfig.path}${props.deepseekWebAdapterConfig.warning ? ` · ${props.deepseekWebAdapterConfig.warning}` : ''}` : '正在读取配置状态…'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshDeepSeekWebAdapterConfig}>刷新</button><button className="settings-action secondary" onClick={props.onOpenDeepSeekWebAdapterConfig}>打开配置</button><button className="settings-action secondary" onClick={props.onResetDeepSeekWebAdapterConfig}>恢复默认</button></span></Field></Card>
         <Card title="DeepSeek API" description="API 模式会产生实际费用，密钥只保存在 Windows 凭据管理器。">
-          <Field title="API 地址"><input value={settings.deepseekApi.baseUrl} onChange={(e) => set({ deepseekApi: { ...settings.deepseekApi, baseUrl: e.target.value } })} /></Field>
-          <Field title="模型"><input value={settings.deepseekApi.model} onChange={(e) => set({ deepseekApi: { ...settings.deepseekApi, model: e.target.value } })} /></Field>
-          <Field title="访问密钥" detail="点击后会弹出 Windows 自己的凭据窗口（密钥不经过壁纸界面，直接由原生写入凭据管理器）：用户名一栏已固定，把 Key 填到「密码」一栏即可。"><button className="settings-action secondary" onClick={props.onConfigureApiKey}>更新 API Key</button></Field>
+          {/* 只深耕 DeepSeek：地址不再暴露成设置项（值仍是默认的官方地址），少一个能填错的地方。
+              用户的原话是"API 网址可以省略"。 */}
+          <Field
+            title="访问密钥"
+            detail="在这里填入 DeepSeek API Key，按「测试」确认可用并保存到 Windows 凭据管理器；测试会同时拉取可用模型列表。密钥不支持读回，下面显示的是脱敏后的形态。"
+          >
+            <span className="api-key-actions">
+              <input
+                type="password"
+                aria-label="DeepSeek API Key"
+                placeholder={props.apiKeyStatus?.present ? '填入新的 Key 以替换' : 'sk-…'}
+                value={props.apiKeyDraft}
+                onChange={(event) => props.onApiKeyDraftChange(event.target.value)}
+                onKeyDown={(event) => { if (event.key === 'Enter') props.onTestApiKey() }}
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <button className="settings-action secondary" disabled={props.apiKeyBusy} onClick={props.onTestApiKey}>测试</button>
+            </span>
+          </Field>
+          <Field title="已保存" detail={props.apiKeyStatus?.present ? '这是凭据管理器里那一条的脱敏形态。' : '还没有保存过 API Key。'}>
+            <span className="api-key-actions">
+              <code className="api-key-masked" aria-label="已保存的 API Key（脱敏）">{props.apiKeyStatus?.present ? props.apiKeyStatus.masked ?? '••••' : '未配置'}</code>
+              <button className="settings-action secondary" disabled={props.apiKeyBusy} onClick={props.onRefreshApiModels}>刷新</button>
+            </span>
+          </Field>
+          <Field title="模型" detail={props.apiModelCatalog && props.apiModelCatalog.length > 0 ? `可用模型 ${props.apiModelCatalog.length} 项，来自刚才那次拉取。` : '按「刷新」拉取可用模型；官方改名时也用它。'}>
+            <input
+              list="api-model-catalog"
+              value={settings.deepseekApi.model}
+              onChange={(e) => set({ deepseekApi: { ...settings.deepseekApi, model: e.target.value } })}
+            />
+            <datalist id="api-model-catalog">
+              {(props.apiModelCatalog ?? []).map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+            </datalist>
+          </Field>
           <Field title="输入价格" detail="人民币／每百万 input tokens。输入、输出价格都配置后，才会显示本轮和会话估算费用。"><PriceInput label="输入价格（人民币每百万 tokens）" value={settings.deepseekApi.priceInputPerMillion} onChange={(priceInputPerMillion) => set({ deepseekApi: { ...settings.deepseekApi, priceInputPerMillion } })} /></Field>
           <Field title="输出价格" detail="人民币／每百万 output tokens。留空不会伪造零费用；缓存 token 没有单独价格时会标为估算。"><PriceInput label="输出价格（人民币每百万 tokens）" value={settings.deepseekApi.priceOutputPerMillion} onChange={(priceOutputPerMillion) => set({ deepseekApi: { ...settings.deepseekApi, priceOutputPerMillion } })} /></Field>
         </Card>

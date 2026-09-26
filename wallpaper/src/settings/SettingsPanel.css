@@ -38,3 +38,9 @@
 
 /* 空白背景那一格的预览：与桌面实际渲染同一个值，而不是网格自己的占位渐变。 */
 .background-grid button[data-background='default']>span{background:var(--blank-background)}
+
+/* 访问密钥：输入框 + 「测试」/「刷新」并排；下面是已保存那一条的脱敏形态。 */
+.api-key-actions{display:flex;align-items:center;gap:7px}
+.api-key-actions input{width:220px}
+/* 脱敏串用等宽字体：点和首尾字符对齐后，"这就是存着的那条"一眼可见。 */
+.api-key-masked{display:inline-flex;align-items:center;height:34px;min-width:220px;padding:0 10px;border:1px solid rgba(139,196,235,.16);border-radius:9px;background:rgba(4,13,25,.48);color:#9fbdd4;font-family:"Cascadia Code",Consolas,monospace;font-size:11px;letter-spacing:.08em}

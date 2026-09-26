@@ -9,55 +9,104 @@ async function source(relativePath: string) {
   return readFile(resolve(wallpaperRoot, relativePath), 'utf8')
 }
 
-describe('native API credential prompt boundary', () => {
-  it('keeps API-key plaintext out of the settings WebView and IPC arguments', async () => {
-    const [settings, runtime] = await Promise.all([
+/**
+ * API Key 的输入路径，以及它留下/丢掉了什么。
+ *
+ * 这里记着一次**有意的性质变更**：最初 Key 由 Windows 自己的凭据对话框（CredUI）收集，明文
+ * 从不经过渲染端与 IPC。用户实测反馈那个对话框读不懂（它是给"用户名 + 密码"的网络凭据设计的，
+ * 用户名那一栏一定会出现），明确要求"在我们的设置窗内输入 apikey"。于是改成本窗口输入，代价是
+ * 明文会**经 IPC 进来一次**——所以下面这些断言守的就是"换掉的那一半之外还剩什么"。
+ */
+describe('API key entry in the settings window', () => {
+  it('collects the key in our own window and never lets it come back out', async () => {
+    const [settings, panel, runtime] = await Promise.all([
       source('src/settings/SettingsWindow.tsx'),
+      source('src/settings/SettingsPanel.tsx'),
       source('src/native/runtime.ts'),
     ])
 
-    expect(settings).not.toContain('window.prompt')
-    expect(settings).toContain('nativeRuntime.promptForApiKeyCredential()')
-    expect(runtime).toContain('promptForApiKeyCredential(): Promise<boolean>')
-    expect(runtime).toContain("invoke<boolean>('prompt_for_api_key')")
-    expect(runtime).not.toContain('saveApiKey(key: string)')
-    expect(runtime).not.toContain("invoke('save_api_key'")
+    // 设置窗自己收：密码型输入框 + 保存入口。
+    expect(panel).toContain('type="password"')
+    expect(panel).toContain('apiKeyDraft')
+    expect(settings).toContain('nativeRuntime.saveApiKey(')
+    expect(runtime).toContain("invoke('save_api_key', { key })")
+    // 系统凭据对话框那条路已经撤掉（连同它的权限与绑定），不留一条没人走的旧路。
+    expect(settings).not.toContain('promptForApiKeyCredential')
+    expect(runtime).not.toContain('prompt_for_api_key')
+    expect(runtime).not.toContain('promptForApiKeyCredential')
+
+    // 反向永远不成立：渲染端拿不到明文，只有脱敏串。
+    expect(runtime).toContain('apiKeyStatus(): Promise<ApiKeyStatus>')
+    expect(runtime).toContain("invoke<ApiKeyStatus>('api_key_status')")
+    expect(runtime).not.toMatch(/getApiKey|readApiKey|apiKeyPlain/)
   })
 
-  it('uses a native generic CredUI prompt and restricts it to Settings', async () => {
-    const native = await source('src-tauri/src/lib.rs')
-
-    expect(native).toContain('fn prompt_for_api_key(caller: tauri::WebviewWindow)')
-    expect(native).toContain('caller.label() != SETTINGS_WINDOW_LABEL')
-    expect(native).toContain('CREDUI_FLAGS_GENERIC_CREDENTIALS')
-    expect(native).toContain('CREDUI_FLAGS_ALWAYS_SHOW_UI')
-    expect(native).toContain('CREDUI_FLAGS_PASSWORD_ONLY_OK')
-    expect(native).toContain('CREDUI_FLAGS_DO_NOT_PERSIST')
-    expect(native).toContain('CredWriteW')
-    expect(native).not.toContain('fn save_api_key(key: String)')
-  })
-
-  /**
-   * 用户实测问过："为什么点『更新 API key』会弹出这玩意？"（截图里是 CredUI 的"用户名 +
-   * 密码"对话框）。答：它**就是 Windows 自己的凭据对话框**，用它是为了那条边界——明文不经过
-   * WebView 与 IPC。但 CredUI 的字段是固定的，用户名那一栏一定会出现，所以不能让它空着，
-   * 也不能让用户以为那栏有用。
-   */
-  it('fills the username CredUI insists on showing, and says where the key goes', async () => {
+  it('masks the stored key natively, and never shows the middle of it', async () => {
     const [native, panel] = await Promise.all([
       source('src-tauri/src/lib.rs'),
       source('src/settings/SettingsPanel.tsx'),
     ])
 
-    // 预填用户名：空的下拉 + 浏览按钮正是让人看不懂的那个画面。
-    expect(native).toContain('let mut credential_username = [0u16; CREDUI_MAX_USERNAME_LENGTH as usize + 1]')
-    expect(native).toMatch(/let seed: Vec<u16> = CREDENTIAL_USERNAME\.encode_utf16\(\)\.collect\(\)/)
-    expect(native).toContain('credential_username[..seed_len].copy_from_slice(&seed[..seed_len])')
-    // 我们写死用户名，就不该让用户改它——否则他会以为自己填的名字生效了。
-    expect(native).toContain('CREDUI_FLAGS_KEEP_USERNAME')
-    // 对话框自己的提示要说"填在密码一栏"，不是笼统的"请输入"。
-    expect(native).toContain('填到「密码」一栏')
-    // 设置卡片也要先说明会弹一个 Windows 窗口，别让系统对话框突然出现。
-    expect(panel).toContain('弹出 Windows')
+    // 脱敏在原生侧算（`mask_api_key`），设置窗只负责把它摆出来。
+    expect(native).toContain('fn mask_api_key(key: &str) -> String')
+    expect(native).toContain('Ok(key) => Ok(serde_json::json!({ "present": true, "masked": mask_api_key(&key) }))')
+    expect(panel).toContain('props.apiKeyStatus.masked')
+  })
+
+  it('restricts the new commands to the settings surface', async () => {
+    const [native, capability, build] = await Promise.all([
+      source('src-tauri/src/lib.rs'),
+      source('src-tauri/capabilities/settings.json'),
+      source('src-tauri/build.rs'),
+    ])
+
+    expect(native).toContain('fn save_api_key(caller: tauri::WebviewWindow, key: String)')
+    expect(native).toContain('fn api_key_status(caller: tauri::WebviewWindow)')
+    expect(native).toContain('caller.label() != SETTINGS_WINDOW_LABEL')
+    // 权限只给设置窗：读状态的命令同样不开放给壁纸/球/网页那些窗口。
+    expect(capability).toContain('"allow-save-api-key"')
+    expect(capability).toContain('"allow-api-key-status"')
+    expect(capability).not.toContain('allow-prompt-for-api-key')
+    // 模型目录要在设置窗里能拉（测试与刷新都靠它）。
+    expect(capability).toContain('"allow-api-models"')
+    // 命令要进 ACL 白名单，否则调用会被 tauri 直接拒掉。
+    expect(build).toContain('"save_api_key"')
+    expect(build).toContain('"api_key_status"')
+    expect(build).not.toContain('"prompt_for_api_key"')
+  })
+
+  it('tests the key by pulling the model catalogue, and offers a separate refresh', async () => {
+    const [settings, panel] = await Promise.all([
+      source('src/settings/SettingsWindow.tsx'),
+      source('src/settings/SettingsPanel.tsx'),
+    ])
+
+    // 「测试」= 保存(如有草稿) + 拉模型目录 + 回读脱敏状态：一次请求同时回答"Key 能不能用"和
+    // "现在有哪些模型"（`/models` 需要密钥，200 就等于密钥可用）。
+    expect(settings).toContain('nativeRuntime.apiModels(')
+    expect(settings).toMatch(/const testApiKey = async \(\) => \{[\s\S]*?nativeRuntime\.saveApiKey\(draft\)/)
+    expect(settings).toMatch(/const testApiKey = async \(\) => \{[\s\S]*?refreshApiModelCatalog\(\)/)
+    expect(settings).toMatch(/const testApiKey = async \(\) => \{[\s\S]*?readApiKeyStatus\(\)/)
+    // 「刷新」只重拉目录，不动密钥。
+    expect(settings).toMatch(/const refreshApiModels = async \(\) => \{[\s\S]*?refreshApiModelCatalog\(\)/)
+    // 两个按钮在面板里，且「测试」在输入框右侧（用户明确要求"最右侧"）。
+    expect(panel).toMatch(/type="password"[\s\S]{0,900}onClick=\{props\.onTestApiKey\}/)
+    expect(panel).toContain('onClick={props.onRefreshApiModels}')
+    // 模型那一栏由拉取到的目录喂候选。
+    expect(panel).toContain('props.apiModelCatalog')
+  })
+
+  it('drops the API address field and keeps it as a default the API client still honours', async () => {
+    const [panel, store, settings] = await Promise.all([
+      source('src/settings/SettingsPanel.tsx'),
+      source('src/settings/store.ts'),
+      source('src/settings/SettingsWindow.tsx'),
+    ])
+
+    // 用户："我们只深耕 deepseek，所以 API 网址可以省略"。
+    expect(panel).not.toContain('title="API 地址"')
+    // 值还在（老配置里的自定义地址继续生效），只是不再让人手填。
+    expect(store).toContain('https://api.deepseek.com')
+    expect(settings).toContain('settingsRef.current.deepseekApi.baseUrl')
   })
 })

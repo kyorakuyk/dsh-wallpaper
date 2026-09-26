@@ -17,6 +17,16 @@ export interface TranslucentTbStatus { installed: boolean; running: boolean; sou
 export interface LockScreenDiagnostics { supported: boolean; packageIdentity: boolean; takeoverAvailable: boolean; originalImageUri?: string; backupExists: boolean; backupValid: boolean; staleBackup: boolean; managedImageReady: boolean; managedImageActive: boolean; developmentBuild: boolean; warnings: string[] }
 export interface ManagedDshStatus { managed: boolean; running: boolean; pid?: number; rootPath?: string; profile?: string }
 /**
+ * 凭据管理器愿意交代的全部内容：有没有 Key，以及脱敏形态（`sk-••••••••abcd`）。
+ *
+ * 没有明文——原生侧**不存在**把 Key 交出来的命令；脱敏也是那边算好的（`mask_api_key`），
+ * 渲染端连"取中间几位自己拼"的机会都没有。
+ */
+export interface ApiKeyStatus {
+  present: boolean
+  masked?: string
+}
+/**
  * Outcome of the one automatic DSH start this process is allowed to attempt.
  * `outcome` is a closed, non-sensitive code; `external` means port 3080 was
  * already owned by someone else's DSH and was deliberately left alone.
@@ -240,11 +250,20 @@ export interface NativeRuntime {
   openTranslucentTbInstall(): Promise<void>
   openWindowsLockScreenSettings(): Promise<void>
   /**
-   * Opens Windows' native credential dialog. The API key never crosses the
-   * WebView IPC boundary: Windows persists it directly in Credential Manager.
-   * `false` means that the user dismissed the dialog without making a change.
+   * Store the DeepSeek API key the user typed in Settings.
+   *
+   * This is the one place a plaintext key crosses the Tauri IPC boundary, and only on the
+   * way **in** — it replaced the Windows credential dialog, which the user found impossible
+   * to read (it is built for username+password credentials). Nothing hands a key back:
+   * `apiKeyStatus` answers with `maskApiKey`'s shape only, and the API client reads the
+   * credential natively in Rust.
    */
-  promptForApiKeyCredential(): Promise<boolean>
+  saveApiKey(key: string): Promise<void>
+  /**
+   * Whether a key is stored, and the masked form to show. `masked` is produced natively
+   * (`mask_api_key`) and never contains the middle of the key.
+   */
+  apiKeyStatus(): Promise<ApiKeyStatus>
   requestDeepSeekLogin(): Promise<void>
   nativeBootstrapGeneration(): Promise<number>
   releaseNativeBootstrap(generation: number): Promise<boolean>
@@ -438,10 +457,16 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('open_windows_lock_screen_settings')
   },
-  async promptForApiKeyCredential() {
+  async saveApiKey(key) {
     if (!await tauriAvailable()) throw new Error('仅桌面版支持 Windows 凭据管理器')
     const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<boolean>('prompt_for_api_key')
+    await invoke('save_api_key', { key })
+  },
+  async apiKeyStatus() {
+    // 浏览器预览里没有凭据管理器：如实回答"没有 Key"，而不是抛错让设置页显示故障。
+    if (!await tauriAvailable()) return { present: false }
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<ApiKeyStatus>('api_key_status')
   },
   async requestDeepSeekLogin() {
     if (!await tauriAvailable()) return

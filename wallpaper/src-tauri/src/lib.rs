@@ -1803,160 +1803,138 @@ fn open_windows_lock_screen_settings(caller: tauri::WebviewWindow) -> Result<(),
     Err("锁屏设置仅支持 Windows。".into())
 }
 
-/// Opens the Windows-owned credential prompt and stores the API key without
-/// transporting plaintext through Tauri IPC or the renderer. The generic
-/// CredUI target deliberately matches the `keyring` crate's default Windows
-/// target naming, so the existing API client reads the same credential.
+/// Set the API-key credential in Windows Credential Manager.
+/// 把 API Key 写进当前用户的**通用凭据**（target / 用户名与 `keyring` 的 Windows 映射一致，
+/// 所以 API 客户端读到的是同一条；keyring 的 `set_password` 把 UTF-16 小端字节当成 blob，
+/// 这里必须写成同一个形状）。
+#[cfg(all(windows, not(feature = "lite")))]
+fn write_api_key_credential(key: &str) -> Result<(), String> {
+    use windows::{
+        core::PWSTR,
+        Win32::{
+            Foundation::FILETIME,
+            Security::Credentials::{
+                CredWriteW, CREDENTIALW, CRED_FLAGS, CRED_PERSIST_ENTERPRISE, CRED_TYPE_GENERIC,
+            },
+        },
+    };
+
+    const CREDENTIAL_TARGET: &str = "deepseek-api.dsh-wallpaper";
+    const CREDENTIAL_USERNAME: &str = "deepseek-api";
+
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return Err("API Key 不能为空。".into());
+    }
+    // CredUI 那条路的上限是 256 个 UTF-16 码元；这里直接输入也守同一个界，
+    // 免得把一条明显不是 Key 的长文本写进凭据管理器。
+    let mut units: Vec<u16> = trimmed.encode_utf16().collect();
+    if units.len() > 256 {
+        secure_zero_u16(&mut units);
+        return Err("API Key 过长（最多 256 个字符）。".into());
+    }
+    let mut target = CREDENTIAL_TARGET.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let mut username = CREDENTIAL_USERNAME.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let mut blob = credential_blob_from_prompt_password(&units);
+    let byte_len = u32::try_from(blob.len()).map_err(|_| "API Key 长度无效。".to_string())?;
+    let mut credential = CREDENTIALW {
+        Flags: CRED_FLAGS::default(),
+        Type: CRED_TYPE_GENERIC,
+        TargetName: PWSTR(target.as_mut_ptr()),
+        Comment: PWSTR::null(),
+        LastWritten: FILETIME::default(),
+        CredentialBlobSize: byte_len,
+        CredentialBlob: blob.as_mut_ptr(),
+        Persist: CRED_PERSIST_ENTERPRISE,
+        AttributeCount: 0,
+        Attributes: std::ptr::null_mut(),
+        TargetAlias: PWSTR::null(),
+        UserName: PWSTR(username.as_mut_ptr()),
+    };
+    let result = unsafe { CredWriteW(&mut credential, 0) }
+        .map_err(|error| format!("无法保存 API Key 到 Windows 凭据管理器：{error}"));
+    secure_zero_bytes(&mut blob);
+    secure_zero_u16(&mut units);
+    secure_zero_u16(&mut target);
+    secure_zero_u16(&mut username);
+    result
+}
+
+/// 展示用的脱敏形式：只留头 3 与尾 4，中间一律替换。
 ///
-/// 用户实测问的是"为什么点『更新 API Key』会弹出这个窗口"：因为它**就是 Windows 自己的凭据
-/// 对话框**（CredUI），不是本应用画的。用它的唯一理由是那条边界——**明文不经过 WebView、
-/// 也不经过 Tauri IPC**，直接由原生写进凭据管理器。
+/// 这是**唯一**被允许离开原生进程的 Key 形态——渲染端没有任何命令能把明文读回来，
+/// 设置中心显示的也只是这个字符串。短 Key 不做"留一半"的漂亮处理：本来就短，全遮。
+#[cfg(all(windows, not(feature = "lite")))]
+fn mask_api_key(key: &str) -> String {
+    let chars: Vec<char> = key.trim().chars().collect();
+    let len = chars.len();
+    let tail = |count: usize| -> String { chars[len - count..].iter().collect() };
+    match len {
+        0 => String::new(),
+        // 短到没什么可藏的：整串遮掉，别为了好看泄漏一半。
+        1..=6 => "•".repeat(len),
+        7..=12 => format!("{}{}", "•".repeat(len - 2), tail(2)),
+        _ => format!("{}••••••••{}", chars[..3].iter().collect::<String>(), tail(4)),
+    }
+}
+
+/// Stores the key the user typed in Settings. This is the one place a plaintext API key
+/// crosses the Tauri IPC boundary, and it does so **once, on the way in**: the renderer
+/// never receives a key back (`api_key_status` answers with `mask_api_key` only), and the
+/// chat client reads the credential natively.
 ///
-/// 代价是 CredUI 的字段是固定的"用户名 + 密码"（它面向的是网络凭据）。代码里曾经假定
-/// `CREDUI_FLAGS_PASSWORD_ONLY_OK` 会把用户名控件藏起来，**实测不会**：用户名那一栏照样出现，
-/// 而且是空的下拉 + 一个"浏览"按钮，用户完全不知道那一栏该填什么。所以现在把用户名**预先填好
-/// 并锁住**（`CREDUI_FLAGS_KEEP_USERNAME`），并在提示里说清 Key 填在"密码"一栏。
+/// 这条路径取代了原来那个系统凭据对话框（`prompt_for_api_key`）：用户实测明确要求"在我们
+/// 的设置窗内输入"，宁可放弃"明文从不经过渲染端"这条性质，换一个正常的输入体验。
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
-fn prompt_for_api_key(caller: tauri::WebviewWindow) -> Result<bool, String> {
+fn save_api_key(caller: tauri::WebviewWindow, key: String) -> Result<(), String> {
     if caller.label() != SETTINGS_WINDOW_LABEL {
         return Err("仅设置中心可以更新 API Key。".into());
     }
 
     #[cfg(windows)]
     {
-        use windows::{
-            core::{HSTRING, PCWSTR, PWSTR},
-            Win32::{
-                Foundation::{ERROR_CANCELLED, FILETIME},
-                Security::Credentials::{
-                    CredUIPromptForCredentialsW, CredWriteW, CREDENTIALW,
-                    CREDUI_FLAGS_ALWAYS_SHOW_UI, CREDUI_FLAGS_DO_NOT_PERSIST,
-                    CREDUI_FLAGS_GENERIC_CREDENTIALS, CREDUI_FLAGS_KEEP_USERNAME,
-                    CREDUI_FLAGS_PASSWORD_ONLY_OK, CREDUI_INFOW, CREDUI_MAX_USERNAME_LENGTH,
-                    CRED_FLAGS, CRED_PERSIST_ENTERPRISE, CRED_TYPE_GENERIC,
-                },
-            },
-        };
-
-        // The Windows SDK caps CredUI password input at 256 UTF-16 code units
-        // plus a terminator.  DeepSeek keys are far shorter, while this avoids
-        // an unbounded native buffer when a malformed value is supplied.
-        const API_KEY_BUFFER_LEN: usize = 257;
-        const CREDENTIAL_TARGET: &str = "deepseek-api.dsh-wallpaper";
-        const CREDENTIAL_USERNAME: &str = "deepseek-api";
-
-        let caption = HSTRING::from("更新 DeepSeek API Key");
-        let message = HSTRING::from(
-            "把 DeepSeek API Key 填到「密码」一栏（用户名已固定，仅作标识）。\
-             密钥只写入当前 Windows 用户的凭据管理器。",
-        );
-        let target = HSTRING::from(CREDENTIAL_TARGET);
-        let username = HSTRING::from(CREDENTIAL_USERNAME);
-        let mut password = [0u16; API_KEY_BUFFER_LEN];
-        // 预填用户名：CredUI 一定会显示这一栏（实测），空着会让用户以为要填账号。
-        // 缓冲区长度仍按文档最大值给，末尾留给 CredUI 自己写的终止符。
-        let mut credential_username = [0u16; CREDUI_MAX_USERNAME_LENGTH as usize + 1];
-        let seed: Vec<u16> = CREDENTIAL_USERNAME.encode_utf16().collect();
-        let seed_len = seed.len().min(CREDUI_MAX_USERNAME_LENGTH as usize);
-        credential_username[..seed_len].copy_from_slice(&seed[..seed_len]);
-        let parent = caller
-            .hwnd()
-            .map_err(|error| format!("无法关联 Windows 凭据对话框：{error}"))?;
-        let ui_info = CREDUI_INFOW {
-            cbSize: std::mem::size_of::<CREDUI_INFOW>() as u32,
-            hwndParent: parent,
-            pszMessageText: PCWSTR(message.as_ptr()),
-            pszCaptionText: PCWSTR(caption.as_ptr()),
-            hbmBanner: Default::default(),
-        };
-        let flags = CREDUI_FLAGS_GENERIC_CREDENTIALS
-            | CREDUI_FLAGS_ALWAYS_SHOW_UI
-            | CREDUI_FLAGS_PASSWORD_ONLY_OK
-            // 用户名是我们自己写死的常量，让用户改它只会造成"他填的名字被丢掉"的错觉。
-            | CREDUI_FLAGS_KEEP_USERNAME
-            // We deliberately make CredUI return the password to this native
-            // function, then write the exact Generic Credential target below.
-            // Microsoft documents that this is the supported path for
-            // inspecting a returned password; it is wiped immediately after
-            // CredWriteW and never enters WebView IPC.
-            | CREDUI_FLAGS_DO_NOT_PERSIST;
-        let result = unsafe {
-            CredUIPromptForCredentialsW(
-                Some(&ui_info),
-                &target,
-                None,
-                0,
-                &mut credential_username,
-                &mut password,
-                None,
-                flags,
-            )
-        };
-
-        if result == ERROR_CANCELLED {
-            secure_zero_u16(&mut password);
-            secure_zero_u16(&mut credential_username);
-            return Ok(false);
-        }
-        if result.0 != 0 {
-            secure_zero_u16(&mut password);
-            secure_zero_u16(&mut credential_username);
-            return Err(format!("Windows 凭据输入失败（错误代码 {}）。", result.0));
-        }
-
-        let save_result = (|| -> Result<(), String> {
-            let password_len = password
-                .iter()
-                .position(|value| *value == 0)
-                .unwrap_or(password.len());
-            if password_len == 0 {
-                return Err("API Key 不能为空。".into());
-            }
-            // Match `keyring`'s Windows Generic Credential representation:
-            // its `set_password` serializes password UTF-16 code units as a
-            // little-endian blob and `get_password` reverses that encoding.
-            let mut password_blob = credential_blob_from_prompt_password(&password[..password_len]);
-            let byte_len = u32::try_from(password_blob.len()).map_err(|_| "API Key 长度无效。")?;
-            let mut credential = CREDENTIALW {
-                Flags: CRED_FLAGS::default(),
-                Type: CRED_TYPE_GENERIC,
-                TargetName: PWSTR(target.as_ptr() as *mut u16),
-                Comment: PWSTR::null(),
-                LastWritten: FILETIME::default(),
-                CredentialBlobSize: byte_len,
-                CredentialBlob: password_blob.as_mut_ptr(),
-                Persist: CRED_PERSIST_ENTERPRISE,
-                AttributeCount: 0,
-                Attributes: std::ptr::null_mut(),
-                TargetAlias: PWSTR::null(),
-                UserName: PWSTR(username.as_ptr() as *mut u16),
-            };
-            // `keyring::Entry::new("dsh-wallpaper", "deepseek-api")`
-            // resolves to this target on Windows. Keep the credential write
-            // native so the renderer never sees plaintext.
-            let result = unsafe { CredWriteW(&mut credential, 0) }
-                .map_err(|error| format!("无法保存 API Key 到 Windows 凭据管理器：{error}"));
-            secure_zero_bytes(&mut password_blob);
-            result
-        })();
-        secure_zero_u16(&mut password);
-        secure_zero_u16(&mut credential_username);
-        save_result?;
-        Ok(true)
+        write_api_key_credential(&key)
     }
 
     #[cfg(not(windows))]
     {
-        let _ = caller;
-        Err("API Key 原生凭据输入仅支持 Windows。".into())
+        let _ = key;
+        Err("API Key 仅支持 Windows 凭据管理器。".into())
+    }
+}
+
+/// Whether a key is stored, and the masked form to show in Settings.
+///
+/// 回答里**永远没有明文**：脱敏在原生侧做完，渲染端拿到的最多是一串点和首尾几个字符。
+/// 没有 Key 时返回 `present: false`，而不是报错——"还没配"是正常状态。
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+fn api_key_status(caller: tauri::WebviewWindow) -> Result<serde_json::Value, String> {
+    if caller.label() != SETTINGS_WINDOW_LABEL {
+        return Err("仅设置中心可以读取 API Key 状态。".into());
+    }
+
+    #[cfg(windows)]
+    {
+        let entry = keyring::Entry::new("dsh-wallpaper", "deepseek-api")
+            .map_err(|_| "无法访问 Windows 凭据管理器。请检查系统凭据服务后重试。".to_string())?;
+        match entry.get_password() {
+            Ok(key) => Ok(serde_json::json!({ "present": true, "masked": mask_api_key(&key) })),
+            Err(_) => Ok(serde_json::json!({ "present": false })),
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        Ok(serde_json::json!({ "present": false }))
     }
 }
 
 #[cfg(all(test, windows))]
 #[cfg(not(feature = "lite"))]
 mod api_credential_tests {
-    use super::credential_blob_from_prompt_password;
+    use super::{credential_blob_from_prompt_password, mask_api_key};
 
     #[test]
     fn serializes_the_same_utf16_little_endian_shape_as_keyring_windows() {
@@ -1964,6 +1942,29 @@ mod api_credential_tests {
             credential_blob_from_prompt_password(&[0x0073, 0x006B, 0x4F60]),
             vec![0x73, 0x00, 0x6B, 0x00, 0x60, 0x4F]
         );
+    }
+
+    /// 设置中心显示的是这个字符串——它必须"认得出是哪一条"，同时**不能**泄漏中间那段，
+    /// 因为这是渲染端唯一能拿到的 Key 形态（没有任何命令能读回明文）。
+    #[test]
+    fn never_reveals_the_middle_of_a_stored_key() {
+        assert_eq!(mask_api_key("sk-1234567890abcdef"), "sk-••••••••cdef");
+        // 首尾照旧看得见，中间那段原样字符一个都不许出现。
+        let masked = mask_api_key("sk-1234567890abcdef");
+        assert!(!masked.contains("1234567890"));
+        assert!(masked.ends_with("cdef"));
+        // 前后空白不是 Key 的一部分。
+        assert_eq!(mask_api_key("  sk-1234567890abcdef  "), "sk-••••••••cdef");
+    }
+
+    /// 短 Key 不玩"留一半"的漂亮处理：全遮，宁可少显示也不多泄漏。
+    #[test]
+    fn hides_short_keys_entirely_rather_than_half_of_them() {
+        assert_eq!(mask_api_key(""), "");
+        assert_eq!(mask_api_key("abc"), "•••");
+        assert_eq!(mask_api_key("abcdef"), "••••••");
+        // 再长一点只留最后两个字符。
+        assert_eq!(mask_api_key("abcdefghi"), "•••••••hi");
     }
 }
 
@@ -4026,7 +4027,8 @@ macro_rules! register_edition_commands {
             launch_translucent_tb,
             open_translucent_tb_install,
             open_windows_lock_screen_settings,
-            prompt_for_api_key,
+            save_api_key,
+            api_key_status,
             show_deepseek_login,
             native_bootstrap_generation,
             release_native_bootstrap,
