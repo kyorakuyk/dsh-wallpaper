@@ -438,7 +438,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
         <Card title="DeepSeek API" description="API 模式会产生实际费用，密钥只保存在 Windows 凭据管理器。">
           <Field title="API 地址"><input value={settings.deepseekApi.baseUrl} onChange={(e) => set({ deepseekApi: { ...settings.deepseekApi, baseUrl: e.target.value } })} /></Field>
           <Field title="模型"><input value={settings.deepseekApi.model} onChange={(e) => set({ deepseekApi: { ...settings.deepseekApi, model: e.target.value } })} /></Field>
-          <Field title="访问密钥"><button className="settings-action secondary" onClick={props.onConfigureApiKey}>更新 API Key</button></Field>
+          <Field title="访问密钥" detail="点击后会弹出 Windows 自己的凭据窗口（密钥不经过壁纸界面，直接由原生写入凭据管理器）：用户名一栏已固定，把 Key 填到「密码」一栏即可。"><button className="settings-action secondary" onClick={props.onConfigureApiKey}>更新 API Key</button></Field>
           <Field title="输入价格" detail="人民币／每百万 input tokens。输入、输出价格都配置后，才会显示本轮和会话估算费用。"><PriceInput label="输入价格（人民币每百万 tokens）" value={settings.deepseekApi.priceInputPerMillion} onChange={(priceInputPerMillion) => set({ deepseekApi: { ...settings.deepseekApi, priceInputPerMillion } })} /></Field>
           <Field title="输出价格" detail="人民币／每百万 output tokens。留空不会伪造零费用；缓存 token 没有单独价格时会标为估算。"><PriceInput label="输出价格（人民币每百万 tokens）" value={settings.deepseekApi.priceOutputPerMillion} onChange={(priceOutputPerMillion) => set({ deepseekApi: { ...settings.deepseekApi, priceOutputPerMillion } })} /></Field>
         </Card>

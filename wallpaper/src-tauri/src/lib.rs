@@ -1807,6 +1807,15 @@ fn open_windows_lock_screen_settings(caller: tauri::WebviewWindow) -> Result<(),
 /// transporting plaintext through Tauri IPC or the renderer. The generic
 /// CredUI target deliberately matches the `keyring` crate's default Windows
 /// target naming, so the existing API client reads the same credential.
+///
+/// 用户实测问的是"为什么点『更新 API Key』会弹出这个窗口"：因为它**就是 Windows 自己的凭据
+/// 对话框**（CredUI），不是本应用画的。用它的唯一理由是那条边界——**明文不经过 WebView、
+/// 也不经过 Tauri IPC**，直接由原生写进凭据管理器。
+///
+/// 代价是 CredUI 的字段是固定的"用户名 + 密码"（它面向的是网络凭据）。代码里曾经假定
+/// `CREDUI_FLAGS_PASSWORD_ONLY_OK` 会把用户名控件藏起来，**实测不会**：用户名那一栏照样出现，
+/// 而且是空的下拉 + 一个"浏览"按钮，用户完全不知道那一栏该填什么。所以现在把用户名**预先填好
+/// 并锁住**（`CREDUI_FLAGS_KEEP_USERNAME`），并在提示里说清 Key 填在"密码"一栏。
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
 fn prompt_for_api_key(caller: tauri::WebviewWindow) -> Result<bool, String> {
@@ -1823,9 +1832,9 @@ fn prompt_for_api_key(caller: tauri::WebviewWindow) -> Result<bool, String> {
                 Security::Credentials::{
                     CredUIPromptForCredentialsW, CredWriteW, CREDENTIALW,
                     CREDUI_FLAGS_ALWAYS_SHOW_UI, CREDUI_FLAGS_DO_NOT_PERSIST,
-                    CREDUI_FLAGS_GENERIC_CREDENTIALS, CREDUI_FLAGS_PASSWORD_ONLY_OK, CREDUI_INFOW,
-                    CREDUI_MAX_USERNAME_LENGTH, CRED_FLAGS, CRED_PERSIST_ENTERPRISE,
-                    CRED_TYPE_GENERIC,
+                    CREDUI_FLAGS_GENERIC_CREDENTIALS, CREDUI_FLAGS_KEEP_USERNAME,
+                    CREDUI_FLAGS_PASSWORD_ONLY_OK, CREDUI_INFOW, CREDUI_MAX_USERNAME_LENGTH,
+                    CRED_FLAGS, CRED_PERSIST_ENTERPRISE, CRED_TYPE_GENERIC,
                 },
             },
         };
@@ -1838,16 +1847,19 @@ fn prompt_for_api_key(caller: tauri::WebviewWindow) -> Result<bool, String> {
         const CREDENTIAL_USERNAME: &str = "deepseek-api";
 
         let caption = HSTRING::from("更新 DeepSeek API Key");
-        let message =
-            HSTRING::from("请输入 DeepSeek API Key。该密钥仅保存到当前 Windows 用户的凭据管理器。");
+        let message = HSTRING::from(
+            "把 DeepSeek API Key 填到「密码」一栏（用户名已固定，仅作标识）。\
+             密钥只写入当前 Windows 用户的凭据管理器。",
+        );
         let target = HSTRING::from(CREDENTIAL_TARGET);
         let username = HSTRING::from(CREDENTIAL_USERNAME);
         let mut password = [0u16; API_KEY_BUFFER_LEN];
-        // Password-only mode must not surface a username control, but CredUI
-        // still requires a writable username buffer. Give it the documented
-        // maximum rather than risking ERROR_INSUFFICIENT_BUFFER on a Windows
-        // implementation that fills a default account name internally.
+        // 预填用户名：CredUI 一定会显示这一栏（实测），空着会让用户以为要填账号。
+        // 缓冲区长度仍按文档最大值给，末尾留给 CredUI 自己写的终止符。
         let mut credential_username = [0u16; CREDUI_MAX_USERNAME_LENGTH as usize + 1];
+        let seed: Vec<u16> = CREDENTIAL_USERNAME.encode_utf16().collect();
+        let seed_len = seed.len().min(CREDUI_MAX_USERNAME_LENGTH as usize);
+        credential_username[..seed_len].copy_from_slice(&seed[..seed_len]);
         let parent = caller
             .hwnd()
             .map_err(|error| format!("无法关联 Windows 凭据对话框：{error}"))?;
@@ -1861,6 +1873,8 @@ fn prompt_for_api_key(caller: tauri::WebviewWindow) -> Result<bool, String> {
         let flags = CREDUI_FLAGS_GENERIC_CREDENTIALS
             | CREDUI_FLAGS_ALWAYS_SHOW_UI
             | CREDUI_FLAGS_PASSWORD_ONLY_OK
+            // 用户名是我们自己写死的常量，让用户改它只会造成"他填的名字被丢掉"的错觉。
+            | CREDUI_FLAGS_KEEP_USERNAME
             // We deliberately make CredUI return the password to this native
             // function, then write the exact Generic Credential target below.
             // Microsoft documents that this is the supported path for
