@@ -309,33 +309,32 @@ fn subject_kind(subject_id: &str) -> HarnessTargetKind {
 
 /// The endpoint that decides whether a subject is running.
 ///
-/// A caller that knows the endpoint the wallpaper is connected to passes it. When
-/// it does not, the subject's own default is the only hint available — and it is a
-/// hint, not a contract, which is why the explicit port wins whenever there is one.
+/// A caller that knows the endpoint the wallpaper is connected to passes it. When it
+/// does not, the endpoint the wallpaper is *actually* using is the answer — and it is
+/// a safety rule rather than a convenience: the settings surface no longer names a
+/// port, so if the user's DSH were listening on a moved port, the subject's own
+/// default would look free and 「打开」 would start a *second* instance against the
+/// same data profile. That live endpoint is now derived from the configured subject,
+/// so this can no longer reach a client the user did not choose (§4.6).
 fn ui_port(subject_id: &str, declared: u16) -> u16 {
     if declared != 0 {
         return declared;
     }
-    // The endpoint the wallpaper is *currently* connected to wins over the subject's
-    // default, and it is a safety rule rather than a convenience: the settings surface
-    // no longer names a port, so if the user's DSH were listening on a moved port the
-    // subject's default (3080) would look free and 「打开」 would start a *second*
-    // instance against the same data profile. A live endpoint means "it is already
-    // running, do not start another" — the same rule §4.6 states for taking over a
-    // client, applied to the one case where the caller cannot tell us which port it
-    // means.
-    let live = crate::harness_endpoint_port();
-    if crate::client_window::endpoint_is_listening(live) {
-        return live;
+    if crate::harness_endpoint_configured() {
+        // The settings' subject decides, and through `harness_endpoint_port` it
+        // already accounts for a checkout the user moved to another port.
+        return crate::harness_endpoint_port();
     }
+    // Nothing has been published yet — the settings window can reach a subject
+    // before it has pushed the scope — so the subject the caller names is the only
+    // statement about where that client answers. Starting on a default port would
+    // mean starting a second instance against the same data profile.
     if let Some(aumid) = subject_id.trim().strip_prefix(SHELL_ID_PREFIX) {
-        if let Some(shell) = known_shell(aumid) {
-            if let Some(port) = shell.default_port {
-                return port;
-            }
+        if let Some(port) = known_shell(aumid).and_then(|shell| shell.default_port) {
+            return port;
         }
     }
-    crate::HARNESS_DEFAULT_PORT
+    crate::harness_endpoint_port()
 }
 
 /// Make the chosen subject's interface available and foreground.

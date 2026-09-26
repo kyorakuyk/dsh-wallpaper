@@ -2383,20 +2383,38 @@ const HARNESS_ENDPOINT_PORTS: &[(u16, &str)] =
 #[cfg(not(feature = "lite"))]
 const HARNESS_DEFAULT_PORT: u16 = 3080;
 
-/// Which endpoint the wallpaper talks to.
+/// Which endpoints the wallpaper may talk to, and which one it is using.
 ///
-/// Two separate facts, and conflating them was a bug: `pinned` is the user's
-/// explicit choice and `active` is whatever a scan last found usable. "Auto" means
-/// *discovered*, not *3080* — the original single-port version reported `offline`
-/// while a ready Bridge served the official desktop shell on 19387, and the
-/// monitor never looked anywhere else.
+/// Three facts that used to be two, and the missing one was the cause of a real
+/// bug: `pinned` is the user's explicit choice, `subject` is the execution subject
+/// the settings configure, and `active` is whatever auto mode last found. Without
+/// `subject` the monitor probed the shipped priority order and would connect to
+/// whichever client happened to answer — i.e. silently answer a session for a
+/// subject the user never chose (the frozen rule: 「无论A是怎么死的，都不允许静默用B
+/// 来替换A」).
+///
+/// `subject` is a whole record rather than a port list because an **empty** list is
+/// meaningful: the subject is configured, this build just cannot say where it
+/// answers. Treating that as "nothing configured" would put the wallpaper back on
+/// the priority order, which is precisely the substitution being prevented.
 #[cfg(not(feature = "lite"))]
 #[derive(Default)]
 struct HarnessEndpointState {
     /// The user's choice from settings, kept until they change it.
     pinned: Mutex<Option<u16>>,
-    /// The endpoint a scan last confirmed, used while nothing is pinned.
+    /// The configured execution subject and the ports it may answer on.
+    subject: Mutex<Option<HarnessEndpointSubject>>,
+    /// The endpoint auto mode last confirmed, used while nothing is configured.
     active: Mutex<Option<u16>>,
+}
+
+#[cfg(not(feature = "lite"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HarnessEndpointSubject {
+    /// The id the settings store (`shell:<aumid>` or a checkout root path).
+    id: String,
+    /// Every port it may be reached on, in the subject's own order.
+    ports: Vec<u16>,
 }
 
 #[cfg(not(feature = "lite"))]
@@ -2407,33 +2425,96 @@ fn harness_endpoint_state() -> &'static HarnessEndpointState {
     HARNESS_ENDPOINT_STATE.get_or_init(HarnessEndpointState::default)
 }
 
+#[cfg(not(feature = "lite"))]
+fn locked<T>(value: &Mutex<T>) -> Option<std::sync::MutexGuard<'_, T>> {
+    value.lock().ok()
+}
+
+/// The ports the wallpaper may probe, in order — never widened by what answers.
+///
+/// The order carries the "connected ⇒ sticky" rule as well: the endpoint already
+/// in use leads the list, so a later probe keeps talking to the same instance
+/// instead of re-deciding on every tick.
+#[cfg(not(feature = "lite"))]
+fn harness_endpoint_candidates() -> Vec<u16> {
+    let state = harness_endpoint_state();
+    if let Some(port) = locked(&state.pinned).and_then(|guard| *guard) {
+        // An explicit pin is the user's own statement about where their DSH is, so
+        // it is the whole candidate list — honoured even while nothing answers.
+        return vec![port];
+    }
+    if let Some(subject) = locked(&state.subject).and_then(|guard| guard.clone()) {
+        let sticky = locked(&state.active).and_then(|guard| *guard);
+        let mut ordered: Vec<u16> = Vec::with_capacity(subject.ports.len());
+        if let Some(port) = sticky {
+            if subject.ports.contains(&port) {
+                ordered.push(port);
+            }
+        }
+        for port in &subject.ports {
+            if !ordered.contains(port) {
+                ordered.push(*port);
+            }
+        }
+        return ordered;
+    }
+    // Nothing configured yet: the shipped priority order, with whatever auto mode
+    // is already using first.
+    let mut ordered: Vec<u16> = locked(&state.active).and_then(|guard| *guard).into_iter().collect();
+    for (port, _kind) in HARNESS_ENDPOINT_PORTS {
+        if !ordered.contains(port) {
+            ordered.push(*port);
+        }
+    }
+    ordered
+}
+
+/// Whether the settings name where the wallpaper may connect at all.
+///
+/// The candidate list cannot answer this on its own: an *empty* list means "the
+/// subject is configured but this build cannot place it", while nothing configured
+/// yields the shipped order. Only this call separates the two, and it is what
+/// decides whether the reason the user reads is `subject-offline` or `no-endpoint`.
+#[cfg(not(feature = "lite"))]
+fn harness_endpoint_configured() -> bool {
+    let state = harness_endpoint_state();
+    if locked(&state.pinned).map(|guard| guard.is_some()).unwrap_or(true) {
+        return true;
+    }
+    locked(&state.subject)
+        .map(|guard| guard.is_some())
+        .unwrap_or(true)
+}
+
 /// The port the wallpaper should talk to.
 ///
-/// A pinned choice wins. Otherwise the last discovered endpoint is used, falling
-/// back to DSH's own default only before any scan has succeeded — so a CLI-started
-/// Host on 3080 still works without configuration, while a desktop client on
-/// another port is found rather than missed.
+/// Among the permitted endpoints, one that is actually listening wins, then the
+/// first permitted one. Never a port outside the permitted set, so this cannot
+/// hand a session to another subject; within one subject's own ports it prefers the
+/// live instance, which is what keeps a CLI-started Host on 3080 working with no
+/// configuration at all.
 #[cfg(not(feature = "lite"))]
 fn harness_endpoint_port() -> u16 {
-    let state = harness_endpoint_state();
-    let pinned = state.pinned.lock().ok().and_then(|guard| *guard);
-    if let Some(port) = pinned {
-        return port;
-    }
-    state
-        .active
-        .lock()
-        .ok()
-        .and_then(|guard| *guard)
+    let candidates = harness_endpoint_candidates();
+    candidates
+        .iter()
+        .copied()
+        .find(|port| client_window::endpoint_is_listening(*port))
+        .or_else(|| candidates.first().copied())
         .unwrap_or(HARNESS_DEFAULT_PORT)
 }
 
-/// Record an endpoint a scan confirmed. Ignored while the user has pinned one, so
-/// discovery can never quietly override an explicit choice.
+/// Record the endpoint a successful probe used.
+///
+/// Sticky, not "discovered": it never widens the permitted set, it only remembers
+/// which permitted port answered. In the subject case that is the whole of
+/// "connected ⇒ sticky"; in auto mode it is the same preference applied to the
+/// shipped order, and a pin is a choice rather than an observation, so nothing is
+/// recorded for it.
 #[cfg(not(feature = "lite"))]
-fn note_discovered_endpoint(port: u16) {
+fn note_endpoint_in_use(port: u16) {
     let state = harness_endpoint_state();
-    if state.pinned.lock().map(|guard| guard.is_some()).unwrap_or(true) {
+    if locked(&state.pinned).map(|guard| guard.is_some()).unwrap_or(true) {
         return;
     }
     if let Ok(mut guard) = state.active.lock() {
@@ -2441,6 +2522,58 @@ fn note_discovered_endpoint(port: u16) {
     }
 }
 
+/// Publish the endpoint scope the settings configure.
+///
+/// One function for the whole decision, because the three facts are one decision: a
+/// partial update would leave the monitor probing a port from a subject the user has
+/// already left. Changing the subject clears the recorded endpoint, because that is
+/// a real change of subject rather than a substitution — the one moment the
+/// wallpaper is allowed to move.
+#[cfg(not(feature = "lite"))]
+fn apply_endpoint_scope(
+    state: &HarnessEndpointState,
+    port: Option<u16>,
+    subject_id: Option<&str>,
+    extra_ports: &[u16],
+) -> Result<serde_json::Value, String> {
+    {
+        let mut guard = state.pinned.lock().map_err(|_| "接入端点状态不可用".to_string())?;
+        *guard = port;
+    }
+    let subject_id = subject_id.unwrap_or_default().trim().to_string();
+    let ports = harness_targets::subject_endpoint_ports(&subject_id, extra_ports);
+    let previous = {
+        let mut guard = state
+            .subject
+            .lock()
+            .map_err(|_| "接入端点状态不可用".to_string())?;
+        let previous = guard.clone();
+        *guard = if subject_id.is_empty() {
+            None
+        } else {
+            Some(HarnessEndpointSubject {
+                id: subject_id,
+                ports,
+            })
+        };
+        previous
+    };
+    let next = state
+        .subject
+        .lock()
+        .map_err(|_| "接入端点状态不可用".to_string())?
+        .clone();
+    if previous != next {
+        if let Ok(mut guard) = state.active.lock() {
+            *guard = None;
+        }
+    }
+    Ok(serde_json::json!({
+        "port": port,
+        "subjectId": next.as_ref().map(|subject| subject.id.clone()),
+        "subjectPorts": next.map(|subject| subject.ports).unwrap_or_default(),
+    }))
+}
 
 #[cfg(not(feature = "lite"))]
 fn harness_status_cache() -> &'static RwLock<serde_json::Value> {
@@ -2691,18 +2824,6 @@ async fn fetch_harness_status() -> serde_json::Value {
     fetch_harness_status_at(harness_endpoint_port()).await
 }
 
-/// Pin or clear the user's endpoint choice.
-///
-/// Independent of discovery: pinning wins until it is cleared, and a cleared pin
-/// lets the monitor's scan take over again. Clearing also drops the remembered
-/// scan result so the next probe rediscovers instead of reusing a stale port.
-
-/// Pin the endpoint the monitor probes, or clear the pin with `None`.
-///
-/// Both surfaces may call it: the settings window after the user picks, and the
-/// background surface when it receives the broadcast. Validation is deliberately
-/// strict — a port outside the TCP range is rejected rather than silently
-/// falling back, so a bad value is visible instead of looking like "no Bridge".
 /// Verify that the renderer's island `pointerdown` really is a user click.
 ///
 /// The native click route is closed - a real click reaches neither `WM_MOUSEACTIVATE` nor
@@ -2735,20 +2856,33 @@ fn verify_island_click(app: tauri::AppHandle, caller: tauri::WebviewWindow) -> R
     Ok(verdict)
 }
 
+/// Publish which endpoints the wallpaper may talk to.
+///
+/// The settings are the authority, and this is how they reach the monitor that
+/// actually probes: the subject id, the user's explicit pin, and the ports they
+/// added by hand. All three arrive together because they are one decision, and a
+/// partial update would leave the monitor on an endpoint belonging to a subject the
+/// user has already left.
+///
+/// Without the subject the monitor only knew ports, so it probed the shipped
+/// priority order and connected to whichever client answered — the silent
+/// substitution of one subject for another that the frozen rule forbids. Validation
+/// stays strict: a port outside the TCP range is rejected rather than silently
+/// dropped, so a bad value is visible instead of looking like "no Bridge".
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
 fn set_harness_endpoint(
     caller: tauri::WebviewWindow,
     port: Option<u16>,
-) -> Result<Option<u16>, String> {
+    subject_id: Option<String>,
+    extra_ports: Option<Vec<u16>>,
+) -> Result<serde_json::Value, String> {
     require_wallpaper_surface(&caller)?;
     if port == Some(0) {
         return Err("接入端点端口必须在 1-65535 之间".into());
     }
     let state = harness_endpoint_state();
-    let mut guard = state.pinned.lock().map_err(|_| "接入端点状态不可用".to_string())?;
-    *guard = port;
-    Ok(*guard)
+    apply_endpoint_scope(state, port, subject_id.as_deref(), &extra_ports.unwrap_or_default())
 }
 
 /// A root-page response is diagnostic only. It is deliberately not part of
@@ -2850,9 +2984,10 @@ mod dsh_autostart_tests {
 #[cfg(not(feature = "lite"))]
 mod harness_status_tests {
     use super::{
-        compatible_harness_bridge_status, diagnose_harness_bridge_status, fetch_harness_status_at,
-        harness_endpoint_port, probe_current_endpoint, root_probe_availability, HarnessEndpointState,
-        HARNESS_DEFAULT_PORT,
+        apply_endpoint_scope, compatible_harness_bridge_status, diagnose_harness_bridge_status,
+        fetch_harness_status_at, harness_endpoint_port, probe_current_endpoint,
+        root_probe_availability, HarnessEndpointState, HARNESS_DEFAULT_PORT,
+        HARNESS_ENDPOINT_PORTS,
     };
     use crate::app_core::HarnessAvailability;
     use serde_json::json;
@@ -2932,61 +3067,134 @@ mod harness_status_tests {
     /// on 19387, and choosing that shell in settings did not help because nothing
     /// ever looked there.
     #[test]
-    fn a_discovered_endpoint_is_used_while_nothing_is_pinned() {
+    fn a_discovered_endpoint_is_used_while_nothing_is_configured() {
         let state = HarnessEndpointState::default();
-        // DSH's own default still applies before any scan succeeds, so a
-        // CLI-started Host on 3080 keeps working with no configuration.
-        assert_eq!(endpoint_port_of(&state), HARNESS_DEFAULT_PORT);
-        assert_eq!(note_discovered_on(&state, 19387), 19387);
+        // The shipped priority order is the candidate list while nothing is
+        // configured, and DSH's own default is still among the candidates, so a
+        // CLI-started Host on 3080 keeps working with no configuration at all.
+        assert!(candidates_of(&state).contains(&HARNESS_DEFAULT_PORT));
+        assert_eq!(candidates_of(&state)[0], 19387);
+        // Whatever auto mode found leads the list, so the next probe keeps using it.
+        assert_eq!(note_in_use_on(&state, 3080)[0], 3080);
     }
 
-    /// An explicit choice outranks discovery, in both directions.
+    /// An explicit choice outranks everything, in both directions.
     #[test]
-    fn a_pinned_endpoint_is_never_overridden_by_discovery() {
+    fn a_pinned_endpoint_is_never_overridden() {
         let state = HarnessEndpointState::default();
-        // A scan result is used while nothing is pinned...
-        assert_eq!(note_discovered_on(&state, 19387), 19387);
+        // A recorded endpoint is used while nothing is pinned...
+        assert_eq!(note_in_use_on(&state, 19387)[0], 19387);
         // ...and stops mattering the moment the user pins something else.
         *state.pinned.lock().expect("pin lock") = Some(43120);
-        assert_eq!(note_discovered_on(&state, 19387), 43120);
-        // Clearing the pin hands control back to discovery.
+        assert_eq!(candidates_of(&state), vec![43120]);
+        // Clearing the pin hands control back to the configured subject, and a pin
+        // never recorded anything for itself to revive.
         *state.pinned.lock().expect("pin lock") = None;
-        assert_eq!(note_discovered_on(&state, 3080), 3080);
+        assert_eq!(state.active.lock().expect("active lock").clone(), Some(19387));
+        assert_eq!(candidates_of(&state)[0], 19387);
     }
 
-    /// Discovery must not record anything while a choice is pinned, so clearing a
-    /// pin cannot silently revive a stale scan result.
+    /// The frozen rule, native half: only the configured subject's own ports may be
+    /// probed, and its being down is not a reason to use another client.
     #[test]
-    fn discovery_is_ignored_entirely_while_pinned() {
+    fn a_configured_subject_narrows_the_candidates_to_its_own_ports() {
         let state = HarnessEndpointState::default();
-        *state.pinned.lock().expect("pin lock") = Some(43120);
-        note_discovered_on(&state, 19387);
+        apply_endpoint_scope(&state, None, Some("shell:com.deepseek.dsh"), &[]).expect("scope");
+        // The official shell owns 19387 and nothing else, even though the shipped
+        // order also holds 43120 and 3080.
+        assert_eq!(candidates_of(&state), vec![19387]);
+
+        // A checkout owns DSH's default plus the ports the user added for it.
+        apply_endpoint_scope(&state, None, Some(r"D:\tree"), &[3081]).expect("scope");
+        assert_eq!(candidates_of(&state), vec![HARNESS_DEFAULT_PORT, 3081]);
+
+        // An unknown shell is *configured* with nowhere to look, which is reported
+        // as unreachable rather than as a reason to fall back to another client.
+        apply_endpoint_scope(&state, None, Some("shell:com.unknown.client"), &[]).expect("scope");
+        assert!(candidates_of(&state).is_empty());
+        assert!(harness_endpoint_configured_on(&state));
+    }
+
+    /// Changing the subject is the one moment the wallpaper may move, and it does
+    /// not carry the previous endpoint across.
+    #[test]
+    fn changing_the_subject_clears_the_endpoint_in_use() {
+        let state = HarnessEndpointState::default();
+        apply_endpoint_scope(&state, None, Some("shell:com.deepseek.dsh"), &[]).expect("scope");
+        assert_eq!(note_in_use_on(&state, 19387)[0], 19387);
+        // Same subject again: the endpoint it is already using stays first.
+        apply_endpoint_scope(&state, None, Some("shell:com.deepseek.dsh"), &[]).expect("scope");
+        assert_eq!(candidates_of(&state)[0], 19387);
+        // A different subject starts from its own order.
+        apply_endpoint_scope(&state, None, Some("shell:ai.deepseek.dsh.desktop"), &[]).expect("scope");
+        assert_eq!(candidates_of(&state), vec![43120]);
         assert_eq!(*state.active.lock().expect("active lock"), None);
     }
 
-    /// The same resolution the commands use, against a caller-owned state.
-    fn endpoint_port_of(state: &HarnessEndpointState) -> u16 {
-        let pinned = state.pinned.lock().ok().and_then(|guard| *guard);
-        if let Some(port) = pinned {
-            return port;
-        }
-        state
-            .active
-            .lock()
-            .ok()
-            .and_then(|guard| *guard)
-            .unwrap_or(HARNESS_DEFAULT_PORT)
+    /// A pin never records an observation, so clearing it cannot revive one.
+    #[test]
+    fn nothing_is_recorded_while_pinned() {
+        let state = HarnessEndpointState::default();
+        *state.pinned.lock().expect("pin lock") = Some(43120);
+        note_in_use_on(&state, 19387);
+        assert_eq!(*state.active.lock().expect("active lock"), None);
     }
 
-    /// `note_discovered_endpoint`, against a caller-owned state, returning what
-    /// the endpoint would then resolve to.
-    fn note_discovered_on(state: &HarnessEndpointState, port: u16) -> u16 {
-        if !state.pinned.lock().map(|guard| guard.is_some()).unwrap_or(true) {
-            if let Ok(mut guard) = state.active.lock() {
-                *guard = Some(port);
+    /// No configuration at all is a different fact from a configuration that cannot
+    /// be placed, and the two read differently to the user.
+    #[test]
+    fn nothing_configured_is_not_the_same_as_configured_but_unreachable() {
+        let state = HarnessEndpointState::default();
+        assert!(!harness_endpoint_configured_on(&state));
+        apply_endpoint_scope(&state, None, Some("   "), &[]).expect("scope");
+        assert!(!harness_endpoint_configured_on(&state));
+        // A pin alone is a configuration too.
+        apply_endpoint_scope(&state, Some(3080), Some(""), &[]).expect("scope");
+        assert!(harness_endpoint_configured_on(&state));
+    }
+
+    /// The same resolution the monitor uses, against a caller-owned state.
+    fn candidates_of(state: &HarnessEndpointState) -> Vec<u16> {
+        if let Some(port) = state.pinned.lock().ok().and_then(|guard| *guard) {
+            return vec![port];
+        }
+        if let Some(subject) = state.subject.lock().ok().and_then(|guard| guard.clone()) {
+            let sticky = state.active.lock().ok().and_then(|guard| *guard);
+            let mut ordered: Vec<u16> = sticky
+                .filter(|port| subject.ports.contains(port))
+                .into_iter()
+                .collect();
+            for port in &subject.ports {
+                if !ordered.contains(port) {
+                    ordered.push(*port);
+                }
+            }
+            return ordered;
+        }
+        let mut ordered: Vec<u16> = state.active.lock().ok().and_then(|guard| *guard).into_iter().collect();
+        for (port, _kind) in HARNESS_ENDPOINT_PORTS {
+            if !ordered.contains(port) {
+                ordered.push(*port);
             }
         }
-        endpoint_port_of(state)
+        ordered
+    }
+
+    fn harness_endpoint_configured_on(state: &HarnessEndpointState) -> bool {
+        state.pinned.lock().map(|guard| guard.is_some()).unwrap_or(true)
+            || state.subject.lock().map(|guard| guard.is_some()).unwrap_or(true)
+    }
+
+    /// `note_endpoint_in_use`, against a caller-owned state, returning the candidate
+    /// list the monitor would then probe.
+    fn note_in_use_on(state: &HarnessEndpointState, port: u16) -> Vec<u16> {
+        if state.pinned.lock().map(|guard| guard.is_some()).unwrap_or(true) {
+            return candidates_of(state);
+        }
+        if let Ok(mut guard) = state.active.lock() {
+            *guard = Some(port);
+        }
+        candidates_of(state)
     }
 
     #[test]
@@ -3286,45 +3494,57 @@ fn harness_endpoint_window(caller: tauri::WebviewWindow, port: u16) -> Result<bo
 }
 
 
-/// Probe the endpoint in use, discovering a better one when it is not answering.
+/// Probe the permitted endpoints and report what the wallpaper is talking to.
 ///
-/// Tiered on purpose. The common case is one loopback request; a full scan of
-/// every candidate only happens when the current endpoint is not ready, so a
-/// resident wallpaper does not pay for discovery it does not need — and a client
-/// that is started later, or restarts on a different port, is still picked up
-/// without the user reopening settings.
+/// Tiered on purpose, but only *within* the permitted set: the endpoint in use is
+/// tried first (the common case is one loopback request), and the rest of the
+/// subject's own ports are tried after it, so a tree that was started on a port the
+/// user added is still found. What never happens is looking outside that set — a
+/// ready Bridge on another port is a different subject, and adopting it is the
+/// silent substitution the frozen rule forbids for any reason. When nothing is
+/// configured the permitted set *is* the shipped priority order, which is the one
+/// case where "whichever client answers" is what the user asked for.
 #[cfg(not(feature = "lite"))]
 async fn probe_current_endpoint() -> serde_json::Value {
-    let current = harness_endpoint_port();
-    let status = fetch_harness_status_at(current).await;
-    if harness_status_is_ready(&status) {
-        note_discovered_endpoint(current);
-        return status;
+    let candidates = harness_endpoint_candidates();
+    let configured = harness_endpoint_configured();
+    let mut first: Option<serde_json::Value> = None;
+    let mut present: Option<serde_json::Value> = None;
+    for port in candidates {
+        let status = fetch_harness_status_at(port).await;
+        if harness_status_is_ready(&status) {
+            // Keep talking to the instance that answered: "connected ⇒ sticky".
+            note_endpoint_in_use(port);
+            return status;
+        }
+        if harness_status_is_present(&status) && present.is_none() {
+            present = Some(status.clone());
+        }
+        if first.is_none() {
+            first = Some(status);
+        }
     }
+    // Nothing permitted is usable. A Bridge that answered but is not ready is the
+    // more specific diagnosis, so it wins over a bare "nothing there"; otherwise the
+    // first permitted port's own status is reported, and the reason code says which
+    // of the two situations this is.
+    let mut status = present
+        .or(first)
+        .unwrap_or_else(|| serde_json::json!({ "availability": "offline" }));
+    if status.get("availability").and_then(serde_json::Value::as_str) == Some("offline") {
+        status["reasonCode"] = serde_json::Value::String(
+            if configured { "subject-offline" } else { "no-endpoint" }.to_string(),
+        );
+    }
+    status
+}
 
-    // Not usable. Look for a better endpoint, but only replace the current one
-    // when the scan finds something strictly usable: otherwise a transient
-    // failure would drop a working endpoint for a worse one.
-    let mut best: Option<(u16, serde_json::Value)> = None;
-    for (port, _kind) in HARNESS_ENDPOINT_PORTS {
-        if *port == current {
-            continue;
-        }
-        let candidate = fetch_harness_status_at(*port).await;
-        if harness_status_is_ready(&candidate) {
-            best = Some((*port, candidate));
-            break;
-        }
-    }
-    match best {
-        Some((port, candidate)) => {
-            log::info!("harness endpoint discovered: {current} -> {port}");
-            note_discovered_endpoint(port);
-            candidate
-        }
-        // Nothing better: report the endpoint in use, so the diagnostic names the
-        // port the user is actually pinned to rather than an unrelated one.
-        None => status,
+/// Whether a status document proves a Bridge is there, even if it is not usable.
+#[cfg(not(feature = "lite"))]
+fn harness_status_is_present(status: &serde_json::Value) -> bool {
+    match status.get("availability").and_then(serde_json::Value::as_str) {
+        Some("offline") | Some("web-only") | None => false,
+        Some(_) => true,
     }
 }
 

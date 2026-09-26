@@ -268,6 +268,57 @@ pub(crate) fn known_shell(aumid: &str) -> Option<ShellApp> {
         })
 }
 
+/// Every default port a known shell carries.
+///
+/// A slice rather than the single [`ShellApp::default_port`] probe hint, because a
+/// caller deciding *which endpoints a subject may be reached on* needs the whole
+/// set: the hint answers "where to wait after a start", this answers "where this
+/// client can be talked to at all", and conflating them is how one port silently
+/// became the contract §4.5 forbids.
+pub(crate) fn known_shell_ports(aumid: &str) -> Option<Vec<u16>> {
+    SHELL_APPS
+        .iter()
+        .find(|spec| spec.aumid.eq_ignore_ascii_case(aumid.trim()))
+        .map(|spec| spec.default_ports.to_vec())
+}
+
+/// The ports a configured execution subject may be reached on, in order.
+///
+/// This is the native half of the frozen "no substitution" rule, and its renderer
+/// mirror is `subjectEndpointPorts` in `wallpaper/src/connect/endpoints.ts`. The
+/// set is derived from the subject alone, never from what a probe finds:
+///
+/// * a shell owns the port compiled into it — the port is part of the client, so a
+///   second one would mean a second client, which is also why a checkout's added
+///   ports deliberately do not apply to it;
+/// * a source tree owns DSH's own web default, plus the ports the user added for
+///   it by hand (adding one *is* the user saying which subject answers there);
+/// * an unknown shell AUMID yields an empty set, which is not the same as "nothing
+///   configured" — see below.
+///
+/// The empty return is loaded with meaning, and there are two of them, so callers
+/// must pass the subject id rather than only this list: an **empty id** means
+/// "nothing chosen yet", the one case where the shipped priority order applies,
+/// while an **empty set for a non-empty id** means the subject is configured but
+/// this build cannot say where it answers, which must be reported as unreachable
+/// rather than as a reason to fall back to another client.
+pub(crate) fn subject_endpoint_ports(subject_id: &str, extra_ports: &[u16]) -> Vec<u16> {
+    let subject = subject_id.trim();
+    if subject.is_empty() {
+        return Vec::new();
+    }
+    if let Some(aumid) = subject.strip_prefix(SHELL_ID_PREFIX) {
+        return known_shell_ports(aumid).unwrap_or_default();
+    }
+    let mut ports = vec![crate::HARNESS_DEFAULT_PORT];
+    for port in extra_ports {
+        if *port != 0 && !ports.contains(port) {
+            ports.push(*port);
+        }
+    }
+    ports
+}
+
 /// Build the target for one known shell.
 fn shell_target(spec: &ShellAppSpec, source: String) -> HarnessTarget {
     HarnessTarget {
@@ -777,6 +828,46 @@ mod tests {
         // What the renderer stores, and what the launcher will hand to Windows,
         // are the same alias: no path and no version exists in between.
         assert_eq!(Some(shell.alias), target.launch.alias);
+    }
+
+    /// The native half of the frozen "no substitution" rule.
+    ///
+    /// Its renderer mirror is `subjectEndpointPorts` in
+    /// `wallpaper/src/connect/endpoints.ts`; the two must agree, because one side
+    /// decides what is scanned and the other what is shown.
+    #[test]
+    fn a_subject_decides_which_ports_may_be_probed() {
+        // A shell owns the port compiled into it, and nothing else: the shipped
+        // order's other two ports are other clients.
+        assert_eq!(
+            subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}{OFFICIAL}"), &[]),
+            vec![19387]
+        );
+        assert_eq!(
+            subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}{DESKTOP}"), &[]),
+            vec![43120]
+        );
+        // The id is matched the same way the launcher matches it.
+        assert_eq!(
+            subject_endpoint_ports("shell:COM.DeepSeek.DSH", &[]),
+            vec![19387]
+        );
+        // A source tree owns DSH's own default plus the ports the user added for it.
+        assert_eq!(subject_endpoint_ports(r"D:\tree", &[]), vec![3080]);
+        assert_eq!(subject_endpoint_ports(r"D:\tree", &[3081, 3081, 0]), vec![3080, 3081]);
+    }
+
+    /// The two empty answers mean opposite things, and conflating them is how the
+    /// wallpaper would end up on the shipped priority order with a subject chosen.
+    #[test]
+    fn an_empty_subject_and_an_unplaceable_one_are_different() {
+        assert!(subject_endpoint_ports("", &[3081]).is_empty());
+        assert!(subject_endpoint_ports("   ", &[3081]).is_empty());
+        // Configured, but this build cannot say where it answers: no port, and the
+        // caller must say so rather than scanning elsewhere.
+        assert!(subject_endpoint_ports("shell:com.unknown.client", &[]).is_empty());
+        // A checkout with added ports is never empty, even before any scan.
+        assert!(!subject_endpoint_ports(r"D:\tree", &[]).is_empty());
     }
 
     /// Ground truth for this machine's shell registrations.
