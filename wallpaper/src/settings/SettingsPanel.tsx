@@ -45,6 +45,8 @@ export interface SettingsPanelProps {
   onTestApiKey: () => void
   onRefreshApiModels: () => void
   apiModelCatalog?: Array<{ id: string; name: string }>
+  /** 上面那份列表的拉取时间（ISO 串）；来自持久化缓存，用来说明它的新鲜度。 */
+  apiModelCatalogFetchedAt?: string
   /**
    * 壁纸此刻在用的 chat 模式（`undefined` = 还没读到快照）。
    *
@@ -262,6 +264,24 @@ export function chatModeOptions(current: BackendMode): Array<{ value: BackendMod
 
 export function backendModeLabel(backend: BackendMode): string {
   return BACKEND_MODE_LABELS[backend] ?? backend
+}
+
+/**
+ * 模型列表那句说明里的"什么时候拉的"。
+ *
+ * 列表是**持久化缓存**（用户实测要求"刷新结果要持久化"），所以它可能是几天前拉的；不把时间写出来，
+ * 用户会以为打开设置时刚拉过。解析不了就什么都不说，而不是编一个时间。
+ */
+export function catalogAgeSuffix(fetchedAt: string | undefined, now = Date.now()): string {
+  if (!fetchedAt) return ''
+  const at = Date.parse(fetchedAt)
+  if (!Number.isFinite(at)) return ''
+  const minutes = Math.max(0, Math.round((now - at) / 60_000))
+  if (minutes < 1) return '（刚刚拉取）'
+  if (minutes < 60) return `（${minutes} 分钟前拉取）`
+  const hours = Math.round(minutes / 60)
+  if (hours < 48) return `（${hours} 小时前拉取）`
+  return `（${Math.round(hours / 24)} 天前拉取）`
 }
 
 /**
@@ -548,7 +568,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
               <button className="settings-action secondary" disabled={props.apiKeyBusy} onClick={props.onRefreshApiModels}>刷新</button>
             </span>
           </Field>
-          <Field title="模型" detail={props.apiModelCatalog && props.apiModelCatalog.length > 0 ? `可用模型 ${props.apiModelCatalog.length} 项，来自刚才那次拉取。` : '按「刷新」拉取可用模型；官方改名时也用它。'}>
+          <Field title="模型" detail={props.apiModelCatalog && props.apiModelCatalog.length > 0 ? `可用模型 ${props.apiModelCatalog.length} 项${catalogAgeSuffix(props.apiModelCatalogFetchedAt)}。换了一批名字就按「刷新」。` : '按「刷新」拉取可用模型；拉到的列表会记下来，下次打开设置直接显示。'}>
             {/* 用面板自己的 `Choice`，**不用** `input list` + `datalist` 那套原生下拉：用户实测
                 它在设置窗里根本展不开（只有箭头在那儿摆着，点不动）。`Choice` 是本窗口里已经在用
                 的下拉（显示器背景、素材用途），展开由自己控制。

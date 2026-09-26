@@ -45,6 +45,22 @@ export interface ApiSettings {
   priceInputPerMillion?: number
   /** 人民币／每百万 output tokens；留白时不估算费用。 */
   priceOutputPerMillion?: number
+  /**
+   * 上次拉取到的可用模型（含来源地址与时间）。
+   *
+   * 存下来是因为用户实测报过："api 的刷新结果也没有持久化，下次仍旧需要重新刷新"。它不是真相
+   * ——真相永远在 `api_models` 那一次请求里；这里只保证"打开设置就能看见上次那份列表"，并且
+   * **带上地址**：换了地址的缓存不能当成新地址的模型清单。
+   */
+  modelCatalog?: ApiModelCatalog
+}
+
+export interface ApiModelCatalog {
+  /** 这份列表是从哪个地址拉来的。地址一变，缓存作废。 */
+  baseUrl: string
+  models: Array<{ id: string; name: string }>
+  /** ISO 时间串，用于在界面上说明"上次拉取是什么时候"。 */
+  fetchedAt: string
 }
 
 export interface HarnessModelSettings {
@@ -464,12 +480,43 @@ function normalizeApiSettings(value: unknown): ApiSettings {
     typeof candidate === 'string' && candidate.trim().length > 0 && candidate.trim().length <= MAX_SETTINGS_STRING
       ? candidate.trim()
       : fallback
+  const modelCatalog = normalizeApiModelCatalog(raw.modelCatalog)
   return {
     baseUrl: boundedText(raw.baseUrl, DEFAULT_SETTINGS.deepseekApi.baseUrl),
     model: boundedText(raw.model, DEFAULT_SETTINGS.deepseekApi.model),
     priceInputPerMillion: normalizedPrice(raw.priceInputPerMillion),
     priceOutputPerMillion: normalizedPrice(raw.priceOutputPerMillion),
+    ...(modelCatalog ? { modelCatalog } : {}),
   }
+}
+
+/** 缓存上限：一份列表不该能把设置撑大。DeepSeek 只有个位数模型，200 已经极其宽松。 */
+export const MAX_API_MODEL_CATALOG = 200
+
+/**
+ * 归一化模型缓存。
+ *
+ * 这是**别人给的数据**（一次 HTTP 响应经设置同步进来），所以逐项校验：地址、id、名字都要是
+ * 有界字符串；任何不合法就整块丢掉，宁可不显示缓存，也不显示一份来路不明的清单。
+ */
+function normalizeApiModelCatalog(value: unknown): ApiModelCatalog | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const raw = value as Record<string, unknown>
+  const baseUrl = settingsText(raw.baseUrl, '', MAX_SETTINGS_STRING)
+  const fetchedAt = settingsText(raw.fetchedAt, '', MAX_SETTINGS_SHORT_STRING)
+  if (!baseUrl || !fetchedAt || !Array.isArray(raw.models)) return undefined
+  const models = raw.models
+    .slice(0, MAX_API_MODEL_CATALOG)
+    .flatMap((entry) => {
+      if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return []
+      const candidate = entry as Record<string, unknown>
+      const id = settingsText(candidate.id, '', MAX_SETTINGS_SHORT_STRING)
+      if (!id) return []
+      const name = settingsText(candidate.name, id, MAX_SETTINGS_SHORT_STRING)
+      return [{ id, name }]
+    })
+  // 一条模型都没有的空缓存没有意义：当作"没缓存过"，下次照常拉。
+  return models.length > 0 ? { baseUrl, models, fetchedAt } : undefined
 }
 
 function normalizeHarnessModelSettings(value: unknown): HarnessModelSettings {

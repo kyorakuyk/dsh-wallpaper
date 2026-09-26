@@ -41,6 +41,14 @@ export interface ConversationBubbleProps {
   /** Bridge availability drives the DSH indicator and mode switch. */
   harnessAvailability?: RuntimeState['harness']
   onSelectBackend?: (backend: BackendMode) => void
+  /**
+   * 离开 Harness 时要回到的那个后端 = 用户在设置里选的聊天后端。
+   *
+   * 这里曾经写死 `'deepseek-web'`：用户在设置里选了 API、用这个开关去 Harness 再切回来，就会
+   * 落到网页桥——**选择没有被尊重**（用户实测报的正是这条）。缺省值仍是网页，免得预览里没有
+   * 设置来源时行为变化。
+   */
+  nonHarnessBackend?: BackendMode
   onStartHarness?: () => void
   onConfigureHarness?: () => void
   /**
@@ -317,7 +325,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           // (single-flight), and the label says what is happening.
           data-starting={props.harnessStarting ? 'true' : undefined}
           onClick={() => harnessReady
-            ? props.onSelectBackend?.(props.backend === 'harness' ? 'deepseek-web' : 'harness')
+            ? props.onSelectBackend?.(props.backend === 'harness' ? (props.nonHarnessBackend ?? 'deepseek-web') : 'harness')
             : props.onStartHarness?.() ?? props.onConfigureHarness?.()}
         >
           <span className="dsh-chat__mode-switch-track"><span className="dsh-chat__mode-switch-knob" /></span>

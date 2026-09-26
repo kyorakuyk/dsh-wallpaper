@@ -124,6 +124,8 @@ export function SettingsWindow() {
   const [apiKeyBusy, setApiKeyBusy] = useState(false)
   // 可用模型列表：由「测试」/「刷新」拉取，也用于「模型」那一栏的下拉候选。
   const [apiModelCatalog, setApiModelCatalog] = useState<Array<{ id: string; name: string }>>()
+  /** 上面那份列表是什么时候拉到的（来自持久化缓存）。 */
+  const [apiModelCatalogFetchedAt, setApiModelCatalogFetchedAt] = useState<string>()
   /**
    * 壁纸**此刻**在用的 chat 模式。
    *
@@ -194,8 +196,14 @@ export function SettingsWindow() {
   }, [notice])
 
   useEffect(() => {
-    // 打开设置就要看到"现在存的是哪一条"（脱敏）。模型目录不在这里拉：它需要一次网络请求，
-    // 交给用户按「测试」或「刷新」，免得开窗就打网络。
+    // 打开设置就要看到"现在存的是哪一条"（脱敏），以及**上次拉到的模型列表**。
+    // 后者是持久化的缓存，所以不必每次开窗都重新拉一次网络（用户实测报过"下次仍旧需要重新刷新"）。
+    // 地址变过就不认这份缓存——它是从旧地址拉来的。
+    const cached = settingsRef.current.deepseekApi.modelCatalog
+    if (cached && cached.baseUrl === settingsRef.current.deepseekApi.baseUrl) {
+      setApiModelCatalog(cached.models)
+      setApiModelCatalogFetchedAt(cached.fetchedAt)
+    }
     void readApiKeyStatus()
   }, [])
 
@@ -478,7 +486,8 @@ export function SettingsWindow() {
 
   const refreshApiModelCatalog = async (): Promise<boolean> => {
     try {
-      const catalog = await nativeRuntime.apiModels(settingsRef.current.deepseekApi.baseUrl)
+      const baseUrl = settingsRef.current.deepseekApi.baseUrl
+      const catalog = await nativeRuntime.apiModels(baseUrl)
       if (!mountedRef.current) return true
       if (!catalog.supported) {
         setNotice('该 API 地址不提供模型列表（HTTP 404/405）。')
@@ -486,6 +495,15 @@ export function SettingsWindow() {
       }
       const models = catalog.models ?? []
       setApiModelCatalog(models)
+      // **持久化**这次拉取的结果：用户实测报过"刷新结果也没有持久化，下次仍旧需要重新刷新"。
+      // 缓存带上地址与时间：地址一换就作废，界面上也能说明它是什么时候拉来的。
+      commitSettings({
+        ...settingsRef.current,
+        deepseekApi: {
+          ...settingsRef.current.deepseekApi,
+          modelCatalog: { baseUrl, models, fetchedAt: new Date().toISOString() },
+        },
+      })
       return true
     } catch (error) {
       if (mountedRef.current) setNotice(`读取模型列表失败：${String(error)}`)
@@ -508,6 +526,9 @@ export function SettingsWindow() {
       }
       const ok = await refreshApiModelCatalog()
       if (!ok) return
+      // 目录里那份 `fetchedAt` 是刚写进设置的，用它把"上次拉取"的说明一并刷新。
+      const catalog = settingsRef.current.deepseekApi.modelCatalog
+      if (catalog) setApiModelCatalogFetchedAt(catalog.fetchedAt)
       await readApiKeyStatus()
       setNotice(draft ? 'API Key 已保存到 Windows 凭据管理器，模型列表已更新。' : '已保存的 API Key 可用，模型列表已更新。')
     } catch (error) {
@@ -524,7 +545,12 @@ export function SettingsWindow() {
     if (apiKeyBusy) return
     setApiKeyBusy(true)
     try {
-      if (await refreshApiModelCatalog()) setNotice('模型列表已刷新。')
+      const baseUrl = settingsRef.current.deepseekApi.baseUrl
+      if (await refreshApiModelCatalog()) {
+        const catalog = settingsRef.current.deepseekApi.modelCatalog
+        if (catalog?.baseUrl === baseUrl) setApiModelCatalogFetchedAt(catalog.fetchedAt)
+        setNotice('模型列表已刷新。')
+      }
     } finally {
       if (mountedRef.current) setApiKeyBusy(false)
     }
@@ -844,6 +870,7 @@ export function SettingsWindow() {
       onTestApiKey={() => { void testApiKey() }}
       onRefreshApiModels={() => { void refreshApiModels() }}
       apiModelCatalog={apiModelCatalog}
+      apiModelCatalogFetchedAt={apiModelCatalogFetchedAt}
       liveBackend={liveBackend}
       onSelectBackend={(backend) => { void selectBackend(backend) }}
       interactionEnabled={interactionEnabled}

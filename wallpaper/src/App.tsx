@@ -1642,6 +1642,10 @@ export function App({ surface = 'combined' }: AppProps) {
       }}
       onConfigureHarness={() => { void nativeRuntime.openSettingsWindow().catch((error) => patchRuntime({ error: String(error) })) }}
       onSelectBackend={changeBackend}
+      // 离开 Harness 要回到**用户在设置里选的那个聊天后端**，而不是写死的网页桥：
+      // 设置里选了 API 的人，用这个开关去 Harness 再切回来时必须回到 API（用户实测报过）。
+      // 设置本身也可能就是 Harness（那时按"聊天后端"取网页），所以这里兜一层。
+      nonHarnessBackend={settings.defaultBackend === 'harness' ? 'deepseek-web' : settings.defaultBackend}
       // 保留下来的是**上一个后端**的转写（壁纸因主体退出自己复位时才发生），所以它只在
       // 已经不在 Harness 上、而且确实有记录可看时才标注来历。
       keptTranscript={autoResetFromHarness && runtime.backend !== 'harness' && messages.length > 0}

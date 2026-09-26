@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { BACKEND_MODE_LABELS, CHAT_MODE_OPTIONS, backendModeLabel, chatModeOptions } from '../src/settings/SettingsPanel.tsx'
+import { BACKEND_MODE_LABELS, CHAT_MODE_OPTIONS, backendModeLabel, catalogAgeSuffix, chatModeOptions } from '../src/settings/SettingsPanel.tsx'
 
 const wallpaperRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const source = async (relative: string): Promise<string> =>
@@ -65,6 +65,48 @@ describe('the chat-mode switch in the settings centre', () => {
     expect(capability).toContain('"allow-select-backend"')
     // 而且切换后仍要把快照发给背景端，否则改了状态、壁纸却不知道。
     expect(native).toMatch(/fn select_backend\([\s\S]{0,1200}?emit_app_snapshot\(&app, &snapshot\)/)
+  })
+
+  it('returns to the configured chat backend when leaving Harness', async () => {
+    const [app, bubble] = await Promise.all([
+      source('src/App.tsx'),
+      source('src/features/chat/ConversationBubble.tsx'),
+    ])
+
+    // 用户实测："从 harness 模式退回来仍旧默认进入 web 端桥"——因为这个开关写死回到了网页。
+    // 现在它回到了**设置里选的那个**聊天后端。
+    expect(bubble).toContain("props.backend === 'harness' ? (props.nonHarnessBackend ?? 'deepseek-web') : 'harness'")
+    expect(bubble).not.toContain("props.backend === 'harness' ? 'deepseek-web' : 'harness'")
+    expect(app).toContain("nonHarnessBackend={settings.defaultBackend === 'harness' ? 'deepseek-web' : settings.defaultBackend}")
+  })
+
+  it('renders how old the persisted model list is', () => {
+    const now = Date.parse('2026-09-27T12:00:00.000Z')
+    expect(catalogAgeSuffix(undefined, now)).toBe('')
+    expect(catalogAgeSuffix('not a date', now)).toBe('')
+    expect(catalogAgeSuffix('2026-09-27T11:59:40.000Z', now)).toBe('（刚刚拉取）')
+    expect(catalogAgeSuffix('2026-09-27T11:30:00.000Z', now)).toBe('（30 分钟前拉取）')
+    expect(catalogAgeSuffix('2026-09-27T06:00:00.000Z', now)).toBe('（6 小时前拉取）')
+    expect(catalogAgeSuffix('2026-09-20T12:00:00.000Z', now)).toBe('（7 天前拉取）')
+  })
+
+  it('persists the pulled model list, keyed by the address it came from', async () => {
+    const [settings, store, panel] = await Promise.all([
+      source('src/settings/SettingsWindow.tsx'),
+      source('src/settings/store.ts'),
+      source('src/settings/SettingsPanel.tsx'),
+    ])
+
+    // 拉取成功后写进设置（用户实测："api 的刷新结果也没有持久化，下次仍旧需要重新刷新"）。
+    expect(settings).toMatch(/const refreshApiModelCatalog = async \(\): Promise<boolean> => \{[\s\S]*?modelCatalog: \{ baseUrl, models, fetchedAt: new Date\(\)\.toISOString\(\) \}/)
+    // 打开窗口时用缓存填充，但**地址不匹配就不认**：旧地址的列表不是新地址的模型清单。
+    expect(settings).toMatch(/const cached = settingsRef\.current\.deepseekApi\.modelCatalog[\s\S]{0,200}?cached\.baseUrl === settingsRef\.current\.deepseekApi\.baseUrl[\s\S]{0,120}?setApiModelCatalog\(cached\.models\)/)
+    // 存储层要能持久化并校验它（响应是外部数据，一律当不可信 JSON 处理）。
+    expect(store).toContain('modelCatalog?: ApiModelCatalog')
+    expect(store).toContain('function normalizeApiModelCatalog(value: unknown): ApiModelCatalog | undefined')
+    expect(store).toMatch(/const modelCatalog = normalizeApiModelCatalog\(raw\.modelCatalog\)/)
+    // 界面上要说明这份列表是什么时候拉的。
+    expect(panel).toContain('catalogAgeSuffix(props.apiModelCatalogFetchedAt)')
   })
 
   it('does not subscribe the settings window to the background-only snapshot event', async () => {
