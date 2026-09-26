@@ -1,15 +1,27 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import {
+  CHECKOUT_ENDPOINT_PORT,
   DEFAULT_ENDPOINT_PORTS,
+  SHELL_SUBJECT_PREFIX,
   clientRaiseAction,
   endpointPriority,
+  endpointScopeConfigured,
   orderCandidates,
   raiseOutcomeNotice,
   scanSummary,
   selectEndpoint,
+  subjectClientKind,
+  subjectEndpointPorts,
   scanEndpoints,
+  type EndpointScope,
   type HarnessEndpointCandidate,
 } from '../src/connect/endpoints.ts'
+import { isEmbeddedShellSubject } from '../src/connect/harnessSubjects.ts'
+import { monitorHarnessEndpoint, type EndpointUpdate } from '../src/connect/harnessEndpoint.ts'
+
+const OFFICIAL_SHELL = `${SHELL_SUBJECT_PREFIX}com.deepseek.dsh`
+const COMMUNITY_SHELL = `${SHELL_SUBJECT_PREFIX}ai.deepseek.dsh.desktop`
+const CHECKOUT = 'D:\\Family\\DeepSeekHarness\\deepseek-harness'
 
 function candidate(
   port: number,
@@ -95,11 +107,11 @@ describe('endpoint priority', () => {
 })
 
 describe('endpoint selection', () => {
-  it('prefers the highest-priority ready endpoint when nothing is pinned', () => {
+  it('prefers the highest-priority ready endpoint when nothing is configured', () => {
     const chosen = selectEndpoint([
       candidate(3080, 'bridge-ready', 'official-web'),
       candidate(19387, 'bridge-ready', 'official-desktop'),
-    ], undefined)
+    ], {})
     expect(chosen?.port).toBe(19387)
   })
 
@@ -108,14 +120,14 @@ describe('endpoint selection', () => {
     // no Bridge at all, and the user needs to see which one it is.
     const chosen = selectEndpoint([
       candidate(19387, 'bridge-auth-unavailable', 'official-desktop'),
-    ], undefined)
+    ], {})
     expect(chosen?.port).toBe(19387)
     expect(chosen?.status.availability).toBe('bridge-auth-unavailable')
   })
 
   it('never selects a port that only hosts a plain web service', () => {
-    expect(selectEndpoint([candidate(19387, 'web-only', 'official-desktop')], undefined)).toBeUndefined()
-    expect(selectEndpoint([candidate(3080, 'offline')], undefined)).toBeUndefined()
+    expect(selectEndpoint([candidate(19387, 'web-only', 'official-desktop')], {})).toBeUndefined()
+    expect(selectEndpoint([candidate(3080, 'offline')], {})).toBeUndefined()
   })
 
   it('honours a pinned port even when it is not ready and another one is', () => {
@@ -124,14 +136,123 @@ describe('endpoint selection', () => {
     const chosen = selectEndpoint([
       candidate(3080, 'bridge-ready', 'official-web'),
       candidate(19387, 'bridge-loading', 'official-desktop'),
-    ], 19387)
+    ], { endpointPort: 19387 })
     expect(chosen?.port).toBe(19387)
     expect(chosen?.status.availability).toBe('bridge-loading')
   })
 
-  it('falls back to auto when the pinned port is not among the candidates', () => {
-    const chosen = selectEndpoint([candidate(3080, 'bridge-ready', 'official-web')], 19387)
-    expect(chosen?.port).toBe(3080)
+  it('reports the pinned port as unreachable instead of substituting another one', () => {
+    // The regression this pins: a pin that the scan did not see used to fall back
+    // to "auto", which handed the session to whichever client happened to answer —
+    // the exact substitution the frozen rule forbids.
+    expect(selectEndpoint([candidate(3080, 'bridge-ready', 'official-web')], { endpointPort: 19387 })).toBeUndefined()
+  })
+})
+
+/**
+ * The frozen rule, from the user's own words: 「无论A是怎么死的，都不允许静默用B
+ * 来替换A，除非用户手动替换」/「设置里设置的是什么就是什么」.
+ *
+ * Everything below is one statement of that rule at a different level: which ports
+ * a subject owns, which candidate may be used, and what happens when the subject
+ * the user chose is the one that is down.
+ */
+describe('the configured subject decides the endpoint', () => {
+  it('gives a shell the one port compiled into it', () => {
+    expect(subjectEndpointPorts({ subjectId: OFFICIAL_SHELL })).toEqual([19387])
+    expect(subjectEndpointPorts({ subjectId: COMMUNITY_SHELL })).toEqual([43120])
+    // The AUMID is matched case-insensitively, like the native table does.
+    expect(subjectEndpointPorts({ subjectId: `${SHELL_SUBJECT_PREFIX}COM.DeepSeek.DSH` })).toEqual([19387])
+  })
+
+  it('gives a source tree its own default plus the ports the user added for it', () => {
+    expect(subjectEndpointPorts({ subjectId: CHECKOUT })).toEqual([CHECKOUT_ENDPOINT_PORT])
+    expect(subjectEndpointPorts({ subjectId: CHECKOUT, extraPorts: [3081, 3081, 0, 70000] }))
+      .toEqual([CHECKOUT_ENDPOINT_PORT, 3081])
+  })
+
+  it('lets an explicit pin outrank the subject, and reads as configured either way', () => {
+    // A pin is the user saying where their DSH is, which is not a substitution.
+    expect(subjectEndpointPorts({ subjectId: OFFICIAL_SHELL, endpointPort: 3080 })).toEqual([3080])
+    expect(endpointScopeConfigured({ subjectId: OFFICIAL_SHELL })).toBe(true)
+    expect(endpointScopeConfigured({ endpointPort: 3080 })).toBe(true)
+    // Nothing chosen yet is the one case that keeps the shipped priority order.
+    expect(subjectEndpointPorts({})).toBeUndefined()
+    expect(subjectEndpointPorts({ subjectId: '   ' })).toBeUndefined()
+    expect(endpointScopeConfigured({})).toBe(false)
+  })
+
+  it('admits no port for a shell this build cannot place', () => {
+    // Configured, but nowhere to look: reporting it as "nothing configured" would
+    // put the wallpaper back on the priority order — another client, by accident.
+    expect(subjectEndpointPorts({ subjectId: `${SHELL_SUBJECT_PREFIX}com.unknown.client` })).toEqual([])
+    expect(endpointScopeConfigured({ subjectId: `${SHELL_SUBJECT_PREFIX}com.unknown.client` })).toBe(true)
+  })
+
+  it('never uses another client\u2019s ready Bridge while the chosen one is down', () => {
+    const scan = [
+      candidate(43120, 'bridge-ready', 'community-desktop'),
+      candidate(3080, 'bridge-ready', 'official-web'),
+      candidate(19387, 'offline', 'official-desktop'),
+    ]
+    const chosen = selectEndpoint(scan, { subjectId: OFFICIAL_SHELL })
+    // The third-party client is up and ready, and it is still not the answer: the
+    // light stays off until the *chosen* subject answers.
+    expect(chosen?.port).toBe(19387)
+    expect(chosen?.status.availability).toBe('offline')
+  })
+
+  it('keeps a live conversation on the endpoint it started on', () => {
+    const scan = [
+      candidate(19387, 'bridge-ready', 'official-desktop'),
+      candidate(43120, 'bridge-ready', 'community-desktop'),
+    ]
+    // Both are ready; the one already in use wins, even against a higher priority.
+    expect(selectEndpoint(scan, { subjectId: COMMUNITY_SHELL }, 43120)?.port).toBe(43120)
+    // And a sticky port outside the configured subject is ignored, not restored.
+    expect(selectEndpoint(scan, { subjectId: COMMUNITY_SHELL }, 19387)?.port).toBe(43120)
+    // A sticky port that stopped answering hands the choice to the next permitted
+    // one rather than freezing the wallpaper on a dead port.
+    expect(selectEndpoint([
+      candidate(3080, 'bridge-ready', 'official-web'),
+      candidate(3081, 'offline', 'official-web'),
+    ], { subjectId: CHECKOUT, extraPorts: [3081] }, 3081)?.port).toBe(3080)
+  })
+
+  it('uses the subject\u2019s own port order for a tree with an added port', () => {
+    const scan = [
+      candidate(3081, 'bridge-ready', 'official-web'),
+      candidate(3080, 'bridge-ready', 'official-web'),
+    ]
+    // The tree's default leads its added port, so the same configuration always
+    // resolves to the same instance.
+    expect(selectEndpoint(scan, { subjectId: CHECKOUT, extraPorts: [3081] })?.port).toBe(3080)
+  })
+
+  it('names the shape of a subject without a scan', () => {
+    // The shape decides how the interface is reached, and it must not depend on
+    // something being live in order to be known.
+    expect(subjectClientKind(OFFICIAL_SHELL)).toBe('official-desktop')
+    expect(subjectClientKind(COMMUNITY_SHELL)).toBe('community-desktop')
+    expect(subjectClientKind(CHECKOUT)).toBe('official-web')
+    expect(subjectClientKind(`${SHELL_SUBJECT_PREFIX}com.unknown.client`)).toBeUndefined()
+    expect(subjectClientKind(undefined)).toBeUndefined()
+  })
+
+  it('agrees with the shell table the rest of the bridge uses', () => {
+    // Three copies of the same two AUMIDs exist (this file, `harness_targets.rs`,
+    // and the scan's wording). The ports are what may not drift: a subject scoped
+    // to a port nobody listens on is an offline wallpaper with no visible cause.
+    for (const aumid of ['com.deepseek.dsh', 'ai.deepseek.dsh.desktop']) {
+      const ports = subjectEndpointPorts({ subjectId: `${SHELL_SUBJECT_PREFIX}${aumid}` })
+      expect(ports).toHaveLength(1)
+      const known = DEFAULT_ENDPOINT_PORTS.find((entry) => entry.port === ports?.[0])
+      expect(known, `port for ${aumid} must be a client port this build scans`).toBeDefined()
+      expect(known?.kind).toBe(subjectClientKind(`${SHELL_SUBJECT_PREFIX}${aumid}`))
+    }
+    // The subject prefix is one namespace, not two spellings of it.
+    expect(isEmbeddedShellSubject(OFFICIAL_SHELL)).toBe(true)
+    expect(isEmbeddedShellSubject(CHECKOUT)).toBe(false)
   })
 })
 
@@ -223,5 +344,123 @@ describe('scanning', () => {
       expect(entry.status.availability).toBe('web-only')
       expect(entry.status.reasonCode).toBe('bridge-status-missing')
     }
+  })
+})
+
+/**
+ * The same frozen rule, through the loop the desktop actually runs: the browser
+ * preview owns the probe loop, and the native monitor mirrors it.
+ */
+describe('the endpoint monitor', () => {
+  const bridgeDocument = {
+    protocolVersion: 1,
+    dsh: 'online',
+    state: 'bridge-ready',
+    authentication: 'ready',
+    capabilities: ['status', 'control', 'sessions', 'history', 'sse', 'cancel', 'approval-handoff'],
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  /** A fake loopback: only `answering` ports host a usable Bridge. */
+  function stubDialled(answering: () => readonly number[], seen?: string[]) {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      seen?.push(url)
+      const port = Number(url.split(':')[2]?.split('/')[0])
+      return answering().includes(port)
+        ? { ok: true, json: async () => bridgeDocument }
+        : Promise.reject(new Error('connection refused'))
+    }))
+  }
+
+  /** Run the monitor for a few poll intervals and collect what it published. */
+  async function published(scope: () => EndpointScope, ticks = 4): Promise<EndpointUpdate[]> {
+    const updates: EndpointUpdate[] = []
+    const monitor = monitorHarnessEndpoint({
+      scope,
+      onChange: (update) => updates.push(update),
+      readyIntervalMs: 5,
+      idleIntervalMs: 5,
+    })
+    await vi.advanceTimersByTimeAsync(ticks * 5)
+    monitor.stop()
+    return updates
+  }
+
+  it('keeps the light off while another client answers instead of the chosen one', async () => {
+    vi.useFakeTimers()
+    // The third-party client is up and perfectly ready; the configured subject is
+    // the official one. Answering with the ready client would be a substitution.
+    stubDialled(() => [43120])
+    const updates = await published(() => ({ subjectId: OFFICIAL_SHELL }))
+    expect(updates.length).toBeGreaterThan(0)
+    for (const update of updates) {
+      expect(update.status.availability).not.toBe('bridge-ready')
+      expect(update.port).toBe(19387)
+    }
+    expect(updates.at(-1)?.status.reasonCode).toBe('subject-offline')
+  })
+
+  it('never even asks a port outside the configured subject', async () => {
+    vi.useFakeTimers()
+    const seen: string[] = []
+    stubDialled(() => [], seen)
+    await published(() => ({ subjectId: COMMUNITY_SHELL }), 2)
+    // Probing the official shell's port on the way would be harmless but dishonest:
+    // the settings say which subject this wallpaper talks to.
+    expect(seen.every((url) => url.includes(':43120'))).toBe(true)
+  })
+
+  it('publishes the configured subject as soon as it answers', async () => {
+    vi.useFakeTimers()
+    stubDialled(() => [19387])
+    const updates = await published(() => ({ subjectId: OFFICIAL_SHELL }))
+    expect(updates.at(-1)?.status.availability).toBe('bridge-ready')
+    expect(updates.at(-1)?.port).toBe(19387)
+  })
+
+  it('stays on the client it connected to when nothing is configured', async () => {
+    vi.useFakeTimers()
+    // Nothing chosen yet, so any running client will do — but the wallpaper must
+    // then *stay* with the one it picked: a higher-priority client appearing must
+    // not pull a live conversation off it.
+    let answering: number[] = [3080]
+    stubDialled(() => answering)
+    const updates: EndpointUpdate[] = []
+    const monitor = monitorHarnessEndpoint({
+      scope: () => ({}),
+      onChange: (update) => updates.push(update),
+      readyIntervalMs: 5,
+      idleIntervalMs: 5,
+    })
+    await vi.advanceTimersByTimeAsync(20)
+    expect(updates.at(-1)?.port).toBe(3080)
+    answering = [3080, 19387, 43120]
+    await vi.advanceTimersByTimeAsync(20)
+    monitor.stop()
+    expect(updates.at(-1)?.port).toBe(3080)
+  })
+
+  it('hands over only when the settings change the subject', async () => {
+    vi.useFakeTimers()
+    stubDialled(() => [19387, 43120])
+    let scope: EndpointScope = { subjectId: OFFICIAL_SHELL }
+    const updates: EndpointUpdate[] = []
+    const monitor = monitorHarnessEndpoint({
+      scope: () => scope,
+      onChange: (update) => updates.push(update),
+      readyIntervalMs: 5,
+      idleIntervalMs: 5,
+    })
+    await vi.advanceTimersByTimeAsync(20)
+    expect(updates.at(-1)?.port).toBe(19387)
+    // A real change of subject is the one thing that may move the endpoint.
+    scope = { subjectId: COMMUNITY_SHELL }
+    await vi.advanceTimersByTimeAsync(20)
+    monitor.stop()
+    expect(updates.at(-1)?.port).toBe(43120)
   })
 })

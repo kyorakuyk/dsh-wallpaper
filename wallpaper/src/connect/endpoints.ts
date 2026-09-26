@@ -20,6 +20,13 @@
  * Nothing here reads a credential: identification uses the Bridge's public
  * `/status`, and a candidate that answers with something else is reported as
  * `web-only` rather than assumed to be ours.
+ *
+ * Discovery and *the right to use* a candidate are separate questions, and only
+ * the second one is binding: scanning may look at every port (a client can be
+ * moved), while `selectEndpoint` may only ever return a port the settings
+ * configure. A ready Bridge found outside that set belongs to a different subject,
+ * and connecting to it is how the wallpaper used to answer a session the user
+ * never chose.
  */
 import { interpretHarnessBridgeStatus, type HarnessStatus } from './harness.ts'
 
@@ -73,6 +80,124 @@ export const DEFAULT_ENDPOINT_PORTS: ReadonlyArray<{ port: number; kind: Harness
   { port: 3080, kind: 'official-web' },
 ]
 
+/**
+ * The shell subjects this build knows, with the port each one carries.
+ *
+ * A shell compiles its port into its own package, so for a shell the port *is*
+ * part of the client: it is the one endpoint fact that belongs to a subject rather
+ * than to a scan. The two AUMIDs and their ports are the same pairs
+ * `harness_targets.rs` holds in `SHELL_APPS`, and the settings surface can never
+ * let a user type one — a scan produces them. A third copy is the price of the
+ * browser preview having no native side at all, so `endpoints.spec.ts` pins these
+ * pairs against `DEFAULT_ENDPOINT_PORTS` above: a change to either list fails
+ * loudly instead of silently scoping a subject to a port nobody listens on.
+ */
+const SHELL_SUBJECTS: Readonly<Record<string, { kind: HarnessClientKind; ports: readonly number[] }>> = {
+  'com.deepseek.dsh': { kind: 'official-desktop', ports: [19387] },
+  'ai.deepseek.dsh.desktop': { kind: 'community-desktop', ports: [43120] },
+}
+
+/**
+ * The subject-id namespace for a shell that carries its own checkout.
+ *
+ * The same prefix as `harnessSubjects.isEmbeddedShellSubject`; the two are pinned
+ * against each other in the tests, because a drift here would classify a shell as
+ * a source tree and hand it a checkout's port.
+ */
+export const SHELL_SUBJECT_PREFIX = 'shell:'
+
+/**
+ * DSH's own web default: the port a source checkout listens on unless the user
+ * moved it with `--port`.
+ */
+export const CHECKOUT_ENDPOINT_PORT =
+  DEFAULT_ENDPOINT_PORTS.find((entry) => entry.kind === 'official-web')?.port ?? 3080
+
+/**
+ * What the settings say the wallpaper may talk to.
+ *
+ * The user chooses a *subject* (a shell, or a source tree) — never a port. The
+ * port is where that subject happens to answer, which is why it may only ever be
+ * read from this scope and never inferred from what a scan found listening. The
+ * three fields travel together because they are one decision: which subject, the
+ * user's explicit override, and the ports they added by hand for a checkout.
+ */
+export interface EndpointScope {
+  /** `shell:<aumid>` for a client that carries its own checkout, else a tree's path. */
+  subjectId?: string
+  /** The user's explicit endpoint choice, which outranks the subject. */
+  endpointPort?: number
+  /** Ports the user added for a checkout that does not listen on the default. */
+  extraPorts?: readonly number[]
+}
+
+function usablePorts(ports: readonly number[]): number[] {
+  const unique: number[] = []
+  for (const port of ports) {
+    if (!Number.isInteger(port) || port < 1 || port > 65535 || unique.includes(port)) continue
+    unique.push(port)
+  }
+  return unique
+}
+
+/**
+ * The ports a configured subject may be reached on, or `undefined` when nothing
+ * is configured and the shipped priority order applies.
+ *
+ * This is the whole of the "no substitution" rule. A subject's set is decided by
+ * the subject alone:
+ *
+ * * an explicit pin is one port, the user's own statement about where their DSH is;
+ * * a shell owns the port compiled into it, and nothing else — a shell cannot be
+ *   moved to another port, so a second port for it would mean another client;
+ * * a source tree listens on DSH's default, plus any port the user added for it by
+ *   hand. An added port is admissible because adding it *is* the user telling the
+ *   wallpaper which subject answers there; anything a scan merely found answering
+ *   is not, which is why discovery can never widen this set.
+ *
+ * `undefined` (nothing chosen yet) is not the same as `[]` (chosen, but this build
+ * cannot say where it answers): the first keeps the shipped priority order, the
+ * second means the configured subject is unreachable.
+ */
+export function subjectEndpointPorts(scope: EndpointScope): number[] | undefined {
+  if (scope.endpointPort !== undefined) {
+    return usablePorts([scope.endpointPort])
+  }
+  const subject = (scope.subjectId ?? '').trim()
+  if (!subject) return undefined
+  if (subject.toLowerCase().startsWith(SHELL_SUBJECT_PREFIX)) {
+    const aumid = subject.slice(SHELL_SUBJECT_PREFIX.length).trim().toLowerCase()
+    // An AUMID this build does not know has no port to offer. Reporting that as
+    // "nothing configured" would put the wallpaper back on the priority order —
+    // i.e. on a client the user did not choose.
+    return usablePorts(SHELL_SUBJECTS[aumid]?.ports ?? [])
+  }
+  return usablePorts([CHECKOUT_ENDPOINT_PORT, ...(scope.extraPorts ?? [])])
+}
+
+/** True when the settings name the subject whose endpoints may be used. */
+export function endpointScopeConfigured(scope: EndpointScope): boolean {
+  return subjectEndpointPorts(scope) !== undefined
+}
+
+/**
+ * The client shape a subject belongs to, or `undefined` when this build cannot
+ * say (an unknown shell AUMID).
+ *
+ * Needed because the shape decides *how* a subject's interface is reached — a
+ * desktop client owns a window, a source tree's interface is the browser — and the
+ * scan cannot answer that when nothing is currently answering on its port. A
+ * configured checkout is `official-web` by construction (§3 of the subject
+ * design: a tree has no window of its own).
+ */
+export function subjectClientKind(subjectId: string | undefined): HarnessClientKind | undefined {
+  const subject = (subjectId ?? '').trim()
+  if (!subject) return undefined
+  if (!subject.toLowerCase().startsWith(SHELL_SUBJECT_PREFIX)) return 'official-web'
+  const aumid = subject.slice(SHELL_SUBJECT_PREFIX.length).trim().toLowerCase()
+  return SHELL_SUBJECTS[aumid]?.kind
+}
+
 /** Sort candidates by the user's priority, then by port for stability. */
 export function orderCandidates(
   candidates: readonly HarnessEndpointCandidate[],
@@ -109,25 +234,80 @@ export function scanSummary(candidates: readonly HarnessEndpointCandidate[]): {
   }
 }
 
-/** The candidate a session should use, honouring an explicit choice first. */
+/**
+ * The candidate a session should use.
+ *
+ * Two frozen rules decide the answer, and they are both about *not* moving:
+ *
+ * 1. **Only the configured subject's own ports are admissible.** When the settings
+ *    name a subject, a ready Bridge on any other port is a different subject, and
+ *    using it would answer a session the user did not choose — even though it is
+ *    "better" by every measure a scan can see.
+ * 2. **Whatever answered stays in use.** `stickyPort` is the port already in use;
+ *    while it still answers a Bridge it wins over a higher-priority candidate, so
+ *    a second client coming up cannot pull the wallpaper off the first one.
+ *
+ * With nothing configured (no subject, no pin) both reduce to the shipped priority
+ * order, which is the one case where "any of them will do" is what the user said.
+ */
 export function selectEndpoint(
   candidates: readonly HarnessEndpointCandidate[],
-  chosenPort: number | undefined,
+  scope: EndpointScope = {},
+  stickyPort?: number,
 ): HarnessEndpointCandidate | undefined {
-  const ordered = orderCandidates(candidates)
-  if (chosenPort !== undefined) {
-    // An explicit choice is honoured even when it is not currently ready: the
-    // user may be starting that client, and silently switching to another one
-    // would answer a different session than the one they picked.
-    const chosen = ordered.find((candidate) => candidate.port === chosenPort)
-    if (chosen) return chosen
+  const permitted = subjectEndpointPorts(scope)
+  if (permitted === undefined) {
+    return preferred(orderCandidates(candidates), stickyPort)
   }
-  return ordered.find((candidate) => candidate.status.availability === 'bridge-ready')
+  // A configured subject: its own ports only, in the order the subject declares
+  // them. `orderCandidates` is deliberately not applied — client priority answers
+  // "which subject should be used", a question the settings already answered, and
+  // re-ranking here is how a scan would sneak another client back in.
+  const inScope = permitted
+    .map((port) => candidates.find((candidate) => candidate.port === port))
+    .filter((candidate): candidate is HarnessEndpointCandidate => candidate !== undefined)
+  // The last resort is the subject's own first port even when it answers nothing:
+  // its diagnostic (offline, web-only, or a Bridge that is not ready) is the
+  // actionable truth about *that* subject, which is more useful than "no endpoint".
+  return preferred(inScope, stickyPort) ?? inScope[0]
+}
+
+/** One candidate that answered something, or the best of what is left. */
+function preferred(
+  ordered: readonly HarnessEndpointCandidate[],
+  stickyPort: number | undefined,
+): HarnessEndpointCandidate | undefined {
+  return (stickyPort === undefined
+    ? undefined
+    : ordered.find((candidate) => candidate.port === stickyPort && candidate.bridgeFound))
+    ?? ordered.find((candidate) => candidate.status.availability === 'bridge-ready')
     ?? ordered.find((candidate) => candidate.bridgeFound)
 }
 
 /** Per-endpoint probe timeout. Short: these are loopback requests. */
 const PROBE_TIMEOUT_MS = 1200
+
+/** The client shape a known port belongs to, for labelling and priority. */
+function kindOfPort(port: number): HarnessClientKind {
+  return DEFAULT_ENDPOINT_PORTS.find((entry) => entry.port === port)?.kind ?? 'official-web'
+}
+
+/**
+ * Probe exactly these ports, adding nothing.
+ *
+ * The scoped probe a configured subject uses: a port that was not named is a port
+ * that must not be looked at, because the only thing a foreign answer can do here
+ * is tempt the selection. `scanEndpoints` stays the discovery scan behind the
+ * settings card's 「扫描」 action and the browser preview's auto mode, where finding
+ * something new is the whole point.
+ */
+export async function scanScopedPorts(ports: readonly number[]): Promise<HarnessEndpointCandidate[]> {
+  return Promise.all(usablePorts(ports).map((port) => probeEndpoint(
+    port,
+    kindOfPort(port),
+    DEFAULT_ENDPOINT_PORTS.some((entry) => entry.port === port) ? 'default' : 'user',
+  )))
+}
 
 /**
  * How the wallpaper reaches a client's interface.

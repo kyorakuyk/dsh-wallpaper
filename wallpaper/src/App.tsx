@@ -1312,12 +1312,19 @@ export function App({ surface = 'combined' }: AppProps) {
     // 3080 probe for each WebView.
     if (appCoreClient.native) return
     // Browser preview has no native probe cache, so it discovers the endpoint
-    // itself. Same priority order and same strict identification as the native
-    // scan, so the two cannot disagree about which client is being used.
+    // itself. Same scope, same strict identification and the same "no substitution"
+    // rule as the native scan, so the two cannot disagree about which client is in
+    // use.
     const monitor = monitorHarnessEndpoint({
       // Read through the live state rather than a captured value, so changing the
-      // dropdown takes effect on the next poll instead of requiring a reload.
-      chosenPort: () => settings.dshLaunch.endpointPort,
+      // subject takes effect on the next poll instead of requiring a reload.
+      scope: () => ({
+        subjectId: settings.dshLaunch.subjectId ?? settings.dshLaunch.rootPath,
+        endpointPort: settings.dshLaunch.endpointPort,
+        extraPorts: settings.dshLaunch.extraEndpointPorts,
+      }),
+      // Only consulted while nothing is configured: a configured subject's own
+      // ports already include the ones the user added for it.
       extraPorts: () => settings.dshLaunch.extraEndpointPorts ?? [],
       onChange: ({ status }) => {
         patchRuntime({ harness: status.availability, model: status.model ?? runtimeRef.current.model, provider: status.provider ?? runtimeRef.current.provider, reasoningEffort: status.reasoningEffort })
