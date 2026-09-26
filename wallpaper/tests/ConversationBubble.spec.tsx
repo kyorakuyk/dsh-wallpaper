@@ -195,6 +195,40 @@ describe('ConversationBubble', () => {
     expect(empty).not.toContain('dsh-chat__history-note')
   })
 
+  it('shows the amber light while connecting, and the dark one only when it is gone', () => {
+    // 三段语义：连上（绿）／正在连（黄呼吸）／不在了（熄灭）。"正在连"时 `harnessReady`
+    // 是 false，所以黄灯必须优先于熄灭态——否则"启动中"与"已经死了"看起来一模一样，而这两件
+    // 事要让用户做的动作完全不同。
+    const connecting = renderToStaticMarkup(<ConversationBubble
+      backend="deepseek-web"
+      activity="idle"
+      modelLabel="deepseek-chat"
+      messages={[]}
+      streamingText=""
+      historyExpanded={false}
+      harnessAvailability="bridge-loading"
+      harnessReady={false}
+      harnessSuspect
+      {...callbacks}
+    />)
+    expect(connecting).toContain('data-ready="suspect"')
+    expect(connecting).toContain('DSH Bridge 正在装载')
+
+    const gone = renderToStaticMarkup(<ConversationBubble
+      backend="deepseek-web"
+      activity="idle"
+      modelLabel="deepseek-chat"
+      messages={[]}
+      streamingText=""
+      historyExpanded={false}
+      harnessAvailability="offline"
+      harnessReady={false}
+      {...callbacks}
+    />)
+    expect(gone).toContain('data-ready="false"')
+    expect(gone).not.toContain('data-ready="suspect"')
+  })
+
   it('keeps the switch usable while a start is still in flight', () => {
     // A start can take the whole 45-second readiness window. Dimming the only switch
     // on the island for that long is what made it look stuck: no way back, no way to

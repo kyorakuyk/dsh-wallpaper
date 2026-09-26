@@ -146,6 +146,27 @@ export function shouldReturnToHarness(
 }
 
 /**
+ * 黄灯：连接与断开之间的**中间态**。
+ *
+ * 用户要的三段语义是"连上（绿）／正在连（黄呼吸）／不在了（熄灭）"，所以中间态覆盖三种真实
+ * 情形：正在把 harness 后台拉起来（点滑槽或开机自启）、宿主已经应答但 Bridge 仍在装载、
+ * 以及已经连上却暂时不应答（还没判死）。少了前两种，用户在"启动中"看到的是一盏熄灭的灯，
+ * 那和"后端已经死了"看起来一模一样——而这两件事要让用户做的动作完全不同。
+ *
+ * 纯函数，因为这条规则是**灯的语言**，不该埋在三元表达式里：它连着"复位滑槽"和"自动回切"，
+ * 判断错了用户就会在错误的时刻被搬走。
+ */
+export function isHarnessTransitioning(state: {
+  /** 壁纸正在启动（或等待）已配置的主体。 */
+  starting: boolean
+  availability: RuntimeState['harness']
+  /** 就绪过的桥接正在失联，但还没到"确认掉线"。 */
+  probing: boolean
+}): boolean {
+  return state.starting || state.probing || state.availability === 'bridge-loading'
+}
+
+/**
  * A 3080 response alone is not a usable Harness transport. Keep every
  * renderer-side selection path behind the same compatible-Bridge predicate.
  */
@@ -730,6 +751,16 @@ export function App({ surface = 'combined' }: AppProps) {
     configured: settings.deepseekApi.model,
     directory: runtime.backend === 'deepseek-api' ? apiModelDir : harnessModelDir,
     ids: modelOptions,
+  })
+  /**
+   * 黄灯：中间态，规则见 `isHarnessTransitioning`（纯函数，可测）。两个来源各自算：原生监控
+   * 把 `harnessProbing` 随快照发下来（它能看到端口属主的进程是否还活着），浏览器预览那条路
+   * 自己在本地探针里判断。
+   */
+  const harnessTransitioning = isHarnessTransitioning({
+    starting: harnessStarting,
+    availability: runtime.harness,
+    probing: harnessProbing || runtime.harnessProbing === true,
   })
   // The WorkerW host is permanently desktop-sized. Both the floating window
   // and the taskbar capsule now use CSS placement inside that one viewport.
@@ -1560,9 +1591,11 @@ export function App({ surface = 'combined' }: AppProps) {
       modelLabels={modelLabels}
       modelSwitchDisabledReason={modelSwitchDisabledReason}
       harnessReady={isHarnessReady(runtime.harness)}
-      // 黄灯的来源有两处，因为两条路各自算：原生监控（它能看到端口主人的进程是否还活着）
-      // 把 `harnessProbing` 随快照发下来；浏览器预览那条路自己在本地探针里判断。
-      harnessSuspect={(harnessProbing || runtime.harnessProbing === true) && isHarnessReady(runtime.harness)}
+      // 黄灯 = **连接与断开的中间态**（用户要求它是呼吸灯）：正在把 harness 后台拉起来、
+      // 宿主在装载 Bridge、或者已经连上但暂时失联还没判死。它不是告警，所以是呼吸而不是闪烁。
+      // 两个来源各自算：原生监控把 `harnessProbing` 随快照发下来（它能看到端口属主的进程是否
+      // 还活着），浏览器预览那条路自己在本地探针里判断。
+      harnessSuspect={harnessTransitioning}
       // 每个后端都接上：它是"拉起当前主体可视化窗口"的快捷键，与岛上当前是哪个后端无关
       // （用户要求的是"每个样式"都有这个按钮）。没有主体可拉时，原生会退到"这个端点上
       // 应答的那台"，所以网页模式下点击也不会落空。

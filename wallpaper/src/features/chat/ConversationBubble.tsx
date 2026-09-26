@@ -299,7 +299,9 @@ export function ConversationBubble(props: ConversationBubbleProps) {
         <span className="dsh-chat__topbar-spacer" />
         <div className="dsh-chat__bottom-status">
         <span className={`dsh-chat__status dsh-chat__status--harness dsh-chat__status--${harnessAvailability}`} title={harnessLabel}>
-          <span className="dsh-chat__status-dot" data-ready={props.harnessReady === false ? 'false' : props.harnessSuspect ? 'suspect' : 'true'} />{harnessLabel}
+          {/* 黄灯优先于"熄灭"：中间态包含"还没连上但在连"，那时 `harnessReady` 是 false，
+              但它和"后端已经不在了"必须看起来不一样（前者呼吸的黄灯，后者熄灭）。 */}
+          <span className="dsh-chat__status-dot" data-ready={props.harnessSuspect ? 'suspect' : props.harnessReady === false ? 'false' : 'true'} />{harnessLabel}
         </span>
         <button
           type="button"

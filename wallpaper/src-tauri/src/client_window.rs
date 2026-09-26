@@ -111,6 +111,39 @@ pub fn process_is_alive(_pid: u32) -> bool {
     true
 }
 
+/// Block until a process is gone, then report whether it is gone.
+///
+/// Waits on the process *handle* rather than polling it: a handle is signalled exactly
+/// once, so a watcher costs nothing while the subject is healthy and cannot miss a
+/// process that exits between two polls. That is what turns "the client exited" into an
+/// event instead of a discovery — the difference between a light that changes when the
+/// user watches the window close, and one that changes several seconds later when the
+/// next scheduled probe happens to run.
+///
+/// A handle that cannot be opened means the process is already gone (or that this
+/// process may not observe it). Both are the answer the caller is waiting for: there is
+/// nothing left to wait on.
+#[cfg(windows)]
+pub fn wait_for_process_exit(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, INFINITE, PROCESS_SYNCHRONIZE,
+    };
+    unsafe {
+        let Ok(handle) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) else {
+            return true;
+        };
+        let waited = WaitForSingleObject(handle, INFINITE);
+        let _ = CloseHandle(handle);
+        waited == WAIT_OBJECT_0
+    }
+}
+
+#[cfg(not(windows))]
+pub fn wait_for_process_exit(_pid: u32) -> bool {
+    true
+}
+
 /// The process id that owns a listening TCP port on loopback, if any.
 ///
 /// Queried from the kernel's own table rather than by launching `netstat`, so it

@@ -2986,8 +2986,9 @@ mod harness_status_tests {
     use super::{
         advance_harness_monitor, apply_endpoint_scope, compatible_harness_bridge_status,
         diagnose_harness_bridge_status, fetch_harness_status_at, harness_endpoint_port,
-        probe_current_endpoint, root_probe_availability, HarnessEndpointState, HarnessMonitorState,
-        HARNESS_DEFAULT_PORT, HARNESS_ENDPOINT_PORTS, HARNESS_UNPROVEN_EXIT_MS,
+        harness_probe_interval, probe_current_endpoint, root_probe_availability,
+        HarnessEndpointState, HarnessMonitorState, HARNESS_DEFAULT_PORT, HARNESS_ENDPOINT_PORTS,
+        HARNESS_TRANSITION_INTERVAL, HARNESS_UNPROVEN_EXIT_MS,
     };
     use crate::app_core::HarnessAvailability;
     use serde_json::json;
@@ -3315,6 +3316,19 @@ mod harness_status_tests {
         assert!(publish);
         assert!(!state.probing);
         assert_eq!(state.available, HarnessAvailability::BridgeReady);
+    }
+
+    #[test]
+    fn the_transition_phase_polls_faster_than_keep_alive() {
+        // 用户实测"杀掉官壳之后留着的那段防瞬发缓冲太长"。结论落在两个数上：确认所需次数（见
+        // 上一条测试）与**确认期间多久探一次**。这里钉住后者：挂起时必须是快档。
+        assert!(harness_probe_interval(true) < harness_probe_interval(false));
+        assert_eq!(harness_probe_interval(true), HARNESS_TRANSITION_INTERVAL);
+        // 而且合起来要足够短：两次确认 + 挂起判定，用户应该在一两秒内看到结果，而不是十几秒。
+        assert!(
+            HARNESS_TRANSITION_INTERVAL * 2 <= std::time::Duration::from_secs(3),
+            "两次确认的总时长必须让用户觉得是「立刻」"
+        );
     }
 
     #[test]
@@ -3677,14 +3691,43 @@ fn harness_status_is_ready(status: &serde_json::Value) -> bool {
     status.get("availability").and_then(serde_json::Value::as_str) == Some("bridge-ready")
 }
 
+/// How often the monitor probes while nothing is in transition.
+///
+/// Low on purpose ("连上后低频保活"), because the event that matters — the subject exiting
+/// — no longer has to be discovered by a poll: a watcher on the process handle wakes
+/// this loop the moment it happens.
+#[cfg(not(feature = "lite"))]
+const HARNESS_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How often the monitor probes *while a ready Bridge is failing*.
+///
+/// The one phase where speed is the whole point: this is the "suspended, not dead"
+/// stretch, the light is breathing amber and the user is waiting to learn which of the
+/// two it is. Probing that at the keep-alive rate makes the verdict — and therefore the
+/// reset — take several times longer than the evidence does.
+#[cfg(not(feature = "lite"))]
+const HARNESS_TRANSITION_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1_200);
+
 /// How long "not answering" may last before the subject is called dead *when there is
 /// nothing to prove it with*.
 ///
-/// The renderer has its own copy of this number (`HARNESS_SUSPECT_GRACE_MS`) because
-/// the browser preview runs its own loop; that copy is the display window. This one is
-/// the verdict, and only this one decides when the switch is allowed to reset.
+/// The renderer has its own copy of this number (`HARNESS_SUSPECT_GRACE_MS`) because the
+/// browser preview runs its own loop; that copy is the display window. This one is the
+/// verdict, and only this one decides when the switch is allowed to reset. It is the
+/// fallback for a subject whose process could not be identified at all — a *proven* exit
+/// does not wait for it.
 #[cfg(not(feature = "lite"))]
-const HARNESS_UNPROVEN_EXIT_MS: u64 = 60_000;
+const HARNESS_UNPROVEN_EXIT_MS: u64 = 20_000;
+
+/// How long to wait before the next probe, given what the last one found.
+#[cfg(not(feature = "lite"))]
+fn harness_probe_interval(probing: bool) -> std::time::Duration {
+    if probing {
+        HARNESS_TRANSITION_INTERVAL
+    } else {
+        HARNESS_PROBE_INTERVAL
+    }
+}
 
 /// What one probe means for the published Harness state.
 ///
@@ -3772,11 +3815,21 @@ fn advance_harness_monitor(
 
 #[cfg(not(feature = "lite"))]
 fn start_harness_monitor(app: tauri::AppHandle) {
+    use std::sync::Arc;
+
     tauri::async_runtime::spawn(async move {
         let mut monitor = HarnessMonitorState::default();
         // Who owned the port the last time it answered: the only process whose exit
         // proves the subject itself is gone.
         let mut owner_pid: Option<u32> = None;
+        // The process id a watcher thread is already waiting on, so a restart spawns a
+        // watcher for the new process instead of piling one up per probe.
+        let mut watched: Option<u32> = None;
+        // The subject's exit is an event, not something to discover by polling: the
+        // watcher below signals this and the loop probes immediately. Without it the
+        // light could only change at the next scheduled probe, which is exactly the
+        // "防瞬发的缓冲时间太长" the user reported after killing the client.
+        let exits = Arc::new(tokio::sync::Notify::new());
         let started = std::time::Instant::now();
         let mut last_reason: Option<String> = None;
         loop {
@@ -3807,6 +3860,20 @@ fn start_harness_monitor(app: tauri::AppHandle) {
                 // from a later *exit*. Kept when a probe fails: that is exactly when it
                 // is needed.
                 owner_pid = client_window::endpoint_process_id(port).or(owner_pid);
+                if let Some(pid) = owner_pid {
+                    if watched != Some(pid) {
+                        watched = Some(pid);
+                        let exits = exits.clone();
+                        std::thread::spawn(move || {
+                            if client_window::wait_for_process_exit(pid) {
+                                log::info!(
+                                    "harness monitor: the process answering {port} (pid {pid}) exited"
+                                );
+                                exits.notify_one();
+                            }
+                        });
+                    }
+                }
             }
             let owner_alive = owner_pid.map(client_window::process_is_alive);
             let now_ms = started.elapsed().as_millis() as u64;
@@ -3840,10 +3907,14 @@ fn start_harness_monitor(app: tauri::AppHandle) {
                     emit_app_snapshot(&app, &snapshot);
                 }
             }
-            // A resident wallpaper must not hammer a dead loopback port. A
-            // single cadence also keeps the stabilisation thresholds
-            // comparable in wall-clock time.
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            // A resident wallpaper must not hammer a dead loopback port — except in the
+            // one phase where the user is waiting on the answer, which polls fast (see
+            // `HARNESS_TRANSITION_INTERVAL`). Either way the wait is interruptible: the
+            // subject exiting is a fact worth reacting to now, not at the next tick.
+            tokio::select! {
+                _ = tokio::time::sleep(harness_probe_interval(monitor.probing)) => {}
+                _ = exits.notified() => {}
+            }
         }
     });
 }

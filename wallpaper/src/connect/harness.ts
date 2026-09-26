@@ -245,8 +245,8 @@ export const HARNESS_PROBE_MS = {
   standby: 30_000,
   /** 已连接：低频保活。 */
   connected: 15_000,
-  /** 疑似挂起：立刻提速。 */
-  suspect: 2_000,
+  /** 疑似挂起：立刻提速。原生那条路用 1.2 s，两边保持一致。 */
+  suspect: 1_200,
 } as const
 
 /** 高频握手的窗口长度；超过它仍未连上就转待机。 */
@@ -255,10 +255,11 @@ export const HARNESS_STARTUP_WINDOW_MS = 3 * 60_000
 /**
  * 失联后多久才判定"确认掉线"。
  *
- * 这段时间里灯是黄的、滑槽不复位——后端重启常要十几秒到一分钟，太早判死会让滑槽在眼前
- * 反复复位。超过它才红灯 + 复位 + 回到启动态。
+ * 这段时间里灯是黄的、滑槽不复位。用户实测这个缓冲**太长**，所以从 60 s 收到 20 s：原生那条路
+ * 现在先看**端口属主的进程还在不在**（属主一消失就是确证，1.2 s 档位下约两秒内见结果），这个
+ * 窗口只剩"连进程都认不出来"时的兜底——兜底不该比取证还慢一个数量级。
  */
-export const HARNESS_SUSPECT_GRACE_MS = 60_000
+export const HARNESS_SUSPECT_GRACE_MS = 20_000
 
 export function monitorHarness(onChange: (status: HarnessStatus) => void, probe: () => Promise<HarnessStatus> = fetchHarnessStatus): { stop(): void; pollNow(): Promise<HarnessStatus> } {
   let stopped = false

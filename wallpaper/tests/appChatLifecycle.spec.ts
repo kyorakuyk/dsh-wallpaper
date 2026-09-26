@@ -85,6 +85,25 @@ describe('App chat lifecycle isolation', () => {
     expect(shouldReturnToHarness('bridge-ready', 'harness', true)).toBe(false)
   })
 
+  it('treats connecting and reconnecting as the amber state', async () => {
+    const { isHarnessTransitioning } = await import('../src/App.tsx')
+    const state = (over: Partial<Parameters<typeof isHarnessTransitioning>[0]>) => ({
+      starting: false,
+      probing: false,
+      availability: 'offline' as const,
+      ...over,
+    })
+
+    // 用户要的三段语义：连上（绿）／正在连（黄呼吸）／不在了（熄灭）。
+    expect(isHarnessTransitioning(state({ starting: true }))).toBe(true)                 // 正在拉起 harness 后台
+    expect(isHarnessTransitioning(state({ availability: 'bridge-loading' }))).toBe(true) // 宿主应答了，Bridge 还在装
+    expect(isHarnessTransitioning(state({ availability: 'bridge-ready', probing: true }))).toBe(true) // 已连上但暂时失联
+    // 已连接、一切正常：绿灯。
+    expect(isHarnessTransitioning(state({ availability: 'bridge-ready' }))).toBe(false)
+    // 后端确实不在了：这是**结论**，不是中间态，灯该熄灭——两者的后续动作完全不同。
+    expect(isHarnessTransitioning(state({}))).toBe(false)
+  })
+
   it('keeps an API adapter lifecycle stable while committing later request settings', async () => {
     const { apiAdapterOptionsFromSettings, chatAdapterLifecycleKey, updateApiAdapterOptions } = await import('../src/App.tsx')
     const first = {
