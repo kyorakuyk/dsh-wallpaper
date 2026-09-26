@@ -6,6 +6,7 @@ import {
   clientRaiseAction,
   endpointPriority,
   endpointScopeConfigured,
+  endpointScopeOf,
   orderCandidates,
   raiseOutcomeNotice,
   scanSummary,
@@ -227,6 +228,17 @@ describe('the configured subject decides the endpoint', () => {
     // The tree's default leads its added port, so the same configuration always
     // resolves to the same instance.
     expect(selectEndpoint(scan, { subjectId: CHECKOUT, extraPorts: [3081] })?.port).toBe(3080)
+  })
+
+  it('reads the stored launch fields as one scope', () => {
+    // The one place the settings become a scope: the background surface and the
+    // settings window both go through it, so neither can mean something different.
+    expect(endpointScopeOf({ subjectId: OFFICIAL_SHELL, endpointPort: 3080, extraEndpointPorts: [3081] }))
+      .toEqual({ subjectId: OFFICIAL_SHELL, endpointPort: 3080, extraPorts: [3081] })
+    // A profile written before `subjectId` existed still names its checkout.
+    expect(endpointScopeOf({ rootPath: CHECKOUT }).subjectId).toBe(CHECKOUT)
+    // And the current field wins over the legacy one, as the launcher resolves it.
+    expect(endpointScopeOf({ subjectId: OFFICIAL_SHELL, rootPath: CHECKOUT }).subjectId).toBe(OFFICIAL_SHELL)
   })
 
   it('names the shape of a subject without a scan', () => {

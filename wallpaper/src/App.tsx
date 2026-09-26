@@ -8,7 +8,7 @@ import type { BackendMode, ChatMessage, ChatQuestion, RuntimeState, TokenUsage }
 import { personaIdFor, resolveModelTier } from './domain/modelTier.ts'
 import { isHarnessReady } from './connect/harness.ts'
 import { monitorHarnessEndpoint } from './connect/harnessEndpoint.ts'
-import { clientRaiseAction } from './connect/endpoints.ts'
+import { clientRaiseAction, endpointScopeOf, subjectClientKind, subjectEndpointPorts } from './connect/endpoints.ts'
 import { HARNESS_STATE_DETAILS } from './connect/harnessLabels.ts'
 import { isEmbeddedShellSubject } from './connect/harnessSubjects.ts'
 import {
@@ -495,9 +495,15 @@ export function App({ surface = 'combined' }: AppProps) {
     // state. Pushing it at startup is what makes a saved choice survive a
     // restart; relying on the settings window to push it meant a user who never
     // reopened settings got the default port instead.
-    // `null` clears the pin, letting the native scan discover an endpoint.
-    void nativeRuntime.setHarnessEndpoint(settings.dshLaunch.endpointPort ?? null).catch(() => null)
-  }, [settings.dshLaunch.endpointPort])
+    // The *subject* is the half that matters: it is what decides which ports may be
+    // probed at all, so native can no longer connect to whichever client answers.
+    void nativeRuntime.setHarnessEndpointScope(endpointScopeOf(settings.dshLaunch)).catch(() => null)
+  }, [
+    settings.dshLaunch.subjectId,
+    settings.dshLaunch.rootPath,
+    settings.dshLaunch.endpointPort,
+    settings.dshLaunch.extraEndpointPorts,
+  ])
 
   useEffect(() => {
     if (!nativeRuntime.isNative) return
@@ -659,18 +665,26 @@ export function App({ surface = 'combined' }: AppProps) {
   const openSubjectInterface = useCallback(() => {
     void (async () => {
       try {
-        const pinned = settings.dshLaunch.endpointPort
-        const endpoints = await nativeRuntime.scanHarnessEndpoints(pinned ? [pinned] : [])
-        const current = endpoints.find((item) => item.port === pinned) ?? endpoints[0]
-        const port = pinned ?? current?.port ?? 0
+        const launch = settings.dshLaunch
+        const subjectId = launch.subjectId ?? launch.rootPath
+        // The subject's own ports, in the subject's own order — never "whatever the
+        // scan found answering", which would reach a client the user did not choose.
+        const ports = subjectEndpointPorts(endpointScopeOf(launch)) ?? []
+        // 0 lets native pick among the subject's own ports, preferring the one that
+        // is actually listening: that is what keeps a checkout the user moved to an
+        // added port from being started a second time.
+        const port = launch.endpointPort ?? (ports.length === 1 ? ports[0]! : 0)
         const ensured = await nativeRuntime.ensureHarnessUi({
-          targetId: settings.dshLaunch.subjectId ?? settings.dshLaunch.rootPath,
+          targetId: subjectId,
           port,
-          profile: settings.dshLaunch.profile,
-          command: settings.dshLaunch.command,
+          profile: launch.profile,
+          command: launch.command,
         })
-        if (clientRaiseAction(current?.kind ?? 'official-web') === 'browser' || ensured.outcome === 'no-window') {
-          if (port > 0) await nativeRuntime.openClientInBrowser(port)
+        if (clientRaiseAction(subjectClientKind(subjectId) ?? 'official-web') === 'browser' || ensured.outcome === 'no-window') {
+          const live = port > 0
+            ? port
+            : (await nativeRuntime.scanHarnessEndpoints([...ports])).find((item) => item.bridgeFound)?.port
+          if (live) await nativeRuntime.openClientInBrowser(live)
           return
         }
         if (ensured.started && ensured.outcome === 'not-running') {

@@ -181,6 +181,29 @@ export function endpointScopeConfigured(scope: EndpointScope): boolean {
 }
 
 /**
+ * The scope a stored launch configuration describes.
+ *
+ * The one place the four stored fields become a scope, so the background surface and
+ * the settings window cannot disagree about what the settings mean. Structural
+ * rather than typed against the settings module: this asks for the fields it reads,
+ * not for a whole `WallpaperSettings`. `rootPath` is the pre-`subjectId` spelling of
+ * a checkout choice and is still honoured, so a profile written by an older version
+ * keeps working (§4.4).
+ */
+export function endpointScopeOf(launch: {
+  subjectId?: string
+  rootPath?: string
+  endpointPort?: number
+  extraEndpointPorts?: readonly number[]
+}): EndpointScope {
+  return {
+    subjectId: launch.subjectId ?? launch.rootPath,
+    endpointPort: launch.endpointPort,
+    extraPorts: launch.extraEndpointPorts,
+  }
+}
+
+/**
  * The client shape a subject belongs to, or `undefined` when this build cannot
  * say (an unknown shell AUMID).
  *

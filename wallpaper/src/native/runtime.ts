@@ -43,6 +43,30 @@ export interface HarnessEndpointScan {
 }
 
 /**
+ * What the settings say the wallpaper may talk to.
+ *
+ * `subjectId` is the user's real choice (`shell:<aumid>` for a client that carries
+ * its own checkout, else a source tree's path); `port` is their explicit endpoint
+ * override; `extraPorts` are the ports they added for a checkout that does not
+ * listen on the default. Native derives the admissible ports from the subject alone
+ * — see `subject_endpoint_ports` — so this is a statement about the subject, never
+ * about which client happens to answer.
+ */
+export interface HarnessEndpointScope {
+  port?: number | null
+  subjectId?: string
+  extraPorts?: readonly number[]
+}
+
+/** What native made of that scope, for logging and for the settings card. */
+export interface HarnessEndpointScopeResult {
+  port?: number | null
+  subjectId?: string
+  /** The ports the subject may be reached on; empty when nothing is configured. */
+  subjectPorts: number[]
+}
+
+/**
  * What the shim did when asked to start a chosen execution subject.
  *
  * `started-unconfirmed` is not a failure: the Windows shell accepted the request
@@ -259,8 +283,17 @@ export interface NativeRuntime {
   clearApiHistory(): Promise<number>
   listenTray(listener: (event: { type: 'backend'; backend: BackendMode }) => void): Promise<() => void>
   probeHarness(): Promise<HarnessStatus>
-  /** Pin the native monitor's endpoint (`null` clears it back to auto). */
-  setHarnessEndpoint(port: number | null): Promise<number | null>
+  /**
+   * Publish which endpoints the wallpaper may talk to.
+   *
+   * The settings are the authority, and the native monitor owns the probe loop, so
+   * the whole scope has to reach native state: the subject the user chose, the
+   * endpoint they pinned, and the ports they added for a checkout. It travels as one
+   * call because it is one decision — a partial update would leave the monitor
+   * probing a port belonging to the subject the user has just left, which is the
+   * silent substitution the connection path forbids.
+   */
+  setHarnessEndpointScope(scope: HarnessEndpointScope): Promise<HarnessEndpointScopeResult>
   /** Which local ports host a wallpaper Bridge, in the native layer's order. */
   scanHarnessEndpoints(extraPorts?: readonly number[]): Promise<HarnessEndpointScan[]>
   /**
@@ -586,16 +619,26 @@ export const nativeRuntime: NativeRuntime = {
     return invoke<HarnessStatus>('probe_harness')
   },
   /**
-   * Pin the endpoint the native monitor probes, or clear the pin with `null`.
+   * Publish the endpoint scope the native monitor probes from.
    *
    * The monitor owns the probe loop, so the choice must reach native state: a
-   * per-request port would leave the rendered status coming from the default port
-   * while the settings card implied otherwise.
+   * per-request port would leave the rendered status coming from the shipped
+   * priority order while the settings named a subject. `subjectId` is the important
+   * half — without it native only knew ports, and connected to whichever client
+   * answered.
    */
-  async setHarnessEndpoint(port: number | null) {
-    if (!await tauriAvailable()) return null
+  async setHarnessEndpointScope(scope: HarnessEndpointScope) {
+    if (!await tauriAvailable()) {
+      return { port: scope.port ?? null, subjectId: scope.subjectId, subjectPorts: [] }
+    }
     const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<number | null>('set_harness_endpoint', { port })
+    return invoke<HarnessEndpointScopeResult>('set_harness_endpoint', {
+      // Explicit nulls rather than omitted keys: the command's own boundary is
+      // strict about what it received, and `None` is well defined on that side.
+      port: scope.port ?? null,
+      subjectId: scope.subjectId ?? null,
+      extraPorts: scope.extraPorts ? [...scope.extraPorts] : [],
+    })
   },
   /**
    * Ask the native side to bring a desktop client's window forward.

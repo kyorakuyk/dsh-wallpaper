@@ -83,8 +83,6 @@ export interface SettingsPanelProps {
   onOpenClient: () => void
   /** Which action the current selection takes, for the button label. */
   reachAction: 'browser' | 'window'
-  /** The endpoint the action will act on, when one is selected. */
-  reachPort?: number
   /** Opening waits for the client to answer, so the button reports that wait. */
   openBusy: boolean
   managedDsh: ManagedDshStatus

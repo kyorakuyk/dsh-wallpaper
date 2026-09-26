@@ -4,7 +4,15 @@ import { invoke } from '@tauri-apps/api/core'
 import { appCoreClient } from '../runtime/appCoreClient.ts'
 import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type HarnessEndpointScan, type HarnessTarget, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
 import { loadSettings, saveSettings, type WallpaperSettings } from './store.ts'
-import { clientRaiseAction, endpointKindLabel, raiseOutcomeNotice, type HarnessClientKind } from '../connect/endpoints.ts'
+import {
+  clientRaiseAction,
+  endpointKindLabel,
+  endpointScopeOf,
+  raiseOutcomeNotice,
+  subjectClientKind,
+  subjectEndpointPorts,
+  type HarnessClientKind,
+} from '../connect/endpoints.ts'
 import { launchOutcomeNotice, subjectChoicePrompt } from '../connect/harnessSubjects.ts'
 import { SettingsPanel, type SettingsPanelHarnessStatus } from './SettingsPanel.tsx'
 import {
@@ -116,18 +124,16 @@ export function SettingsWindow() {
   const lockScreenOperationRef = useRef(false)
   const autostartOperationRef = useRef(false)
   /**
-   * The endpoint the reach action will act on.
+   * The shape of the subject the reach action reaches.
    *
-   * An explicit choice wins; otherwise the highest-priority discovered Bridge is
-   * used, matching what the monitor would select. Deliberately not read from the
-   * scan list alone: a user who pinned a port that is not currently ready still
-   * gets that port acted on, because silently reaching a *different* client would
-   * be the wrong answer.
+   * Derived from the configured subject first, never from "which client happens to be
+   * ready": reaching a client the user did not choose is the same substitution the
+   * connection path forbids. It comes from the subject because the shape decides *how*
+   * the interface is reached and has to be known even while nothing answers.
    */
-  const reachPort = settings.dshLaunch.endpointPort
-    ?? endpointScan.find((item) => item.bridgeFound && item.status.availability === 'bridge-ready')?.port
-    ?? endpointScan.find((item) => item.bridgeFound)?.port
-  const reachKind: HarnessClientKind = endpointScan.find((item) => item.port === reachPort)?.kind ?? 'official-web'
+  const reachKind: HarnessClientKind = subjectClientKind(settings.dshLaunch.subjectId ?? settings.dshLaunch.rootPath)
+    ?? endpointScan.find((item) => item.port === settings.dshLaunch.endpointPort)?.kind
+    ?? 'official-web'
   const dshScanOperationRef = useRef(false)
   const lockScreenDiagnosticsRequestRef = useRef(0)
   const apiHistoryOperationRef = useRef(false)
@@ -137,12 +143,13 @@ export function SettingsWindow() {
   const mountedRef = useRef(true)
 
   useEffect(() => {
-    // Push the stored endpoint on mount, not only when the user changes it.
+    // Push the stored endpoint scope on mount, not only when the user changes it.
     // The native monitor holds its own endpoint state, so without this a saved
     // choice was only honoured after the user touched the control again — and
     // this surface has a separate storage partition from the background one, so
-    // it cannot assume the other already pushed it.
-    void nativeRuntime.setHarnessEndpoint(settingsRef.current.dshLaunch.endpointPort ?? null)
+    // it cannot assume the other already pushed it. The subject travels with it:
+    // that is what stops the monitor from probing another client's port.
+    void nativeRuntime.setHarnessEndpointScope(endpointScopeOf(settingsRef.current.dshLaunch))
       .catch(() => null)
   }, [])
 
@@ -152,8 +159,8 @@ export function SettingsWindow() {
     saveSettings(next)
     // The native monitor owns the probe loop, so an endpoint change has to be
     // pushed explicitly; publishing settings alone would leave the rendered
-    // status coming from the previous port.
-    void nativeRuntime.setHarnessEndpoint(next.dshLaunch.endpointPort ?? null).catch(() => null)
+    // status coming from the previous port — or, worse, from another subject.
+    void nativeRuntime.setHarnessEndpointScope(endpointScopeOf(next.dshLaunch)).catch(() => null)
     // Every Tauri WebView owns an isolated browser storage partition. Route
     // settings through Rust so this renderer cannot emit to arbitrary Tauri
     // event targets; Rust delivers the snapshot only to the background host.
@@ -262,10 +269,9 @@ export function SettingsWindow() {
       if (!mountedRef.current) return
       setEndpointScan(found)
       setEndpointScanDone(true)
-      // Pushing the current choice to the native monitor is what makes the
-      // dropdown affect the status the desktop renders, rather than only the
-      // label in this card.
-      await nativeRuntime.setHarnessEndpoint(settingsRef.current.dshLaunch.endpointPort ?? null).catch(() => null)
+      // Pushing the current choice to the native monitor is what makes the subject
+      // affect the status the desktop renders, rather than only the label in this card.
+      await nativeRuntime.setHarnessEndpointScope(endpointScopeOf(settingsRef.current.dshLaunch)).catch(() => null)
       const bridges = found.filter((item) => item.bridgeFound)
       if (bridges.length === 0) {
         setNotice('未发现可接入的 Harness。请先启动任一个客户端官官方桌面 / 第三方桌面 / 官方 Web）后重新扫描。')
@@ -293,10 +299,15 @@ export function SettingsWindow() {
    */
   const reachClient = async () => {
     const current = settingsRef.current.dshLaunch
-    // 0 means the native side decides from the subject itself: the user no longer picks
-    // an endpoint anywhere, so no scan has to run before this action can work.
-    const port = current.endpointPort ?? reachPort ?? 0
-    const kind = endpointScan.find((item) => item.port === port)?.kind ?? 'official-web'
+    const subjectId = current.subjectId ?? current.rootPath
+    // The subject's own ports, in its own order — never "whatever the scan found
+    // answering", which would reach a client the user did not choose.
+    const ports = subjectEndpointPorts(endpointScopeOf(current)) ?? []
+    // The user's pin wins; otherwise native decides from the subject itself, which
+    // prefers a port that is actually listening. Passing the subject's first port
+    // unconditionally would start a second instance of a checkout the user moved.
+    const port = current.endpointPort ?? (ports.length === 1 ? ports[0]! : 0)
+    const kind = subjectClientKind(subjectId) ?? reachKind
     setReachBusy(true)
     try {
       // §5.2: one idempotent action covers all three states — the subject may not be
@@ -304,7 +315,7 @@ export function SettingsWindow() {
       // just be behind another window. Native decides which, and starts the subject
       // itself when nothing answers, so the caller never has to branch on that.
       const ensured = await nativeRuntime.ensureHarnessUi({
-        targetId: current.subjectId ?? current.rootPath,
+        targetId: subjectId,
         port,
         profile: current.profile,
         command: current.command,
@@ -317,9 +328,18 @@ export function SettingsWindow() {
       }
       if (clientRaiseAction(kind) === 'browser' || ensured.outcome === 'no-window') {
         // No window exists for this shape; the browser is its interface, and it is
-        // now confirmed to be answering (this action started it if it was not).
-        await nativeRuntime.openClientInBrowser(port)
-        setNotice(`已在默认浏览器中打开 127.0.0.1:${port}。`)
+        // now confirmed to be answering (this action started it if it was not). The
+        // address is resolved among the subject's own ports, because 0 above
+        // deliberately left the choice of port to native.
+        const live = port > 0
+          ? port
+          : (await nativeRuntime.scanHarnessEndpoints([...ports])).find((item) => item.bridgeFound)?.port
+        if (!live) {
+          setNotice('没有可打开的界面：主体没有在本机监听任何端口。')
+          return
+        }
+        await nativeRuntime.openClientInBrowser(live)
+        setNotice(`已在默认浏览器中打开 127.0.0.1:${live}。`)
         return
       }
       const notice = raiseOutcomeNotice(ensured.outcome, kind)
@@ -660,7 +680,6 @@ export function SettingsWindow() {
       onOpenClient={() => { void reachClient() }}
       openBusy={reachBusy}
       reachAction={clientRaiseAction(reachKind)}
-      reachPort={reachPort}
       autostart={autostartState}
       onScanDsh={() => { void scanDsh(true) }}
       dshScanBusy={dshScanBusy}
