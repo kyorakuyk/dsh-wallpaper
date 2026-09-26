@@ -27,6 +27,9 @@
   --dsh-accent: var(--persona-primary, #5caeff);
   --dsh-accent-soft: var(--persona-accent, #99d4ff);
   --dsh-accent-rgb: 92, 174, 255;
+  /* 压在**实色 accent** 上的字形颜色。浅色字压亮蓝/亮红只有 2~3:1，深色反而约 7:1，
+     而且两种主题色都能用——悬浮球那枚扁平按钮靠它保证图标看得清。 */
+  --dsh-accent-ink: #07121f;
   --dsh-glow: var(--persona-glow, rgba(54, 157, 255, 0.24));
 
   --dsh-glass-fill: rgba(8, 17, 31, 0.62);
@@ -86,6 +89,7 @@
     --dsh-glass-border: ButtonBorder;
     --dsh-accent: Highlight;
     --dsh-accent-soft: HighlightText;
+    --dsh-accent-ink: HighlightText;
     --dsh-shadow-floating: none;
     --dsh-shadow-resting: none;
   }

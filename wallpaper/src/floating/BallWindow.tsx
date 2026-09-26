@@ -1,5 +1,5 @@
 /**
- * 悬浮球窗口（surface `ball`）：一个极简的小圆球。
+ * 悬浮球窗口（surface `ball`）：一枚扁平圆形的"消息"按钮。
  *
  * 它是折叠态胶囊的新家——壁纸场景画在 Explorer 图标层之下，表桌面收不到任何鼠标消息
  * （见 `docs/evidence/input-model-desktop-hit-testing.md`），所以折叠态的 UI 必须搬到一个
@@ -21,6 +21,7 @@ import './BallWindow.css'
 import { invoke } from '@tauri-apps/api/core'
 import { useEffect } from 'react'
 import { suppressNativeContextMenu } from '../runtime/contextMenu.ts'
+import { Icon } from '../ui/primitives/Icon.tsx'
 
 export function BallWindow() {
   // 球也是壁纸的一部分：右键它不该弹出"图像另存为/更多工具"那一套网页菜单。
@@ -35,6 +36,11 @@ export function BallWindow() {
         // 失败不弹任何界面：球的窗口没有能力显示错误，原生侧会留下日志。
         void invoke('enter_inner_workspace_from_ball').catch(() => undefined)
       }}
-    />
+    >
+      {/* 扁平圆形按钮 + 一枚对话气泡：**可被认出**比"极简"更重要。球是表桌面上唯一的入口，
+          一枚没有语义的圆球只能靠猜；画上"消息"，用户一眼就知道点它会说话。
+          （早期的要求是"只要一个极简小圆球、球里不要图标"，本轮由用户改判。） */}
+      <Icon name="message" size={24} />
+    </button>
   )
 }

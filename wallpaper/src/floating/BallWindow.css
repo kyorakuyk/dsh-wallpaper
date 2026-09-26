@@ -1,17 +1,19 @@
-/* 悬浮球窗口（surface `ball`）的样式：一个极简的小圆球。
+/* 悬浮球窗口（surface `ball`）的样式：一枚**扁平**的圆形"消息"按钮。
  *
  * 窗口是 56×56 逻辑像素、无边框、透明，原生 `SetWindowRgn` 已经把窗口区域裁成
  * 圆形（圆角椭圆直径 = 窗口高度）。所以这里把整窗画满即可：
  * `100vw × 100vh` + `border-radius: 50%`，形状与原生区域一致。
  *
- * 三条刻意的取舍：
- * 1. **不用 `backdrop-filter`**：球是独立顶层窗口，背后是桌面而不是本进程的其它图层，
+ * 造型取舍（本轮按用户要求改判）：
+ * 1. **扁平**：一层实色 + 一枚字形。没有玻璃渐变、没有模糊、没有内外发光——
+ *    球的职责是"被认出是一个可以说话的入口"，材质感在这里没有信息量。
+ * 2. **不用 `backdrop-filter`**：球是独立顶层窗口，背后是桌面而不是本进程的其它图层，
  *    模糊没有可采样的底；仓库也已因为全屏 `backdrop-filter` 吃过 hover 卡顿的亏。
- * 2. **辉光只能画在内部**：原生区域会裁掉圆之外的一切，外发光在球上根本不可见，
- *    柔光用 `inset` 阴影 + 内部渐亮表达。
- * 3. **不放任何文字/图标**：用户要求「极简的一个小圆球就够了」，所以球体里没有字形，
- *    只有一层玻璃质感与一圈描边；hover 时描边转为主题色，那是「这里是可点的」的唯一提示，
- *    同时也是「WebView 确实收到了真实鼠标输入」的证据（球是独立顶层窗口，不靠热区推算）。
+ * 3. **内嵌"消息"图标**（`ui/primitives/Icon.tsx` 的 `message`）：早期要求是"极简小圆球、
+ *    球里不要图标"，但一枚没有语义的圆球要靠猜；用户本轮要求画上图标让意图一眼可见。
+ * 4. **反馈只在颜色/位移上**：hover 提亮、按下内收；原来那层"内部呼吸光"属于玻璃质感，
+ *    一并去掉（球本身现在就是一个自解释的按钮）。
+ * 5. 字形用深色压在亮底上（对比度约 7:1），比白字压亮蓝/亮红更清楚，也不挑主题色。
  */
 
 .ball-surface {
@@ -34,61 +36,43 @@
 
 .ball {
   box-sizing: border-box;
-  position: relative;
-  display: block;
+  display: grid;
   width: 100vw;
   height: 100vh;
   margin: 0;
   padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.22);
+  place-items: center;
+  border: 0;
   border-radius: 50%;
-  /* 深色玻璃球；令牌缺失时用同一族的字面值兜底，避免球整块不可见。 */
-  background:
-    radial-gradient(78% 62% at 50% 22%, rgba(255, 255, 255, 0.14), transparent 62%),
-    radial-gradient(120% 120% at 50% 118%, color-mix(in srgb, var(--dsh-accent, #5caeff) 42%, transparent), transparent 58%),
-    color-mix(in srgb, var(--dsh-glass-fill-strong, rgba(8, 16, 29, 0.78)) 90%, transparent);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.16),
-    inset 0 0 18px var(--dsh-glow, rgba(54, 157, 255, 0.24));
+  /* 扁平实色。令牌缺失时给同族字面值兜底，避免球整块不可见。 */
+  background: var(--dsh-accent, #5caeff);
+  color: var(--dsh-accent-ink, #07121f);
   cursor: pointer;
-  transition: border-color var(--dsh-duration-fast, 140ms) var(--dsh-ease-standard, ease);
+  transition:
+    filter var(--dsh-duration-fast, 140ms) var(--dsh-ease-standard, ease),
+    transform var(--dsh-duration-fast, 140ms) var(--dsh-ease-standard, ease);
   /* 窗口永不激活（WS_EX_NOACTIVATE），所以键盘焦点环在这里没有意义。 */
   outline: none;
   -webkit-appearance: none;
   appearance: none;
 }
 
-/* hover：描边转主题色。这是 WebView 收到的真事件（不是热区推算），
+/* hover：提亮并轻微放大。这是 WebView 收到的真事件（不是热区推算），
  * 它不依赖窗口是否激活：`focusable(false)` 只影响激活，不影响 hover。 */
 .ball:hover {
-  border-color: color-mix(in srgb, var(--dsh-accent, #5caeff) 62%, transparent);
+  filter: brightness(1.12);
+  transform: scale(1.04);
 }
 
-/* 按下时轻微内收，给出「已经点到」的反馈。 */
+/* 按下：内收一点，给出"已经点到"的反馈。 */
 .ball:active {
-  box-shadow:
-    inset 0 2px 8px rgba(0, 0, 0, 0.35),
-    inset 0 0 22px var(--dsh-glow, rgba(54, 157, 255, 0.3));
+  filter: brightness(0.94);
+  transform: scale(0.93);
 }
 
-/* 内部呼吸光：外发光会被原生区域裁掉，所以用内部一层柔光表达"活着"。 */
-.ball::after {
-  content: '';
-  position: absolute;
-  inset: 22%;
-  border-radius: 50%;
-  background: radial-gradient(closest-side, color-mix(in srgb, var(--dsh-accent, #5caeff) 30%, transparent), transparent 78%);
-  pointer-events: none;
-  animation: ball-breathe 6s ease-in-out infinite;
-}
-
-@keyframes ball-breathe {
-  0%, 100% { opacity: 0.5; }
-  50% { opacity: 1; }
-}
-
-/* 系统要求减少动态时完全不呼吸（与 `styles.css` / `tokens.css` 同一约定）。 */
+/* 系统要求减少动态时不做位移（与 `styles.css` / `tokens.css` 同一约定）。 */
 @media (prefers-reduced-motion: reduce) {
   .ball { transition: none; }
-  .ball::after { animation: none; }
+  .ball:hover,
+  .ball:active { transform: none; }
 }

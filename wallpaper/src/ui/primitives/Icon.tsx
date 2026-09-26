@@ -1,6 +1,6 @@
 import type { SVGAttributes } from 'react'
 
-export type IconName = 'arrow-up' | 'check' | 'chevron-up' | 'close' | 'export' | 'history' | 'image' | 'import' | 'inbox' | 'lock' | 'model' | 'palette' | 'refresh' | 'spark' | 'stop'
+export type IconName = 'arrow-up' | 'check' | 'chevron-up' | 'close' | 'export' | 'history' | 'image' | 'import' | 'inbox' | 'lock' | 'message' | 'model' | 'palette' | 'refresh' | 'spark' | 'stop'
 
 const paths: Record<IconName, string> = {
   'arrow-up': 'M12 19V5m0 0-6 6m6-6 6 6',
@@ -13,6 +13,8 @@ const paths: Record<IconName, string> = {
   import: 'M12 3v12m0 0-5-5m5 5 5-5M5 18v2h14v-2',
   inbox: 'M4 5h16l-2 14H6L4 5Zm1.3 9h4l1.2 2h3l1.2-2h4',
   lock: 'M7 10V7a5 5 0 0 1 10 0v3m-11 0h12v10H6V10Z',
+  // 一个带尾巴的对话气泡：悬浮球用它表明"点这里可以说话"，比一枚没有语义的圆球更容易懂。
+  message: 'M19.5 7A2.5 2.5 0 0 0 17 4.5H7A2.5 2.5 0 0 0 4.5 7v6A2.5 2.5 0 0 0 7 15.5h.4V19l4-3.5H17A2.5 2.5 0 0 0 19.5 13V7Z',
   model: 'M12 3 4.5 7.2 12 11.5l7.5-4.3L12 3Zm-7.5 9L12 16.3l7.5-4.3M4.5 16.8 12 21l7.5-4.2',
   palette: 'M12 3a9 9 0 1 0 0 18h1.2a2 2 0 0 0 0-4H12a2 2 0 0 1 0-4h5.5A3.5 3.5 0 0 0 21 9.5C21 5.9 17 3 12 3Z',
   refresh: 'M20 7v5h-5M4 17v-5h5m10.2-3A8 8 0 0 0 5.5 6M4.8 15A8 8 0 0 0 18.5 18',
