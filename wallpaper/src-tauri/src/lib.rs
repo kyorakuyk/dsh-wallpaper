@@ -471,11 +471,21 @@ async fn ensure_harness_ui(
         //
         // 已安装的 CLI 与源码目录都走这一处：两条路的"孩子"定义本就该一致。
         if outcome.started {
-            if let Some(pid) = crate::client_window::endpoint_process_id(port) {
-                harness_launch::remember_child(subject_for_record.trim(), pid);
-            } else {
-                log::warn!("harness managed-child unknown: nothing listening on {port} after a start");
-            }
+            // 端口**不会**在 `ensure_ui` 返回前就绪：只有壳会等窗口，非壳主体不等（实测：刚 spawn
+            // 完就去问属主，得到的是"还没人在听"，两秒后端口才起来）。所以这里不抢答，交给一个
+            // 有限的轮询：端口一起来就把**那时**的属主记为孩子；等不到就留一条警告，让"没有记录"
+            // 这件事有据可查，而不是静悄悄。
+            let subject_for_record = subject_for_record.trim().to_string();
+            std::thread::spawn(move || {
+                for _ in 0..60 {
+                    if let Some(pid) = crate::client_window::endpoint_process_id(port) {
+                        harness_launch::remember_child(&subject_for_record, pid);
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+                log::warn!("harness managed-child unknown: nothing listening on {port} after waiting");
+            });
         }
         // 门票只属于**那一次启动**：`dsh web` 每次起来现生成一个，打印一次。如果宿主已经在跑、
         // 而壁纸手里没有它这一代的门票（装机/重启之后最常见），浏览器会被自己的围栏挡在门外。
