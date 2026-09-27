@@ -126,6 +126,19 @@ export interface DshLaunchSettings {
   endpointPort?: number
   /** Extra ports the user added to the scan, beyond the three known shapes. */
   extraEndpointPorts?: number[]
+  /**
+   * Which interface 「打开」 raises when the subject has no window of its own.
+   *
+   * Only meaningful for a subject this build reaches through a *browser*: the official
+   * desktop client owns a Windows window, so the question does not arise for it. For an
+   * installed DSH CLI the user picks between the same web UI in a browser and the same
+   * host under the TUI (`dst`), which is a real choice — the two show the same sessions
+   * and differ in where the conversation is typed.
+   *
+   * Absent means `browser`: the route that has always been there, so a stored or older
+   * profile keeps behaving exactly as it did.
+   */
+  window?: 'browser' | 'tui'
 }
 
 export interface WallpaperSettings {
@@ -449,6 +462,8 @@ function normalizeDshLaunchSettings(raw: unknown): DshLaunchSettings {
     ...(normalizeExtraPorts(value.extraEndpointPorts).length > 0
       ? { extraEndpointPorts: normalizeExtraPorts(value.extraEndpointPorts) }
       : {}),
+    // 只认这两个值；缺省不写入，读的时候按 `browser` 处理（与旧档案行为一致 ✓）。
+    ...(value.window === 'tui' ? { window: 'tui' as const } : {}),
   }
 }
 
