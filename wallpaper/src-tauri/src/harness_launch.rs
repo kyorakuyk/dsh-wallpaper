@@ -156,7 +156,7 @@ fn launch_installed_cli(launcher: &str, profile: &str) -> HarnessLaunchOutcome {
 /// * **no `--profile`** — unlike `dsh`, the TUI names its own profile (`dsh-tui`) and
 ///   forwards the rest to it, so passing one here would be the wallpaper overriding a
 ///   choice the tool already made.
-fn tui_launch_command(launcher: &Path) -> (PathBuf, Vec<String>) {
+pub(crate) fn tui_launch_command(launcher: &Path) -> (PathBuf, Vec<String>) {
     (
         PathBuf::from("cmd.exe"),
         vec![

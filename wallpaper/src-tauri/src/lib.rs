@@ -1869,6 +1869,42 @@ fn open_project_memory(caller: tauri::WebviewWindow, app: tauri::AppHandle) -> R
     }))
 }
 
+/// 「打开 TUI」：把本机的 TUI（`dst`）在一个**新的终端窗口**里拉起来。
+///
+/// 为什么这件事必须由原生做：能不能开终端窗口、以及**本机到底有没有装 TUI**，都只有原生能回答。
+/// 而这条命令的契约是「缺什么就说什么」：找不到 `dst` 时返回 `opened: false` 加一句怎么办，
+/// **绝不静默改成打开浏览器** —— 那等于替用户换了一条他没选的路。
+///
+/// 与 `open_project_memory` 同样的门：**只有设置中心能调**（`require_settings`）。
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+fn open_subject_tui(caller: tauri::WebviewWindow) -> Result<serde_json::Value, String> {
+    require_settings(&caller)?;
+    let launchers = harness_targets::tui_launcher_paths(
+        std::env::var("APPDATA").ok().as_deref(),
+        std::env::var("PATH").ok().as_deref(),
+    );
+    let Some(launcher) = launchers.first() else {
+        return Ok(serde_json::json!({
+            "opened": false,
+            "reason": "not-installed",
+            "message": "本机没有找到 TUI（dst）。安装：npm i -g @deepseek-harness-tui/dsh-tui",
+        }));
+    };
+    let (program, args) = harness_launch::tui_launch_command(launcher);
+    std::process::Command::new(&program)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|error| format!("无法拉起 TUI：{error}"))?;
+    Ok(serde_json::json!({
+        "opened": true,
+        "launcher": launcher.display().to_string(),
+    }))
+}
+
 /// 「清除全部用户数据」里，**能由本应用安全删掉**的那几处。
 ///
 /// 刻意不含 WebView2 配置目录（设置与网页登录态都住在里面）：那个目录正被运行中的进程占用，
@@ -4248,6 +4284,7 @@ macro_rules! register_edition_commands {
             api_key_status,
             desktop_workspace_status,
             open_project_memory,
+            open_subject_tui,
             clear_user_data,
             show_deepseek_login,
             native_bootstrap_generation,

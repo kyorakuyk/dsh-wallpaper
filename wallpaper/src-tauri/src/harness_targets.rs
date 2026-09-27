@@ -551,7 +551,7 @@ fn installed_cli_launchers_from(npm_prefix: Option<&str>, path: Option<&str>) ->
 /// `@deepseek-harness-tui/dsh-tui` installs two names for the same entry point, `dst`
 /// and `dsh-tui`, and either may be the one on `PATH` — so both are searched rather
 /// than assuming the shorter one.
-fn tui_launcher_paths(npm_prefix: Option<&str>, path: Option<&str>) -> Vec<PathBuf> {
+pub(crate) fn tui_launcher_paths(npm_prefix: Option<&str>, path: Option<&str>) -> Vec<PathBuf> {
     npm_launcher_paths(npm_prefix, path, &["dst", "dsh-tui"])
 }
 
