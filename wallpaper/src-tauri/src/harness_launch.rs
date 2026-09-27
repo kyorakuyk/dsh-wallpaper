@@ -25,7 +25,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::harness_targets::{known_shell, HarnessTargetKind, SHELL_ID_PREFIX};
+use crate::harness_targets::{known_shell, HarnessTargetKind, CLI_ID_PREFIX, SHELL_ID_PREFIX};
 
 /// How long a shell is given to answer before its start is reported as
 /// unconfirmed. Generous on purpose: an Electron client's first start after a
@@ -92,6 +92,54 @@ pub(crate) enum LaunchPlan {
         profile: String,
         command: Option<String>,
     },
+    /// Spawn a globally installed DSH CLI (`npm i -g @deepseek-ai/dsh`).
+    ///
+    /// It differs from a checkout in the one way that matters here: there is no tree to
+    /// run a launcher *from*, only the launcher itself. Everything else — the profile it
+    /// boots, the port it answers on — is the same, which is why the caller cannot tell
+    /// the two apart once the command line is decided.
+    InstalledCli { launcher: String, profile: String },
+}
+
+/// Start a globally installed CLI: `<launcher> --profile <profile>`.
+///
+/// `--profile` is passed explicitly rather than left to the CLI's own default: this
+/// subject exists so the wallpaper can reach the *web/app* shape over HTTP, and that is
+/// the profile the user's other subjects boot.
+///
+/// `CREATE_NO_WINDOW` matters here. The launcher is a console program, and a GUI process
+/// that spawns one without that flag gets a console window of its own — a black rectangle
+/// that appears next to a wallpaper and stays until the CLI exits.
+fn launch_installed_cli(launcher: &str, profile: &str) -> HarnessLaunchOutcome {
+    let (program, args) = installed_cli_command(Path::new(launcher), profile);
+    let mut command = std::process::Command::new(&program);
+    command
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    log::info!(
+        "harness installed-cli launch: program={} args={args:?}",
+        program.display()
+    );
+    match command.spawn() {
+        Ok(child) => HarnessLaunchOutcome {
+            outcome: "started".into(),
+            kind: HarnessTargetKind::InstalledCli,
+            pid: Some(child.id()),
+            hidden: false,
+        },
+        Err(error) => {
+            log::warn!("harness installed-cli launch failed: {error}");
+            HarnessLaunchOutcome::new("spawn-failed", HarnessTargetKind::InstalledCli)
+        }
+    }
 }
 
 /// The program and arguments that start a **globally installed** DSH CLI.
@@ -153,6 +201,18 @@ pub(crate) fn plan_launch(
     trigger: LaunchTrigger,
 ) -> Result<LaunchPlan, &'static str> {
     let command = command.map(str::trim).filter(|value| !value.is_empty());
+    if let Some(launcher) = id.trim().strip_prefix(CLI_ID_PREFIX) {
+        let launcher = launcher.trim();
+        if launcher.is_empty() {
+            return Err("unknown-target");
+        }
+        // 已安装的 CLI 自己就是程序 —— 没有树、没有自定义启动器，所以"要不要用户确认"
+        // 这个问题对它不成立：它不是用户随手填的命令，而是扫描扫出来的一个已安装命令。
+        return Ok(LaunchPlan::InstalledCli {
+            launcher: launcher.to_string(),
+            profile: profile.trim().to_string(),
+        });
+    }
     if let Some(aumid) = id.trim().strip_prefix(SHELL_ID_PREFIX) {
         let Some(shell) = known_shell(aumid) else {
             return Err("unknown-target");
@@ -198,6 +258,7 @@ pub(crate) fn run_launch(
             port,
             hide_window,
         } => launch_shell(aumid, alias, *port, *hide_window),
+        LaunchPlan::InstalledCli { launcher, profile } => launch_installed_cli(launcher, profile),
         LaunchPlan::Checkout {
             root_path,
             profile,
@@ -593,6 +654,24 @@ mod tests {
         let (program, args) = installed_cli_command(Path::new(r"C:\tools\dsh.exe"), "web");
         assert_eq!(program, PathBuf::from(r"C:\tools\dsh.exe"));
         assert_eq!(args, vec!["--profile", "web"]);
+    }
+
+    #[test]
+    fn an_installed_cli_plans_the_launcher_itself_with_its_profile() {
+        let id = format!("{CLI_ID_PREFIX}C:\\Users\\u\\AppData\\Roaming\\npm\\dsh.cmd");
+        let plan = plan_launch(&id, " web ", None, MANUAL).expect("cli plan");
+        match plan {
+            LaunchPlan::InstalledCli { launcher, profile } => {
+                assert_eq!(launcher, r"C:\Users\u\AppData\Roaming\npm\dsh.cmd");
+                assert_eq!(profile, "web", "the profile is trimmed like a checkout's");
+            }
+            _ => panic!("expected an installed-cli plan"),
+        }
+        // 空启动器要拒绝，否则会变成"启动当前目录"那种意外。
+        assert_eq!(plan_launch("cli:", "web", None, MANUAL), Err("unknown-target"));
+        assert_eq!(plan_launch("cli:   ", "web", None, AUTO), Err("unknown-target"));
+        // 它不需要"用户确认启动器"那一步：它不是用户填的命令，而是扫描扫出来的已安装命令。
+        assert!(plan_launch(&id, "web", None, AUTO).is_ok());
     }
 
     const OFFICIAL_ID: &str = "shell:com.deepseek.dsh";
