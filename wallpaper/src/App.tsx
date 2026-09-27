@@ -273,6 +273,9 @@ export function dshAutostartNotice(result: ManagedDshAutostart): string | null {
  *
  * Returns `null` while the launch is still legitimately pending.
  */
+/** 启动后多久才允许下"它退出了"这个结论（宽限期内不下结论，见函数内注释）。 */
+const IMMEDIATE_EXIT_GRACE_MS = 8_000
+
 export function harnessLaunchOutcome(
   status: { availability: RuntimeState['harness']; reasonCode?: string },
   elapsedMs: number,
@@ -287,8 +290,15 @@ export function harnessLaunchOutcome(
   launchedKind: 'embedded-shell' | 'checkout' = 'checkout',
 ): { message: string } | null {
   if (status.availability === 'bridge-ready') return null
-  if (launchedKind === 'checkout' && (!managed.managed || !managed.running)) {
-    return { message: 'DSH 启动后立即退出；请检查 DSH 配置或启动日志。' }
+  // "还没被我管起来"不等于"已经退出了"：宿主起来要几秒（实测：启动 22:27:54、端口与门票
+  // 22:27:56；已安装 CLI 还要先经过一层 cmd 与批处理）。在这个**宽限期**内不下结论 —— 否则
+  // 用户会先看到"启动后立即退出"，两秒后指示灯又变绿：一次假警报，比不说更糟。
+  if (
+    launchedKind === 'checkout'
+    && elapsedMs > IMMEDIATE_EXIT_GRACE_MS
+    && (!managed.managed || !managed.running)
+  ) {
+    return { message: 'DSH 启动后很快退出；请检查 DSH 配置或启动日志。' }
   }
   if (elapsedMs <= timeoutMs) return null
   // Past the deadline the most specific available cause wins: a Bridge that

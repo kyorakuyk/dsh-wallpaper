@@ -69,13 +69,17 @@ describe('launch supervision', () => {
     expect(harnessLaunchOutcome({ availability: 'bridge-ready' }, 999_999, { managed: true, running: true })).toBeNull()
   })
 
-  it('reports an immediate exit as soon as the managed process is gone', async () => {
+  it('does not call a slow start an immediate exit', async () => {
     const { harnessLaunchOutcome } = await appModule()
-    // This must not wait for the timeout: a process that died is already known.
-    expect(harnessLaunchOutcome({ availability: 'offline' }, 500, { managed: true, running: false })?.message)
-      .toContain('立即退出')
-    expect(harnessLaunchOutcome({ availability: 'offline' }, 500, { managed: false, running: false })?.message)
-      .toContain('立即退出')
+    // 实测：CLI 宿主起来要两三秒（启动 22:27:54、端口与门票 22:27:56），而这条判定原先**立刻**
+    // 就下结论 ⇒ 用户先看到"启动后立即退出"，两秒后指示灯又变绿 —— 一次假警报，比不说更糟。
+    expect(harnessLaunchOutcome({ availability: 'offline' }, 500, { managed: false, running: false })).toBeNull()
+    expect(harnessLaunchOutcome({ availability: 'offline' }, 7_999, { managed: true, running: false })).toBeNull()
+    // 过了宽限期仍然没有受管进程，才说"很快退出"（措辞也改成不夸大：8 秒不是"立即"）。
+    expect(harnessLaunchOutcome({ availability: 'offline' }, 8_001, { managed: true, running: false })?.message)
+      .toContain('很快退出')
+    expect(harnessLaunchOutcome({ availability: 'offline' }, 8_001, { managed: false, running: false })?.message)
+      .toContain('很快退出')
   })
 
   it('prefers the most specific cause once the deadline passes', async () => {
