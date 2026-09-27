@@ -837,6 +837,10 @@ export function SettingsWindow() {
         dshLaunch: {
           ...settingsRef.current.dshLaunch,
           subjectId: targetId,
+          // 显式端点属于**上一个主体**：它是"用户当年为那个主体选的那个端口"，换主体后就是一条
+          // 自相矛盾的选择（实测：主体是 3080 的已安装 CLI，pin 还是官方客户端的 19387，于是点
+          // 打开把官方客户端的窗口拉到了前台）。用户的 pin 优先这条规则不动，但换主体必须清掉它。
+          endpointPort: undefined,
           // 已安装的 CLI 既不是源码树也不是壳：它没有根目录可填（id 里的 `cli:` 是身份命名空间，
           // 不是路径），而它的档案是 dsh 自己那一个 —— web。沿用一个属于源码目录/官壳的 desktop
           // 会让它启动后立刻退出（实测：日志里 `--profile desktop`，而同一命令换 web 一切正常）。
