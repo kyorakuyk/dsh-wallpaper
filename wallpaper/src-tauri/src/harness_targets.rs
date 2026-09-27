@@ -543,6 +543,20 @@ pub fn scan_harness_targets_blocking(hint_path: Option<String>, deep_scan: bool)
 /// Pure on purpose: the environment values are parameters, so the layout can be
 /// tested without reading this machine.
 fn installed_cli_launchers_from(npm_prefix: Option<&str>, path: Option<&str>) -> Vec<PathBuf> {
+    npm_launcher_paths(npm_prefix, path, &["dsh"])
+}
+
+/// The same search for any npm-installed launcher, by base name.
+///
+/// Kept general because the TUI is a second such command (`dst`, installed globally
+/// from `@deepseek-harness-tui/dsh-tui`) and it has to be found the same way, in the
+/// same places, with the same rules — a second implementation would drift from this
+/// one about which directory counts.
+fn npm_launcher_paths(
+    npm_prefix: Option<&str>,
+    path: Option<&str>,
+    names: &[&str],
+) -> Vec<PathBuf> {
     let mut launchers = Vec::new();
     let mut push = |candidate: PathBuf| {
         if candidate.is_file() && !launchers.iter().any(|existing| existing == &candidate) {
@@ -550,14 +564,18 @@ fn installed_cli_launchers_from(npm_prefix: Option<&str>, path: Option<&str>) ->
         }
     };
     if let Some(prefix) = npm_prefix {
-        for name in ["dsh.cmd", "dsh.exe"] {
-            push(PathBuf::from(prefix).join(name));
+        for name in names {
+            for extension in ["cmd", "exe"] {
+                push(PathBuf::from(prefix).join(format!("{name}.{extension}")));
+            }
         }
     }
     if let Some(path) = path {
         for directory in std::env::split_paths(path) {
-            for name in ["dsh.cmd", "dsh.exe"] {
-                push(directory.join(name));
+            for name in names {
+                for extension in ["cmd", "exe"] {
+                    push(directory.join(format!("{name}.{extension}")));
+                }
             }
         }
     }
@@ -710,6 +728,28 @@ mod tests {
         checkouts: &[crate::DshPathCandidate],
     ) -> HarnessTargetScan {
         super::build_scan(shortcuts, checkouts, &[])
+    }
+
+    #[test]
+    fn the_same_search_finds_the_tui_launcher() {
+        // ③ 要用它找 `dst`（全局安装的 TUI）：同一个搜索、同一批位置、同一套规则，
+        // 只是换一个基名。这里用真实存在的文件验证"按名字找"确实生效。
+        let dir = std::env::temp_dir().join("dsh-wallpaper-launcher-test");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let dst = dir.join("dst.cmd");
+        std::fs::write(&dst, b"@echo off\r\n").expect("write");
+        let found = npm_launcher_paths(None, Some(dir.to_string_lossy().as_ref()), &["dst"]);
+        assert_eq!(found, vec![dst.clone()]);
+        // 同一个目录里找 `dsh` 不会把 `dst` 也算进去 —— 名字是精确的。
+        assert!(npm_launcher_paths(None, Some(dir.to_string_lossy().as_ref()), &["dsh"]).is_empty());
+        // 前缀优先，且同一个启动器不会被列两次。
+        let both = npm_launcher_paths(
+            Some(dir.to_string_lossy().as_ref()),
+            Some(dir.to_string_lossy().as_ref()),
+            &["dst"],
+        );
+        assert_eq!(both, vec![dst]);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     fn shortcut(aumid: &str, directory: &str) -> ScannedShortcut {
