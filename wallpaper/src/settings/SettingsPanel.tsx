@@ -274,9 +274,10 @@ export const CHAT_MODE_OPTIONS: Array<{ value: BackendMode; label: string }> = [
  * 当前值可能是 Harness：那时它必须留在候选里并标出来源，否则 `Choice` 会退回第一个候选，
  * 控件显示成"网页入口"而壁纸其实在 Harness 上——一个会骗人的开关。
  */
-export function chatModeOptions(current: BackendMode): Array<{ value: BackendMode; label: string }> {
-  if (CHAT_MODE_OPTIONS.some((option) => option.value === current)) return [...CHAT_MODE_OPTIONS]
-  return [...CHAT_MODE_OPTIONS, { value: current, label: `${BACKEND_MODE_LABELS[current]}（由桌面开关切换）` }]
+export function chatModeOptions(): Array<{ value: BackendMode; label: string }> {
+  // 这个下拉只回答一件事：**滑槽在左边时，聊天连接哪个通道**。滑槽在右端时一定是 Harness，
+  // 而那是滑槽自己的含义 —— 与这里无关，所以候选**恒为两项**，不为运行中的后端追加任何项。
+  return [...CHAT_MODE_OPTIONS]
 }
 
 export function backendModeLabel(backend: BackendMode): string {
@@ -401,6 +402,18 @@ export function SettingsPanel(props: SettingsPanelProps) {
    */
   const selectedSubject = props.harnessTargets.find((target) => target.id === settings.dshLaunch.subjectId)
   const shellSelected = selectedSubject?.kind === 'embedded-shell'
+  // 「打开」能做什么，由主体决定：官壳只有自己的窗口，源码树只有浏览器，只有"已安装的 CLI"真的有
+  // 两条路可选。**单项不做成下拉** —— 那是一个点了没反应、也无法改变的控件。
+  const openRoutes: Array<{ value: 'browser' | 'tui'; label: string }> = !settings.dshLaunch.subjectId
+    ? []
+    : shellSelected
+      ? [{ value: 'browser', label: '官方客户端窗口' }]
+      : selectedSubject?.kind === 'installed-cli'
+        ? [{ value: 'browser', label: '浏览器' }, { value: 'tui', label: '终端里的 TUI' }]
+        : [{ value: 'browser', label: '浏览器' }]
+  // 存着的路线只有在**真的有两条路**时才作数：官壳/源码树即便档案里写着 tui，也仍然走它们唯一的路。
+  const openRoute: 'browser' | 'tui' =
+    openRoutes.length > 1 && settings.dshLaunch.window === 'tui' ? 'tui' : 'browser'
   /**
    * Clients that are actually running. The endpoint picker is only a *choice* when
    * there is more than one: with zero or one, ports and Bridge states are internal
@@ -463,15 +476,13 @@ export function SettingsPanel(props: SettingsPanelProps) {
       </>}
 
       {page === 'connections' && <>
-        <Card title="聊天模式" description="三选一。更改会话的通道，会记作下次启动的默认值；网页桥接不会在失败时自动切到付费 API。">
-          <Field title="当前使用" detail={props.liveBackend && props.liveBackend !== settings.defaultBackend ? `壁纸此刻在用：${backendModeLabel(props.liveBackend)}（与默认值不同，可能刚被托盘或自动切换改过；此窗口打开时读取）。Harness 不在这里切换。` : '立即切换正在运行的壁纸；此窗口打开时读取它现在用哪一种。Harness 由桌面上的那个开关切换。'}>
-            {/* 值是**运行中**的那个后端，不是启动默认值：两者会分叉（托盘换后端、
-                `autoSwitchHarness` 自动切到 Harness、主体退出后壁纸自己复位），显示事实而不是意图。
-                当前值是 Harness 时它也留在候选里（标注"由桌面开关切换"），否则这个控件会显示成
-                网页入口而壁纸其实在 Harness 上。 */}
-            <Choice label="当前使用" value={props.liveBackend ?? settings.defaultBackend} onChange={(value) => props.onSelectBackend(value as BackendMode)} options={chatModeOptions(props.liveBackend ?? settings.defaultBackend)} />
+        <Card title="聊天模式" description="二选一。更改会话的通道，会记作下次启动的默认值；网页桥接不会在失败时自动切到付费 API。">
+          <Field title="当前使用" detail="滑槽在左边时，聊天走这里选的通道；改动会记作下次启动的默认值。">
+            {/* 值是**启动默认值**：这个控件给"滑槽在左边"这个位置赋予含义。滑槽在右端时一定是
+                Harness，那由滑槽自己表达，这里不描述、也不需要一个不可选但可见的 Harness 项。 */}
+            <Choice label="当前使用" value={settings.defaultBackend} onChange={(value) => props.onSelectBackend(value as BackendMode)} options={chatModeOptions()} />
           </Field>
-          <Field title="DSH 就绪时自动切换" detail="仅检测到兼容的壁纸 Bridge 才会切换。"><Toggle label="DSH 自动切换" checked={settings.autoSwitchHarness} onChange={(value) => set({ autoSwitchHarness: value })} /></Field>
+          <Field title="DSH 就绪时自动切换" detail="当 harness 就绪时自动切换到 harness 模式。"><Toggle label="DSH 自动切换" checked={settings.autoSwitchHarness} onChange={(value) => set({ autoSwitchHarness: value })} /></Field>
         </Card>
                 {/*
           Wording rules for this card, applied to every sentence in it:
@@ -487,7 +498,9 @@ export function SettingsPanel(props: SettingsPanelProps) {
             "壁纸自身开机自启" and "你的系统自启设置"; the page has one name for it, so
             the toggle points at that page instead of introducing a second.
         */}
-        <Card title="DeepSeek Harness 启动" description="选择由谁来接管复杂工作：客户端自带运行环境，源码目录由本应用启动。已经在运行的实例不会被接管或关闭。">
+        <Card title="DeepSeek Harness 连接" description="当第一次使用与本机含有多个不同dsh时使用">
+          {/* 旧的卡片描述留档（不再显示）：选择由谁来接管复杂工作：客户端自带运行环境，源码目录由本应用启动。
+              已经在运行的实例不会被接管或关闭。 */}
           {/*
             One control for "who runs it", because that is one question. The scanned
             subjects used to be a row each with its own 采用 button, plus a separate row
@@ -501,7 +514,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
             detail={props.dshScanBusy
               ? '正在后台搜索可识别的运行方式，请稍候。'
               : props.harnessTargets.length === 0
-                ? '点「扫描」找出本机可以运行的 DeepSeek Harness；扫描不会阻塞设置中心。'
+                ? '点「扫描」找出本机可以运行的 DSH。'
                 : [props.subjectChoice, `已发现 ${props.harnessTargets.length} 个可选项${props.subjectCatalogVerifiedAt ? `（${catalogAgeLabel(props.subjectCatalogVerifiedAt)}）` : ''}。`].filter(Boolean).join(' ')}
           >
             <span className="integration-actions">
@@ -553,18 +566,26 @@ export function SettingsPanel(props: SettingsPanelProps) {
               ? '先在上面选定运行方式。'
               : shellSelected
                 ? '会把它自己的窗口调到前台；如果它没在运行，会先把它启动起来。'
-                : '会用它自己的界面（默认浏览器）；如果它没在运行，会先把它启动起来。'}
+                : openRoutes.length > 1
+                  ? '浏览器用它的网页界面；TUI 会在一个新的终端窗口里打开。没在运行时都会先把它启动起来。'
+                  : '会用它的网页界面（默认浏览器）；如果它没在运行，会先把它启动起来。'}
           >
-            <select
-              className="settings-select"
-              aria-label="拉起的窗口"
-              value={settings.dshLaunch.window ?? 'browser'}
-              onChange={(event) => props.onSelectWindow(event.target.value === 'tui' ? 'tui' : 'browser')}
-            >
-              <option value="browser">浏览器</option>
-              <option value="tui">终端里的 TUI</option>
-            </select>
-            <button className="settings-action" disabled={!settings.dshLaunch.subjectId || props.openBusy} onClick={settings.dshLaunch.window === 'tui' ? props.onOpenTui : props.onOpenClient}>
+            {/* 两条路才给下拉；只有一条路就写一行字，而不是做一个改不动、点了也没反应的控件。 */}
+            {openRoutes.length > 1
+              ? (
+                  <select
+                    className="settings-select"
+                    aria-label="拉起的窗口"
+                    value={openRoute}
+                    onChange={(event) => props.onSelectWindow(event.target.value === 'tui' ? 'tui' : 'browser')}
+                  >
+                    {openRoutes.map((route) => <option key={route.value} value={route.value}>{route.label}</option>)}
+                  </select>
+                )
+              : openRoutes.length === 1
+                ? <span>{openRoutes[0]!.label}</span>
+                : null}
+            <button className="settings-action" disabled={!settings.dshLaunch.subjectId || props.openBusy} onClick={openRoute === 'tui' ? props.onOpenTui : props.onOpenClient}>
               {props.openBusy ? '处理中…' : '打开'}
             </button>
           </Field>
@@ -601,9 +622,9 @@ export function SettingsPanel(props: SettingsPanelProps) {
               />
             </Field>
           )}
-                    <Field title="受管进程" detail={props.managedDsh.managed ? '该 DSH 由本应用启动，可以在这里停止它。' : '本应用没有启动 DSH；其他人启动的实例不会被停止。'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshManagedDsh}>刷新</button><button className="settings-action secondary" disabled={!props.managedDsh.running} onClick={props.onStopManagedDsh}>停止本应用启动的 DSH</button></span></Field>
+                    <Field title="本应用启动的 DSH" detail={props.managedDsh.managed ? '该 DSH 由本应用启动，可以在这里停止它。' : '本应用没有启动 DSH；其他人启动的实例不会被停止。'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshManagedDsh}>刷新</button><button className="settings-action secondary" disabled={!props.managedDsh.running} onClick={props.onStopManagedDsh}>停止本应用启动的 DSH</button></span></Field>
         </Card>
-        <Card title="DeepSeek 网页入口（实验）" description="登录后直连你的deepseek网页端。"><Field title="页面" detail="页面和登录状态由独立 WebView2 配置目录保存；本应用不读取、复制或记录 Cookie。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开应用内页面</button></Field><Field title="网页适配器配置" detail={props.deepseekWebAdapterConfig ? `${props.deepseekWebAdapterConfig.source === 'local' ? '本地 override' : '内置默认'} · ${props.deepseekWebAdapterConfig.adapterVersion} · ${props.deepseekWebAdapterConfig.path}${props.deepseekWebAdapterConfig.warning ? ` · ${props.deepseekWebAdapterConfig.warning}` : ''}` : '正在读取配置状态…'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshDeepSeekWebAdapterConfig}>刷新</button><button className="settings-action secondary" onClick={props.onOpenDeepSeekWebAdapterConfig}>打开配置</button><button className="settings-action secondary" onClick={props.onResetDeepSeekWebAdapterConfig}>恢复默认</button></span></Field></Card>
+        <Card title="DeepSeek 网页入口（实验）" description="在壁纸里用你的网页版账号对话；登录后直连。"><Field title="页面" detail="页面和登录状态由独立 WebView2 配置目录保存；本应用不读取、复制或记录 Cookie。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开应用内页面</button></Field><Field title="网页适配（高级）" detail={props.deepseekWebAdapterConfig ? `网页结构变化时才需要动它，平常不用管。${props.deepseekWebAdapterConfig.source === 'local' ? '本地 override' : '内置默认'} · ${props.deepseekWebAdapterConfig.adapterVersion} · ${props.deepseekWebAdapterConfig.path}${props.deepseekWebAdapterConfig.warning ? ` · ${props.deepseekWebAdapterConfig.warning}` : ''}` : '正在读取配置状态…'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshDeepSeekWebAdapterConfig}>刷新</button><button className="settings-action secondary" onClick={props.onOpenDeepSeekWebAdapterConfig}>打开配置</button><button className="settings-action secondary" onClick={props.onResetDeepSeekWebAdapterConfig}>恢复默认</button></span></Field></Card>
         <Card title="DeepSeek API" description="API 模式会产生实际费用，密钥只保存在 Windows 凭据管理器。">
           {/* 只深耕 DeepSeek：地址不再暴露成设置项（值仍是默认的官方地址），少一个能填错的地方。
               用户的原话是"API 网址可以省略"。 */}
@@ -657,7 +678,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <div className="asset-component-list">{componentSlots.map(({ slot, label, detail }) => {
             const candidates = props.appearanceAssets.filter((asset) => asset.status === 'classified' && asset.slots.includes(slot))
             const selected = props.appearanceOverrides[slot] ?? ''
-            return <div className="asset-component-row" key={slot}><span><strong>{label}</strong><small>{detail} · {candidates.length} 项可选</small></span><Choice label={label} value={selected} onChange={(id) => { if (id) props.onSelectAppearance(slot, id); else props.onClearAppearance(slot) }} disabled={props.appearanceBusy} emptyMessage={candidates.length === 0 ? '暂无此类素材，请先导入并指定用途' : undefined} options={[{ value: '', label: '使用官方默认' }, ...candidates.map((asset) => ({ value: asset.id, label: `${asset.originalName}${asset.width && asset.height ? ` (${asset.width} × ${asset.height})` : ''}` }))]} /></div>
+            return <div className="asset-component-row" key={slot}><span><strong>{label}</strong><small>{detail} · {candidates.length} 项可选</small></span><Choice label={label} value={selected} onChange={(id) => { if (id) props.onSelectAppearance(slot, id); else props.onClearAppearance(slot) }} disabled={props.appearanceBusy} emptyMessage={candidates.length === 0 ? '暂无此类素材，请先导入并指定用途' : undefined} options={[{ value: '', label: '使用默认' }, ...candidates.map((asset) => ({ value: asset.id, label: `${asset.originalName}${asset.width && asset.height ? ` (${asset.width} × ${asset.height})` : ''}` }))]} /></div>
           })}</div>
         </Card>
         <Card title="苏醒动画（开发中）">
