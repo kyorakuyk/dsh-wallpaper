@@ -73,6 +73,30 @@ describe('settings normalization boundary', () => {
     expect(loadSettings()).toEqual({ ...VALID, version: SETTINGS_VERSION })
   })
 
+  it('keeps only the two window values, and treats absent as the browser', () => {
+    // ③ 的存储语义：只认 'browser' / 'tui'；缺省**不写**字段，读的人按浏览器处理 ⇒
+    // 旧档案与已存配置的行为逐字不变，不需要迁移。
+    const tui = normalizeSettings({ ...VALID, dshLaunch: { ...VALID.dshLaunch, window: 'tui' } })
+    expect(tui.dshLaunch.window).toBe('tui')
+    const browser = normalizeSettings({ ...VALID, dshLaunch: { ...VALID.dshLaunch, window: 'browser' } })
+    expect(browser.dshLaunch.window).toBeUndefined()
+    expect(normalizeSettings({ ...VALID }).dshLaunch.window).toBeUndefined()
+    // 垃圾值不会被带进存储：既不认它，也不替它猜一个意思。
+    const junk = normalizeSettings({ ...VALID, dshLaunch: { ...VALID.dshLaunch, window: 'terminal' as never } })
+    expect(junk.dshLaunch.window).toBeUndefined()
+  })
+
+  it('does not rewrite the stored choice it was told to leave alone', () => {
+    // 官方桌面客户端自带窗口 ⇒ 这个字段与它无关；归一化只是照存，
+    // 既不替它清掉，也不替它猜（"设置里设置的是什么就是什么"）。
+    const shell = normalizeSettings({
+      ...VALID,
+      dshLaunch: { ...VALID.dshLaunch, subjectId: 'shell:com.deepseek.dsh', window: 'tui' },
+    })
+    expect(shell.dshLaunch.subjectId).toBe('shell:com.deepseek.dsh')
+    expect(shell.dshLaunch.window).toBe('tui')
+  })
+
   it('replaces a string animation speed with a number', () => {
     const settings = normalizeSettings({ ...VALID, animationSpeed: 'fast' })
     expect(settings.animationSpeed).toBe(DEFAULT_SETTINGS.animationSpeed)
