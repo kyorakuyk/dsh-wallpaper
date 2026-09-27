@@ -128,13 +128,28 @@ pub(crate) fn set_records_path(path: PathBuf) {
 ///
 /// 只动**对齐枪管**的那一格：别的格子原样保留，这样"CLI → 客户端 → 切回 CLI"时壁纸仍然认得
 /// CLI 那个孩子。写失败只记日志、不影响启动本身（这份记录是参考，不是启动的前提）。
-pub(crate) fn remember_child(subject_id: &str, pid: u32) {
+///
+/// `port` 与 `handoff` 是**为门票**留的：门票每次启动现生成，但它在那个宿主活着期间一直有效，
+/// 所以存下来是对的 —— 壁纸重启（例如每次装机）之后，"宿主还在跑、票却随着上一个进程丢掉"这种
+/// 情况就不必靠重启宿主来解决。前提是它必须**随进程一起作废**，那由读取时的 pid + 创建时间
+/// 校验保证（见 `handoff_in`）。
+pub(crate) fn remember_child(subject_id: &str, pid: u32, port: Option<u16>, handoff: Option<String>) {
     let Some(path) = RECORDS_PATH.get() else { return };
     let mut cylinder = read_managed_children(path);
+    // 同一个孩子被记两次很常见（先记下"它是我的"，稍后才解析到门票）。没有票的那次不能把
+    // 已有票抹掉；而**换了 pid** 就是另一个进程，票必须作废，不能继承。
+    let (port, handoff) = match cylinder.aligned(subject_id) {
+        Some(previous) if previous.pid == pid => {
+            (port.or(previous.port), handoff.or_else(|| previous.handoff.clone()))
+        }
+        _ => (port, handoff),
+    };
     cylinder.remember(ManagedChild {
         subject_id: subject_id.to_string(),
         pid,
         started_at: crate::client_window::process_started_at(pid),
+        port,
+        handoff,
     });
     if let Err(error) = write_managed_children(path, &cylinder) {
         log::warn!("harness managed-child record not written: {error}");
@@ -234,6 +249,14 @@ pub(crate) struct ManagedChild {
     /// 把别人的进程认成自己的孩子，然后去停它 —— 那就破了"绝不接管他人实例"这条底线。
     /// `None` 表示取不到（平台不提供）⇒ 判定一律为"不是我启动的"，宁可少一个按钮可用。
     pub started_at: Option<u64>,
+    /// 这一格的孩子当时在哪个端口上服务。**只用来找回门票**，身份依旧是 pid + 创建时间：
+    /// 端口不是契约，不能拿它当"这是我的"的证据。
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// 那次启动打印出来的门票（`/?token=…`）。它在那个宿主活着期间一直有效，所以值得存下来；
+    /// 但**只要那一格不再对应同一个进程就作废**（`handoff_in` 负责校验）。
+    #[serde(default)]
+    pub handoff: Option<String>,
 }
 
 /// 这条记录是否真的对应**此刻活着并且是同一个进程**的孩子。
@@ -274,7 +297,57 @@ pub(crate) fn web_handoff_path(line: &str) -> Option<(u16, String)> {
 
 /// The hand-off path a browser should be opened with, when one is known for that port.
 pub(crate) fn known_web_handoff(port: u16) -> Option<String> {
-    web_handoffs().lock().ok()?.get(&port).cloned()
+    if let Some(path) = web_handoffs().lock().ok()?.get(&port).cloned() {
+        return Some(path);
+    }
+    // 内存里没有 ⇒ 这一代壁纸还没做过那次启动。落盘记录里可能还留着那一代宿主的票，而票在
+    // 宿主活着期间一直有效 —— 但**只认仍然对应同一个进程的那一格**（pid + 创建时间）。
+    recorded_web_handoff(port)
+}
+
+/// 从落盘记录里找回某一端口所属宿主的门票。
+///
+/// 找不到 RECORDS_PATH（测试或非打包运行）就当作没有：这张票只是省一次重启，不是必需品。
+fn recorded_web_handoff(port: u16) -> Option<String> {
+    let path = RECORDS_PATH.get()?;
+    let cylinder = read_managed_children(path);
+    handoff_in(&cylinder, port, |child| {
+        // 必须是**此刻正占着这个端口**的那一格：不同主体可以先后用同一个端口，所以"记过这个端口"
+        // 不等于"就是它"。再加上 pid + 创建时间的校验，两张票同时存在时也不会张冠李戴。
+        if crate::client_window::endpoint_process_id(port) != Some(child.pid) {
+            return false;
+        }
+        let live_start = crate::client_window::process_started_at(child.pid);
+        owns_live_process(Some(child), Some(child.pid), live_start)
+    })
+}
+
+/// 从弹仓里取某一端口的门票，**只认通过校验的那一格**。
+///
+/// 把"这一格是不是此刻该端口的属主、且仍然是同一个进程"作为参数传进来，是为了让这条规则可以被
+/// 纯函数测住：进程换了 pid、创建时间对不上、或者端口已经被别的主体接手，票都必须作废 ——
+/// 一张过期门票比没有门票更坏，它会让浏览器停在同一句道歉页上，而我们却以为自己有票。
+pub(crate) fn handoff_in(
+    cylinder: &ManagedChildren,
+    port: u16,
+    owns_the_port_now: impl Fn(&ManagedChild) -> bool,
+) -> Option<String> {
+    cylinder
+        .children
+        .values()
+        .find_map(|child| {
+            (child.port == Some(port) && owns_the_port_now(child))
+                .then(|| child.handoff.clone())
+                .flatten()
+        })
+}
+
+/// 日志里的门票要打码：它虽然只是本机回环的凭据，但"凭据不进日志"是条不该破的规矩。
+pub(crate) fn redact_handoff(path: &str) -> String {
+    match path.find("token=") {
+        Some(at) => format!("{}{}", &path[..at], "token=••••"),
+        None => path.to_string(),
+    }
 }
 
 /// Start a globally installed CLI: `<launcher> --profile <profile>`.
@@ -329,14 +402,18 @@ fn launch_installed_cli(launcher: &str, profile: &str) -> HarnessLaunchOutcome {
                         use std::io::BufRead;
                         for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
                             if let Some((port, path)) = web_handoff_path(&line) {
-                                log::info!("harness web handoff: port={port} path={path}");
+                                // 记录里可以存票（它在这个宿主活着期间一直有效），但**日志里不行**。
+                                log::info!(
+                                    "harness web handoff: port={port} path={}",
+                                    redact_handoff(&path)
+                                );
                                 if let Ok(mut map) = web_handoffs().lock() {
-                                    map.insert(port, path);
+                                    map.insert(port, path.clone());
                                 }
                                 // 端口可能比门票晚一点点才被登记到内核表里；短暂轮询，不空等。
                                 for _ in 0..40 {
                                     if let Some(pid) = crate::client_window::endpoint_process_id(port) {
-                                        remember_child(&subject, pid);
+                                        remember_child(&subject, pid, Some(port), Some(path.clone()));
                                         break;
                                     }
                                     std::thread::sleep(std::time::Duration::from_millis(250));
@@ -942,6 +1019,53 @@ mod tests {
     }
 
     #[test]
+    fn a_ticket_is_only_used_while_the_process_that_earned_it_is_the_same_one() {
+        let mut cylinder = ManagedChildren::default();
+        cylinder.remember(ManagedChild {
+            subject_id: "cli:C:\\Users\\u\\AppData\\Roaming\\npm\\dsh.cmd".into(),
+            pid: 4242,
+            started_at: Some(1_700_000_000),
+            port: Some(3080),
+            handoff: Some("/?token=SECRET".into()),
+        });
+        // 那一格正占着这个端口、也仍是同一个进程 ⇒ 票可用（这正是"壁纸重启、宿主还在跑"能省下一次重启的原因）。
+        assert_eq!(
+            handoff_in(&cylinder, 3080, |child| child.pid == 4242).as_deref(),
+            Some("/?token=SECRET")
+        );
+        // 进程换了（pid 回收、或宿主退出后重启）⇒ 票必须作废：过期门票比没有门票更坏，
+        // 它会让浏览器停在同一句道歉页上，而我们以为自己有票。
+        assert_eq!(handoff_in(&cylinder, 3080, |_| false), None);
+        // 别的端口不认这张票。
+        assert_eq!(handoff_in(&cylinder, 4000, |_| true), None);
+        // 两个格子都记得这个端口，但**此刻占着端口的不是持票那一格**（不同主体可以先后用同一个
+        // 端口）⇒ 不能把它的票拿出来用。这一条是写这个测试时才发现的漏洞：原先只问"是不是我们的
+        // 进程"，于是会退回到另一格上。
+        cylinder.remember(ManagedChild {
+            subject_id: "D:\\checkout".into(),
+            pid: 77,
+            started_at: Some(1),
+            port: Some(3080),
+            handoff: None,
+        });
+        assert_eq!(handoff_in(&cylinder, 3080, |child| child.pid == 77), None);
+        assert_eq!(
+            handoff_in(&cylinder, 3080, |child| child.pid == 4242).as_deref(),
+            Some("/?token=SECRET")
+        );
+    }
+
+    #[test]
+    fn a_ticket_never_reaches_the_log_in_clear() {
+        assert_eq!(redact_handoff("/?token=SECRET"), "/?token=••••");
+        assert_eq!(redact_handoff("/"), "/");
+        // 打码后不能还剩下原文的任何一段。
+        let redacted = redact_handoff("/index.html?token=abc123&x=1");
+        assert!(!redacted.contains("abc123"));
+        assert!(redacted.starts_with("/index.html"));
+    }
+
+    #[test]
     fn a_missing_or_broken_record_reads_as_an_empty_cylinder() {
         let dir = std::env::temp_dir().join("dsh-wallpaper-managed-children-test");
         let _ = std::fs::remove_dir_all(&dir);
@@ -954,6 +1078,8 @@ mod tests {
             subject_id: "cli:C:\\Users\\u\\AppData\\Roaming\\npm\\dsh.cmd".into(),
             pid: 4242,
             started_at: Some(1_700_000_000),
+            port: None,
+            handoff: None,
         });
         write_managed_children(&path, &cylinder).expect("write");
         assert_eq!(read_managed_children(&path), cylinder);
@@ -970,11 +1096,11 @@ mod tests {
         let cli = r"cli:C:\Users\u\AppData\Roaming\npm\dsh.cmd";
         let shell = "shell:com.deepseek.dsh";
         let mut cylinder = ManagedChildren::default();
-        cylinder.remember(ManagedChild { subject_id: cli.into(), pid: 111, started_at: Some(1) });
+        cylinder.remember(ManagedChild { subject_id: cli.into(), pid: 111, started_at: Some(1), port: None, handoff: None });
         // 切到客户端：CLI 那一格**保留**，只是不再对齐。
         assert!(cylinder.aligned(shell).is_none());
         assert_eq!(cylinder.aligned(cli).map(|child| child.pid), Some(111));
-        cylinder.remember(ManagedChild { subject_id: shell.into(), pid: 222, started_at: Some(2) });
+        cylinder.remember(ManagedChild { subject_id: shell.into(), pid: 222, started_at: Some(2), port: None, handoff: None });
         // 切回 CLI：仍然认得那个孩子 —— 这就是"别的格子必须留着"的全部理由。
         assert_eq!(cylinder.aligned(cli).map(|child| child.pid), Some(111));
         assert_eq!(cylinder.aligned(shell).map(|child| child.pid), Some(222));
@@ -990,6 +1116,8 @@ mod tests {
             subject_id: "cli:C:\\Users\\u\\AppData\\Roaming\\npm\\dsh.cmd".into(),
             pid: 4242,
             started_at: Some(1_700_000_000),
+            port: None,
+            handoff: None,
         };
         // 两项都对上：是自己的孩子。
         assert!(owns_live_process(Some(&child), Some(4242), Some(1_700_000_000)));

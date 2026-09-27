@@ -487,7 +487,12 @@ async fn ensure_harness_ui(
             std::thread::spawn(move || {
                 for _ in 0..60 {
                     if let Some(pid) = crate::client_window::endpoint_process_id(port) {
-                        harness_launch::remember_child(&subject_for_record, pid);
+                        harness_launch::remember_child(
+                            &subject_for_record,
+                            pid,
+                            Some(port),
+                            harness_launch::known_web_handoff(port),
+                        );
                         return;
                     }
                     std::thread::sleep(std::time::Duration::from_millis(250));
