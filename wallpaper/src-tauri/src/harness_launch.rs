@@ -318,6 +318,13 @@ fn launch_installed_cli(launcher: &str, profile: &str) -> HarnessLaunchOutcome {
         Ok(mut child) => {
             if wants_handoff {
                 if let Some(stdout) = child.stdout.take() {
+                    // 记录"这个孩子是壁纸启动的"，就记在**拿到门票的那一刻**：那一刻我们既确认了
+                    // 启动确实发生（这条线程只在我们 spawn 之后存在），也从门票里读到了端口，于是
+                    // 能顺手问到**端口属主**（真正在服务的 DSH 宿主，而不是刚 spawn 的 cmd 外壳）。
+                    //
+                    // 为什么非要在这一处记：启动有三条入口（设置里的「打开」、壁纸面的「启动主体」、
+                    // 开机自启），只有这一处**知道端口**，也只有这一处能确定"是我们启动的"。
+                    let subject = format!("{CLI_ID_PREFIX}{launcher}");
                     std::thread::spawn(move || {
                         use std::io::BufRead;
                         for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -325,6 +332,14 @@ fn launch_installed_cli(launcher: &str, profile: &str) -> HarnessLaunchOutcome {
                                 log::info!("harness web handoff: port={port} path={path}");
                                 if let Ok(mut map) = web_handoffs().lock() {
                                     map.insert(port, path);
+                                }
+                                // 端口可能比门票晚一点点才被登记到内核表里；短暂轮询，不空等。
+                                for _ in 0..40 {
+                                    if let Some(pid) = crate::client_window::endpoint_process_id(port) {
+                                        remember_child(&subject, pid);
+                                        break;
+                                    }
+                                    std::thread::sleep(std::time::Duration::from_millis(250));
                                 }
                                 // 不 break：继续把管道读干，别让 CLI 因为写不出去而报错。
                             }
