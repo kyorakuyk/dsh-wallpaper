@@ -182,7 +182,13 @@ pub(crate) fn tui_launch_command(launcher: &Path) -> (PathBuf, Vec<String>) {
 /// Pure, and that is the point: the spawn site stays boring, and the tests can read
 /// the exact command line a stored subject would produce on this machine.
 fn installed_cli_command(launcher: &Path, profile: &str) -> (PathBuf, Vec<String>) {
-    let profile_args = vec!["--profile".to_string(), profile.to_string()];
+    let mut profile_args = vec!["--profile".to_string(), profile.to_string()];
+    // `dsh web` 的默认行为是"起服务**并且打开默认浏览器**"。这个决定该由壁纸来做：设置里选的
+    // 是浏览器还是终端里的 TUI，而且开机自启时更不该自己弹窗。`--no-open` 是 **web 应用自己的**
+    // 旗标，所以只在 `web` 这个档案上带 —— 别的档案的 app 未必认这个参数。
+    if profile.trim() == "web" {
+        profile_args.push("--no-open".to_string());
+    }
     let extension = launcher
         .extension()
         .map(|value| value.to_string_lossy().to_ascii_lowercase());
@@ -675,16 +681,22 @@ mod tests {
                 "/c",
                 r"C:\Users\u\AppData\Roaming\npm\dsh.cmd",
                 "--profile",
-                "web"
+                "web",
+                // 少了它，CLI 自己就会打开默认浏览器：设置里"浏览器还是终端里的 TUI"就白选了，
+                // 开机自启还会每次弹窗。
+                "--no-open"
             ]
         );
+        // 别的档案不带它：这是 web 应用自己的旗标，未知档案的 app 未必认这个参数。
+        let (_, desktop) = installed_cli_command(Path::new(r"C:\tools\dsh.exe"), "desktop");
+        assert_eq!(desktop, vec!["--profile", "desktop"]);
     }
 
     #[test]
     fn a_native_launcher_is_started_directly() {
         let (program, args) = installed_cli_command(Path::new(r"C:\tools\dsh.exe"), "web");
         assert_eq!(program, PathBuf::from(r"C:\tools\dsh.exe"));
-        assert_eq!(args, vec!["--profile", "web"]);
+        assert_eq!(args, vec!["--profile", "web", "--no-open"]);
     }
 
     #[test]
