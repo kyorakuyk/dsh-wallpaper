@@ -97,6 +97,21 @@ describe('App chat lifecycle isolation', () => {
     expect(shouldReturnToHarness('bridge-ready', 'deepseek-web', harnessResetClaimed(false, undefined))).toBe(false)
   })
 
+  /**
+   * 聊天层的通知必须和原生宿主的 rror **分开存**：后者会被原生快照整体覆写，挤在一起时
+   * 通知刚写进去就被下一条快照擦掉（用户实测："顶上弹了一下，消失得极快"）。
+   */
+  it('keeps a chat-layer notice visible even though snapshots own the host error', async () => {
+    const { visibleNotice } = await import('../src/App.tsx')
+    const afterTurnBlocked = { chatNotice: 'DSH 拒绝了这一轮（这条会话已被归档）', error: undefined }
+    // 快照随后把宿主那句话写进来（或写空）：聊天层那句仍然在屏幕上。
+    expect(visibleNotice({ ...afterTurnBlocked, error: undefined })).toBe(afterTurnBlocked.chatNotice)
+    expect(visibleNotice({ ...afterTurnBlocked, error: 'Bridge 已断开' })).toBe(afterTurnBlocked.chatNotice)
+    // 没有聊天层通知时，宿主那句话照旧显示；两者都没有则不显示。
+    expect(visibleNotice({ error: 'Bridge 已断开' })).toBe('Bridge 已断开')
+    expect(visibleNotice({})).toBeUndefined()
+  })
+
   it('treats connecting and reconnecting as the amber state', async () => {
     const { isHarnessTransitioning } = await import('../src/App.tsx')
     const state = (over: Partial<Parameters<typeof isHarnessTransitioning>[0]>) => ({

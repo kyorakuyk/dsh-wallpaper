@@ -109,4 +109,13 @@ export interface RuntimeState {
    */
   harnessProbing?: boolean
   error?: string
+  /**
+   * 聊天层自己要说的一句话（"这条会话被拒绝了，已经换新会话重发"之类）。
+   *
+   * **必须和 `error` 分开**：`error` 会被**原生快照整体覆写**（`error: snapshot.error`），
+   * 而快照随活动状态一路推下来 —— 两者挤在同一个字段里时，聊天层的通知刚写进去就被下一条
+   * 快照擦掉，用户只看到"顶上闪了一下"（实测）。分开之后快照永远碰不到它 ✓。
+   * 显示优先级：`chatNotice` 在前（它更新、更针对当前这一刻），`error` 在后。
+   */
+  chatNotice?: string
 }

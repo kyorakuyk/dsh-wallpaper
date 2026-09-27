@@ -456,6 +456,18 @@ export function harnessAvailabilityPatch(
   }
 }
 
+/**
+ * 通知条上该显示哪一句。
+ *
+ * 两句话来自两个不同的世界：`chatNotice` 是**聊天层**说的（"这条会话被拒绝了，已换新会话重发"），
+ * `error` 是**原生宿主**说的（Bridge 断开等）。必须分开存，因为 `error` 会被**原生快照整体覆写**
+ * （`error: snapshot.error`）——以前两者挤在同一个字段里，聊天层的通知刚写进去就被下一条快照擦掉，
+ * 用户只看到"顶上闪了一下"（实测）。聊天层那句更新、更针对此刻，所以它在前面。
+ */
+export function visibleNotice(state: Pick<RuntimeState, 'chatNotice' | 'error'>): string | undefined {
+  return state.chatNotice ?? state.error
+}
+
 export interface AppProps { surface?: AppSurface }
 
 export function App({ surface = 'combined' }: AppProps) {
@@ -1316,22 +1328,24 @@ export function App({ surface = 'combined' }: AppProps) {
       if (event.type === 'approval-required') { patchRuntime({ activity: 'tool', error: `${event.summary}；请打开 Harness 处理。` }); dispatchCore('set-activity', { value: 'tool' }) }
       if (event.type === 'question-required') { setQuestionPrompt(event.questions); patchRuntime({ activity: 'tool', error: undefined }); dispatchCore('set-activity', { value: 'tool' }) }
       if (event.type === 'conversation-reset') {
-        // 用户把这条会话归档掉了，桥不再往它里面写东西：轨道上这段记录**立刻**停止看起来像活的
-        // （用户实测的症状正是"输入被吞了、灯还是绿的"——转写看着正常，其实没有人在听）。
+        // 这条会话不能用了（用户归档，或宿主拒绝了这一轮）：轨道上这段记录**立刻**停止看起来
+        // 像活的（症状正是"输入被吞了、灯还是绿的"——转写看着正常，其实没有人在听）。
         // 同步清空而不是等新会话的历史对账回来：那个请求可能回空，而且它赢不了"重发那句话已经
-        // 在路上"这件事；新会话的内容由随后的事件与历史对账填回来。通知走 `error` 那条横幅
-        // （它本来就是可关闭的提示条，不是报错区），用户能看见"会话换掉了"这件事本身。
+        // 在路上"这件事；新会话的内容由随后的事件与历史对账填回来。通知走 `chatNotice` 而不是
+        // `error`：原生快照会整体覆写 `error`，挤在一起就只能"闪一下"。
         setMessages([])
         setStreamingText('')
         setUsage(undefined)
         setQuestionPrompt(undefined)
         if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current.activity = 'sending'
-        patchRuntime({ activity: 'sending', error: event.message })
+        patchRuntime({ activity: 'sending', chatNotice: event.message })
         dispatchCore('set-activity', { value: 'sending' })
       }
       if (event.type === 'error') {
         if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current.activity = 'idle'
-        setStreamingText(''); patchRuntime({ activity: 'idle', error: event.message }); dispatchCore('set-activity', { value: 'idle' })
+        // 同样是**聊天层**的话（"DSH 拒绝了这一轮…"、"发送失败…"），走 `chatNotice`：
+        // 它在屏幕上留得住，而原生快照碰不到它。
+        setStreamingText(''); patchRuntime({ activity: 'idle', chatNotice: event.message }); dispatchCore('set-activity', { value: 'idle' })
       }
     })
     void (async () => {
@@ -1751,7 +1765,8 @@ export function App({ surface = 'combined' }: AppProps) {
         setUsage(undefined)
         setStreamingText('')
         if (chatActivityRef.current?.adapter === adapter && chatActivityRef.current.backend === adapterBackend) chatActivityRef.current.activity = 'sending'
-        patchRuntime({ activity: 'sending', error: undefined })
+        // 一次新的发送清掉上一条聊天层通知（宿主的 `error` 由原生快照自己维护，不动它）。
+        patchRuntime({ activity: 'sending', error: undefined, chatNotice: undefined })
         dispatchCore('set-activity', { value: 'sending' })
         const sending = adapter.send(text)
         persistConversationPointerWhenAvailable(adapter, adapterBackend)
@@ -1833,7 +1848,7 @@ export function App({ surface = 'combined' }: AppProps) {
     <>
       <WidgetHost workspace={workspace} widgets={[]} />
       {conversationSurface}
-      {runtime.error && runtime.phase !== 'error' && <div className="runtime-notice" role="status">{runtime.error}<button onClick={() => patchRuntime({ error: undefined })}>×</button></div>}
+      {visibleNotice(runtime) && runtime.phase !== 'error' && <div className="runtime-notice" role="status">{visibleNotice(runtime)}<button onClick={() => patchRuntime({ error: undefined, chatNotice: undefined })}>×</button></div>}
       {runtime.phase === 'auth-required' && <div className="auth-overlay" data-interaction-region="auth"><div className="auth-card"><h2>需要登录 DeepSeek 网页入口</h2><p>应用内官方页面已经打开，请在其中完成登录。登录状态只保存在独立 WebView2 配置目录，本应用不会读取或复制 Cookie；登录完成后回到桌面即可继续发送。</p><button onClick={() => { baseDispatch({ type: 'AUTH_READY' }); dispatchCore('auth-ready') }}>我已完成登录</button></div></div>}
     </>
   </div>
