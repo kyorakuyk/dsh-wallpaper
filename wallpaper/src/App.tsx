@@ -10,7 +10,7 @@ import { isHarnessReady } from './connect/harness.ts'
 import { monitorHarnessEndpoint } from './connect/harnessEndpoint.ts'
 import { endpointScopeOf, subjectEndpointPorts } from './connect/endpoints.ts'
 import { HARNESS_STATE_DETAILS } from './connect/harnessLabels.ts'
-import { isEmbeddedShellSubject, reachNeedsBrowser } from './connect/harnessSubjects.ts'
+import { isEmbeddedShellSubject, isInstalledCliSubject, reachNeedsBrowser } from './connect/harnessSubjects.ts'
 import {
   apiModelDirectory,
   bridgeModelDirectory,
@@ -97,7 +97,7 @@ let dshAutostartRequestedInProcess = false
  * owned here. Same module-scope reasoning as above: this survives a remount, and
  * it is only a label — the native side decides what actually happens.
  */
-let harnessLaunchedKind: 'embedded-shell' | 'checkout' = 'checkout'
+let harnessLaunchedKind: 'embedded-shell' | 'checkout' | 'installed-cli' = 'checkout'
 
 export function canAutoSelectHarness(
   availability: RuntimeState['harness'],
@@ -273,8 +273,21 @@ export function dshAutostartNotice(result: ManagedDshAutostart): string | null {
  *
  * Returns `null` while the launch is still legitimately pending.
  */
-/** 启动后多久才允许下"它退出了"这个结论（宽限期内不下结论，见函数内注释）。 */
-const IMMEDIATE_EXIT_GRACE_MS = 8_000
+/** 启动后多久才允许下"它退出了"这个结论（宽限期内不下结论，见函数内注释）。
+ *
+ * 各类别不一样长，因为它们的启动成本不一样：源码目录直接跑本机二进制，已安装的 CLI 要先经过
+ * 一层 npm 批处理（cmd）再拉起 node，冷启动明显更慢。同一条时限套在所有人身上，就是"刚报错
+ * 就连上"的来源 —— 报错早于事实。
+ */
+export const IMMEDIATE_EXIT_GRACE_MS = {
+  checkout: 8_000,
+  'installed-cli': 20_000,
+} as const
+
+/** 只有非壳主体才是本进程能观察"退出"的孩子，所以只有它们有宽限。 */
+function exitGraceMs(launchedKind: 'embedded-shell' | 'checkout' | 'installed-cli'): number {
+  return launchedKind === 'embedded-shell' ? 0 : IMMEDIATE_EXIT_GRACE_MS[launchedKind]
+}
 
 export function harnessLaunchOutcome(
   status: { availability: RuntimeState['harness']; reasonCode?: string },
@@ -287,15 +300,15 @@ export function harnessLaunchOutcome(
    * not ours, and "not managed" would otherwise be reported as "started and
    * immediately exited" for a client that is running perfectly well.
    */
-  launchedKind: 'embedded-shell' | 'checkout' = 'checkout',
+  launchedKind: 'embedded-shell' | 'checkout' | 'installed-cli' = 'checkout',
 ): { message: string } | null {
   if (status.availability === 'bridge-ready') return null
   // "还没被我管起来"不等于"已经退出了"：宿主起来要几秒（实测：启动 22:27:54、端口与门票
-  // 22:27:56；已安装 CLI 还要先经过一层 cmd 与批处理）。在这个**宽限期**内不下结论 —— 否则
-  // 用户会先看到"启动后立即退出"，两秒后指示灯又变绿：一次假警报，比不说更糟。
+  // 22:27:56；已安装 CLI 还要先经过一层 cmd 与批处理）。各类别给各自长度的宽限期，期内不下
+  // 结论 —— 否则用户会先看到"启动后很快退出"，两秒后指示灯又变绿：一次假警报，比不说更糟。
   if (
-    launchedKind === 'checkout'
-    && elapsedMs > IMMEDIATE_EXIT_GRACE_MS
+    launchedKind !== 'embedded-shell'
+    && elapsedMs > exitGraceMs(launchedKind)
     && (!managed.managed || !managed.running)
   ) {
     return { message: 'DSH 启动后很快退出；请检查 DSH 配置或启动日志。' }
@@ -1180,7 +1193,11 @@ export function App({ surface = 'combined' }: AppProps) {
           // Reuse the manual launch's readiness window, so the same 45-second
           // supervision, timeout message and exit detection apply. A shell is
           // supervised on the bridge probe alone: nothing here owns its process.
-          harnessLaunchedKind = isEmbeddedShellSubject(subjectId) ? 'embedded-shell' : 'checkout'
+          harnessLaunchedKind = isEmbeddedShellSubject(subjectId)
+            ? 'embedded-shell'
+            : isInstalledCliSubject(subjectId)
+              ? 'installed-cli'
+              : 'checkout'
           harnessLaunchStartedAtRef.current = Date.now()
           harnessLaunchPendingRef.current = true
           setHarnessStarting(true)
@@ -1691,7 +1708,11 @@ export function App({ surface = 'combined' }: AppProps) {
             await nativeRuntime.openSettingsWindow()
             return
           }
-          harnessLaunchedKind = isEmbeddedShellSubject(subjectId) ? 'embedded-shell' : 'checkout'
+          harnessLaunchedKind = isEmbeddedShellSubject(subjectId)
+            ? 'embedded-shell'
+            : isInstalledCliSubject(subjectId)
+              ? 'installed-cli'
+              : 'checkout'
           await nativeRuntime.launchHarnessTarget({
             targetId: subjectId,
             profile: settings.dshLaunch.profile,

@@ -82,6 +82,22 @@ describe('launch supervision', () => {
       .toContain('很快退出')
   })
 
+  it('waits longer for the installed CLI, which boots through a shell first', async () => {
+    const { harnessLaunchOutcome } = await appModule()
+    const cli = 'installed-cli' as const
+    // 源码目录 8 秒就说"很快退出"，而这个时间点上 CLI 还可能在启动：它要先经 npm 批处理（cmd）
+    // 再拉起 node。同一条时限套在所有人身上，用户就会看到"刚报错就连上"—— 报错早于事实。
+    expect(harnessLaunchOutcome({ availability: 'offline' }, 8_001, { managed: false, running: false }, 45_000, cli))
+      .toBeNull()
+    expect(harnessLaunchOutcome({ availability: 'offline' }, 19_999, { managed: false, running: false }, 45_000, cli))
+      .toBeNull()
+    expect(harnessLaunchOutcome({ availability: 'offline' }, 20_001, { managed: false, running: false }, 45_000, cli)?.message)
+      .toContain('很快退出')
+    // 壳没有"退出"可观察，任何时刻都不该由这条判定发言。
+    expect(harnessLaunchOutcome({ availability: 'offline' }, 60_000, { managed: false, running: false }, 45_000, 'embedded-shell'))
+      .not.toBeNull()
+  })
+
   it('prefers the most specific cause once the deadline passes', async () => {
     const { harnessLaunchOutcome } = await appModule()
     const late = (availability: 'offline' | 'web-only' | 'bridge-loading' | 'bridge-auth-unavailable' | 'bridge-incompatible') =>

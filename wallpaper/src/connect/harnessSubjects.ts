@@ -39,6 +39,17 @@ export function isEmbeddedShellSubject(subjectId: string | undefined): boolean {
 }
 
 /**
+ * Whether a stored subject id names the globally installed CLI.
+ *
+ * 这一类不是"另一种源码目录"：它启动时要经过一层 npm 的批处理外壳再拉起 node，冷启动明显比
+ * 直接跑二进制慢，所以等待它的时间不该和别的类别一样长（见 `harnessLaunchOutcome` 的宽限）。
+ * 前缀同样属于原生模型（`cli:<启动器路径>`），沿用上面那条"只在这里读一次"的规矩。
+ */
+export function isInstalledCliSubject(subjectId: string | undefined): boolean {
+  return (subjectId ?? '').startsWith('cli:')
+}
+
+/**
  * The one line under a subject's name.
  *
  * A shell has nothing to configure — it brings its own checkout and its own data
