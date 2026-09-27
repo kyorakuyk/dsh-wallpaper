@@ -128,6 +128,8 @@ export function SettingsWindow() {
   const [apiModelCatalogFetchedAt, setApiModelCatalogFetchedAt] = useState<string>()
   /** 「桌面会话」工作区路径（原生只读自检；系统页显示，方便核对）。 */
   const [desktopWorkspace, setDesktopWorkspace] = useState<DesktopWorkspaceStatus>()
+  /** 正在打开「项目记忆」：桌面会话里不贴路径，改它的入口只在这里。 */
+  const [openingMemory, setOpeningMemory] = useState(false)
   /**
    * 壁纸**此刻**在用的 chat 模式。
    *
@@ -883,6 +885,20 @@ export function SettingsWindow() {
       interactionEnabled={interactionEnabled}
       onSetInteractionEnabled={(enabled) => void appCoreClient.setInteractionEnabled(enabled).then((snapshot) => setInteractionEnabled(snapshot.interaction.enabled)).catch((error) => setNotice(String(error)))}
       desktopWorkspace={desktopWorkspace}
+      onOpenProjectMemory={async () => {
+        // 打开的是**文件所在的位置**：文件在就选中它，不在就把工作区目录打开（原生实现）。
+        // 结果用那句 notice 如实回报，而不是让用户自己去猜窗口为什么没动。
+        setOpeningMemory(true)
+        try {
+          const opened = await nativeRuntime.openProjectMemory()
+          setNotice(opened.memoryExists ? '已在资源管理器中选中「项目记忆.md」。' : '还没有「项目记忆.md」：已打开桌面会话目录，你或助手第一次“记下来”时它会出现在这里。')
+        } catch (error) {
+          setNotice(String(error))
+        } finally {
+          setOpeningMemory(false)
+        }
+      }}
+      openingMemory={openingMemory}
       onClose={close}
     />
   </main>

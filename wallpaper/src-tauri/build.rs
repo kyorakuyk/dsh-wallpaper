@@ -48,6 +48,7 @@ fn main() {
             // 设置中心直接输入 API Key（取代了原来的系统凭据对话框）。
             "save_api_key",
             "desktop_workspace_status",
+            "open_project_memory",
             "clear_user_data",
             "api_key_status",
             "show_deepseek_login",

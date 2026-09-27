@@ -54,6 +54,9 @@ export interface SettingsPanelProps {
    * 安装目录每次升级被整体替换（写那里的必丢），数据目录则升级保留、卸载也留得下。
    */
   desktopWorkspace?: DesktopWorkspaceStatus
+  /** 在资源管理器里打开「项目记忆」；桌面会话里不贴路径，入口只在这里。 */
+  onOpenProjectMemory?: () => Promise<void>
+  openingMemory?: boolean
   /**
    * 壁纸此刻在用的 chat 模式（`undefined` = 还没读到快照）。
    *
@@ -733,6 +736,13 @@ export function SettingsPanel(props: SettingsPanelProps) {
           {/* 卸载时问不了（MSIX 没有自定义卸载界面），所以"想清干净的时候能清干净"这个入口放在这里。
               原生只做它能证明做完的两件：工作区目录 + 凭据管理器里那条 Key；WebView2 配置目录正被
               运行中的进程占用，删不干净，所以如实回报路径让用户退出后自己删。 */}
+          <Field title="项目记忆" detail={props.desktopWorkspace ? props.desktopWorkspace.memoryFile + (props.desktopWorkspace.memoryExists ? '（助手维护；说话人格等长期要求就写在这里）' : '（还没有：你或助手第一次「记下来」时会出现）') : '正在读取…'}>
+            <button
+              className="settings-action secondary"
+              disabled={props.openingMemory}
+              onClick={() => { void props.onOpenProjectMemory?.() }}
+            >{props.openingMemory ? '正在打开…' : '打开项目记忆'}</button>
+          </Field>
           <Field title="清除全部用户数据" detail={clearDetail ?? '删除本应用的桌面会话工作区，以及凭据管理器里保存的 API Key。设置与网页登录态在 WebView2 配置目录里，需要退出应用后手动删除（下面会给出路径）。'}>
             <button
               className="settings-action secondary"

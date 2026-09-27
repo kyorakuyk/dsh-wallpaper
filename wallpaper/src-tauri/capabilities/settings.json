@@ -38,6 +38,7 @@
     "allow-save-api-key",
     "allow-api-key-status",
     "allow-desktop-workspace-status",
+    "allow-open-project-memory",
     "allow-clear-user-data",
     "allow-api-models",
     "allow-show-deepseek-login",

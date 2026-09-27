@@ -36,6 +36,9 @@ export interface DesktopWorkspaceStatus {
   dataDirectory: string
   workspaceDirectory: string
   workspaceExists: boolean
+  /** 助手维护的「项目记忆」（说话人格等长期要求落在这里）；桌面会话里不贴路径，设置里给入口。 */
+  memoryFile: string
+  memoryExists: boolean
   /** 「清除全部用户数据」时要一并删掉的那条凭据（在凭据管理器里，不在文件系统上）。 */
   credentialTarget: string
 }
@@ -279,6 +282,7 @@ export interface NativeRuntime {
   apiKeyStatus(): Promise<ApiKeyStatus>
   /** 桌面会话工作区落在哪儿（只读自检）——与桥用的是同一条规则。 */
   desktopWorkspaceStatus(): Promise<DesktopWorkspaceStatus>
+  openProjectMemory(): Promise<{ opened: string; memoryFile: string; memoryExists: boolean }>
   requestDeepSeekLogin(): Promise<void>
   nativeBootstrapGeneration(): Promise<number>
   releaseNativeBootstrap(generation: number): Promise<boolean>
@@ -487,6 +491,11 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) throw new Error('仅桌面版支持桌面会话工作区自检')
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<DesktopWorkspaceStatus>('desktop_workspace_status')
+  },
+  async openProjectMemory() {
+    if (!await tauriAvailable()) throw new Error('仅桌面版支持打开项目记忆')
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<{ opened: string; memoryFile: string; memoryExists: boolean }>('open_project_memory')
   },  async requestDeepSeekLogin() {
     if (!await tauriAvailable()) return
     const { invoke } = await import('@tauri-apps/api/core')

@@ -1832,6 +1832,43 @@ fn desktop_workspace_status(
     Ok(desktop_workspace_status_from(&data_dir))
 }
 
+/// 项目记忆的文件名。**必须与桥里的 `PROJECT_MEMORY_FILE_NAME` 一致** —— 桥按它读/注入，
+/// 设置中心按它打开；两处不同的话，用户在设置里看到的和助手实际用的会是两个文件。
+#[cfg(not(feature = "lite"))]
+const PROJECT_MEMORY_FILE_NAME: &str = "项目记忆.md";
+
+/// 在资源管理器里打开「项目记忆」：文件在就选中它，不在就打开工作区目录（顺带建出来）。
+///
+/// 为什么要有这个按钮：记忆文件的**绝对路径不该出现在桌面会话里**（那是聊天面，不是文件管理器），
+/// 但用户确实需要一个地方去改它 —— 那个地方就是设置，路径也只在这里出现。
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+fn open_project_memory(caller: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    require_settings(&caller)?;
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?;
+    let workspace = data_dir.join(DESKTOP_WORKSPACE_DIRECTORY_NAME);
+    std::fs::create_dir_all(&workspace).map_err(|error| format!("无法创建桌面会话目录：{error}"))?;
+    let memory = workspace.join(PROJECT_MEMORY_FILE_NAME);
+    // 有文件就选中它（用户一眼看到要改的东西）；没有就把目录打开，别替他造一个空文件。
+    let argument = if memory.is_file() {
+        format!("/select,{}", memory.display())
+    } else {
+        workspace.display().to_string()
+    };
+    std::process::Command::new("explorer.exe")
+        .arg(&argument)
+        .spawn()
+        .map_err(|error| format!("无法打开资源管理器：{error}"))?;
+    Ok(serde_json::json!({
+        "opened": argument,
+        "memoryFile": memory.display().to_string(),
+        "memoryExists": memory.is_file(),
+    }))
+}
+
 /// 「清除全部用户数据」里，**能由本应用安全删掉**的那几处。
 ///
 /// 刻意不含 WebView2 配置目录（设置与网页登录态都住在里面）：那个目录正被运行中的进程占用，
@@ -1896,7 +1933,7 @@ fn remove_api_key_credential() -> Result<bool, String> {
 
 #[cfg(all(test, not(feature = "lite")))]
 mod desktop_workspace_tests {
-    use super::{desktop_workspace_status_from, DESKTOP_WORKSPACE_DIRECTORY_NAME};
+    use super::{desktop_workspace_status_from, DESKTOP_WORKSPACE_DIRECTORY_NAME, PROJECT_MEMORY_FILE_NAME};
 
     /// 位置规则只有一条：数据目录下的「桌面会话」。
     ///
@@ -1914,16 +1951,29 @@ mod desktop_workspace_tests {
         assert_eq!(status["credentialTarget"].as_str().unwrap(), "deepseek-api.dsh-wallpaper");
         // 打包前目录还不存在时也必须给出路径（桥会按同一条规则重建）。
         assert_eq!(status["workspaceExists"].as_bool(), Some(false));
+        // 「项目记忆」的路径也要报出来（设置里那个「打开项目记忆」按钮用它），而且**必须与桥读的
+        // 是同一个名字**：两处不同的话，用户在设置里打开的和助手实际用的是两个文件。
+        assert_eq!(
+            status["memoryFile"].as_str().unwrap(),
+            format!(r"C:\Users\me\AppData\Local\com.dsh.wallpaper\{DESKTOP_WORKSPACE_DIRECTORY_NAME}\{PROJECT_MEMORY_FILE_NAME}")
+        );
+        assert_eq!(status["memoryExists"].as_bool(), Some(false));
     }
 }
 
 /// 纯函数：只负责"路径怎么算"，好让测试直接钉住它（真实的数据目录是运行时才知道的）。
 #[cfg(not(feature = "lite"))]
-fn desktop_workspace_status_from(data_dir: &std::path::Path) -> serde_json::Value {    let workspace = data_dir.join(DESKTOP_WORKSPACE_DIRECTORY_NAME);
+fn desktop_workspace_status_from(data_dir: &std::path::Path) -> serde_json::Value {
+    let workspace = data_dir.join(DESKTOP_WORKSPACE_DIRECTORY_NAME);
+    let memory = workspace.join(PROJECT_MEMORY_FILE_NAME);
     serde_json::json!({
         "dataDirectory": data_dir.display().to_string(),
         "workspaceDirectory": workspace.display().to_string(),
         "workspaceExists": workspace.is_dir(),
+        // 助手维护的「项目记忆」（说话人格等长期要求就落在这里）；设置里给它一个打开入口，
+        // 桌面会话里不贴路径。
+        "memoryFile": memory.display().to_string(),
+        "memoryExists": memory.is_file(),
         // 清除全部用户数据时要一并删掉的那条凭据（在凭据管理器里，不在文件系统上）。
         "credentialTarget": "deepseek-api.dsh-wallpaper",
     })
@@ -4197,6 +4247,7 @@ macro_rules! register_edition_commands {
             save_api_key,
             api_key_status,
             desktop_workspace_status,
+            open_project_memory,
             clear_user_data,
             show_deepseek_login,
             native_bootstrap_generation,

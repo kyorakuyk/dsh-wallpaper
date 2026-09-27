@@ -59,6 +59,9 @@ describe('desktop briefing', () => {
     expect(text).toContain('说话人格')
     expect(text).toContain('外观')
     expect(text).toContain('设置中心')
+    // 路径只给它自己看：桌面回复里不许贴绝对路径，改记忆的入口在设置里（用户 2026-09-27 提的）。
+    expect(text).toContain('不要在桌面回复里贴绝对路径')
+    expect(text).toContain('打开项目记忆')
   })
 
   it('injects the project memory when there is one, and says nothing when there is not', () => {
