@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
-import { API_PREFIX } from '../src/protocol.ts'
+import { API_PREFIX, BRIDGE_VERSION } from '../src/protocol.ts'
 import { apply, desktopEntryPrompt, historyOf, isLoopbackWebServerHost, tokenFileForRoot, windowsTokenAclCommands, windowsTokenDirectoryAclCommands, LIVE_SESSION_IDLE_TTL_MS, LIVE_SESSION_SWEEP_INTERVAL_MS, MAX_HISTORY_BYTES, MAX_HISTORY_MESSAGES, MAX_LIVE_SESSIONS, MAX_PENDING_CREATIONS, MAX_SSE_CLIENTS_PER_SESSION } from '../src/index.ts'
 
 /**
@@ -493,7 +493,7 @@ describe('wallpaper bridge HTTP routes', () => {
       // The Bridge's own release version, taken from package.json rather than a
       // second hardcoded contract number. `protocolVersion` below is the stable
       // v1 boundary.
-      bridgeVersion: '0.1.1',
+      bridgeVersion: BRIDGE_VERSION,
       protocolVersion: 1,
       // DSH exposes no runtime version, so this is the only version claim the
       // Bridge can prove: the API range it was compiled against.

@@ -1,9 +1,26 @@
+import { readFile, readdir } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 import { SessionId, Session } from '@deepseek-ai/dsh-session'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
-import { bearerAuthorized, errorReference, isSafeSessionId, isVisibleWallpaperMessage, mapSessionEvent, parseSessionRoute } from '../src/protocol.ts'
+import { BRIDGE_VERSION, bearerAuthorized, errorReference, isSafeSessionId, isVisibleWallpaperMessage, mapSessionEvent, parseSessionRoute } from '../src/protocol.ts'
 
 describe('wallpaper bridge protocol', () => {
+  /**
+   * 版本号是"这份拷贝是哪一版"的唯一凭据（`/status` 的 `bridgeVersion`），它被**烘焙进构建产物**。
+   * 代价很具体：改了 `package.json` 却忘了 `build`，产物就停在上一个版本上 —— 我今天正是据此
+   * **误判**"新代码没生效"，白费一轮。所以产物必须与清单对得上。
+   */
+  it('keeps the reported version, the manifest, and the built artifact in step', async () => {
+    const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
+    expect(BRIDGE_VERSION).toBe(manifest.version)
+    // 版本被烘焙进**共享 chunk**（不是 index.js），所以整个 lib/ 都要看。
+    const directory = new URL('../lib/', import.meta.url)
+    const artifacts = await readdir(directory).catch(() => [] as string[])
+    if (artifacts.length === 0) return
+    const contents = await Promise.all(artifacts.map((name) => readFile(new URL(name, directory), 'utf8')))
+    expect(contents.join('\n')).toContain(manifest.version)
+  })
+
   it('parses only versioned session routes', () => {
     expect(parseSessionRoute('/api/wallpaper/v1/sessions')).toEqual({ kind: 'collection' })
     expect(parseSessionRoute('/api/wallpaper/v1/sessions/a%20b/events')).toEqual({ kind: 'events', sessionId: 'a b' })
