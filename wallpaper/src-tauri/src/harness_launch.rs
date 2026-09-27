@@ -101,6 +101,40 @@ pub(crate) enum LaunchPlan {
     InstalledCli { launcher: String, profile: String },
 }
 
+/// The web app's own hand-off address, per port.
+///
+/// `dsh web` prints `http://127.0.0.1:<port>/?token=<token>`, and its browser fence then
+/// refuses a bare `host:port` with "dsh web authentication required; reopen the URL
+/// printed by dsh web". The token is minted per start, so it cannot be remembered across
+/// launches — this holds the one the *current* host printed, and the browser route hands
+/// it back to the user instead of opening a page that can only apologise.
+static WEB_HANDOFF: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u16, String>>> =
+    std::sync::OnceLock::new();
+
+fn web_handoffs() -> &'static std::sync::Mutex<std::collections::HashMap<u16, String>> {
+    WEB_HANDOFF.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// The path-and-query that lets a browser into a web host: `/?token=…`.
+///
+/// Pure, because this is the one piece that rots silently if DSH changes its wording: a
+/// test reads the rule back, instead of a person having to notice a log line.
+pub(crate) fn web_handoff_path(line: &str) -> Option<(u16, String)> {
+    const PREFIX: &str = "http://127.0.0.1:";
+    let rest = &line[line.find(PREFIX)? + PREFIX.len()..];
+    let port_len = rest.find(|c: char| !c.is_ascii_digit())?;
+    let port: u16 = rest[..port_len].parse().ok()?;
+    let after_port = &rest[port_len..];
+    let query_at = after_port.find("/?")?;
+    let query = after_port[query_at..].split_whitespace().next()?;
+    Some((port, query.to_string()))
+}
+
+/// The hand-off path a browser should be opened with, when one is known for that port.
+pub(crate) fn known_web_handoff(port: u16) -> Option<String> {
+    web_handoffs().lock().ok()?.get(&port).cloned()
+}
+
 /// Start a globally installed CLI: `<launcher> --profile <profile>`.
 ///
 /// `--profile` is passed explicitly rather than left to the CLI's own default: this
@@ -110,13 +144,23 @@ pub(crate) enum LaunchPlan {
 /// `CREATE_NO_WINDOW` matters here. The launcher is a console program, and a GUI process
 /// that spawns one without that flag gets a console window of its own — a black rectangle
 /// that appears next to a wallpaper and stays until the CLI exits.
+///
+/// A `web` host keeps its stdout: that stream is where the browser hand-off is printed,
+/// and dropping it is what left the browser opening a page that could only say
+/// "authentication required". The reader keeps draining for the child's whole life — a
+/// pipe closed early would hand the CLI a write error it does not deserve.
 fn launch_installed_cli(launcher: &str, profile: &str) -> HarnessLaunchOutcome {
     let (program, args) = installed_cli_command(Path::new(launcher), profile);
+    let wants_handoff = profile.trim() == "web";
     let mut command = std::process::Command::new(&program);
     command
         .args(&args)
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
+        .stdout(if wants_handoff {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
         .stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {
@@ -129,12 +173,30 @@ fn launch_installed_cli(launcher: &str, profile: &str) -> HarnessLaunchOutcome {
         program.display()
     );
     match command.spawn() {
-        Ok(child) => HarnessLaunchOutcome {
-            outcome: "started".into(),
-            kind: HarnessTargetKind::InstalledCli,
-            pid: Some(child.id()),
-            hidden: false,
-        },
+        Ok(mut child) => {
+            if wants_handoff {
+                if let Some(stdout) = child.stdout.take() {
+                    std::thread::spawn(move || {
+                        use std::io::BufRead;
+                        for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                            if let Some((port, path)) = web_handoff_path(&line) {
+                                log::info!("harness web handoff: port={port} path={path}");
+                                if let Ok(mut map) = web_handoffs().lock() {
+                                    map.insert(port, path);
+                                }
+                                // 不 break：继续把管道读干，别让 CLI 因为写不出去而报错。
+                            }
+                        }
+                    });
+                }
+            }
+            HarnessLaunchOutcome {
+                outcome: "started".into(),
+                kind: HarnessTargetKind::InstalledCli,
+                pid: Some(child.id()),
+                hidden: false,
+            }
+        }
         Err(error) => {
             log::warn!("harness installed-cli launch failed: {error}");
             HarnessLaunchOutcome::new("spawn-failed", HarnessTargetKind::InstalledCli)
@@ -718,6 +780,21 @@ mod tests {
         );
         // TUI 自己指定 profile（dsh-tui）⇒ 这里**不能**替它加 `--profile`。
         assert!(!args.iter().any(|arg| arg == "--profile"));
+    }
+
+    #[test]
+    fn the_browser_handoff_is_read_from_the_line_the_cli_prints() {
+        // 实测原文（`dsh web` 启动时打印的那一行）。
+        let printed = "dsh web: http://127.0.0.1:3080/?token=w03-O64JxomJCRw9Any3kg9Nap09jNg56tJbeU6pE4s";
+        let (port, path) = web_handoff_path(printed).expect("handoff");
+        assert_eq!(port, 3080);
+        assert_eq!(path, "/?token=w03-O64JxomJCRw9Any3kg9Nap09jNg56tJbeU6pE4s");
+        // 换端口也认（端口不是契约）。
+        assert_eq!(web_handoff_path("dsh web: http://127.0.0.1:8080/?token=abc").map(|(p, _)| p), Some(8080));
+        // 没有门票的普通行、或别的地址，都不该被误认成门票。
+        assert!(web_handoff_path("dsh web: opening the default browser").is_none());
+        assert!(web_handoff_path("http://127.0.0.1:3080/").is_none());
+        assert!(web_handoff_path("https://example.com/?token=abc").is_none());
     }
 
     #[test]

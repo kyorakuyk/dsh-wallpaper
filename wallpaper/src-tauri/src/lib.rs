@@ -3886,7 +3886,11 @@ fn open_client_in_browser(
     path: Option<String>,
 ) -> Result<(), String> {
     require_wallpaper_surface(&caller)?;
-    client_window::open_loopback_url(port, path.as_deref().unwrap_or("/"))
+    // 没给路径时用**这次启动打印出来的门票**：`dsh web` 的浏览器围栏要求 URL 上带 token，
+    // 裸端口只会得到那句 "dsh web authentication required"。门票由启动时捕获（见
+    // `harness_launch::known_web_handoff`），前端不需要知道它存在。
+    let fallback = harness_launch::known_web_handoff(port).unwrap_or_else(|| "/".to_string());
+    client_window::open_loopback_url(port, path.as_deref().unwrap_or(&fallback))
 }
 
 /// Report whether anything is listening on an endpoint, without raising it.
