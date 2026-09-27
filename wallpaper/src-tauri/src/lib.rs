@@ -3886,11 +3886,19 @@ fn open_client_in_browser(
     path: Option<String>,
 ) -> Result<(), String> {
     require_wallpaper_surface(&caller)?;
-    // 没给路径时用**这次启动打印出来的门票**：`dsh web` 的浏览器围栏要求 URL 上带 token，
-    // 裸端口只会得到那句 "dsh web authentication required"。门票由启动时捕获（见
-    // `harness_launch::known_web_handoff`），前端不需要知道它存在。
-    let fallback = harness_launch::known_web_handoff(port).unwrap_or_else(|| "/".to_string());
-    client_window::open_loopback_url(port, path.as_deref().unwrap_or(&fallback))
+    // 没给路径、或给的就是裸根 `/` 时，用**这次启动打印出来的门票**：`dsh web` 的浏览器围栏要求
+    // URL 上带 token，裸端口只会得到那句 "dsh web authentication required"。门票由启动时捕获
+    // （见 `harness_launch::known_web_handoff`），前端不需要知道它存在。
+    //
+    // 把 `/` 也当作"没指定"是刻意的：渲染层传参默认值就是 `'/'`（实测），而对一个带围栏的宿主
+    // 来说，裸根本来就不是任何人想要的结果 —— 它只会换来一句道歉。
+    let requested = path.as_deref().unwrap_or("/");
+    let target = if requested == "/" {
+        harness_launch::known_web_handoff(port).unwrap_or_else(|| requested.to_string())
+    } else {
+        requested.to_string()
+    };
+    client_window::open_loopback_url(port, &target)
 }
 
 /// Report whether anything is listening on an endpoint, without raising it.
