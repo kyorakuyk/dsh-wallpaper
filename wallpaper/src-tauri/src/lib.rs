@@ -510,12 +510,7 @@ async fn ensure_harness_ui(
                     "harness handoff refresh: restarting our own host on {port} (pid {}) to capture its browser ticket",
                     child.pid
                 );
-                #[cfg(windows)]
-                {
-                    let _ = std::process::Command::new("taskkill.exe")
-                        .args(["/PID", &child.pid.to_string(), "/T", "/F"])
-                        .output();
-                }
+                crate::client_window::stop_process_tree(child.pid);
                 harness_launch::forget_child(subject);
                 let state = record_from.state::<ManagedDshState>();
                 let _ = harness_launch::ensure_ui(
@@ -1006,52 +1001,67 @@ fn managed_dsh_status(
 
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
-fn stop_managed_dsh(
+async fn stop_managed_dsh(
     caller: tauri::WebviewWindow,
-    state: tauri::State<'_, ManagedDshState>,
+    app: tauri::AppHandle,
     subject_id: Option<String>,
 ) -> Result<(), String> {
     require_settings(&caller)?;
-    let mut managed = state
-        .0
-        .lock()
-        .map_err(|_| "DSH 进程状态不可用".to_string())?;
-    let taken = managed.take();
-    drop(managed);
-    let Some(mut process) = taken else {
-        // 内存里没有孩子（壁纸重启过）⇒ 看落盘记录，而且**只有判定为真的那一格**才动手：
-        // pid 与创建时间都对上，才承认它是本应用启动的那个。对不上就什么都不做。
-        if let Some(subject) = subject_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            if let Some(child) = harness_launch::owned_child(subject) {
+    // 这一步会起 taskkill 并等它结束（正常几百毫秒，遇到卡住的进程更久），所以**不能**在界面
+    // 线程上做 —— 那正是"设置窗口先卡死"的成因。状态也在闭包里重新取，避免借用外部的 State。
+    tauri::async_runtime::spawn_blocking(move || {
+        let subject = subject_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let state = app.state::<ManagedDshState>();
+        let mut managed = state
+            .0
+            .lock()
+            .map_err(|_| "DSH 进程状态不可用".to_string())?;
+        let taken = managed.take();
+        drop(managed);
+        match taken {
+            Some(mut process) => {
+                let pid = process.child.id();
                 #[cfg(windows)]
-                {
-                    let _ = std::process::Command::new("taskkill.exe")
-                        .args(["/PID", &child.pid.to_string(), "/T", "/F"])
-                        .output();
+                let stopped = crate::client_window::stop_process_tree(pid);
+                #[cfg(not(windows))]
+                let stopped = process.child.kill().is_ok();
+                if !stopped {
+                    log::warn!("managed DSH stop failed for pid {pid}");
                 }
-                harness_launch::forget_child(subject);
+                let _ = process.child.wait();
+                if let Some(subject) = subject.as_deref() {
+                    harness_launch::forget_child(subject);
+                }
+                if stopped {
+                    Ok(())
+                } else {
+                    Err("无法停止该 DSH 进程；它可能已经退出，或被别的程序接管了。".to_string())
+                }
+            }
+            None => {
+                // 内存里没有孩子（壁纸重启过）⇒ 看落盘记录，而且**只有判定为真的那一格**才动手：
+                // pid 与创建时间都对上，才承认它是本应用启动的那个。对不上就什么都不做。
+                if let Some(subject) = subject.as_deref() {
+                    if let Some(child) = harness_launch::owned_child(subject) {
+                        if crate::client_window::stop_process_tree(child.pid) {
+                            harness_launch::forget_child(subject);
+                        } else {
+                            return Err(
+                                "无法停止该 DSH 进程；它可能已经退出，或被别的程序接管了。".to_string(),
+                            );
+                        }
+                    }
+                }
+                Ok(())
             }
         }
-        return Ok(());
-    };
-    // Scope termination to the exact process spawned by this application;
-    // never infer a target by probing a port or executable name.
-    #[cfg(windows)]
-    {
-        let _ = std::process::Command::new("taskkill.exe")
-            .args(["/PID", &process.child.id().to_string(), "/T", "/F"])
-            .output();
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = process.child.kill();
-    }
-    let _ = process.child.wait();
-    // 本应用停掉的孩子，要从"左轮弹仓"里清掉那一格（别的格子不动）。
-    if let Some(subject) = subject_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        harness_launch::forget_child(subject);
-    }
-    Ok(())
+    })
+    .await
+    .map_err(|error| format!("停止 DSH 未完成：{error}"))?
 }
 
 /// Settings are always authored by the dedicated settings surface and then
@@ -4704,12 +4714,7 @@ fn shutdown_native_state(app: &tauri::AppHandle) {
         if let Some(state) = app.try_state::<ManagedDshState>() {
             if let Ok(mut managed) = state.0.lock() {
                 if let Some(mut process) = managed.take() {
-                    #[cfg(windows)]
-                    {
-                        let _ = std::process::Command::new("taskkill.exe")
-                            .args(["/PID", &process.child.id().to_string(), "/T", "/F"])
-                            .output();
-                    }
+                    crate::client_window::stop_process_tree(process.child.id());
                     #[cfg(not(windows))]
                     {
                         let _ = process.child.kill();

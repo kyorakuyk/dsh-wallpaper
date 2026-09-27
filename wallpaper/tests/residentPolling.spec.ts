@@ -65,8 +65,18 @@ describe('native exit lifecycle', () => {
     expect(shutdown).toContain('native_bootstrap::destroy()')
     expect(shutdown).toContain('unregister_session_events(app)')
     // Only the DSH child this process launched is stopped.
-    expect(shutdown).toContain('taskkill.exe')
+    expect(shutdown).toContain('stop_process_tree(')
     expect(shutdown).toContain('managed.take()')
+    // 而且要**安静地**停：taskkill 是控制台程序，从 GUI 进程起它时若不带 CREATE_NO_WINDOW，
+    // 退出时会闪一个黑框；用 `.output()` 还会为它建管道并一直等到它结束。
+    const clientWindow = await readNative('src/client_window.rs')
+    const stopHelper = clientWindow.slice(
+      clientWindow.indexOf('pub(crate) fn stop_process_tree'),
+      clientWindow.indexOf('/// Exposed within the crate'),
+    )
+    expect(stopHelper).toContain('CREATE_NO_WINDOW')
+    expect(stopHelper).toContain('.status()')
+    expect(stopHelper).not.toContain('.output()')
     // Every step is inside a `Once`, because ExitRequested can precede Exit.
     expect(shutdown).toContain('SHUTDOWN.call_once')
     // The tray "hide" item is an action dispatch, not an exit.

@@ -104,6 +104,34 @@ pub(crate) fn filetime_ticks(high: u32, low: u32) -> u64 {
     ((high as u64) << 32) | low as u64
 }
 
+/// 结束一个进程及其子树，**安静地**：不弹控制台、不建管道、不等管道。
+///
+/// `taskkill.exe` 是控制台程序，而从 GUI 进程起控制台程序时，Windows 默认会为它新建一个控制台
+/// 窗口 —— 用户看到的就是一个黑框。若再用 `Command::output()`，还会为它建管道并一直等到它退出；
+/// 在界面线程上这么做，就是"设置窗口先卡死、然后弹一个黑框"的来源。
+///
+/// 所以三件事一起做：`CREATE_NO_WINDOW` 不建窗口、三个标准流都置空不走管道、用 `.status()`
+/// 只取退出码。返回是否成功，好让调用方如实回报，而不是假设它一定成功。
+#[cfg(windows)]
+pub(crate) fn stop_process_tree(pid: u32) -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let outcome = std::process::Command::new("taskkill.exe")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+    matches!(outcome, Ok(status) if status.success())
+}
+
+#[cfg(not(windows))]
+pub(crate) fn stop_process_tree(_pid: u32) -> bool {
+    // 没有内核表可读时，"做不到"才是诚实的答案：调用方会如实回报，而不是以为已经停掉。
+    false
+}
+
 /// Exposed within the crate so a caller that started something for the user can
 /// clean up after itself by identity (the kernel's own table) instead of by image
 /// name, which would also match an instance the user was already running.
