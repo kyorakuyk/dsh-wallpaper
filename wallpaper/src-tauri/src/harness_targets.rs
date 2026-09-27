@@ -50,6 +50,14 @@ pub enum HarnessTargetKind {
     /// A source tree. The service is this tree; the window is chosen separately,
     /// because a checkout has none of its own.
     Checkout,
+    /// A DSH CLI installed on this machine rather than a tree the user owns — the
+    /// `npm i -g @deepseek-ai/dsh` shape. It has no AUMID (it is not a shell) and no
+    /// source tree (it ships packed), so it is neither of the two classes above; what
+    /// it *does* have is a launcher on `PATH`, and that launcher is its identity.
+    ///
+    /// The service it starts is the same web/app shape a checkout starts — same
+    /// profile, same default port — which is why its `client` is `OfficialWeb`.
+    InstalledCli,
 }
 
 /// The client shapes the endpoint scanner already knows.
@@ -456,6 +464,38 @@ pub fn scan_harness_targets_blocking(hint_path: Option<String>, deep_scan: bool)
             .count()
     );
     scan
+}
+
+/// The launchers of a globally installed DSH CLI, as `npm` leaves them.
+///
+/// `npm i -g @deepseek-ai/dsh` writes `dsh`/`dsh.cmd`/`dsh.ps1` into the global
+/// prefix's bin directory (on Windows that is `%APPDATA%\npm`) and puts that
+/// directory on `PATH`. Both halves are checked, prefix first, and the `PATH` walk
+/// looks only for the Windows launchers `.cmd`/`.exe`, because that is what a spawn
+/// from Rust can execute directly.
+///
+/// Pure on purpose: the environment values are parameters, so the layout can be
+/// tested without reading this machine.
+fn installed_cli_launchers_from(npm_prefix: Option<&str>, path: Option<&str>) -> Vec<PathBuf> {
+    let mut launchers = Vec::new();
+    let mut push = |candidate: PathBuf| {
+        if candidate.is_file() && !launchers.iter().any(|existing| existing == &candidate) {
+            launchers.push(candidate);
+        }
+    };
+    if let Some(prefix) = npm_prefix {
+        for name in ["dsh.cmd", "dsh.exe"] {
+            push(PathBuf::from(prefix).join(name));
+        }
+    }
+    if let Some(path) = path {
+        for directory in std::env::split_paths(path) {
+            for name in ["dsh.cmd", "dsh.exe"] {
+                push(directory.join(name));
+            }
+        }
+    }
+    launchers
 }
 
 /// The directories a shell registration can live in.
@@ -884,6 +924,12 @@ mod tests {
                 HarnessTargetKind::Checkout => {
                     assert!(target.identity.root_path.is_some());
                     assert!(target.identity.aumid.is_none());
+                }
+                HarnessTargetKind::InstalledCli => {
+                    // 已安装的 CLI 既不是壳也不是源码树：它没有 AUMID，也没有根目录。
+                    assert!(target.identity.aumid.is_none());
+                    assert!(target.identity.root_path.is_none());
+                    assert_eq!(target.client, HarnessClientKind::OfficialWeb);
                 }
             }
         }
