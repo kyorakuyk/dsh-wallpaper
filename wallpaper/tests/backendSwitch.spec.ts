@@ -54,6 +54,14 @@ describe('the chat-mode switch in the settings centre', () => {
     expect(panel).not.toContain('title="启动时使用"')
   })
 
+  it('drops the old subject\u2019s explicit endpoint when the subject changes', async () => {
+    const settings = await source('src/settings/SettingsWindow.tsx')
+    // 那条显式端点是"用户当年为上一个主体选的端口"，换主体后它就是一条自相矛盾的选择：
+    // 实测过——主体是 3080 的已安装 CLI，pin 还停在官方客户端的 19387，于是「打开」把官方
+    // 客户端的窗口拉到了前台。用户的 pin 优先这条规则不变，但换主体必须把它清掉。
+    expect(settings).toMatch(/onSelectSubject=\{\(targetId\) => change\(\{[\s\S]{0,900}?endpointPort: undefined/)
+  })
+
   it('is allowed for the settings surface in the native gate and the capability', async () => {
     const [native, capability] = await Promise.all([
       source('src-tauri/src/lib.rs'),
