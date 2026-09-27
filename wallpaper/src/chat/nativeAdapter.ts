@@ -46,6 +46,12 @@ export function isArchivedSessionError(error: unknown): boolean {
  */
 export const ARCHIVED_SESSION_NOTICE = '这条会话已被归档，已在今天的新会话里重新发送。'
 
+/**
+ * 宿主拒绝这一轮时说的那句。与归档不同：会话还在、只是不再接受我们的消息（实测：被归档的
+ * 会话，`turn/end` 的 `reason.kind` 是 `blocked`）。给用户的动作是同一个 —— 换一条新会话。
+ */
+export const BLOCKED_TURN_NOTICE = 'DSH 拒绝了这一轮（这条会话已被归档）；已在今天的新会话里重新发送。'
+
 export class NativeChatAdapter extends EventChatAdapter {
   readonly mode: BackendMode
   private nativeUnsubscribe: (() => void) | undefined
@@ -65,6 +71,10 @@ export class NativeChatAdapter extends EventChatAdapter {
    */
   private turnToken: string | undefined
   private turnActive = false
+  /** 这一轮的原话，供"被宿主拒绝之后重发一次"用。 */
+  private lastTurnText: string | undefined
+  /** 本轮已经为"被拒绝"换过一次会话：只换一次，不在换—重发之间打转。 */
+  private blockedTurnRecovered = false
   private readonly nativeOptions: NativeSendOptions
   private readonly deliveredMessageCounts = new Map<string, number>()
   private reconcileTimer: ReturnType<typeof setTimeout> | undefined
@@ -243,12 +253,44 @@ export class NativeChatAdapter extends EventChatAdapter {
     }
     if (chatEvent.type === 'error') this.stopHistoryReconciliation()
     this.emit(chatEvent)
+    // 宿主**拒绝了这一轮**（桥把 `turn/end { reason.kind: "blocked" }` 翻成 `turn-blocked`）：
+    // 这条会话不再收我们的消息了 —— 实测就是被归档的会话，几毫秒内结束、没有回答。用户看到的
+    // 是"发出去了、永远没回应、灯还是绿的"，所以除了那句错误，还要**自己换一条新会话并把这句
+    // 重发一次**：他不必再手动重来一次。上面那句 `emit` 必须在前，先让他知道发生了什么。
+    if (this.mode === 'harness' && chatEvent.type === 'error' && chatEvent.code === 'turn-blocked') {
+      void this.recoverBlockedTurn()
+      return
+    }
     // `assistant/message` is the durable terminal record. Some hosts omit the
     // later `turn/end` event from a replaced SSE connection; make the desktop
     // idle as soon as the final message itself arrives.
     if (this.mode === 'harness' && chatEvent.type === 'message' && chatEvent.role === 'assistant') {
       this.emit({ type: 'status', activity: 'done' })
     }
+  }
+
+  /**
+   * 一轮被宿主拒绝之后的收尾：离开这条会话、开一条新的、把这句重发一次。
+   *
+   * 只做一次（`blockedTurnRecovered`）：新会话要是又被拒，就报错，不在"换—重发"之间打转。
+   * 走的是和归档恢复**同一套**机制，因为对用户来说这是同一件事：这条会话不能用了。
+   */
+  private async recoverBlockedTurn(): Promise<void> {
+    if (this.blockedTurnRecovered || this.disposed) return
+    this.blockedTurnRecovered = true
+    const text = this.lastTurnText
+    this.turnActive = false
+    this.stopHistoryReconciliation()
+    const failure = await this.recoverArchivedSession()
+    if (failure || !text) {
+      if (failure) {
+        this.emit({ type: 'error', code: 'NATIVE_SEND_FAILED', recoverable: true, message: `换一条新会话也没有成功：${failure}` })
+      }
+      return
+    }
+    this.emit({ type: 'conversation-reset', reason: 'turn-blocked', message: BLOCKED_TURN_NOTICE })
+    await this.runTurn(text, this.nativeOptions.model ? { model: this.nativeOptions.model } : undefined, false)
+      .catch(() => undefined)
   }
 
   async send(text: string, options?: SendOptions): Promise<void> {
@@ -260,6 +302,9 @@ export class NativeChatAdapter extends EventChatAdapter {
    * 立刻又不可用，必须报错，而不是在"重连—重发"之间打转。
    */
   private async runTurn(text: string, options: SendOptions | undefined, allowArchivedRecovery: boolean): Promise<void> {
+    // 一次新的用户发送重置两处本轮状态：原话（重发用）与"已经为被拒绝换过一次会话"。
+    this.lastTurnText = text
+    if (allowArchivedRecovery) this.blockedTurnRecovered = false
     if (this.mode === 'deepseek-api' && !this.sessionId) this.sessionId = crypto.randomUUID()
     if (this.mode === 'deepseek-api') this.apiRequestId = crypto.randomUUID()
     // Every send owns a new turn identity. The previous turn's token is gone

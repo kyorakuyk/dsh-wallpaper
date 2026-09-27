@@ -58,10 +58,11 @@ export type ChatEvent =
   | { type: 'approval-required'; sessionId: string; summary: string }
   | { type: 'auth-required' }
   /**
-   * 这条转写所属的会话已经不是当前会话了：用户把它归档掉之后，桥不会再往它里面写东西，
-   * 所以轨道上那段记录必须立刻停止看起来像活的。`message` 是给用户的一句话通知，不是报错。
+   * 这条转写所属的会话已经不是当前会话了：`session-archived` 是桥明确回报归档，
+   * `turn-blocked` 是宿主拒绝执行这一轮（实测归档会话就是这样，几毫秒结束、没有回答）。
+   * 两者对用户的动作相同：轨道上那段记录必须立刻停止看起来像活的。`message` 是通知，不是报错。
    */
-  | { type: 'conversation-reset'; reason: 'session-archived'; message: string }
+  | { type: 'conversation-reset'; reason: 'session-archived' | 'turn-blocked'; message: string }
   | { type: 'error'; code: string; recoverable: boolean; message: string }
 
 /**

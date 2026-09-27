@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { NativeChatAdapter, ARCHIVED_SESSION_NOTICE, isArchivedSessionError } from '../src/chat/nativeAdapter.ts'
+import { NativeChatAdapter, ARCHIVED_SESSION_NOTICE, BLOCKED_TURN_NOTICE, isArchivedSessionError } from '../src/chat/nativeAdapter.ts'
 import type { ChatEvent, ChatMessage, ScopedChatEvent } from '../src/domain/types.ts'
 import { nativeRuntime, type NativeSendOptions } from '../src/native/runtime.ts'
 
@@ -521,6 +521,43 @@ describe('NativeChatAdapter archived-session recovery', () => {
       expect(errors[0] && 'message' in errors[0] ? errors[0].message : '').toContain('HARNESS_SESSION_ARCHIVED')
       expect(errors[0] && 'message' in errors[0] ? errors[0].message : '').toContain('bridge 未就绪')
       expect(events.some((event) => event.type === 'conversation-reset')).toBe(false)
+      adapter.disconnect()
+    } finally {
+      native.restore()
+    }
+  })
+
+  /**
+   * 宿主拒绝这一轮（桥把 `turn/end { reason.kind: "blocked" }` 翻成 `turn-blocked`）时，
+   * 用户看到的是"发出去了、永远没回应、灯还是绿的"。所以除了那句错误，壁纸要**自己**换一条
+   * 新会话并把这句重发一次 —— 与归档恢复同一套机制，因为对用户来说是同一件事。
+   */
+  it('leaves the session and resends once when the host refuses the turn', async () => {
+    const native = new FakeNative()
+    try {
+      const adapter = await connectedHarness(native)
+      const events = collector(adapter)
+      const connectionId = native.connectCalls[0]?.connectionId
+      expect(connectionId).toBeTruthy()
+      await adapter.send('这句话不能丢')
+      events.length = 0
+      native.connectSessionIds = ['fresh-daily-session']
+
+      native.emit(harnessEvent(connectionId!, 'harness-session', {
+        type: 'error',
+        code: 'turn-blocked',
+        recoverable: true,
+        message: 'DSH 拒绝了这一轮对话（原因：blocked）',
+      }))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      // 用户先知道发生了什么，然后才看到我们换了会话并重发。
+      expect(events[0]).toMatchObject({ type: 'error', code: 'turn-blocked' })
+      expect(events[1]).toEqual({ type: 'conversation-reset', reason: 'turn-blocked', message: BLOCKED_TURN_NOTICE })
+      expect(native.connectCalls).toHaveLength(2)
+      expect(native.connectCalls[1]?.resumeSessionId).toBeUndefined()
+      expect(native.chatSends.map((send) => send.text)).toEqual(['这句话不能丢', '这句话不能丢'])
+      expect(native.chatSends[1]?.options?.conversationId).toBe('fresh-daily-session')
       adapter.disconnect()
     } finally {
       native.restore()
