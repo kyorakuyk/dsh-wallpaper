@@ -251,6 +251,12 @@ export function SettingsWindow() {
       if (fallback) {
         change({ ...settingsRef.current, dshLaunch: { ...settingsRef.current.dshLaunch, subjectId: fallback.subjectId } })
         setNotice(fallback.notice)
+      } else if (settingsRef.current.dshLaunch.subjectId?.startsWith(CLI_SUBJECT_PREFIX)
+        && settingsRef.current.dshLaunch.profile === 'desktop') {
+        // 已安装的 CLI 沿用了源码目录/官壳的默认档案：它启动后**立刻退出**（实测日志里是
+        // `--profile desktop`，同一命令换 web 一切正常）。改正它，并且说出来 —— 不静默改设置。
+        change({ ...settingsRef.current, dshLaunch: { ...settingsRef.current.dshLaunch, profile: 'web' } })
+        setNotice('已安装的 DSH CLI 用 web 这个档案（它自己那一个）；原来的 desktop 属于桌面客户端，会让它启动后立刻退出 —— 已改正。')
       } else if (announce) {
         setNotice(subjectChoicePrompt(scan.targets) ?? (scan.targets.length > 0
           ? `扫描完成，发现 ${scan.targets.length} 个可选执行主体。`
