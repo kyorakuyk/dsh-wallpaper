@@ -139,6 +139,29 @@ export const SHELL_SUBJECT_PREFIX = 'shell:'
 export const OFFICIAL_SHELL_SUBJECT_ID = `${SHELL_SUBJECT_PREFIX}com.deepseek.dsh`
 
 /**
+ * 一条**不属于当前主体**的显式端点（存量的自相矛盾）。
+ *
+ * "用户的 pin 优先"是刻意的规则，不动它。但那条 pin 是**用户当年为那个主体选的端口**：换主体后
+ * 它继续生效，就变成"按旧主体的端口去开新主体的界面"——实测过一次：主体是只该用 3080 的已安装
+ * CLI，pin 还停在官方客户端的 19387，于是点「打开」把官方客户端的窗口拉到了前台。
+ *
+ * 这里只做判定，不修改任何东西：改正该由调用方**说出来**再做（与"已不受支持的主体"同一套做法）。
+ * 返回 `undefined` 表示不算矛盾——没有存值、没有主体（这条 pin 无所属）、或 pin 就在本主体自己的
+ * 端口里。
+ */
+export function staleEndpointPort(launch: {
+  subjectId?: string
+  rootPath?: string
+  endpointPort?: number
+}): number | undefined {
+  const pinned = launch.endpointPort
+  if (pinned === undefined) return undefined
+  const allowed = subjectEndpointPorts({ ...endpointScopeOf(launch), endpointPort: undefined })
+  if (!allowed) return undefined
+  return allowed.includes(pinned) ? undefined : pinned
+}
+
+/**
  * The subject-id namespace for a **globally installed** DSH CLI (`npm i -g @deepseek-ai/dsh`).
  *
  * A third class, not a second spelling of a checkout: it has no source tree to name, so

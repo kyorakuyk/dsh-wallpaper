@@ -11,6 +11,7 @@ import {
   endpointKindLabel,
   endpointScopeOf,
   raiseOutcomeNotice,
+  staleEndpointPort,
   subjectClientKind,
   subjectEndpointPorts,
   unsupportedShellSubjectFallback,
@@ -257,6 +258,13 @@ export function SettingsWindow() {
         // `--profile desktop`，同一命令换 web 一切正常）。改正它，并且说出来 —— 不静默改设置。
         change({ ...settingsRef.current, dshLaunch: { ...settingsRef.current.dshLaunch, profile: 'web' } })
         setNotice('已安装的 DSH CLI 用 web 这个档案（它自己那一个）；原来的 desktop 属于桌面客户端，会让它启动后立刻退出 —— 已改正。')
+      } else if (staleEndpointPort(settingsRef.current.dshLaunch) !== undefined) {
+        // 存量的自相矛盾：显式端点是**上一个主体的**端口。留着它，"用户 pin 优先"这条正确的规则
+        // 就会按旧主体的端口去开新主体的界面（实测：主体是只该用 3080 的已安装 CLI，pin 还是官方
+        // 客户端的 19387，点「打开」把官方客户端的窗口拉到了前台）。清掉并说出来。
+        const stale = staleEndpointPort(settingsRef.current.dshLaunch)!
+        change({ ...settingsRef.current, dshLaunch: { ...settingsRef.current.dshLaunch, endpointPort: undefined } })
+        setNotice(`设置里选定的端口 ${stale} 不属于当前主体，已清除；「打开」会按该主体自己的端口来。`)
       } else if (announce) {
         setNotice(subjectChoicePrompt(scan.targets) ?? (scan.targets.length > 0
           ? `扫描完成，发现 ${scan.targets.length} 个可选执行主体。`
