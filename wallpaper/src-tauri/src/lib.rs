@@ -447,6 +447,7 @@ async fn ensure_harness_ui(
     let worker = app.clone();
     // 闭包要拿走一份用于记录，外部保留一份用于"这次是不是我启动的、pid 是多少"。
     let subject_for_record = target_id.clone();
+    let profile_for_refresh = profile.clone();
     let record_from = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let managed = worker.state::<ManagedDshState>();
@@ -469,6 +470,42 @@ async fn ensure_harness_ui(
             let pid = state.0.lock().ok().and_then(|managed| managed.as_ref().map(|child| child.child.id()));
             if let Some(pid) = pid {
                 harness_launch::remember_child(subject_for_record.trim(), pid);
+            }
+        }
+        // 门票只属于**那一次启动**：`dsh web` 每次起来现生成一个，打印一次。如果宿主已经在跑、
+        // 而壁纸手里没有它这一代的门票（装机/重启之后最常见），浏览器会被自己的围栏挡在门外。
+        // 处理分两种，界线是"是不是我启动的"：
+        //   * 是我的 ⇒ 重启它一次去取票（这是本应用自己的孩子，动它不越界）；
+        //   * 不是我的 ⇒ 什么都不做，由调用方如实说明拿不到门票 —— 绝不接管别人的实例。
+        let subject = subject_for_record.trim();
+        let needs_ticket = profile_for_refresh.trim() == "web"
+            && !outcome.started
+            && harness_launch::known_web_handoff(port).is_none();
+        if needs_ticket {
+            if let Some(child) = harness_launch::owned_child(subject) {
+                log::info!(
+                    "harness handoff refresh: restarting our own host on {port} (pid {}) to capture its browser ticket",
+                    child.pid
+                );
+                #[cfg(windows)]
+                {
+                    let _ = std::process::Command::new("taskkill.exe")
+                        .args(["/PID", &child.pid.to_string(), "/T", "/F"])
+                        .output();
+                }
+                harness_launch::forget_child(subject);
+                let state = record_from.state::<ManagedDshState>();
+                let _ = harness_launch::ensure_ui(
+                    subject,
+                    port,
+                    &profile_for_refresh,
+                    None,
+                    state.inner(),
+                );
+            } else {
+                log::warn!(
+                    "harness handoff unavailable for {port}: the host is not one this app started; leaving it alone"
+                );
             }
         }
         outcome
