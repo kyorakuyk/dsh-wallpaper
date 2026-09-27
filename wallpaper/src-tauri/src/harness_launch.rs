@@ -115,6 +115,43 @@ fn web_handoffs() -> &'static std::sync::Mutex<std::collections::HashMap<u16, St
     WEB_HANDOFF.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
+/// 一份"这个孩子是壁纸启动的"记录，落在盘上，跨壁纸重启有效。
+///
+/// 只记**当前选中的那个主体**的孩子：换主体后旧进程不追踪、也不去停（它还活着，只是不再算
+/// "我的"）。每次成功启动覆盖它。
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ManagedChild {
+    /// 主体 id（`shell:<aumid>` / 目录路径 / `cli:<启动器>`）—— 不是端口：端口不是契约，
+    /// 而且不同主体可以先后用同一个端口。
+    pub subject_id: String,
+    pub pid: u32,
+    /// 进程创建时间（内核给的）。**必须和 pid 一起比**：pid 回收得很快，只比 pid 会让壁纸
+    /// 把别人的进程认成自己的孩子，然后去停它 —— 那就破了"绝不接管他人实例"这条底线。
+    /// `None` 表示取不到（平台不提供）⇒ 判定一律为"不是我启动的"，宁可少一个按钮可用。
+    pub started_at: Option<u64>,
+}
+
+/// 这条记录是否真的对应**此刻活着并且是同一个进程**的孩子。
+///
+/// 纯函数：把"真实进程长什么样"作为参数传进来，判定规则才可以被测试钉住。任何不确定
+/// （没有记录、pid 不同、创建时间取不到或不一致）都返回 false —— 这份缓存**只是参考，不是
+/// 授权**：坏了、丢了最坏是"壁纸以为不是自己的"（安全方向）。
+pub(crate) fn owns_live_process(
+    recorded: Option<&ManagedChild>,
+    live_pid: Option<u32>,
+    live_started_at: Option<u64>,
+) -> bool {
+    let Some(recorded) = recorded else { return false };
+    let Some(live_pid) = live_pid else { return false };
+    if recorded.pid != live_pid {
+        return false;
+    }
+    match (recorded.started_at, live_started_at) {
+        (Some(recorded_at), Some(live_at)) => recorded_at == live_at,
+        _ => false,
+    }
+}
+
 /// The path-and-query that lets a browser into a web host: `/?token=…`.
 ///
 /// Pure, because this is the one piece that rots silently if DSH changes its wording: a
@@ -780,6 +817,27 @@ mod tests {
         );
         // TUI 自己指定 profile（dsh-tui）⇒ 这里**不能**替它加 `--profile`。
         assert!(!args.iter().any(|arg| arg == "--profile"));
+    }
+
+    #[test]
+    fn ownership_needs_the_pid_and_the_start_time_to_agree() {
+        let child = ManagedChild {
+            subject_id: "cli:C:\\Users\\u\\AppData\\Roaming\\npm\\dsh.cmd".into(),
+            pid: 4242,
+            started_at: Some(1_700_000_000),
+        };
+        // 两项都对上：是自己的孩子。
+        assert!(owns_live_process(Some(&child), Some(4242), Some(1_700_000_000)));
+        // pid 相同但创建时间不同 ⇒ 那是回收后的**另一个**进程：绝不能认领，更不能去停它。
+        assert!(!owns_live_process(Some(&child), Some(4242), Some(1_700_000_999)));
+        // pid 不同 / 进程已不在 / 没有记录。
+        assert!(!owns_live_process(Some(&child), Some(4243), Some(1_700_000_000)));
+        assert!(!owns_live_process(Some(&child), None, None));
+        assert!(!owns_live_process(None, Some(4242), Some(1_700_000_000)));
+        // 创建时间任一侧取不到 ⇒ 判定为"不是我启动的"（安全方向，绝不误杀）。
+        let unknown = ManagedChild { started_at: None, ..child.clone() };
+        assert!(!owns_live_process(Some(&unknown), Some(4242), Some(1_700_000_000)));
+        assert!(!owns_live_process(Some(&child), Some(4242), None));
     }
 
     #[test]
