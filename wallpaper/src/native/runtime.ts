@@ -289,6 +289,14 @@ export interface NativeRuntime {
   /** 桌面会话工作区落在哪儿（只读自检）——与桥用的是同一条规则。 */
   desktopWorkspaceStatus(): Promise<DesktopWorkspaceStatus>
   openProjectMemory(): Promise<{ opened: string; memoryFile: string; memoryExists: boolean }>
+  /**
+   * 「打开 TUI」：在一个**新的终端窗口**里拉起本机的 TUI 命令（`dst`）。
+   *
+   * 契约与原生一致，而且调用方必须遵守：找不到 TUI 时返回 `opened: false` 与一句 `message`
+   * 说明**怎么办** —— 那句话要显示出来，**不得**静默改成打开浏览器（那等于替用户换了一条
+   * 他没选的路，而这正是这次改动要根除的失败模式）。
+   */
+  openSubjectTui(): Promise<{ opened: boolean; reason?: string; message?: string; launcher?: string }>
   requestDeepSeekLogin(): Promise<void>
   nativeBootstrapGeneration(): Promise<number>
   releaseNativeBootstrap(generation: number): Promise<boolean>
@@ -502,6 +510,11 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) throw new Error('仅桌面版支持打开项目记忆')
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<{ opened: string; memoryFile: string; memoryExists: boolean }>('open_project_memory')
+  },
+  async openSubjectTui() {
+    if (!await tauriAvailable()) throw new Error('仅桌面版支持打开 TUI')
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<{ opened: boolean; reason?: string; message?: string; launcher?: string }>('open_subject_tui')
   },  async requestDeepSeekLogin() {
     if (!await tauriAvailable()) return
     const { invoke } = await import('@tauri-apps/api/core')
