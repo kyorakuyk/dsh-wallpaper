@@ -1832,6 +1832,68 @@ fn desktop_workspace_status(
     Ok(desktop_workspace_status_from(&data_dir))
 }
 
+/// 「清除全部用户数据」里，**能由本应用安全删掉**的那几处。
+///
+/// 刻意不含 WebView2 配置目录（设置与网页登录态都住在里面）：那个目录正被运行中的进程占用，
+/// 在这里删它只会删到一半；那条路径由命令自己回报给界面，让用户"退出应用后删掉"。
+#[cfg(not(feature = "lite"))]
+fn clearable_user_data_targets(data_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    vec![data_dir.join(DESKTOP_WORKSPACE_DIRECTORY_NAME)]
+}
+
+/// 清除本应用自己的用户数据：桌面会话工作区 + 凭据管理器里那条 API Key。
+///
+/// 只做这两件**能确定删干净**的事，并把其余（设置 / 网页登录态）连同路径回报出去 —— 卸载时
+/// MSIX 没有自定义卸载界面可以问，所以这个显式入口就是"想清干净的时候能清干净"的答案。
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+fn clear_user_data(caller: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    require_settings(&caller)?;
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?;
+
+    let mut removed: Vec<String> = Vec::new();
+    for target in clearable_user_data_targets(&data_dir) {
+        if !target.exists() {
+            continue;
+        }
+        std::fs::remove_dir_all(&target).map_err(|error| format!("无法删除 {}：{error}", target.display()))?;
+        removed.push(target.display().to_string());
+    }
+
+    let credential_removed = remove_api_key_credential()?;
+
+    Ok(serde_json::json!({
+        "removed": removed,
+        "credentialRemoved": credential_removed,
+        // 这两处不在本进程的删除范围内，如实回报路径，让用户自己决定。
+        "manual": [
+            { "what": "设置与网页登录态", "path": data_dir.display().to_string() },
+            { "what": "桥接凭据", "path": "~/.dsh/wallpaper" },
+        ],
+    }))
+}
+
+/// 删除凭据管理器里那条 API Key；本来就不存在也算成功（返回 `false`）。
+#[cfg(all(windows, not(feature = "lite")))]
+fn remove_api_key_credential() -> Result<bool, String> {
+    use windows::core::HSTRING;
+    use windows::Win32::Security::Credentials::{CredDeleteW, CRED_TYPE_GENERIC};
+
+    let target = HSTRING::from("deepseek-api.dsh-wallpaper");
+    match unsafe { CredDeleteW(&target, CRED_TYPE_GENERIC, None) } {
+        Ok(()) => Ok(true),
+        Err(_) => Ok(false),
+    }
+}
+
+#[cfg(all(not(windows), not(feature = "lite")))]
+fn remove_api_key_credential() -> Result<bool, String> {
+    Err("仅 Windows 支持凭据管理器。".into())
+}
+
 #[cfg(all(test, not(feature = "lite")))]
 mod desktop_workspace_tests {
     use super::{desktop_workspace_status_from, DESKTOP_WORKSPACE_DIRECTORY_NAME};
@@ -4135,6 +4197,7 @@ macro_rules! register_edition_commands {
             save_api_key,
             api_key_status,
             desktop_workspace_status,
+            clear_user_data,
             show_deepseek_login,
             native_bootstrap_generation,
             release_native_bootstrap,
