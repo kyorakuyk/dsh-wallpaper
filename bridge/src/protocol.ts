@@ -255,7 +255,21 @@ export function mapSessionEvent(event: SessionEvent, sessionId?: string): Bridge
       const question = questionFromToolCall(event, sessionId)
       return question ? [{ type: 'status', activity: 'tool' }, question] : [{ type: 'status', activity: 'tool' }]
     }
-    case 'turn/end': return [{ type: 'status', activity: event.data.reason.kind === 'completed' ? 'done' : 'idle' }]
+    // 一轮以非 `completed` 的原因结束，是**宿主拒绝了它**（实测：归档掉的会话，`turn/end` 的
+    // `reason.kind` 就是 `blocked`，几毫秒内结束、既没有 step 也没有回答）。以前这里把它和
+    // "正常跑完但没说话"一起翻成 `idle`，壁纸于是看到"结束了、没事"——用户看到的就是"输入被吞、
+    // 灯还是绿的"。异常被说成正常比异常本身危险，所以非 `completed` 一律额外报一条可识别的错。
+    case 'turn/end': {
+      const reason = event.data.reason.kind
+      const status: BridgeEvent = { type: 'status', activity: reason === 'completed' ? 'done' : 'idle' }
+      if (reason === 'completed') return [status]
+      return [status, {
+        type: 'error',
+        code: 'turn-blocked',
+        recoverable: true,
+        message: `DSH 拒绝了这一轮对话（原因：${reason}）；这条会话可能已被归档或不再可写。`,
+      }]
+    }
     case 'request/context': return [{
       type: 'model',
       provider: event.data.provider,

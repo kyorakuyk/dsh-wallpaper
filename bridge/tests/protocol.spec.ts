@@ -67,8 +67,31 @@ describe('wallpaper bridge protocol', () => {
     ])
   })
 
-  it('never exposes plugin-injected runtime context as a user chat message', () => {
-    const session = Session.create(SessionId('bridge-context-filter'))
+  /**
+   * 一轮以非 `completed` 的原因结束时，宿主是**拒绝了**这一轮（真机实测：归档掉的会话，
+   * `turn/end` 的 `reason.kind` 就是 `blocked`，几毫秒内结束、没有 step、没有回答）。
+   * 以前这里和"正常跑完但没说话"一样只回 `idle`，壁纸看到的是"结束了、没事"——用户看到的就是
+   * "输入被吞、灯还是绿的"。异常被说成正常比异常本身危险，所以这里必须额外报出来。
+   */
+  it('reports a turn the host refused instead of mapping it to a silent idle', () => {
+    const session = Session.create(SessionId('blocked-session'))
+    // `turn/end` 不是 surface-eligible 事件，本来就不带 surfaceOp。
+    const completed = session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    const blocked = session.append('turn/end', { turn: 2, reason: { kind: 'blocked' } })
+
+    expect(mapSessionEvent(completed)).toEqual([{ type: 'status', activity: 'done' }])
+    expect(mapSessionEvent(blocked)).toEqual([
+      { type: 'status', activity: 'idle' },
+      {
+        type: 'error',
+        code: 'turn-blocked',
+        recoverable: true,
+        message: 'DSH 拒绝了这一轮对话（原因：blocked）；这条会话可能已被归档或不再可写。',
+      },
+    ])
+  })
+
+  it('never exposes plugin-injected runtime context as a user chat message', () => {    const session = Session.create(SessionId('bridge-context-filter'))
     const injected = createUserMessage({
       content: [{ type: 'text', text: 'internal runtime context' }],
       source: { kind: 'plugin', plugin: 'agent-instructions' },
