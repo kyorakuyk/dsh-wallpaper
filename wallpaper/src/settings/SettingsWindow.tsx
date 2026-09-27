@@ -6,6 +6,7 @@ import { appCoreClient } from '../runtime/appCoreClient.ts'
 import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type ApiKeyStatus, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type DesktopWorkspaceStatus, type HarnessEndpointScan, type HarnessTarget, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
 import { loadSettings, saveSettings, type WallpaperSettings } from './store.ts'
 import {
+  CLI_SUBJECT_PREFIX,
   clientRaiseAction,
   endpointKindLabel,
   endpointScopeOf,
@@ -830,10 +831,19 @@ export function SettingsWindow() {
         dshLaunch: {
           ...settingsRef.current.dshLaunch,
           subjectId: targetId,
-          // A checkout's id *is* its path, so keeping the root-path field in step
-          // means the profile/launcher fields below still describe the same tree.
-          // A shell keeps whatever path is there, so switching back is lossless.
-          ...(targetId.startsWith('shell:') ? {} : { rootPath: targetId }),
+          // 已安装的 CLI 既不是源码树也不是壳：它没有根目录可填（id 里的 `cli:` 是身份命名空间，
+          // 不是路径），而它的档案是 dsh 自己那一个 —— web。沿用一个属于源码目录/官壳的 desktop
+          // 会让它启动后立刻退出（实测：日志里 `--profile desktop`，而同一命令换 web 一切正常）。
+          // 只在档案还是那个默认值时才替换；用户自己填过的档案一律不动。
+          ...(targetId.startsWith(CLI_SUBJECT_PREFIX)
+            ? {
+                rootPath: undefined,
+                ...(settingsRef.current.dshLaunch.profile === 'desktop' ? { profile: 'web' } : {}),
+              }
+            // A checkout's id *is* its path, so keeping the root-path field in step
+            // means the profile/launcher fields below still describe the same tree.
+            // A shell keeps whatever path is there, so switching back is lossless.
+            : targetId.startsWith('shell:') ? {} : { rootPath: targetId }),
         },
       })}
       endpointScan={endpointScan}
