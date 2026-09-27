@@ -196,10 +196,12 @@ describe.skipIf(!smokeReady)('real DSH desktop profile smoke test', () => {
     await expect(foreign.json()).resolves.toMatchObject({ error: 'resume-unavailable' })
 
     // `sse` must likewise be a real route with the ready handshake.
+    // 真实 DSH 是要冷启动的：这条链路上要装配部署人设、建 agent、挂事件订阅，10 秒在
+    // 这台机器上不够（实测握手要十几秒）。给足时间，否则测的是"来不及"而不是"能不能"。
     const sse = await authorizedFetch(`${API_PREFIX}/sessions/wallpaper-smoke/events`, {
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(60_000),
     })
-    expect(sse.status).toBe(200)
+    expect(sse.status, `body: ${await sse.clone().text()}`).toBe(200)
     expect(sse.headers.get('x-dsh-wallpaper-sse-ready')).toBe('1')
     await sse.body?.cancel()
 

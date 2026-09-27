@@ -7,7 +7,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { chmod, lstat, mkdir, open, readFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, open, readFile, writeFile } from 'node:fs/promises'
 import { promisify } from 'node:util'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -153,6 +153,10 @@ interface LiveSession {
   /** Last time this handle did anything (subscriber attach, event, message).
    * The idle sweep uses it to release handles nobody is watching. */
   lastActivityAt: number
+  /** When this process created the handle. Only the archive-visibility check
+   * reads it: a session we just created cannot have been archived yet, while
+   * `lastActivityAt` moves with every request and would never expire. */
+  createdAt: number
 }
 
 /** The narrow host-owned default model API consumed by the bridge. */
@@ -193,6 +197,9 @@ const MAX_SSE_COST = 1_000_000
 // rather than an unbounded allocation.
 export const MAX_LIVE_SESSIONS = 8
 export const MAX_SSE_CLIENTS_PER_SESSION = 4
+/** 刚建出来的会话在这么长时间内不参与"归档可见性"判断：宿主的可见列表可能还没包含它，
+ * 而按"不可见"判死会丢掉一条健康的会话。（用户实测：桌面会话目录搬家之后正是这种情况。） */
+export const ARCHIVED_VISIBILITY_GRACE_MS = 30_000
 export const MAX_PENDING_CREATIONS = 8
 export const MAX_HISTORY_MESSAGES = 256
 export const MAX_HISTORY_BYTES = 4 * 1024 * 1024
@@ -507,6 +514,12 @@ function json(res: ServerResponse, status: number, value: unknown): void {
  *
  * 抽成纯函数是为了能直接测：它决定"这条会话还在不在"，判错一次就会把用户的活会话判死，
  * 或者把消息继续发进已归档的会话。任何读不懂的形状一律跳过；不是数组则回答"不可知"。
+ *
+ * 真机实测的形状（2026-09-27，81 份快照）是
+ * `{ header: { version, id, createdAt, cwd, origin, … }, revision, sizeBytes }` —— id 在
+ * **`header.id`** 里。以前这里只读顶层 `id`/`sessionId`，于是 81 份快照读出来是**空集合**，
+ * 而空集合的语义是"每一条会话都不可见"：归档判断因此对**所有**会话成立。这条错误比它看上去
+ * 严重——它会把健康的会话判死（岛的开关切不回去、桥报错，都是这一条）。
  */
 export function visibleSessionIdSet(all: unknown): Set<string> | undefined {
   if (!Array.isArray(all)) return undefined
@@ -514,9 +527,15 @@ export function visibleSessionIdSet(all: unknown): Set<string> | undefined {
   for (const snapshot of all) {
     if (snapshot === null || typeof snapshot !== 'object') continue
     const record = snapshot as Record<string, unknown>
-    const candidate = record.id ?? record.sessionId
+    const header = record.header !== null && typeof record.header === 'object'
+      ? record.header as Record<string, unknown>
+      : undefined
+    const candidate = header?.id ?? record.id ?? record.sessionId
     if (typeof candidate === 'string' && candidate.trim()) ids.add(candidate.trim())
   }
+  // **非空却一个 id 都读不出来**，说明快照的形状变了：那是"不可知"，不是"全都不可见"。
+  // 后者会把每一条活会话都判死，所以宁可退回"不做判断"。
+  if (ids.size === 0 && all.length > 0) return undefined
   return ids
 }
 
@@ -975,6 +994,27 @@ export function apply(ctx: Context, config: Config = {}): void {
   }
 
   /**
+   * 临时诊断（拿到答案就删）：把 `list()` 到底给了什么，写进桥自己的目录。
+   *
+   * 起因：真机上归档一条会话之后，409 从来没有发生过 —— 所以必须先分清是**我们读不到
+   * `sessionPersistence`**（返回 `undefined`，调用方按"不可知"放行），还是 `list()` **本来就不
+   * 排除归档会话**（那说明 DSH 的注释与实现不一致）。DSH 不落盘文本日志、`ctx.logger` 我读不到，
+   * 所以证据必须落到 `~/.dsh/wallpaper/visible-sessions.json`（和 bridge-token 同一个目录）。
+   */
+  const writeVisibilityDiagnostic = async (payload: Record<string, unknown>): Promise<void> => {
+    try {
+      const directory = configuredTokenRoot(config)
+      await mkdir(directory, { recursive: true })
+      await writeFile(
+        join(directory, 'visible-sessions.json'),
+        JSON.stringify({ at: new Date().toISOString(), ...payload }, null, 2),
+      )
+    } catch {
+      // 诊断失败绝不影响主流程：它只是取证。
+    }
+  }
+
+  /**
    * DSH 侧"此刻可见的已存会话"。
    *
    * 归档一个会话之后，它就从可见集合里消失了（DSH 自己的注释写得很直白：`list()` 返回
@@ -987,24 +1027,29 @@ export function apply(ctx: Context, config: Config = {}): void {
    */
   const visibleStoredSessionIds = async (): Promise<Set<string> | undefined> => {
     const get = (ctx as Context & { get?: (name: string) => unknown }).get
-    if (typeof get !== 'function') return undefined
+    if (typeof get !== 'function') {
+      void writeVisibilityDiagnostic({ outcome: 'no-context-get' })
+      return undefined
+    }
     const service = get.call(ctx, 'sessionPersistence') as { list?: unknown } | undefined
-    if (!service || typeof service.list !== 'function') return undefined
+    if (!service || typeof service.list !== 'function') {
+      void writeVisibilityDiagnostic({ outcome: 'no-session-persistence', service: service ? typeof service : 'absent' })
+      return undefined
+    }
     try {
       const all = await (service.list as () => Promise<unknown>).call(service)
-      if (Array.isArray(all) && all.length > 0) {
-        // 临时诊断（拿到字段名之后删掉）：工作区命名要按"最近活动"排序，而那个时间字段到底叫什么，
-        // 只有真机上的快照才说得清。打一条样本，别再靠猜。
-        try {
-          const sample = JSON.stringify(all[0])
-          ;(ctx as Context & { logger?: { info?: (message: string) => void } }).logger
-            ?.info?.(`wallpaper bridge diagnostic: visible session sample ${sample.slice(0, 400)}`)
-        } catch {
-          // 诊断失败不该影响主流程。
-        }
-      }
-      return visibleSessionIdSet(all)
-    } catch {
+      const ids = visibleSessionIdSet(all)
+      // 临时诊断：`list()` 到底给了什么，必须落到我能读的地方（见上面那段说明）。
+      void writeVisibilityDiagnostic({
+        outcome: 'listed',
+        isArray: Array.isArray(all),
+        count: Array.isArray(all) ? all.length : undefined,
+        sample: Array.isArray(all) && all.length > 0 ? JSON.stringify(all[0]).slice(0, 600) : undefined,
+        visibleIds: ids ? [...ids].slice(0, 40) : undefined,
+      })
+      return ids
+    } catch (error) {
+      void writeVisibilityDiagnostic({ outcome: 'list-threw', message: String(error).slice(0, 300) })
       return undefined
     }
   }
@@ -1554,6 +1599,18 @@ export function apply(ctx: Context, config: Config = {}): void {
                     })
                   }
                 } else {
+                  // 我们选的那个 id 在会话存储里**已经存在**时，不能直接 create：DSH 会拒绝
+                  // 同 id 重复的会话。真机上这条路径正是这样 500 的 —— 桌面会话目录搬进数据目录
+                  // 之后，工作区注册表里不再有旧的日会话，于是 `resume` 为空，我们又原样拿它的 id
+                  // 去 create（存储里那条还在，只是不再归我们）。挑一个**确定空闲**的 id：先试既有的
+                  // 确定性替代 `-recovered`，它也被占了才退到随机 id。
+                  if (!resume && visible?.has(effectiveId)) {
+                    const recoveredId = recoveredDailyWallpaperSessionId(dailyId)
+                    effectiveId = visible.has(recoveredId) ? `wallpaper-${randomUUID()}` : recoveredId
+                    wctx.logger.info?.(
+                      `wallpaper bridge: session id ${id} already exists in storage; creating ${effectiveId} instead`,
+                    )
+                  }
                   stage = 'create'
                   handle = await host.createAgent({
                     sessionId: SessionId(effectiveId),
@@ -1583,7 +1640,7 @@ export function apply(ctx: Context, config: Config = {}): void {
                   await handle.dispose().catch(() => undefined)
                   throw new Error('wallpaper bridge is shutting down')
                 }
-                const entry: LiveSession = { handle, clients: new Set<ServerResponse>(), lastActivityAt: Date.now() }
+                const entry: LiveSession = { handle, clients: new Set<ServerResponse>(), lastActivityAt: Date.now(), createdAt: Date.now() }
                 live.set(effectiveId, entry)
                 if (!resume || effectiveId !== id) await workspace.attachSession(SessionId(effectiveId))
                 return entry
@@ -1606,11 +1663,15 @@ export function apply(ctx: Context, config: Config = {}): void {
           // 归档的会话在我们这边**看不出任何异常**：句柄还在、灯还是绿的。所以在服务任何一条
           // 会话路由之前先核对一次可见性；确认不可见就丢掉句柄，并用一个可区分的错误回答，
           // 让壁纸知道该换一条新会话了 —— 而不是继续往黑洞里发消息（用户实测报的"吞输入"）。
-          const stillVisible = await visibleStoredSessionIds()
+          //
+          // 宽限期：**我们自己刚建出来的**会话不可能已经被归档，而宿主那边的可见列表可能还没来得及
+          // 包含它（smoke 里就是这样）。那时按"不可见"判死，等于把一条健康的会话丢掉。
+          const recentlyCreated = Date.now() - entry.createdAt < ARCHIVED_VISIBILITY_GRACE_MS
+          const stillVisible = recentlyCreated ? undefined : await visibleStoredSessionIds()
           if (stillVisible && !stillVisible.has(route.sessionId)) {
             live.delete(route.sessionId)
             await entry.handle.dispose().catch(() => undefined)
-            wctx.logger.info?.(`wallpaper bridge: session ${route.sessionId} is no longer visible (archived); released`)
+            wctx.logger.info?.(`wallpaper bridge: session ${route.sessionId} is no longer visible (archived); released (age ${Date.now() - entry.createdAt} ms, grace ${ARCHIVED_VISIBILITY_GRACE_MS} ms, ${stillVisible.size} visible)`)
             return json(res, 409, { error: 'session-archived', sessionId: route.sessionId })
           }
 
