@@ -201,9 +201,9 @@ export function compatibleHarnessBridgeStatus(data: unknown): HarnessStatus | un
 /**
  * Loopback base URL for a DSH endpoint.
  *
- * The port is a parameter rather than a constant because the three client shapes
- * listen on different ports (official desktop shell 19387, community desktop
- * 43120, CLI/core 3080) and only some of them are configurable. See
+ * The port is a parameter rather than a constant because the client shapes
+ * listen on different ports (official desktop shell 19387, CLI/core 3080) and only
+ * some of them are configurable. See
  * `connect/endpoints.ts` for discovery and the priority order.
  */
 export function harnessBaseUrl(port = 3080): string {

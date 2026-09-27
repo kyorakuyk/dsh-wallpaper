@@ -98,7 +98,7 @@ export interface SettingsPanelProps {
   /**
    * Endpoint discovery. The wallpaper used to probe one hardcoded port (3080),
    * which silently meant "only ever connect to the CLI shape" — the official
-   * desktop shell listens on 19387 and the community desktop on 43120. The card
+   * desktop shell listens on 19387 and the CLI/webui shape on 3080. The card
    * reports how many Bridges the scan found and lets the user pin one.
    */
   endpointScan: HarnessEndpointScan[]
@@ -230,7 +230,6 @@ function Choice({ value, options, onChange, label, disabled = false, emptyMessag
 export function harnessEndpointKindLabel(kind: HarnessEndpointScan['kind']): string {
   switch (kind) {
     case 'official-desktop': return '桌面客户端'
-    case 'community-desktop': return '第三方桌面客户端'
     default: return 'Web / CLI'
   }
 }
@@ -432,10 +431,10 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
       {page === 'general' && <>
         <Card title="交互方式" description="决定会话气泡如何出现在桌面上。">
-          <Field title="中央会话窗" detail="关闭后仅可通过托盘右键或此处重新显示；不会因失焦、切换应用或按 Esc 自动消失。"><Toggle label="显示中央会话窗" checked={props.interactionEnabled} onChange={props.onSetInteractionEnabled} /></Field>
+          <Field title="中央会话窗" detail="关闭后仅可通过托盘右键或此处重新打开"><Toggle label="显示中央会话窗" checked={props.interactionEnabled} onChange={props.onSetInteractionEnabled} /></Field>
           <Field title="气泡布局" detail="中央悬浮始终展开；任务栏停靠以胶囊按钮唤起。"><Choice label="气泡布局" value={settings.interactionLayout} onChange={(value) => set({ interactionLayout: value as WallpaperSettings['interactionLayout'] })} options={[{ value: 'floating', label: '中央玻璃悬浮' }, { value: 'taskbar-docked', label: '任务栏停靠胶囊' }]} /></Field>
           <Field title="历史抽屉默认展开" detail="启动或解锁后直接显示最近的对话。"><Toggle label="历史抽屉默认展开" checked={settings.historyStartsExpanded} onChange={(value) => set({ historyStartsExpanded: value })} /></Field>
-          <Field title="发送消息快捷键" detail="习惯回车换行的开发者可切换为 Ctrl+Enter 发送。"><Choice label="发送消息快捷键" value={settings.sendShortcut} onChange={(value) => set({ sendShortcut: value as WallpaperSettings['sendShortcut'] })} options={[{ value: 'Enter', label: 'Enter 发送，Ctrl+Enter 换行' }, { value: 'Ctrl+Enter', label: 'Ctrl+Enter 发送，Enter 换行' }]} /></Field>
+          <Field title="发送消息快捷键" detail="想防止误触发送的开发者可切换为 Ctrl+Enter 发送。"><Choice label="发送消息快捷键" value={settings.sendShortcut} onChange={(value) => set({ sendShortcut: value as WallpaperSettings['sendShortcut'] })} options={[{ value: 'Enter', label: 'Enter 发送，Ctrl+Enter 换行' }, { value: 'Ctrl+Enter', label: 'Ctrl+Enter 发送，Enter 换行' }]} /></Field>
         </Card>
         {props.desktopDisplays.length > 1 && <Card title={`多屏桌面 · 已检测 ${props.desktopDisplays.length} 个屏幕`} description="每块屏幕独立铺满自己的背景；对话窗和立绘可以分别指定目标屏幕。未单独指定的屏幕跟随全局背景。">
           <Field title="启用独立多屏背景" detail={settings.multiScreen.enabled ? '已按屏幕分别渲染；修改某一屏不会改变其他屏幕的背景选择。' : '关闭时保持现有跨虚拟桌面的单一场景；开启后才显示逐屏选择。'}><Toggle label="启用独立多屏背景" checked={settings.multiScreen.enabled} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, enabled: value } })} /></Field>
@@ -447,7 +446,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <div className="integration-actions"><button className="settings-action secondary" onClick={() => void props.onRefreshDesktopDisplays()}>刷新显示器检测</button></div>
         </Card>}
         <Card title="会话生命周期"><Field title="新会话策略" detail="网页模式会固定到同一个 DeepSeek 会话地址；其他后端分别保留自己的最近会话。"><Choice label="新会话策略" value={settings.conversationPolicy} onChange={(value) => set({ conversationPolicy: value as WallpaperSettings['conversationPolicy'] })} options={[{ value: 'resume-last', label: '恢复最近会话' }, { value: 'new-on-unlock', label: '每次解锁新建' }, { value: 'daily', label: '每日新建' }]} /></Field></Card>
-        <Card title="高级外观" description="环境渐变只作用于立绘；会话窗使用独立的亚克力透明度。">
+        <Card title="高级外观（测试中）" description="环境渐变只作用于立绘；会话窗使用独立的亚克力透明度。">
           <Field title="环境渐变长度" detail={`从暗侧向亮侧延伸至 ${settings.portraitAmbientLength}%`}><input type="range" min="35" max="100" step="1" value={settings.portraitAmbientLength} onChange={(event) => set({ portraitAmbientLength: Number(event.target.value) })} /></Field>
           <Field title="环境渐变强度" detail={`${Math.round(settings.portraitAmbientStrength * 100)}%`}><input type="range" min="0" max="1" step="0.01" value={settings.portraitAmbientStrength} onChange={(event) => set({ portraitAmbientStrength: Number(event.target.value) })} /></Field>
           <Field title="中央会话窗透明度" detail={`${Math.round(settings.conversationOpacity * 100)}% · 仅影响亚克力底色，不影响文字可读性`}><input type="range" min="0.2" max="0.96" step="0.01" value={settings.conversationOpacity} onChange={(event) => set({ conversationOpacity: Number(event.target.value) })} /></Field>

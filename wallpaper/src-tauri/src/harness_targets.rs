@@ -56,13 +56,12 @@ pub enum HarnessTargetKind {
 ///
 /// The three strings match `HarnessClientKind` in
 /// `wallpaper/src/connect/endpoints.ts` on purpose: the settings UI already has
-/// one vocabulary for "official desktop / third-party desktop / official web",
-/// and a second one here would eventually disagree with it.
+/// one vocabulary for "official desktop / official web", and a second one here
+/// would eventually disagree with it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HarnessClientKind {
     OfficialDesktop,
-    CommunityDesktop,
     OfficialWeb,
 }
 
@@ -191,8 +190,11 @@ struct ShellAppSpec {
     can_start_hidden: bool,
 }
 
-/// Official client first, then the third-party desktop client — the priority the
-/// endpoint scanner uses as well.
+/// 官方客户端 —— 本 build 唯一按 AUMID 寻址的壳。
+///
+/// 第三方桌面客户端（`ai.deepseek.dsh.desktop`，默认 43120）2026-09-27 按用户要求移除：
+/// 实测它把整台本地 HTTP 服务放在自己的授权之后，用 bridge token 打过去一律 403（连 `/` 都进不去），
+/// 所以它永远点不亮；留在"可选择的主体"里只是误导。
 const SHELL_APPS: &[ShellAppSpec] = &[
     ShellAppSpec {
         aumid: "com.deepseek.dsh",
@@ -204,24 +206,6 @@ const SHELL_APPS: &[ShellAppSpec] = &[
         // supports starting without showing the window.
         single_instance: true,
         can_start_hidden: true,
-    },
-    ShellAppSpec {
-        aumid: "ai.deepseek.dsh.desktop",
-        label: "第三方桌面客户端",
-        client: HarnessClientKind::CommunityDesktop,
-        default_ports: &[43120],
-        // Measured: no single-instance lock, no tray, no hidden start. A second
-        // launch opens a second window, so none of those may be assumed (§2.3).
-        //
-        // Re-measured 2026-09-27 by scanning this build's `resources/app.asar` for
-        // `requestSingleInstanceLock`, `second-instance`, `focusPrimaryWindow`,
-        // `window-all-closed` and `Tray`: all five are absent, so this stays false.
-        // It is load-bearing — `harness_launch` asks a single-instance shell to focus
-        // its own window *first* and only uses this application's window work as the
-        // fallback, so flipping this flag without re-measuring would make 「打开」 open
-        // a second client instead of showing the one that is running.
-        single_instance: false,
-        can_start_hidden: false,
     },
 ];
 
@@ -628,7 +612,9 @@ mod tests {
     }
 
     const OFFICIAL: &str = "com.deepseek.dsh";
-    const DESKTOP: &str = "ai.deepseek.dsh.desktop";
+    /// 一个**本 build 已不再支持**的 AUMID（第三方桌面客户端，2026-09-27 移除）：
+    /// 用它验证"陌生/不受支持的 AUMID 不会被当成主体"。
+    const UNSUPPORTED_AUMID: &str = "ai.deepseek.dsh.desktop";
 
     #[test]
     fn a_shell_is_matched_by_aumid_and_never_by_path() {
@@ -688,26 +674,18 @@ mod tests {
     }
 
     #[test]
-    fn shells_keep_the_priority_order_whatever_order_they_were_found_in() {
-        let scan = build_scan(
-            &[
-                shortcut(DESKTOP, r"C:\Desktop"),
-                shortcut(OFFICIAL, r"C:\Start Menu"),
-            ],
-            &[],
-        );
-        let clients: Vec<_> = scan.targets.iter().map(|target| target.client).collect();
-        assert_eq!(
-            clients,
-            vec![
-                HarnessClientKind::OfficialDesktop,
-                HarnessClientKind::CommunityDesktop
-            ]
-        );
-        let desktop = &scan.targets[1];
-        assert!(!desktop.capabilities.single_instance);
-        assert!(!desktop.capabilities.can_start_hidden);
-        assert!(desktop.capabilities.owns_window);
+    fn a_shell_this_build_no_longer_supports_is_not_a_target() {
+        // 第三方桌面客户端 2026-09-27 移除：它的快捷方式即使就摆在那儿，也必须**扫不出任何主体** ——
+        // 否则设置里又会多出一个永远点不亮的选项（实测它对自己的本地接口一律 403）。
+        let scan = build_scan(&[shortcut(UNSUPPORTED_AUMID, r"C:\Desktop")], &[]);
+        assert!(scan.targets.is_empty(), "unsupported AUMID must not become a subject");
+
+        let official = build_scan(&[shortcut(OFFICIAL, r"C:\Start Menu")], &[]);
+        let clients: Vec<_> = official.targets.iter().map(|target| target.client).collect();
+        assert_eq!(clients, vec![HarnessClientKind::OfficialDesktop]);
+        assert!(official.targets[0].capabilities.single_instance);
+        assert!(official.targets[0].capabilities.can_start_hidden);
+        assert!(official.targets[0].capabilities.owns_window);
     }
 
     #[test]
@@ -826,7 +804,7 @@ mod tests {
 
     #[test]
     fn a_shell_target_id_resolves_back_to_the_same_shell() {
-        let scan = build_scan(&[shortcut(DESKTOP, r"C:\Desktop")], &[]);
+        let scan = build_scan(&[shortcut(OFFICIAL, r"C:\Start Menu")], &[]);
         let target = &scan.targets[0];
         let aumid = target
             .id
@@ -845,15 +823,21 @@ mod tests {
     /// decides what is scanned and the other what is shown.
     #[test]
     fn a_subject_decides_which_ports_may_be_probed() {
-        // A shell owns the port compiled into it, and nothing else: the shipped
-        // order's other two ports are other clients.
+        // A shell owns the port compiled into it, and nothing else: 3080 is
+        // another client's.
         assert_eq!(
             subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}{OFFICIAL}"), &[]),
             vec![19387]
         );
+        // 第三方客户端已移除 ⇒ 它的 AUMID 现在与陌生 AUMID 一样：**一个端口都不给**（而不是
+        // "给 43120 然后探测失败"）。这正是与 `endpoints.ts` 必须一致的那条规则。
         assert_eq!(
-            subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}{DESKTOP}"), &[]),
-            vec![43120]
+            subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}{UNSUPPORTED_AUMID}"), &[]),
+            Vec::<u16>::new()
+        );
+        assert_eq!(
+            subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}com.unknown.client"), &[]),
+            Vec::<u16>::new()
         );
         // The id is matched the same way the launcher matches it.
         assert_eq!(

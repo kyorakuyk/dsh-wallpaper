@@ -9,8 +9,11 @@
  * | client                | default port | configurable |
  * | --------------------- | ------------ | ------------ |
  * | official desktop shell| 19387        | no — compiled into its asar |
- * | third-party desktop   | 43120        | yes (its own settings) |
  * | DSH CLI / core        | 3080         | yes (`--port`) |
+ *
+ * （第三方桌面客户端曾经也在这张表里，2026-09-27 按用户要求移除：实测它把整台本地
+ * HTTP 服务放在自己的授权之后，壁纸用 bridge token 打过去一律 403，连 `/` 都进不去 ——
+ * 留着只会让"可选择的主体"里有一个永远点不亮的东西。）
  *
  * So "connect to 3080" silently means "connect only to the CLI shape", and a user
  * running the official shell sees `offline` while a perfectly ready wallpaper
@@ -30,8 +33,8 @@
  */
 import { interpretHarnessBridgeStatus, type HarnessStatus } from './harness.ts'
 
-/** The three client shapes, in the priority order the wallpaper defaults to. */
-export type HarnessClientKind = 'official-desktop' | 'community-desktop' | 'official-web'
+/** The client shapes, in the priority order the wallpaper defaults to. */
+export type HarnessClientKind = 'official-desktop' | 'official-web'
 
 export interface HarnessEndpointCandidate {
   /** TCP port on 127.0.0.1. */
@@ -50,21 +53,18 @@ export interface HarnessEndpointCandidate {
 export function endpointKindLabel(kind: HarnessClientKind): string {
   switch (kind) {
     case 'official-desktop': return '桌面客户端'
-    case 'community-desktop': return '第三方桌面客户端'
     default: return 'Web / CLI'
   }
 }
 
 /**
  * Priority used whenever several endpoints are usable. The user's stated order:
- * official desktop, then the community desktop, then plain official web/CLI.
- * Lower sorts first.
+ * the official desktop client first, then plain official web/CLI. Lower sorts first.
  */
 export function endpointPriority(kind: HarnessClientKind): number {
   switch (kind) {
     case 'official-desktop': return 0
-    case 'community-desktop': return 1
-    default: return 2
+    default: return 1
   }
 }
 
@@ -76,7 +76,6 @@ export function endpointPriority(kind: HarnessClientKind): number {
  */
 export const DEFAULT_ENDPOINT_PORTS: ReadonlyArray<{ port: number; kind: HarnessClientKind }> = [
   { port: 19387, kind: 'official-desktop' },
-  { port: 43120, kind: 'community-desktop' },
   { port: 3080, kind: 'official-web' },
 ]
 
@@ -94,7 +93,6 @@ export const DEFAULT_ENDPOINT_PORTS: ReadonlyArray<{ port: number; kind: Harness
  */
 const SHELL_SUBJECTS: Readonly<Record<string, { kind: HarnessClientKind; ports: readonly number[] }>> = {
   'com.deepseek.dsh': { kind: 'official-desktop', ports: [19387] },
-  'ai.deepseek.dsh.desktop': { kind: 'community-desktop', ports: [43120] },
 }
 
 /**

@@ -545,7 +545,6 @@ mod tests {
     use super::*;
 
     const OFFICIAL_ID: &str = "shell:com.deepseek.dsh";
-    const DESKTOP_ID: &str = "shell:ai.deepseek.dsh.desktop";
     const CHECKOUT: &str = r"D:\Family\DeepSeekHarness\deepseek-harness";
 
     const MANUAL: LaunchTrigger = LaunchTrigger::Manual;
@@ -574,9 +573,6 @@ mod tests {
         // ...while a button the user just pressed shows them what they asked for.
         let manual = plan_launch(OFFICIAL_ID, "desktop", None, MANUAL).expect("shell plan");
         assert!(matches!(manual, LaunchPlan::Shell { hide_window: false, .. }));
-        // §4.10: the third-party desktop client is never hidden, either way.
-        let third_party = plan_launch(DESKTOP_ID, "desktop", None, AUTO).expect("plan");
-        assert!(matches!(third_party, LaunchPlan::Shell { hide_window: false, .. }));
     }
 
     #[test]
@@ -640,148 +636,15 @@ mod tests {
     fn a_shell_is_never_gated_by_the_launcher_consent_rule() {
         // A shell has no configured launcher at all, so the consent question does
         // not apply to it; only checkouts can carry a `command`.
-        assert!(plan_launch(DESKTOP_ID, "desktop", None, AUTO).is_ok());
+        assert!(plan_launch(OFFICIAL_ID, "desktop", None, AUTO).is_ok());
     }
 
-    /// Ground truth for the one class this machine can be asked about.
+        #[test]
+    /// Ground truth for the one class this machine can be asked about without side
+    /// effects: the official shell that is already running.
     ///
-    /// Ignored by default: it starts the third-party desktop client and stops it
-    /// again. The official shell is never touched here — it hosts the session that
-    /// would be running this test — so the official shell's launch stays a
-    /// user-verified step, which the design records as such (§9.2).
-    ///
-    /// What this proves that a unit test cannot: the alias the wallpaper stores is
-    /// one the Windows shell actually resolves, the start is confirmed by the
-    /// port, and the process that answered can be identified and stopped again
-    /// without touching an instance the user already had running.
-    #[test]
-    #[ignore = "starts and stops this machine's third-party desktop client"]
-    fn this_machine_starts_the_third_party_desktop_from_its_alias() {
-        let port = 43120;
-        if crate::client_window::endpoint_is_listening(port) {
-            // The user already has it running: leave it exactly as found.
-            println!("desktop client already listening on {port}; nothing started");
-            return;
-        }
-
-        let plan = plan_launch(DESKTOP_ID, "desktop", None, AUTO).expect("shell plan");
-        // §4.10: the third-party client is started with its window, never hidden.
-        assert!(matches!(plan, LaunchPlan::Shell { hide_window: false, .. }));
-
-        let state = crate::ManagedDshState::default();
-        let outcome = run_launch(&plan, &state);
-        println!("launch outcome: {outcome:?}");
-        assert_eq!(outcome.kind, HarnessTargetKind::EmbeddedShell);
-        // The alias was accepted and the client answered within the timeout.
-        assert_eq!(outcome.outcome, "started");
-        assert!(crate::client_window::endpoint_is_listening(port));
-
-        // Starting again must not open a second client: it reports the running one
-        // and leaves it alone.
-        let again = run_launch(&plan, &state);
-        assert_eq!(again.outcome, "already-running");
-
-        let pid = crate::client_window::endpoint_process_id(port)
-            .expect("the answering process is identifiable");
-        println!("stopping the client this test started: pid={pid}");
-        let _ = std::process::Command::new("taskkill.exe")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .output();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-        while crate::client_window::endpoint_is_listening(port)
-            && std::time::Instant::now() < deadline
-        {
-            std::thread::sleep(SHELL_START_POLL);
-        }
-        assert!(
-            !crate::client_window::endpoint_is_listening(port),
-            "the client this test started is still listening on {port}"
-        );
-    }
-
-    /// Ground truth for 「拉起 UI」's three states (§5.2), on the one class this
-    /// machine can be asked about.
-    ///
-    /// Ignored by default: it starts, hides, kills and stops the third-party desktop
-    /// client. The official shell is never touched — it hosts the session running
-    /// this test — so its version of this stays a user-verified step (§9.2).
-    #[test]
-    #[ignore = "starts, hides and stops this machine's third-party desktop client"]
-    fn this_machine_covers_the_three_states_of_raising_the_ui() {
-        let port = 43120;
-        if crate::client_window::endpoint_is_listening(port) {
-            println!("desktop client already listening on {port}; nothing started");
-            return;
-        }
-        let state = crate::ManagedDshState::default();
-
-        // State 1 — nothing running: raising the UI starts the whole chain, and this
-        // time the window is expected on screen (the manual trigger, not §5.1's
-        // silent start).
-        let down = ensure_ui(DESKTOP_ID, port, "desktop", None, &state);
-        println!("state 1 (subject down): {down:?}");
-        assert!(down.started);
-        assert_eq!(down.kind, HarnessTargetKind::EmbeddedShell);
-        assert!(
-            matches!(down.outcome.as_str(), "raised" | "raise-refused"),
-            "a subject this call started must end up with a window to look at: {down:?}"
-        );
-
-        // State 2 — running with its window hidden by the wallpaper: the same call
-        // must find that window again and show it. This is the assertion that fails
-        // if window resolution only ever looks for *visible* windows, which is how
-        // a silently started client would become unreachable.
-        assert!(
-            crate::client_window::hide_client_window(port).hidden,
-            "the wallpaper must be able to hide the window it is about to be asked for"
-        );
-        let hidden = ensure_ui(DESKTOP_ID, port, "desktop", None, &state);
-        println!("state 2 (window hidden): {hidden:?}");
-        assert!(!hidden.started, "the port was answering, so nothing should start");
-        assert!(
-            matches!(hidden.outcome.as_str(), "raised" | "raise-refused"),
-            "a hidden window must be found and shown, not reported as missing: {hidden:?}"
-        );
-
-        // State 3 — the subject itself is gone (§6.2): raising must re-pull the whole
-        // chain rather than wait for a window that cannot appear.
-        let pid = crate::client_window::endpoint_process_id(port).expect("identifiable process");
-        let _ = std::process::Command::new("taskkill.exe")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .output();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-        while crate::client_window::endpoint_is_listening(port)
-            && std::time::Instant::now() < deadline
-        {
-            std::thread::sleep(SHELL_START_POLL);
-        }
-        let gone = ensure_ui(DESKTOP_ID, port, "desktop", None, &state);
-        println!("state 3 (subject killed): {gone:?}");
-        assert!(gone.started, "a subject that is gone must be started again");
-        assert!(
-            matches!(gone.outcome.as_str(), "raised" | "raise-refused"),
-            "{gone:?}"
-        );
-
-        let pid = crate::client_window::endpoint_process_id(port).expect("identifiable process");
-        println!("stopping the client this test started: pid={pid}");
-        let _ = std::process::Command::new("taskkill.exe")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .output();
-    }
-
-    /// What 「拉起 UI」 actually sees for the **official shell**, read-only.
-    ///
-    /// Ignored by default, and deliberately weaker than the two tests above: it starts
-    /// nothing and stops nothing. It only reports what this machine's live shell looks
-    /// like from here — whether the port answers, which process owns it, whether a
-    /// window can be resolved for it, and what a raise attempt answers — because that is
-    /// the half of this feature a unit test cannot see and the half that broke when the
-    /// official shell's window stopped coming forward.
-    ///
-    /// `--nocapture` prints each line; run it while the official client is running:
-    /// `cargo test --lib -- --ignored --nocapture this_machine_reports_what_raising_the_official_shell_would_do`
-    #[test]
+    /// Ignored by default, because it reads a live shell. Run it with
+    /// `cargo test --lib -- --ignored --nocapture this_machine_reports_what_raising_the_official_shell_would_do`.
     #[ignore = "reads this machine's live official shell; starts nothing and stops nothing"]
     fn this_machine_reports_what_raising_the_official_shell_would_do() {
         let port = 19387;

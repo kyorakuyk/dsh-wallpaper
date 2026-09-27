@@ -111,9 +111,9 @@ export interface DshLaunchSettings {
   /**
    * The port of the DSH endpoint to talk to, or undefined for "auto".
    *
-   * The three client shapes listen on different ports and only some are
-   * configurable (official desktop shell 19387, community desktop 43120,
-   * CLI/core 3080, and the official web app's own default is 3080 via
+   * The client shapes listen on different ports and only some are
+   * configurable (official desktop shell 19387, CLI/core 3080, and the official
+   * web app's own default is 3080 via
    * `ctx.webStartup.port`). Before this setting existed the wallpaper probed
    * 3080 unconditionally, so a user running the official shell saw `offline`
    * while a ready Bridge listened one port away.

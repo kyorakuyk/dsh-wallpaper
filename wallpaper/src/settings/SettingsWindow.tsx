@@ -312,7 +312,7 @@ export function SettingsWindow() {
       await nativeRuntime.setHarnessEndpointScope(endpointScopeOf(settingsRef.current.dshLaunch)).catch(() => null)
       const bridges = found.filter((item) => item.bridgeFound)
       if (bridges.length === 0) {
-        setNotice('未发现可接入的 Harness。请先启动任一个客户端官官方桌面 / 第三方桌面 / 官方 Web）后重新扫描。')
+        setNotice('未发现可接入的 Harness。请先启动官方桌面客户端，或让本机的 DSH CLI 起来（dsh web）后重新扫描。')
       } else if (bridges.every((item) => item.status.availability !== 'bridge-ready')) {
         setNotice(`发现 ${bridges.length} 个 Harness，但当前都不可对话；详情见端点下拉。`)
       } else {

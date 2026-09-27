@@ -62,7 +62,7 @@ export interface AutostartStatus { enabled: boolean; source: 'startup-task' | 'r
  */
 export interface HarnessEndpointScan {
   port: number
-  kind: 'official-desktop' | 'community-desktop' | 'official-web'
+  kind: 'official-desktop' | 'official-web'
   source: 'default' | 'user'
   bridgeFound: boolean
   status: HarnessStatus
@@ -156,9 +156,15 @@ export interface HarnessTargetCatalog {
 export interface HarnessTarget {
   /** Stable key to store and later resolve back to a subject. */
   id: string
-  kind: 'embedded-shell' | 'checkout'
+  /**
+   * `embedded-shell` 自带检出、按 AUMID 寻址；`checkout` 是一棵源码树、路径就是身份；
+   * `installed-cli` 是本机**全局安装**的 DSH CLI（npm 全局装的那种）—— 它没有 AUMID、也没有
+   * 源码树，所以它与 checkout 的差别只有"没有树"：命令从 `node <tree>/apps/cli/lib/bin.js`
+   * 换成 `dsh`，服务仍是它自举的 profile（默认 `web`，端口 3080）。
+   */
+  kind: 'embedded-shell' | 'checkout' | 'installed-cli'
   /** Which client shape this subject answers as, reusing the endpoint scan's vocabulary. */
-  client: 'official-desktop' | 'community-desktop' | 'official-web'
+  client: 'official-desktop' | 'official-web'
   label: string
   /** Where the scan found it: a checkout's scan origin, or a shell's shortcut directory. */
   source: string

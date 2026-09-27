@@ -2615,18 +2615,18 @@ const HARNESS_BRIDGE_PROTOCOL_VERSION: u64 = 1;
 const REQUIRED_HARNESS_BRIDGE_CAPABILITIES: &[&str] =
     &["sessions", "history", "sse", "cancel", "approval-handoff"];
 
-/// The three DSH client shapes listen on different ports, and only some of them
-/// are configurable, so probing one hardcoded port means "only ever connect to
-/// the CLI shape". The official desktop shell compiles 19387 into its asar; the
-/// community desktop defaults to 43120; the CLI and the official web app both
-/// default to 3080 (`ctx.webStartup.port ?? 3080`).
+/// The DSH client shapes listen on different ports, and only some of them are
+/// configurable, so probing one hardcoded port means "only ever connect to the CLI
+/// shape". The official desktop shell compiles 19387 into its asar; the CLI and the
+/// official web app both default to 3080 (`ctx.webStartup.port ?? 3080`).
 ///
-/// Order is the shipped priority: official desktop, then community desktop, then
-/// plain web/CLI. The renderer applies the same order, and
-/// `wallpaper/src/connect/endpoints.ts` documents it.
+/// Order is the shipped priority: official desktop, then plain web/CLI. The renderer
+/// applies the same order, and `wallpaper/src/connect/endpoints.ts` documents it.
+///
+/// （第三方的 43120 2026-09-27 按用户要求移除：它把本地接口锁在自己的授权后面，壁纸一律 403 ✓。）
 #[cfg(not(feature = "lite"))]
 const HARNESS_ENDPOINT_PORTS: &[(u16, &str)] =
-    &[(19387, "official-desktop"), (43120, "community-desktop"), (3080, "official-web")];
+    &[(19387, "official-desktop"), (3080, "official-web")];
 
 /// Port used when a caller does not name one. Matches DSH's own web default, so a
 /// CLI-started Host is found without configuration.
@@ -3336,8 +3336,8 @@ mod harness_status_tests {
         // A recorded endpoint is used while nothing is pinned...
         assert_eq!(note_in_use_on(&state, 19387)[0], 19387);
         // ...and stops mattering the moment the user pins something else.
-        *state.pinned.lock().expect("pin lock") = Some(43120);
-        assert_eq!(candidates_of(&state), vec![43120]);
+        *state.pinned.lock().expect("pin lock") = Some(6000);
+        assert_eq!(candidates_of(&state), vec![6000]);
         // Clearing the pin hands control back to the configured subject, and a pin
         // never recorded anything for itself to revive.
         *state.pinned.lock().expect("pin lock") = None;
@@ -3352,7 +3352,7 @@ mod harness_status_tests {
         let state = HarnessEndpointState::default();
         apply_endpoint_scope(&state, None, Some("shell:com.deepseek.dsh"), &[]).expect("scope");
         // The official shell owns 19387 and nothing else, even though the shipped
-        // order also holds 43120 and 3080.
+        // order also holds 3080.
         assert_eq!(candidates_of(&state), vec![19387]);
 
         // A checkout owns DSH's default plus the ports the user added for it.
@@ -3377,8 +3377,8 @@ mod harness_status_tests {
         apply_endpoint_scope(&state, None, Some("shell:com.deepseek.dsh"), &[]).expect("scope");
         assert_eq!(candidates_of(&state)[0], 19387);
         // A different subject starts from its own order.
-        apply_endpoint_scope(&state, None, Some("shell:ai.deepseek.dsh.desktop"), &[]).expect("scope");
-        assert_eq!(candidates_of(&state), vec![43120]);
+        apply_endpoint_scope(&state, None, Some(r"D:\tree"), &[]).expect("scope");
+        assert_eq!(candidates_of(&state), vec![HARNESS_DEFAULT_PORT]);
         assert_eq!(*state.active.lock().expect("active lock"), None);
     }
 
@@ -3386,7 +3386,7 @@ mod harness_status_tests {
     #[test]
     fn nothing_is_recorded_while_pinned() {
         let state = HarnessEndpointState::default();
-        *state.pinned.lock().expect("pin lock") = Some(43120);
+        *state.pinned.lock().expect("pin lock") = Some(6000);
         note_in_use_on(&state, 19387);
         assert_eq!(*state.active.lock().expect("active lock"), None);
     }

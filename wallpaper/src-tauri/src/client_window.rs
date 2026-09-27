@@ -6,7 +6,6 @@
 //! | client           | default port | interface                       |
 //! | ---------------- | ------------ | ------------------------------- |
 //! | official desktop | 19387        | its own Windows window          |
-//! | community desktop| 43120        | its own Windows window           |
 //! | CLI / webui      | 3080         | no window at all — a browser URL |
 //!
 //! This module implements the *interview* half only: identify the client by the
