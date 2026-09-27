@@ -26,6 +26,26 @@ export function isCurrentAdapter(active: unknown, candidate: unknown, disposed: 
   return !disposed && active === candidate
 }
 
+/**
+ * 原生侧"这条会话已被归档"的稳定标记，与 `wallpaper/src-tauri/src/chat.rs` 的
+ * `HARNESS_SESSION_ARCHIVED` 一一对应（那边注释写明这是**跨进程契约**，改一处就要改另一处）。
+ *
+ * 用**包含**匹配而不是相等：Tauri 拒绝一条命令时抛的是那条 Rust 错误字符串本身（不是 Error），
+ * 而它对用户话术的改动不该把这条机器可读的标识一起弄丢。
+ */
+export const HARNESS_SESSION_ARCHIVED = 'HARNESS_SESSION_ARCHIVED'
+
+export function isArchivedSessionError(error: unknown): boolean {
+  return String(error ?? '').includes(HARNESS_SESSION_ARCHIVED)
+}
+
+/**
+ * 换会话时**必须**说清楚的一句。用户归档掉一条会话之后，桥拒绝它的消息，我们能做的只有
+ * 在今天的新会话里重发——但"把用户刚说的话挪到另一条会话里"这件事不能静默发生（用户对主体
+ * 的同一原则：不允许静默替换），所以这句话就是他看到的凭据。
+ */
+export const ARCHIVED_SESSION_NOTICE = '这条会话已被归档，已在今天的新会话里重新发送。'
+
 export class NativeChatAdapter extends EventChatAdapter {
   readonly mode: BackendMode
   private nativeUnsubscribe: (() => void) | undefined
@@ -232,6 +252,14 @@ export class NativeChatAdapter extends EventChatAdapter {
   }
 
   async send(text: string, options?: SendOptions): Promise<void> {
+    return this.runTurn(text, options, true)
+  }
+
+  /**
+   * 用户的一轮话。`allowArchivedRecovery` 只对**重发**那一轮为 false：刚换到的新会话如果
+   * 立刻又不可用，必须报错，而不是在"重连—重发"之间打转。
+   */
+  private async runTurn(text: string, options: SendOptions | undefined, allowArchivedRecovery: boolean): Promise<void> {
     if (this.mode === 'deepseek-api' && !this.sessionId) this.sessionId = crypto.randomUUID()
     if (this.mode === 'deepseek-api') this.apiRequestId = crypto.randomUUID()
     // Every send owns a new turn identity. The previous turn's token is gone
@@ -259,9 +287,49 @@ export class NativeChatAdapter extends EventChatAdapter {
     } catch (error) {
       if (this.turnToken === turnToken) this.turnActive = false
       this.stopHistoryReconciliation()
+      if (allowArchivedRecovery && this.mode === 'harness' && !this.disposed && isArchivedSessionError(error)) {
+        const failure = await this.recoverArchivedSession()
+        if (!failure) {
+          // 先告诉界面：它正在显示的那段转写属于一条**已被归档**的会话，而下面这些事件
+          // 会落到另一条会话上。顺序不能反——重发一旦开始，转写就该已经在换了。
+          this.emit({ type: 'conversation-reset', reason: 'session-archived', message: ARCHIVED_SESSION_NOTICE })
+          // 重发**不带**上一轮的 `conversationId`：那个 id 正是刚被桥拒绝的那条会话，
+          // 带着它就等于又往归档会话里发一次。
+          await this.runTurn(text, options?.model ? { model: options.model } : undefined, false)
+          return
+        }
+        const message = `${String(error)} 换一条新会话也没有成功：${failure}`
+        this.emit({ type: 'error', code: 'NATIVE_SEND_FAILED', recoverable: true, message })
+        throw new Error(message)
+      }
       this.emit({ type: 'error', code: 'NATIVE_SEND_FAILED', recoverable: true, message: String(error) })
       throw error
     }
+  }
+
+  /**
+   * 离开那条被归档的会话，改绑一条新的。
+   *
+   * **必须在这里做**：SSE 事件流的生命周期归渲染端（见 `stop()` 的说明），原生只清掉它自己
+   * 缓存的会话 id 就回去了——"有会话、没有事件流"正是用户遇到的那种"看着连上了、却永远安静"
+   * 的状态。事件流建错的代价是静默，所以重连这件事由持有事件流的这一侧负责。
+   *
+   * 先清掉 `sessionId` 是关键：桥只在**没有** resume id 时才去建"今天这条桌面会话"，带着
+   * 刚被它拒绝的 id 去 resume，只会再被拒一次。
+   *
+   * 返回 `undefined` 表示换成功；否则是给用户看的原因（这时调用方要报错，不能假装换成了）。
+   */
+  private async recoverArchivedSession(): Promise<string | undefined> {
+    this.sessionId = undefined
+    this.resetDeliveredMessageCounts()
+    try {
+      await this.openEventScope()
+    } catch (error) {
+      return String(error)
+    }
+    if (this.disposed) return '连接已经关闭'
+    if (!this.sessionId) return '桥没有给出新的会话'
+    return undefined
   }
 
   /**

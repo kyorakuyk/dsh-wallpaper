@@ -1293,6 +1293,20 @@ export function App({ surface = 'combined' }: AppProps) {
       }
       if (event.type === 'approval-required') { patchRuntime({ activity: 'tool', error: `${event.summary}；请打开 Harness 处理。` }); dispatchCore('set-activity', { value: 'tool' }) }
       if (event.type === 'question-required') { setQuestionPrompt(event.questions); patchRuntime({ activity: 'tool', error: undefined }); dispatchCore('set-activity', { value: 'tool' }) }
+      if (event.type === 'conversation-reset') {
+        // 用户把这条会话归档掉了，桥不再往它里面写东西：轨道上这段记录**立刻**停止看起来像活的
+        // （用户实测的症状正是"输入被吞了、灯还是绿的"——转写看着正常，其实没有人在听）。
+        // 同步清空而不是等新会话的历史对账回来：那个请求可能回空，而且它赢不了"重发那句话已经
+        // 在路上"这件事；新会话的内容由随后的事件与历史对账填回来。通知走 `error` 那条横幅
+        // （它本来就是可关闭的提示条，不是报错区），用户能看见"会话换掉了"这件事本身。
+        setMessages([])
+        setStreamingText('')
+        setUsage(undefined)
+        setQuestionPrompt(undefined)
+        if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current.activity = 'sending'
+        patchRuntime({ activity: 'sending', error: event.message })
+        dispatchCore('set-activity', { value: 'sending' })
+      }
       if (event.type === 'error') {
         if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current.activity = 'idle'
         setStreamingText(''); patchRuntime({ activity: 'idle', error: event.message }); dispatchCore('set-activity', { value: 'idle' })

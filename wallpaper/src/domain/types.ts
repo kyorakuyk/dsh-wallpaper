@@ -57,6 +57,11 @@ export type ChatEvent =
   | { type: 'question-required'; sessionId: string; questions: ChatQuestion[] }
   | { type: 'approval-required'; sessionId: string; summary: string }
   | { type: 'auth-required' }
+  /**
+   * 这条转写所属的会话已经不是当前会话了：用户把它归档掉之后，桥不会再往它里面写东西，
+   * 所以轨道上那段记录必须立刻停止看起来像活的。`message` 是给用户的一句话通知，不是报错。
+   */
+  | { type: 'conversation-reset'; reason: 'session-archived'; message: string }
   | { type: 'error'; code: string; recoverable: boolean; message: string }
 
 /**
