@@ -144,6 +144,8 @@
 2. **中文一律用 `edit` 工具改**。用 pwsh 拼字符串写文件会**损坏 CJK**——`store.ts` 里出现过 `'认认主题渐变'` 这种乱码（已修）。提交信息用英文可完全避开这条。
 3. **先过门禁再提交**（曾出现过"测试红着提交"）：`pnpm typecheck`、`pnpm test`（266 + bridge 69）、`cargo test --locked --all-targets`（168/0，5 ignored）、lite lib 与 lite bin check。
 4. **官壳 19387 是本次会话宿主，绝不能重启/杀掉**。第三方桌面客户端 `shell:AppsFolder\ai.deepseek.dsh.desktop`（默认 43120）可用于实测，用完按**应答端口的 PID** 干净停止（`client_window::endpoint_process_id`）。
+   > **2026-09-27 更正**：第三方桌面客户端**已被移除**（用户要求）。实测它把整台本地 HTTP 服务放在自己的授权之后 —— 用 bridge token 打过去一律 **403**，连 `/` 都进不去 ⇒ 它永远点不亮，留着只会误导。原生与渲染两侧的支持、`43120` 的默认端口、以及两条只为启停它而存在的真机测试都已删除；设置里若还存着它，会自动落回官方桌面客户端并给出提示。这一条此后只作历史记录。
+   > 同时：本机现在多了一条**全局安装的 DSH CLI**（`npm i -g @deepseek-ai/dsh`，命令名 `dsh`，装在 `%APPDATA%\npm` ✓），它是 ② 要新增的那类主体（无 AUMID、无源码树，启动 `dsh --profile web`）。
 5. **端口不是契约**（3080/19387/43120 只是默认值）；**绝不接管或停止他人已运行的实例**。
 6. 打包：`pwsh -NoProfile -File scripts\publish-local-msix.ps1 -PackageVersion <x.y.z.N>`（自带 Rust 门禁、签名、安装、拉起）。它**必须先绿**；`cargo fmt --check` 不是门禁（整个 crate 有偏差）。
 
