@@ -23,6 +23,7 @@
 //!   codes below, so the wording lives in one place in the renderer.
 
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 use crate::harness_targets::{known_shell, HarnessTargetKind, SHELL_ID_PREFIX};
 
@@ -91,6 +92,29 @@ pub(crate) enum LaunchPlan {
         profile: String,
         command: Option<String>,
     },
+}
+
+/// The program and arguments that start a **globally installed** DSH CLI.
+///
+/// npm's Windows launcher is a `.cmd` batch file, and `CreateProcess` cannot run one
+/// directly — it needs `cmd /c` in front of it. A `.exe` (a different packaging, or a
+/// future npm) is spawned as-is, so this decides by extension instead of assuming.
+///
+/// Pure, and that is the point: the spawn site stays boring, and the tests can read
+/// the exact command line a stored subject would produce on this machine.
+fn installed_cli_command(launcher: &Path, profile: &str) -> (PathBuf, Vec<String>) {
+    let profile_args = vec!["--profile".to_string(), profile.to_string()];
+    let extension = launcher
+        .extension()
+        .map(|value| value.to_string_lossy().to_ascii_lowercase());
+    match extension.as_deref() {
+        Some("cmd") | Some("bat") => {
+            let mut args = vec!["/c".to_string(), launcher.to_string_lossy().into_owned()];
+            args.extend(profile_args);
+            (PathBuf::from("cmd.exe"), args)
+        }
+        _ => (launcher.to_path_buf(), profile_args),
+    }
 }
 
 /// Who is asking for the start, which is what decides the two rules that differ.
@@ -543,6 +567,33 @@ fn wait_for_endpoint(port: u16, timeout: std::time::Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_installed_cli_starts_through_cmd_because_npm_ships_a_batch_file() {
+        let (program, args) = installed_cli_command(
+            Path::new(r"C:\Users\u\AppData\Roaming\npm\dsh.cmd"),
+            "web",
+        );
+        // `CreateProcess` cannot execute a `.cmd`; without `cmd /c` this would fail
+        // with "not a valid application" on every machine that has the CLI.
+        assert_eq!(program, PathBuf::from("cmd.exe"));
+        assert_eq!(
+            args,
+            vec![
+                "/c",
+                r"C:\Users\u\AppData\Roaming\npm\dsh.cmd",
+                "--profile",
+                "web"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_native_launcher_is_started_directly() {
+        let (program, args) = installed_cli_command(Path::new(r"C:\tools\dsh.exe"), "web");
+        assert_eq!(program, PathBuf::from(r"C:\tools\dsh.exe"));
+        assert_eq!(args, vec!["--profile", "web"]);
+    }
 
     const OFFICIAL_ID: &str = "shell:com.deepseek.dsh";
     const CHECKOUT: &str = r"D:\Family\DeepSeekHarness\deepseek-harness";
