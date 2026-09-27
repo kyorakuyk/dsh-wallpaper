@@ -62,6 +62,48 @@ impl RaiseOutcome {
 
 /// The process id that owns a listening TCP port on loopback, if any.
 ///
+/// 某个 pid 的创建时间（内核给的 100ns 计数），用作"进程身份"的另一半。
+///
+/// 只比 pid 不够：pid 会被回收，一条过期记录迟早撞上一个新进程，那时"这是我启动的"就会让本应用
+/// 去停别人的进程。**pid 与创建时间的组合才是身份**。
+///
+/// `None` 一律表示"查不到"（进程已退出、权限不足、平台不提供），调用方按"不是我启动的"处理。
+#[cfg(windows)]
+pub(crate) fn process_started_at(pid: u32) -> Option<u64> {
+    use windows::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        let queried =
+            GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user).is_ok();
+        let _ = CloseHandle(handle);
+        if !queried {
+            return None;
+        }
+        Some(filetime_ticks(creation.dwHighDateTime, creation.dwLowDateTime))
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn process_started_at(_pid: u32) -> Option<u64> {
+    // 没有可读的内核表时，"查不到"才是诚实的答案：调用方会按"不是我启动的"处理。
+    None
+}
+
+/// `FILETIME` 的两个 32 位半部分合成 64 位计数。
+///
+/// 抽成纯函数是因为它是这段里唯一能被测住的部分：**高字在前**，写反会得到一个"看起来像时间"
+/// 的错值 —— 而错值正是这类判定最危险的失败方式，它会把自己伪装成"同一个进程"。
+pub(crate) fn filetime_ticks(high: u32, low: u32) -> u64 {
+    ((high as u64) << 32) | low as u64
+}
+
 /// Exposed within the crate so a caller that started something for the user can
 /// clean up after itself by identity (the kernel's own table) instead of by image
 /// name, which would also match an instance the user was already running.
@@ -699,6 +741,25 @@ mod tests {
     ///
     /// Uses an ephemeral port that is bound and released, so this asserts the
     /// "absent" path of the real Windows code rather than a mock.
+    #[test]
+    fn a_filetime_is_high_word_first() {
+        use crate::client_window::filetime_ticks;
+        // 高字在前：写反会得到一个"看起来像时间"的错值，而错值最危险 —— 它会伪装成"同一个进程"。
+        assert_eq!(filetime_ticks(0, 1), 1);
+        assert_eq!(filetime_ticks(1, 0), 1 << 32);
+        assert_eq!(filetime_ticks(0x0123_4567, 0x89AB_CDEF), 0x0123_4567_89AB_CDEF);
+        assert!(filetime_ticks(1, 0) > filetime_ticks(0, u32::MAX));
+    }
+
+    #[test]
+    fn a_live_process_has_a_start_time_and_a_missing_pid_does_not() {
+        use crate::client_window::process_started_at;
+        // 真机核对：本进程必须查得到创建时间；一个几乎不可能存在的 pid 必须查不到
+        // （查不到 ⇒ 调用方按"不是我启动的"处理，也就是安全方向）。
+        assert!(process_started_at(std::process::id()).is_some());
+        assert!(process_started_at(0xFFFF_FFF0).is_none());
+    }
+
     #[test]
     fn a_free_port_has_neither_listener_nor_window() {
         let port = {
