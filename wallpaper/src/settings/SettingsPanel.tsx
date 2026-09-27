@@ -524,24 +524,22 @@ export function SettingsPanel(props: SettingsPanelProps) {
           >
             <span className="integration-actions">
               {props.harnessTargets.length > 0 && (
-                <select
-                  className="settings-select"
-                  aria-label="运行方式"
+                <Choice
+                  label="运行方式"
                   value={settings.dshLaunch.subjectId ?? ''}
-                  onChange={(event) => props.onSelectSubject(event.target.value)}
-                >
-                  {/*
-                    A subject stored before this list was rescanned stays visible:
-                    dropping the user's choice because a scan has not run yet is the
-                    "looks empty" failure the catalogue exists to prevent.
-                  */}
-                  {settings.dshLaunch.subjectId && !props.harnessTargets.some((target) => sameSubject(target.id, settings.dshLaunch.subjectId)) && (
-                    <option value={settings.dshLaunch.subjectId}>{`当前：${displaySubjectPath(settings.dshLaunch.subjectId)}`}</option>
-                  )}
-                  {props.harnessTargets.map((target) => (
-                    <option key={target.id} value={target.id}>{subjectOptionLabel(target, props.harnessTargets)}</option>
-                  ))}
-                </select>
+                  onChange={props.onSelectSubject}
+                  options={[
+                    /*
+                      A subject stored before this list was rescanned stays visible:
+                      dropping the user's choice because a scan has not run yet is the
+                      "looks empty" failure the catalogue exists to prevent.
+                    */
+                    ...(settings.dshLaunch.subjectId && !props.harnessTargets.some((target) => sameSubject(target.id, settings.dshLaunch.subjectId))
+                      ? [{ value: settings.dshLaunch.subjectId, label: `当前：${displaySubjectPath(settings.dshLaunch.subjectId)}` }]
+                      : []),
+                    ...props.harnessTargets.map((target) => ({ value: target.id, label: subjectOptionLabel(target, props.harnessTargets) })),
+                  ]}
+                />
               )}
               <button className="settings-action secondary" disabled={props.dshScanBusy} onClick={props.onScanDsh}>
                 {props.dshScanBusy ? '扫描中…' : props.harnessTargets.length > 0 ? '重新扫描' : '扫描'}
@@ -577,14 +575,12 @@ export function SettingsPanel(props: SettingsPanelProps) {
             {/* 两条路才给下拉；只有一条路就写一行字，而不是做一个改不动、点了也没反应的控件。 */}
             {openRoutes.length > 1
               ? (
-                  <select
-                    className="settings-select"
-                    aria-label="拉起的窗口"
+                  <Choice
+                    label="拉起的窗口"
                     value={openRoute}
-                    onChange={(event) => props.onSelectWindow(event.target.value === 'tui' ? 'tui' : 'browser')}
-                  >
-                    {openRoutes.map((route) => <option key={route.value} value={route.value}>{route.label}</option>)}
-                  </select>
+                    onChange={(value) => props.onSelectWindow(value === 'tui' ? 'tui' : 'browser')}
+                    options={openRoutes}
+                  />
                 )
               : openRoutes.length === 1
                 ? <span className="settings-static">{openRoutes[0]!.label}</span>

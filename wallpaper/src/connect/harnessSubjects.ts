@@ -168,7 +168,11 @@ export function subjectOptionLabel(target: HarnessTarget, all: readonly HarnessT
   const duplicated = all.filter((other) => other.label === target.label).length > 1
   const parent = duplicated && target.identity.rootPath ? parentName(target.identity.rootPath) : ''
   const name = parent ? `${target.label}（${parent}）` : target.label
-  return `${subjectKindLabel(target.kind)} · ${name}`
+  const kind = subjectKindLabel(target.kind)
+  // 主体的名字里**已经**说了类别时不再重复：已安装的 CLI 那条的标签就叫"已安装的DSH CLI"，
+  // 拼成"已安装的 CLI · 已安装的DSH CLI"是把同一件事说两遍（用户指出来了）。判据用"以类别
+  // 名开头"，因为那是这一条名字本身的写法，而不是我们拼出来的。
+  return name.startsWith(kind) ? name : `${kind} · ${name}`
 }
 export function launchOutcomeNotice(outcome: {
   outcome: string
