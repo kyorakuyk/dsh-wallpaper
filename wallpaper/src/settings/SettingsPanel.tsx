@@ -112,6 +112,14 @@ export interface SettingsPanelProps {
    */
   /** Idempotent 「打开界面」: start it if needed, then show it. */
   onOpenClient: () => void
+  /**
+   * 「打开」的另一条路线：在一个**新的终端窗口**里拉起 TUI。
+   *
+   * 只有**没有自己窗口**的主体才会用到它（官方桌面客户端自带窗口 ⇒ 这个问题对它不成立）。
+   */
+  onOpenTui: () => void
+  /** 用户选的路线。存进 `dshLaunch.window`；缺省按浏览器（与旧档案行为一致）。 */
+  onSelectWindow: (value: 'browser' | 'tui') => void
   /** Which action the current selection takes, for the button label. */
   reachAction: 'browser' | 'window'
   /** Opening waits for the client to answer, so the button reports that wait. */
@@ -455,7 +463,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
       </>}
 
       {page === 'connections' && <>
-        <Card title="聊天模式" description="三选一。改的是**正在运行**的那个壁纸，同时也记作下次启动的默认值；网页桥接不会在失败时自动切到付费 API。">
+        <Card title="聊天模式" description="三选一。更改会话的通道，会记作下次启动的默认值；网页桥接不会在失败时自动切到付费 API。">
           <Field title="当前使用" detail={props.liveBackend && props.liveBackend !== settings.defaultBackend ? `壁纸此刻在用：${backendModeLabel(props.liveBackend)}（与默认值不同，可能刚被托盘或自动切换改过；此窗口打开时读取）。Harness 不在这里切换。` : '立即切换正在运行的壁纸；此窗口打开时读取它现在用哪一种。Harness 由桌面上的那个开关切换。'}>
             {/* 值是**运行中**的那个后端，不是启动默认值：两者会分叉（托盘换后端、
                 `autoSwitchHarness` 自动切到 Harness、主体退出后壁纸自己复位），显示事实而不是意图。
@@ -479,7 +487,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
             "壁纸自身开机自启" and "你的系统自启设置"; the page has one name for it, so
             the toggle points at that page instead of introducing a second.
         */}
-        <Card title="DeepSeek Harness 启动" description="选择由谁来跑 DeepSeek Harness：客户端自带运行环境，源码目录由本应用启动。已经在运行的实例不会被接管或关闭。">
+        <Card title="DeepSeek Harness 启动" description="选择由谁来接管复杂工作：客户端自带运行环境，源码目录由本应用启动。已经在运行的实例不会被接管或关闭。">
           {/*
             One control for "who runs it", because that is one question. The scanned
             subjects used to be a row each with its own 采用 button, plus a separate row
@@ -547,7 +555,16 @@ export function SettingsPanel(props: SettingsPanelProps) {
                 ? '会把它自己的窗口调到前台；如果它没在运行，会先把它启动起来。'
                 : '会用它自己的界面（默认浏览器）；如果它没在运行，会先把它启动起来。'}
           >
-            <button className="settings-action" disabled={!settings.dshLaunch.subjectId || props.openBusy} onClick={props.onOpenClient}>
+            <select
+              className="settings-select"
+              aria-label="拉起的窗口"
+              value={settings.dshLaunch.window ?? 'browser'}
+              onChange={(event) => props.onSelectWindow(event.target.value === 'tui' ? 'tui' : 'browser')}
+            >
+              <option value="browser">浏览器</option>
+              <option value="tui">终端里的 TUI</option>
+            </select>
+            <button className="settings-action" disabled={!settings.dshLaunch.subjectId || props.openBusy} onClick={settings.dshLaunch.window === 'tui' ? props.onOpenTui : props.onOpenClient}>
               {props.openBusy ? '处理中…' : '打开'}
             </button>
           </Field>
@@ -586,13 +603,13 @@ export function SettingsPanel(props: SettingsPanelProps) {
           )}
                     <Field title="受管进程" detail={props.managedDsh.managed ? '该 DSH 由本应用启动，可以在这里停止它。' : '本应用没有启动 DSH；其他人启动的实例不会被停止。'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshManagedDsh}>刷新</button><button className="settings-action secondary" disabled={!props.managedDsh.running} onClick={props.onStopManagedDsh}>停止本应用启动的 DSH</button></span></Field>
         </Card>
-        <Card title="DeepSeek 网页入口（实验）" description="在应用内持久 WebView2 中打开 DeepSeek 页面，登录后可从桌面会话窗发送消息。"><Field title="页面" detail="页面和登录状态由独立 WebView2 配置目录保存；本应用不读取、复制或记录 Cookie。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开应用内页面</button></Field><Field title="网页适配器配置" detail={props.deepseekWebAdapterConfig ? `${props.deepseekWebAdapterConfig.source === 'local' ? '本地 override' : '内置默认'} · ${props.deepseekWebAdapterConfig.adapterVersion} · ${props.deepseekWebAdapterConfig.path}${props.deepseekWebAdapterConfig.warning ? ` · ${props.deepseekWebAdapterConfig.warning}` : ''}` : '正在读取配置状态…'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshDeepSeekWebAdapterConfig}>刷新</button><button className="settings-action secondary" onClick={props.onOpenDeepSeekWebAdapterConfig}>打开配置</button><button className="settings-action secondary" onClick={props.onResetDeepSeekWebAdapterConfig}>恢复默认</button></span></Field></Card>
+        <Card title="DeepSeek 网页入口（实验）" description="登录后直连你的deepseek网页端。"><Field title="页面" detail="页面和登录状态由独立 WebView2 配置目录保存；本应用不读取、复制或记录 Cookie。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开应用内页面</button></Field><Field title="网页适配器配置" detail={props.deepseekWebAdapterConfig ? `${props.deepseekWebAdapterConfig.source === 'local' ? '本地 override' : '内置默认'} · ${props.deepseekWebAdapterConfig.adapterVersion} · ${props.deepseekWebAdapterConfig.path}${props.deepseekWebAdapterConfig.warning ? ` · ${props.deepseekWebAdapterConfig.warning}` : ''}` : '正在读取配置状态…'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshDeepSeekWebAdapterConfig}>刷新</button><button className="settings-action secondary" onClick={props.onOpenDeepSeekWebAdapterConfig}>打开配置</button><button className="settings-action secondary" onClick={props.onResetDeepSeekWebAdapterConfig}>恢复默认</button></span></Field></Card>
         <Card title="DeepSeek API" description="API 模式会产生实际费用，密钥只保存在 Windows 凭据管理器。">
           {/* 只深耕 DeepSeek：地址不再暴露成设置项（值仍是默认的官方地址），少一个能填错的地方。
               用户的原话是"API 网址可以省略"。 */}
           <Field
             title="访问密钥"
-            detail="在这里填入 DeepSeek API Key，按「测试」确认可用并保存到 Windows 凭据管理器；测试会同时拉取可用模型列表。密钥不支持读回，下面显示的是脱敏后的形态。"
+            detail="在这里填入 DeepSeek API Key，按测试确认连通性，自动拉取可用模型。"
           >
             <span className="api-key-actions">
               <input
@@ -634,7 +651,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
       {page === 'appearance' && <>
         <Card title="桌面背景" description="内置背景与你的素材将保持独立。"><div className="background-grid">{BACKGROUND_OPTIONS.map((background) => <button key={background.id} data-background={background.id} className={settings.background === background.id ? 'is-active' : ''} onClick={() => set({ background: background.id })}><span style={background.path ? { backgroundImage: `url(${background.path})` } : undefined} /><strong>{background.name}</strong>{settings.background === background.id && <i>当前</i>}</button>)}</div></Card>
-        <Card title="素材库" description="导入的单张素材先选择用途，再出现在对应组件的枚举菜单中。主题包和插件将在后续版本单独处理。">
+        <Card title="素材库（导入功能测试中）" description="导入的单张素材先选择用途，再出现在对应组件的枚举菜单中。主题包和插件将在后续版本单独处理。">
           <div className="asset-library-toolbar"><button className="settings-action" onClick={props.onImportAppearance} disabled={props.appearanceBusy}>导入图片素材</button><span>{props.appearanceAssets.filter((asset) => asset.status === 'inbox').length} 项待分类 · {props.appearanceAssets.filter((asset) => asset.status === 'classified').length} 项可用</span></div>
           {props.appearanceAssets.filter((asset) => asset.status === 'inbox').length > 0 && <div className="asset-inbox">{props.appearanceAssets.filter((asset) => asset.status === 'inbox').map((asset) => <div className="asset-inbox-row" key={asset.id}><span><strong>{asset.originalName}</strong><small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : '图片'}{asset.hasAlpha ? ' · 透明背景' : ''}</small></span><Choice label={`${asset.originalName} 的用途`} value="" onChange={(slot) => props.onClassifyAppearance(asset.id, slot as AppearanceSlot)} disabled={props.appearanceBusy} options={[{ value: '', label: '选择用途…' }, ...componentSlots.map(({ slot, label }) => ({ value: slot, label }))]} /></div>)}</div>}
           <div className="asset-component-list">{componentSlots.map(({ slot, label, detail }) => {
@@ -643,7 +660,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
             return <div className="asset-component-row" key={slot}><span><strong>{label}</strong><small>{detail} · {candidates.length} 项可选</small></span><Choice label={label} value={selected} onChange={(id) => { if (id) props.onSelectAppearance(slot, id); else props.onClearAppearance(slot) }} disabled={props.appearanceBusy} emptyMessage={candidates.length === 0 ? '暂无此类素材，请先导入并指定用途' : undefined} options={[{ value: '', label: '使用官方默认' }, ...candidates.map((asset) => ({ value: asset.id, label: `${asset.originalName}${asset.width && asset.height ? ` (${asset.width} × ${asset.height})` : ''}` }))]} /></div>
           })}</div>
         </Card>
-        <Card title="苏醒动画">
+        <Card title="苏醒动画（开发中）">
           <Field title="启用动画"><Toggle label="启用苏醒动画" checked={settings.animationsEnabled} onChange={(value) => set({ animationsEnabled: value })} /></Field>
           <Field title="每次解锁播放"><Toggle label="每次解锁播放" checked={settings.playWakeOnEveryUnlock} onChange={(value) => set({ playWakeOnEveryUnlock: value })} /></Field>
           <Field title="跳过苏醒过程"><Toggle label="跳过苏醒过程" checked={settings.skipWakeAnimation} onChange={(value) => set({ skipWakeAnimation: value })} /></Field>
@@ -730,7 +747,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
       </>}
 
       {page === 'system' && <>
-        <Card title="数据与目录" description="「桌面会话」的工作区落在壁纸自己的数据目录里：升级安装会保留，卸载之后也留得下（它不是安装目录，MSIX 不会替换它）。">
+        <Card title="数据与目录" description="「桌面会话」的工作区落在壁纸自己的数据目录里：升级安装会保留，卸载之后也留得下。若想彻底删除数据，在卸载前请先点击下面的“清除全部用户数据”。">
           <Field title="工作区" detail={props.desktopWorkspace ? (props.desktopWorkspace.workspaceExists ? props.desktopWorkspace.workspaceDirectory : props.desktopWorkspace.workspaceDirectory + '（还没创建；桥第一次用到时会在这里建出来）') : '正在读取…'}><span /></Field>
           {/* 卸载时问不了（MSIX 没有自定义卸载界面），所以"想清干净的时候能清干净"这个入口放在这里。
               原生只做它能证明做完的两件：工作区目录 + 凭据管理器里那条 Key；WebView2 配置目录正被

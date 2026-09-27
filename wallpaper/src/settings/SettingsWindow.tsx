@@ -848,6 +848,19 @@ export function SettingsWindow() {
       dshScanBusy={dshScanBusy}
       managedDsh={managedDsh}
       onRefreshManagedDsh={refreshManagedDsh}
+      onOpenTui={() => void nativeRuntime.openSubjectTui().then((result) => {
+        // 契约：没装 TUI 时原生返回 `opened: false` 与一句"怎么办"。**把那句显示出来**，
+        // 绝不静默改成打开浏览器 —— 那等于替用户换了一条他没选的路。
+        if (!result.opened) {
+          setNotice(result.message ?? '本机没有找到 TUI（dst）。')
+          return
+        }
+        setNotice('已在新终端窗口中拉起 TUI。')
+      }).catch((error) => setNotice(`打开 TUI 失败：${String(error)}`))}
+      onSelectWindow={(value) => change({
+        ...settingsRef.current,
+        dshLaunch: { ...settingsRef.current.dshLaunch, window: value },
+      })}
       onStopManagedDsh={() => void nativeRuntime.stopManagedDsh().then(() => { setNotice('已停止本应用启动的 DSH。'); refreshManagedDsh() }).catch((error) => setNotice(String(error)))}
       onChange={change}
       onRefreshTranslucentTb={refreshTranslucentTb}
