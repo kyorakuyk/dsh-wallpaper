@@ -389,6 +389,49 @@ fn checkout_target(root_path: &str, source: &str) -> HarnessTarget {
     }
 }
 
+/// Prefix of a globally installed CLI's target id.
+///
+/// Like `SHELL_ID_PREFIX`, the launcher parses this namespace back out of a stored
+/// id, so the two spellings must not drift.
+pub(crate) const CLI_ID_PREFIX: &str = "cli:";
+
+/// One globally installed DSH CLI, as a subject.
+///
+/// Mirrors `checkout_target` deliberately — same service shape, same default port,
+/// and the same "what you must name is its identity" rule. The only difference is
+/// what gets named: a launcher on `PATH` instead of a tree on disk.
+fn installed_cli_target(launcher: &Path) -> HarnessTarget {
+    let path = launcher.to_string_lossy().into_owned();
+    HarnessTarget {
+        // A globally installed CLI has no tree to point at, so its launcher is what
+        // survives: reinstalling the package rewrites that file in place.
+        id: format!("{CLI_ID_PREFIX}{path}"),
+        kind: HarnessTargetKind::InstalledCli,
+        client: HarnessClientKind::OfficialWeb,
+        label: "已安装的 DSH CLI".to_string(),
+        // The settings row shows where a subject came from; for this class that is
+        // the launcher itself, which is also its identity.
+        source: path,
+        identity: TargetIdentity {
+            aumid: None,
+            root_path: None,
+            default_ports: vec![crate::HARNESS_DEFAULT_PORT],
+        },
+        launch: LaunchRecipe {
+            kind: LaunchRecipeKind::ManagedCommand,
+            alias: None,
+        },
+        capabilities: TargetCapabilities {
+            // Single instance is a property of the port, not of this shape, and the
+            // managed chain already leaves an external DSH on that port alone.
+            single_instance: false,
+            owns_window: false,
+            can_start_hidden: true,
+            needs_profile: true,
+        },
+    }
+}
+
 /// Match the scanned shortcuts against the shells this build can start.
 ///
 /// Unknown AUMIDs are ignored: they belong to applications that have nothing to
@@ -711,6 +754,27 @@ mod tests {
         );
         assert_eq!(scan.targets.len(), 1);
         assert_eq!(scan.targets[0].source, r"C:\Start Menu");
+    }
+
+    #[test]
+    fn an_installed_cli_is_named_by_its_launcher() {
+        let launcher = r"C:\Users\someone\AppData\Roaming\npm\dsh.cmd";
+        let target = installed_cli_target(Path::new(launcher));
+        assert_eq!(target.kind, HarnessTargetKind::InstalledCli);
+        assert_eq!(target.client, HarnessClientKind::OfficialWeb);
+        // 它的身份就是那个启动器，id 把它带进存储；两者必须是同一份字符串。
+        assert_eq!(target.id, format!("{CLI_ID_PREFIX}{launcher}"));
+        assert_eq!(target.source, launcher);
+        // 没有 AUMID、没有源码树 —— 这正是它必须单列一类的原因。
+        assert!(target.identity.aumid.is_none());
+        assert!(target.identity.root_path.is_none());
+        assert_eq!(
+            target.identity.default_ports,
+            vec![crate::HARNESS_DEFAULT_PORT]
+        );
+        // 它会像检出那样 boot 一个 profile。
+        assert!(target.capabilities.needs_profile);
+        assert!(!target.capabilities.owns_window);
     }
 
     #[test]
