@@ -164,6 +164,15 @@ export interface WallpaperSettings {
   /** 壁纸端记住的 Harness 模型选择（用于重启后回显）。 */
   harnessModel: HarnessModelSettings
   dshLaunch: DshLaunchSettings
+  /**
+   * 壁纸**自己**把滑槽拨离 harness 的那一次（主体掉线时的自动复位），记的是时间戳。
+   *
+   * 这件事必须跨进程存活。它决定两件用户能看见的东西：主体回来后壁纸是否有权自己拨回去
+   * （用户定死的规则：再次联通之后要以 harness 后端为准），以及轨道里那段保留下来的转写要不要
+   * 标明"这不是当前会话"。只放在内存里的后果实测过：升级安装重启了壁纸，这条规则悄悄失效，
+   * 滑槽停在左侧、桥的灯却是绿的，用户以为还在跟 DSH 说话——输入其实进了另一个后端（"输入被吞"）。
+   */
+  harnessAutoResetAt?: number
 }
 
 export const DEFAULT_SETTINGS: WallpaperSettings = {
@@ -257,6 +266,12 @@ function boundedNumber(candidate: unknown, fallback: number, min: number, max: n
   return candidate === undefined ? fallback : Math.min(max, Math.max(min, finiteNumber(candidate, fallback)))
 }
 
+/** An optional record of when something happened. Anything that is not a real
+ * timestamp means "no record", never a guessed one. */
+function optionalTimestamp(candidate: unknown): number | undefined {
+  return typeof candidate === 'number' && Number.isFinite(candidate) && candidate > 0 ? candidate : undefined
+}
+
 function settingsText(candidate: unknown, fallback: string, maxLength = MAX_SETTINGS_STRING): string {
   if (typeof candidate !== 'string') return fallback
   const trimmed = candidate.trim()
@@ -321,6 +336,9 @@ export function normalizeSettings(raw: unknown): WallpaperSettings {
     deepseekApi: normalizeApiSettings(value.deepseekApi),
     harnessModel: normalizeHarnessModelSettings(value.harnessModel),
     dshLaunch: normalizeDshLaunchSettings(value.dshLaunch),
+    // 只在它是个真实时间戳时才算数：这个字段是"壁纸自己复位过"的证据，值不可信就等于没有
+    // ——宁可不自动拨回去，也不要拿一个坏值当凭据把用户从他自己选的滑槽那边搬走。
+    harnessAutoResetAt: optionalTimestamp(value.harnessAutoResetAt),
   }
 }
 

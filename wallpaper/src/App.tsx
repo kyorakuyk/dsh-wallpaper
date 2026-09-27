@@ -147,6 +147,20 @@ export function shouldReturnToHarness(
 }
 
 /**
+ * "上次是壁纸自己把滑槽拨离 Harness 的"这件事是否成立。
+ *
+ * 它存在两处，缺一不可：内存里的 `ref` 管**本次运行**，设置里的时间戳管**重启之后**——升级安装
+ * 必然重启壁纸，而壁纸自己做过的事不会因为重启就不算数。只存内存的后果实测过：桥回来、灯是绿的，
+ * 滑槽却停在左侧，用户以为还在跟 DSH 说话，而输入进的是另一个后端（"输入被吞"）。
+ *
+ * 这条判断只回答"壁纸有没有这个权利"，不回答"现在该不该拨"——后者还得看桥是否就绪
+ * （`shouldReturnToHarness`）。用户手动拨动滑槽会同时清掉这两处凭据，他选的那一侧永远优先。
+ */
+export function harnessResetClaimed(inMemory: boolean, persistedAt: number | undefined): boolean {
+  return inMemory || (typeof persistedAt === 'number' && Number.isFinite(persistedAt))
+}
+
+/**
  * 黄灯：连接与断开之间的**中间态**。
  *
  * 用户要的三段语义是"连上（绿）／正在连（黄呼吸）／不在了（熄灭）"，所以中间态覆盖三种真实
@@ -520,6 +534,14 @@ export function App({ surface = 'combined' }: AppProps) {
   const markAutoResetFromHarness = (value: boolean) => {
     autoResetFromHarnessRef.current = value
     setAutoResetFromHarness(value)
+    // 同一件事写进设置，让它活过下一个进程：装一次新版就重启一次壁纸，只记在内存里的规则
+    // 会在重启那一刻悄悄失效（见 `harnessResetClaimed`）。用户手动选后端会清掉它。
+    const current = settingsRef.current
+    if (value) {
+      saveSettings({ ...current, harnessAutoResetAt: Date.now() })
+    } else if (current.harnessAutoResetAt !== undefined) {
+      saveSettings({ ...current, harnessAutoResetAt: undefined })
+    }
   }
   const adapterRef = useRef<ChatAdapter>(new PreviewAdapter(settings.defaultBackend))
   const chatActivityRef = useRef<{ adapter: ChatAdapter; backend: BackendMode; activity: RuntimeState['activity'] }>()
@@ -1487,7 +1509,7 @@ export function App({ surface = 'combined' }: AppProps) {
         patchRuntime({ harness: status.availability, model: status.model ?? runtimeRef.current.model, provider: status.provider ?? runtimeRef.current.provider, reasoningEffort: status.reasoningEffort })
         if (isHarnessReady(status.availability) && runtimeRef.current.backend !== 'harness') {
           if (canAutoSelectHarness(status.availability, runtimeRef.current.backend, settings.autoSwitchHarness)
-            || shouldReturnToHarness(status.availability, runtimeRef.current.backend, autoResetFromHarnessRef.current)) {
+            || shouldReturnToHarness(status.availability, runtimeRef.current.backend, harnessResetClaimed(autoResetFromHarnessRef.current, settingsRef.current.harnessAutoResetAt))) {
             markAutoResetFromHarness(false)
             changeBackend('harness', { automatic: true })
           }
@@ -1506,7 +1528,7 @@ export function App({ surface = 'combined' }: AppProps) {
     if (!appCoreClient.native) return
     if (isHarnessReady(runtime.harness) && runtime.backend !== 'harness') {
       if (canAutoSelectHarness(runtime.harness, runtime.backend, settings.autoSwitchHarness)
-        || shouldReturnToHarness(runtime.harness, runtime.backend, autoResetFromHarnessRef.current)) {
+        || shouldReturnToHarness(runtime.harness, runtime.backend, harnessResetClaimed(autoResetFromHarnessRef.current, settings.harnessAutoResetAt))) {
         markAutoResetFromHarness(false)
         changeBackend('harness', { automatic: true })
       }
@@ -1514,7 +1536,8 @@ export function App({ surface = 'combined' }: AppProps) {
     // 主体退出后复位到左侧：拉起 harness 的入口就在壁纸里，停在死掉的一侧会让用户
     // 不得不再手动切一次 ✗。记录不会丢——会话按日期命名、转写留在宿主那边，切回去自动接上。
     // 复位时**保留轨道里的转写**：用户看到的是"上次的 Harness 会话"，而不是一片空白；
-    // `autoResetFromHarnessRef` 同时记下"这次是壁纸复位的"，主体回来后由它自己拨回去。
+    // `autoResetFromHarnessRef` 与设置里的时间戳同时记下"这次是壁纸复位的"，主体回来后由它自己
+    // 拨回去——包括壁纸重启之后（升级安装必然重启）。
     const fallback = harnessFallbackBackend(runtime.harness, runtime.backend, settings.defaultBackend)
     if (fallback) {
       markAutoResetFromHarness(true)
@@ -1662,7 +1685,7 @@ export function App({ surface = 'combined' }: AppProps) {
       nonHarnessBackend={settings.defaultBackend === 'harness' ? 'deepseek-web' : settings.defaultBackend}
       // 保留下来的是**上一个后端**的转写（壁纸因主体退出自己复位时才发生），所以它只在
       // 已经不在 Harness 上、而且确实有记录可看时才标注来历。
-      keptTranscript={autoResetFromHarness && runtime.backend !== 'harness' && messages.length > 0}
+      keptTranscript={harnessResetClaimed(autoResetFromHarness, settings.harnessAutoResetAt) && runtime.backend !== 'harness' && messages.length > 0}
       presetOptions={presetOptions}
       selectedPreset={selectedPreset}
       onSelectPreset={messages.length === 0 ? (preset) => { void nativeRuntime.setHarnessPreset(preset).then(() => setSelectedPreset(preset)).catch((error) => patchRuntime({ error: String(error) })) } : undefined}

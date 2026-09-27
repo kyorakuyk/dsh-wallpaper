@@ -118,6 +118,20 @@ describe('settings normalization boundary', () => {
     expect(normalizeSettings({ ...VALID, animationsEnabled: null }).animationsEnabled).toBe(DEFAULT_SETTINGS.animationsEnabled)
   })
 
+  it('keeps the wallpaper\'s own backend-reset claim only when it is a real timestamp', () => {
+    // 这条记录是"壁纸自己把滑槽拨离 harness 过"的证据，必须活过进程重启：升级安装会重启壁纸，
+    // 只记在内存里的规则会在那一刻失效（滑槽停在左侧、桥的灯却是绿的，输入进错后端）。
+    const claim = Date.parse('2026-09-27T14:06:00+08:00')
+    expect(normalizeSettings({ ...VALID, harnessAutoResetAt: claim }).harnessAutoResetAt).toBe(claim)
+    // 不是真实时间戳就等于没有：宁可不自动拨回去，也不拿坏值当凭据把用户搬走。
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 'yesterday', null, {}, []]) {
+      expect(normalizeSettings({ ...VALID, harnessAutoResetAt: bad as never }).harnessAutoResetAt).toBeUndefined()
+    }
+    // 用户手动选过后端（或还没发生过复位）：字段根本不出现。
+    expect(normalizeSettings({ ...VALID, harnessAutoResetAt: undefined }).harnessAutoResetAt).toBeUndefined()
+    expect(normalizeSettings(VALID).harnessAutoResetAt).toBeUndefined()
+  })
+
   it('drops a non-object multi-screen block and over-long display ids', () => {
     expect(normalizeSettings({ ...VALID, multiScreen: 'bad' }).multiScreen).toEqual(DEFAULT_SETTINGS.multiScreen)
     expect(normalizeSettings({ ...VALID, multiScreen: null }).multiScreen).toEqual(DEFAULT_SETTINGS.multiScreen)

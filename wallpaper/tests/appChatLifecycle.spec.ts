@@ -71,7 +71,7 @@ describe('App chat lifecycle isolation', () => {
   })
 
   it('moves the switch back only when the wallpaper itself moved it away', async () => {
-    const { shouldReturnToHarness } = await import('../src/App.tsx')
+    const { shouldReturnToHarness, harnessResetClaimed } = await import('../src/App.tsx')
 
     // 主体退出后壁纸自己复位过：它回来时，滑槽要自己拨回去（用户原话：再次联通之后要以
     // harness 后端为准）。复位期间保留的那段转写属于同一个会话——会话按日期命名、转写留在
@@ -83,6 +83,18 @@ describe('App chat lifecycle isolation', () => {
     expect(shouldReturnToHarness('bridge-loading', 'deepseek-web', true)).toBe(false)
     expect(shouldReturnToHarness('offline', 'deepseek-web', true)).toBe(false)
     expect(shouldReturnToHarness('bridge-ready', 'harness', true)).toBe(false)
+
+    // 这次复位是**壁纸自己**做的，而壁纸装一次新版就重启一次：权利写进设置，活过重启。少了这
+    // 一半，桥回来了、灯是绿的，滑槽却停在左侧——用户以为还在跟 DSH 说话，输入进了另一个后端
+    // （用户实测报的"输入被吞"）。用户手动拨过一次就会清掉它，他选的那一侧永远优先。
+    expect(harnessResetClaimed(false, undefined)).toBe(false)
+    expect(harnessResetClaimed(true, undefined)).toBe(true)
+    expect(harnessResetClaimed(false, Date.now())).toBe(true)
+    expect(harnessResetClaimed(true, Date.now())).toBe(true)
+    // 坏值不算凭据。
+    expect(harnessResetClaimed(false, Number.NaN)).toBe(false)
+    expect(shouldReturnToHarness('bridge-ready', 'deepseek-web', harnessResetClaimed(false, 1))).toBe(true)
+    expect(shouldReturnToHarness('bridge-ready', 'deepseek-web', harnessResetClaimed(false, undefined))).toBe(false)
   })
 
   it('treats connecting and reconnecting as the amber state', async () => {
