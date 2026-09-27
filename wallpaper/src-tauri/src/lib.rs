@@ -449,6 +449,14 @@ async fn ensure_harness_ui(
     let subject_for_record = target_id.clone();
     let profile_for_refresh = profile.clone();
     let record_from = app.clone();
+    // **在动手之前**看一次：这个端口上有属主吗？
+    //
+    // 这是"孩子是不是我启动的"唯一可靠的判据。试过两个标志都不行：`started` 属于壳/受管链那套
+    // 口径（实测已安装 CLI 被真正启动时它仍是 false），`start_outcome` 在这条路上也没带值 ⇒
+    // 记录代码一次都没执行。所以不再问"哪条路发生了什么"，只观察事实本身：
+    //   之前没人听、之后有人听 ⇒ 这次是我们启动的；
+    //   之前就有人听 ⇒ 本来就在跑 ⇒ **不记**（正确的"不是我的"）。
+    let owner_before = crate::client_window::endpoint_process_id(port);
     tauri::async_runtime::spawn_blocking(move || {
         let managed = worker.state::<ManagedDshState>();
         harness_launch::ensure_ui(
@@ -470,11 +478,7 @@ async fn ensure_harness_ui(
         // 想要停止的东西；`ensure_ui` 返回时端口已经在应答（它自己会等），所以这里读到的一定是它。
         //
         // 已安装的 CLI 与源码目录都走这一处：两条路的"孩子"定义本就该一致。
-        // 门槛用 `start_outcome` 而不是 `started`：前者是"**它不得不启动时**这次启动自己的结果码"，
-        // 也就是"确实发生过一次启动"的直接证据；而 `started` 走的是壳/受管链那套口径 —— 实测已安装
-        // CLI 被真正启动时它仍是 false（日志：launch 有、handoff 有、started=false），于是记录代码
-        // 根本没被执行。用一个更贴近"发生了什么"的信号，而不是一个更贴近"哪条路发生了什么"的信号。
-        if outcome.started || outcome.start_outcome.is_some() {
+        if owner_before.is_none() {
             // 端口**不会**在 `ensure_ui` 返回前就绪：只有壳会等窗口，非壳主体不等（实测：刚 spawn
             // 完就去问属主，得到的是"还没人在听"，两秒后端口才起来）。所以这里不抢答，交给一个
             // 有限的轮询：端口一起来就把**那时**的属主记为孩子；等不到就留一条警告，让"没有记录"
