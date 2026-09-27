@@ -459,10 +459,14 @@ fn shell_targets_from(shortcuts: &[ScannedShortcut]) -> Vec<HarnessTarget> {
 /// Visible to the crate so the catalogue's tests can record a scan built by the
 /// model's own matching rules instead of hand-made targets.
 pub(crate) fn build_scan_for_tests(shortcuts: &[ScannedShortcut]) -> HarnessTargetScan {
-    build_scan(shortcuts, &[])
+    build_scan(shortcuts, &[], &[])
 }
 
-fn build_scan(shortcuts: &[ScannedShortcut], checkouts: &[crate::DshPathCandidate]) -> HarnessTargetScan {
+fn build_scan(
+    shortcuts: &[ScannedShortcut],
+    checkouts: &[crate::DshPathCandidate],
+    installed_clis: &[PathBuf],
+) -> HarnessTargetScan {
     let mut targets = shell_targets_from(shortcuts);
     let mut seen = HashSet::new();
     for checkout in checkouts {
@@ -473,6 +477,14 @@ fn build_scan(shortcuts: &[ScannedShortcut], checkouts: &[crate::DshPathCandidat
             continue;
         }
         targets.push(checkout_target(&checkout.root_path, &checkout.source));
+    }
+    for launcher in installed_clis {
+        // Same defence, same key shape: the discovery already deduplicates, and this
+        // keeps a future caller from listing one launcher twice.
+        if !seen.insert(launcher.to_string_lossy().to_ascii_lowercase()) {
+            continue;
+        }
+        targets.push(installed_cli_target(launcher));
     }
     let requires_subject_choice = targets
         .iter()
@@ -492,9 +504,16 @@ fn build_scan(shortcuts: &[ScannedShortcut], checkouts: &[crate::DshPathCandidat
 pub fn scan_harness_targets_blocking(hint_path: Option<String>, deep_scan: bool) -> HarnessTargetScan {
     let shortcuts = scan_shell_shortcuts();
     let checkouts = crate::scan_dsh_paths_blocking(hint_path, deep_scan);
-    let scan = build_scan(&shortcuts, &checkouts);
+    // npm's global prefix on Windows is `%APPDATA%\npm`, and it also puts that
+    // directory on `PATH`; both are given to the pure matcher, so this is the only
+    // place the environment is read.
+    let installed_clis = installed_cli_launchers_from(
+        std::env::var("APPDATA").ok().as_deref(),
+        std::env::var("PATH").ok().as_deref(),
+    );
+    let scan = build_scan(&shortcuts, &checkouts, &installed_clis);
     log::info!(
-        "harness target scan: {} 个快捷方式，{} 个可选项（{} 个壳，{} 份源码检出）",
+        "harness target scan: {} 个快捷方式，{} 个可选项（{} 个壳，{} 份源码检出，{} 个已安装 CLI）",
         shortcuts.len(),
         scan.targets.len(),
         scan.targets
@@ -504,6 +523,10 @@ pub fn scan_harness_targets_blocking(hint_path: Option<String>, deep_scan: bool)
         scan.targets
             .iter()
             .filter(|target| target.kind == HarnessTargetKind::Checkout)
+            .count(),
+        scan.targets
+            .iter()
+            .filter(|target| target.kind == HarnessTargetKind::InstalledCli)
             .count()
     );
     scan
@@ -679,6 +702,15 @@ fn scan_shell_shortcuts() -> Vec<ScannedShortcut> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 测试里的扫描大多不关心"已安装的 CLI"这一类，所以在这里补一个两参数包装：调用点读起来
+    /// 仍然是"快捷方式 + 检出"两件事，而需要覆盖第三类的测试直接调 `super::build_scan`。
+    fn build_scan(
+        shortcuts: &[ScannedShortcut],
+        checkouts: &[crate::DshPathCandidate],
+    ) -> HarnessTargetScan {
+        super::build_scan(shortcuts, checkouts, &[])
+    }
 
     fn shortcut(aumid: &str, directory: &str) -> ScannedShortcut {
         ScannedShortcut {
