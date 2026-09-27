@@ -550,7 +550,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
               entry the scan is what fills the list, so an editable field would be an
               input with no effect.
             */}
-            <Field title="源码目录" detail="这份源码的位置；扫描会用它作为下一次查找的提示路径。"><span>{displaySubjectPath(selectedSubject?.identity.rootPath ?? settings.dshLaunch.rootPath)}</span></Field>
+            <Field title="源码目录" detail="这份源码的位置；扫描会用它作为下一次查找的提示路径。"><span className="settings-static">{displaySubjectPath(selectedSubject?.identity.rootPath ?? settings.dshLaunch.rootPath)}</span></Field>
             <Field title="数据档案（Profile）" detail="这份源码使用的档案名；不同档案的会话互不相通。"><input value={settings.dshLaunch.profile} placeholder="desktop" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, profile: e.target.value || 'desktop' } })} /></Field>
             <Field title="启动命令" detail="一般留空即可。只有在需要用别的程序启动它时，才填写那个程序的完整路径（不能带参数）。"><input value={settings.dshLaunch.command ?? ''} placeholder="留空时使用内置的启动方式" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, command: e.target.value || undefined, trustedCommandForAutoStart: e.target.value ? settings.dshLaunch.trustedCommandForAutoStart : false } })} /></Field>
           </>}
@@ -583,7 +583,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
                   </select>
                 )
               : openRoutes.length === 1
-                ? <span>{openRoutes[0]!.label}</span>
+                ? <span className="settings-static">{openRoutes[0]!.label}</span>
                 : null}
             <button className="settings-action" disabled={!settings.dshLaunch.subjectId || props.openBusy} onClick={openRoute === 'tui' ? props.onOpenTui : props.onOpenClient}>
               {props.openBusy ? '处理中…' : '打开'}

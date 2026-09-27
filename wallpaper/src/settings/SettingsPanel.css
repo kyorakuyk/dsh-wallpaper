@@ -44,3 +44,6 @@
 .api-key-actions input{width:220px}
 /* 脱敏串用等宽字体：点和首尾字符对齐后，"这就是存着的那条"一眼可见。 */
 .api-key-masked{display:inline-flex;align-items:center;height:34px;min-width:220px;padding:0 10px;border:1px solid rgba(139,196,235,.16);border-radius:9px;background:rgba(4,13,25,.48);color:#9fbdd4;font-family:"Cascadia Code",Consolas,monospace;font-size:11px;letter-spacing:.08em}
+/* 只读的"值"：打开方式只有一条路时的那个词、源码目录的路径。
+   裸 <span> 会继承这一层的默认字号（比旁边的说明大出一截），所以静态值必须带这个类。 */
+.settings-static{display:inline-flex;align-items:center;min-height:34px;min-width:220px;padding:0 10px;border:1px solid rgba(139,196,235,.16);border-radius:9px;background:rgba(4,13,25,.48);color:#9fbdd4;font-size:11px}
