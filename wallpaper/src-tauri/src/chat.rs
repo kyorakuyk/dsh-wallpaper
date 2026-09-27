@@ -35,6 +35,12 @@ const MAX_HARNESS_SSE_CHUNK_BYTES: usize = MAX_HARNESS_SSE_EVENT_BYTES;
 /// Non-streaming Bridge responses must be bounded before `bytes()` allocates
 /// them. The live-session endpoint is tiny; history has an explicit larger
 /// ceiling because it can contain several completed turns.
+/// 渲染端要认的错误码：这条 Harness 会话已被用户在桌面端归档（桥不再接受它的消息）。
+///
+/// 与桥的 `session-archived` 一一对应，是一条**跨进程契约**：改这里就要改渲染端的判断，
+/// 两边各有一条测试钉住同一个字面量。
+pub const HARNESS_SESSION_ARCHIVED: &str = "HARNESS_SESSION_ARCHIVED";
+
 const MAX_HARNESS_SESSION_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_HARNESS_HISTORY_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_HARNESS_HISTORY_MESSAGES: usize = 256;
@@ -3082,6 +3088,32 @@ pub async fn harness_send(state: tauri::State<'_, ChatState>, text: String) -> R
         .send()
         .await
         .map_err(|_| "发送到 DSH bridge 失败；请确认 Harness 仍在运行。".to_string())?;
+    if response.status() == reqwest::StatusCode::CONFLICT {
+        // 用户在桌面端把这条会话**归档**掉之后，它在我们缓存里还在，但桥已经不再往它里面写东西了：
+        // 桥会回 `session-archived` 并释放句柄。这不是"发送失败"，而是"这条会话没了"。
+        //
+        // 这里刻意**不**自己重连：重连要重新建立 SSE 事件流，而那条流是渲染端按连接生命周期建的
+        // ——由它接手才不会出现"有会话、没事件流"。所以只把缓存里的会话清掉，并回一个**可识别**的
+        // 错误：渲染端看到 `HARNESS_SESSION_ARCHIVED` 就会重连并把这句重发一次。
+        let archived = bounded_bridge_json::<BridgeErrorResponse>(
+            response,
+            MAX_HARNESS_SESSION_RESPONSE_BYTES,
+            "DSH bridge 返回了无法识别的会话响应。",
+        )
+        .await
+        .ok()
+        .and_then(|body| body.error)
+        .as_deref()
+            == Some("session-archived");
+        if archived {
+            clear_harness_session_if(&state, &session_id);
+            return Err(format!(
+                "{HARNESS_SESSION_ARCHIVED}: 这条会话已在桌面端归档，桥不再接受它的消息。"
+            ));
+        }
+        // 别的 409（例如"另一台 DSH 占用"）保持原来的说法，不要冒充归档。
+        return Err(harness_http_error(reqwest::StatusCode::CONFLICT, "messages"));
+    }
     if !response.status().is_success() {
         return Err(harness_http_error(response.status(), "messages"));
     }
