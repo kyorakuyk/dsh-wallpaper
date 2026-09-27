@@ -39,6 +39,7 @@
     "allow-api-key-status",
     "allow-desktop-workspace-status",
     "allow-open-project-memory",
+    "allow-open-subject-tui",
     "allow-clear-user-data",
     "allow-api-models",
     "allow-show-deepseek-login",
