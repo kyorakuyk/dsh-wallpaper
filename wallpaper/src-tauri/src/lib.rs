@@ -462,14 +462,19 @@ async fn ensure_harness_ui(
     .await
     .map_err(|error| format!("拉起 Harness 界面未完成：{error}"))
     .map(|outcome| {
-        // 源码目录这一类由受管链启动，pid 记在受管状态里；把它落进"左轮弹仓"，这样壁纸重启后
-        // 仍然认得这个孩子（装机重启就丢归属，是今天好几个症状的共同根因）。
-        // 已安装的 CLI 不走这里：它在 `launch_installed_cli` 里自己记（那条路没有受管状态）。
-        if outcome.started && !subject_for_record.trim().starts_with("cli:") {
-            let state = record_from.state::<ManagedDshState>();
-            let pid = state.0.lock().ok().and_then(|managed| managed.as_ref().map(|child| child.child.id()));
-            if let Some(pid) = pid {
+        // 记录"这个孩子是壁纸启动的"——**记的是端口的属主**，不是刚 spawn 出来的外壳。
+        //
+        // 为什么必须是属主：Windows 上启动 `.cmd` 会多出一层 `cmd.exe`（`dsh.cmd` 与 `pnpm.cmd`
+        // 都是批处理），外壳与真正的 DSH 宿主是两个 pid。记外壳会让状态与停止按钮指错对象：
+        // "还活着吗""是不是同一个进程""要停哪一个"全部会答错。属主才是那个在服务、也是我们真正
+        // 想要停止的东西；`ensure_ui` 返回时端口已经在应答（它自己会等），所以这里读到的一定是它。
+        //
+        // 已安装的 CLI 与源码目录都走这一处：两条路的"孩子"定义本就该一致。
+        if outcome.started {
+            if let Some(pid) = crate::client_window::endpoint_process_id(port) {
                 harness_launch::remember_child(subject_for_record.trim(), pid);
+            } else {
+                log::warn!("harness managed-child unknown: nothing listening on {port} after a start");
             }
         }
         // 门票只属于**那一次启动**：`dsh web` 每次起来现生成一个，打印一次。如果宿主已经在跑、

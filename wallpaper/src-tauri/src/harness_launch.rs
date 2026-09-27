@@ -332,9 +332,8 @@ fn launch_installed_cli(launcher: &str, profile: &str) -> HarnessLaunchOutcome {
                     });
                 }
             }
-            // 记住这个孩子属于哪个主体：装了新版壁纸、或壁纸重启之后，"这还是我启动的吗"
-            // 这个问题只能靠这份落盘的记录回答（pid + 创建时间才是身份）。
-            remember_child(&format!("{CLI_ID_PREFIX}{launcher}"), child.id());
+            // 记录**不在这里**做：这里拿到的是刚 spawn 的外壳（Windows 上启动 `.cmd` 必然如此），
+            // 而"孩子"应当指真正在服务的那一个 —— 端口的属主。统一由调用方在端口起来之后记。
             HarnessLaunchOutcome {
                 outcome: "started".into(),
                 kind: HarnessTargetKind::InstalledCli,
