@@ -1808,6 +1808,65 @@ fn open_windows_lock_screen_settings(caller: tauri::WebviewWindow) -> Result<(),
     Err("锁屏设置仅支持 Windows。".into())
 }
 
+/// 「桌面会话」目录名。与桥那边（`bridge/src/index.ts`）保持一致：**同一个名字**既是工作区标题，
+/// 也是壁纸数据目录下的那个子目录名。
+#[cfg(not(feature = "lite"))]
+const DESKTOP_WORKSPACE_DIRECTORY_NAME: &str = "桌面会话";
+
+/// 桌面会话工作区落点的自检信息（只读）。
+///
+/// 位置规则与桥一致：**壁纸自己的数据目录**（`%LOCALAPPDATA%\com.dsh.wallpaper`，也就是打包标识）
+/// 下的「桌面会话」。安装目录不能用——MSIX 每次升级会把整个安装目录替换掉，写在那里的东西必丢；
+/// 数据目录则运行时可写、升级保留、卸载也留得下（用户明确要求"卸载之后也保留桌面会话的数据"）。
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+fn desktop_workspace_status(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    require_settings(&caller)?;
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?;
+    Ok(desktop_workspace_status_from(&data_dir))
+}
+
+#[cfg(all(test, not(feature = "lite")))]
+mod desktop_workspace_tests {
+    use super::{desktop_workspace_status_from, DESKTOP_WORKSPACE_DIRECTORY_NAME};
+
+    /// 位置规则只有一条：数据目录下的「桌面会话」。
+    ///
+    /// 这条断言的价值在于它同时否掉了两个诱人的位置：安装目录（MSIX 升级时整体替换，写那里的必丢）
+    /// 和 DSH 自己的目录（不是"壁纸的目录"，清理时说不清该不该留）。
+    #[test]
+    fn the_workspace_lives_beside_the_apps_own_data() {
+        let status = desktop_workspace_status_from(std::path::Path::new(r"C:\Users\me\AppData\Local\com.dsh.wallpaper"));
+        assert_eq!(
+            status["workspaceDirectory"].as_str().unwrap(),
+            format!(r"C:\Users\me\AppData\Local\com.dsh.wallpaper\{DESKTOP_WORKSPACE_DIRECTORY_NAME}")
+        );
+        assert_eq!(status["dataDirectory"].as_str().unwrap(), r"C:\Users\me\AppData\Local\com.dsh.wallpaper");
+        // 「清除全部用户数据」要删的那条凭据在凭据管理器里，不在文件系统上——把名字一并报出来。
+        assert_eq!(status["credentialTarget"].as_str().unwrap(), "deepseek-api.dsh-wallpaper");
+        // 打包前目录还不存在时也必须给出路径（桥会按同一条规则重建）。
+        assert_eq!(status["workspaceExists"].as_bool(), Some(false));
+    }
+}
+
+/// 纯函数：只负责"路径怎么算"，好让测试直接钉住它（真实的数据目录是运行时才知道的）。
+#[cfg(not(feature = "lite"))]
+fn desktop_workspace_status_from(data_dir: &std::path::Path) -> serde_json::Value {    let workspace = data_dir.join(DESKTOP_WORKSPACE_DIRECTORY_NAME);
+    serde_json::json!({
+        "dataDirectory": data_dir.display().to_string(),
+        "workspaceDirectory": workspace.display().to_string(),
+        "workspaceExists": workspace.is_dir(),
+        // 清除全部用户数据时要一并删掉的那条凭据（在凭据管理器里，不在文件系统上）。
+        "credentialTarget": "deepseek-api.dsh-wallpaper",
+    })
+}
+
 /// Set the API-key credential in Windows Credential Manager.
 /// 把 API Key 写进当前用户的**通用凭据**（target / 用户名与 `keyring` 的 Windows 映射一致，
 /// 所以 API 客户端读到的是同一条；keyring 的 `set_password` 把 UTF-16 小端字节当成 blob，
@@ -4075,6 +4134,7 @@ macro_rules! register_edition_commands {
             open_windows_lock_screen_settings,
             save_api_key,
             api_key_status,
+            desktop_workspace_status,
             show_deepseek_login,
             native_bootstrap_generation,
             release_native_bootstrap,

@@ -27,6 +27,19 @@ export interface ApiKeyStatus {
   masked?: string
 }
 /**
+ * 桌面会话工作区落在哪儿（只读自检）。
+ *
+ * 位置规则与桥一致：**壁纸自己的数据目录**（`%LOCALAPPDATA%\com.dsh.wallpaper`）下的「桌面会话」。
+ * 安装目录不能用——MSIX 每次升级会整体替换它，写在那里的东西必丢。
+ */
+export interface DesktopWorkspaceStatus {
+  dataDirectory: string
+  workspaceDirectory: string
+  workspaceExists: boolean
+  /** 「清除全部用户数据」时要一并删掉的那条凭据（在凭据管理器里，不在文件系统上）。 */
+  credentialTarget: string
+}
+/**
  * Outcome of the one automatic DSH start this process is allowed to attempt.
  * `outcome` is a closed, non-sensitive code; `external` means port 3080 was
  * already owned by someone else's DSH and was deliberately left alone.
@@ -264,6 +277,8 @@ export interface NativeRuntime {
    * (`mask_api_key`) and never contains the middle of the key.
    */
   apiKeyStatus(): Promise<ApiKeyStatus>
+  /** 桌面会话工作区落在哪儿（只读自检）——与桥用的是同一条规则。 */
+  desktopWorkspaceStatus(): Promise<DesktopWorkspaceStatus>
   requestDeepSeekLogin(): Promise<void>
   nativeBootstrapGeneration(): Promise<number>
   releaseNativeBootstrap(generation: number): Promise<boolean>
@@ -468,7 +483,11 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<ApiKeyStatus>('api_key_status')
   },
-  async requestDeepSeekLogin() {
+  async desktopWorkspaceStatus() {
+    if (!await tauriAvailable()) throw new Error('仅桌面版支持桌面会话工作区自检')
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<DesktopWorkspaceStatus>('desktop_workspace_status')
+  },  async requestDeepSeekLogin() {
     if (!await tauriAvailable()) return
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('show_deepseek_login')

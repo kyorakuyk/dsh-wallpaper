@@ -37,6 +37,7 @@
     "allow-open-windows-lock-screen-settings",
     "allow-save-api-key",
     "allow-api-key-status",
+    "allow-desktop-workspace-status",
     "allow-api-models",
     "allow-show-deepseek-login",
     "allow-deepseek-web-adapter-config-status",
