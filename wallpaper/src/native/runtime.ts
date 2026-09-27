@@ -435,8 +435,14 @@ export interface NativeRuntime {
     trustedCommand?: boolean
   }): Promise<ManagedDshAutostart>
   managedDshAutostartStatus(): Promise<ManagedDshAutostart | null>
-  managedDshStatus(): Promise<ManagedDshStatus>
-  stopManagedDsh(): Promise<void>
+  /**
+   * 本应用是否启动着某个 DSH。
+   *
+   * 传 `subjectId` 是因为"是不是我启动的"记在**每个主体一格**的落盘记录里（左轮弹仓）：
+   * 只问"有没有在跑"会把别人启动的实例也算进来，而按钮该按归属亮，不按存活亮。
+   */
+  managedDshStatus(subjectId?: string): Promise<ManagedDshStatus>
+  stopManagedDsh(subjectId?: string): Promise<void>
 }
 
 async function tauriAvailable(): Promise<boolean> {
@@ -868,12 +874,12 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<ManagedDshAutostart | null>('managed_dsh_autostart_status')
   },
-  async managedDshStatus() {
+  async managedDshStatus(subjectId?: string) {
     const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<ManagedDshStatus>('managed_dsh_status')
+    return invoke<ManagedDshStatus>('managed_dsh_status', { subjectId })
   },
-  async stopManagedDsh() {
+  async stopManagedDsh(subjectId?: string) {
     const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('stop_managed_dsh')
+    await invoke('stop_managed_dsh', { subjectId })
   },
 }

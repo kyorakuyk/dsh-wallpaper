@@ -115,6 +115,61 @@ fn web_handoffs() -> &'static std::sync::Mutex<std::collections::HashMap<u16, St
     WEB_HANDOFF.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
+/// 记录文件的位置，由 lib.rs 在启动时告知（打包应用的本地数据目录只有 Tauri 算得准，
+/// 不能靠环境变量硬拼）。没设置时一切"记住/忘记"都退化成空操作：少了持久化，行为回到今天
+/// 之前的样子，而不是出错。
+static RECORDS_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+pub(crate) fn set_records_path(path: PathBuf) {
+    let _ = RECORDS_PATH.set(path);
+}
+
+/// 记住"这个主体当前的孩子是 pid"，并落盘。
+///
+/// 只动**对齐枪管**的那一格：别的格子原样保留，这样"CLI → 客户端 → 切回 CLI"时壁纸仍然认得
+/// CLI 那个孩子。写失败只记日志、不影响启动本身（这份记录是参考，不是启动的前提）。
+pub(crate) fn remember_child(subject_id: &str, pid: u32) {
+    let Some(path) = RECORDS_PATH.get() else { return };
+    let mut cylinder = read_managed_children(path);
+    cylinder.remember(ManagedChild {
+        subject_id: subject_id.to_string(),
+        pid,
+        started_at: crate::client_window::process_started_at(pid),
+    });
+    if let Err(error) = write_managed_children(path, &cylinder) {
+        log::warn!("harness managed-child record not written: {error}");
+    } else {
+        log::info!("harness managed-child remembered: subject={subject_id} pid={pid}");
+    }
+}
+
+/// 由本应用停掉之后清掉**对齐枪管**的那一格；别的格子不受影响。
+pub(crate) fn forget_child(subject_id: &str) {
+    let Some(path) = RECORDS_PATH.get() else { return };
+    let mut cylinder = read_managed_children(path);
+    cylinder.forget(subject_id);
+    if let Err(error) = write_managed_children(path, &cylinder) {
+        log::warn!("harness managed-child record not written: {error}");
+    }
+}
+
+/// 这个主体**当前对齐那一格**的记录（不做存活校验，校验由 `owns_live_process` 负责）。
+pub(crate) fn recorded_child(subject_id: &str) -> Option<ManagedChild> {
+    let path = RECORDS_PATH.get()?;
+    read_managed_children(path).aligned(subject_id).cloned()
+}
+
+/// 这个主体记着的孩子**此刻是否真的还是同一个进程**。
+///
+/// 任一不确定（没有记录、读不到记录、进程已退出、创建时间对不上）都返回 `None`：调用方据此
+/// 认为"不是我启动的"，于是既不会去停它，也不会声称拥有它。
+pub(crate) fn owned_child(subject_id: &str) -> Option<ManagedChild> {
+    let child = recorded_child(subject_id)?;
+    let live_pid = Some(child.pid).filter(|pid| crate::client_window::process_is_alive(*pid));
+    let live_start = live_pid.and_then(crate::client_window::process_started_at);
+    owns_live_process(Some(&child), live_pid, live_start).then_some(child)
+}
+
 /// 读一条记录。**任何不确定都降级为"没有记录"**：文件不存在、读不了、不是 JSON、字段对不上
 /// —— 全部当成空的弹仓。方向是刻意的：这份缓存只是参考不是授权，丢了最坏是"壁纸以为孩子不是
 /// 自己的"（少一个按钮可用），绝不会变成"去停别人的进程"。
@@ -277,6 +332,9 @@ fn launch_installed_cli(launcher: &str, profile: &str) -> HarnessLaunchOutcome {
                     });
                 }
             }
+            // 记住这个孩子属于哪个主体：装了新版壁纸、或壁纸重启之后，"这还是我启动的吗"
+            // 这个问题只能靠这份落盘的记录回答（pid + 创建时间才是身份）。
+            remember_child(&format!("{CLI_ID_PREFIX}{launcher}"), child.id());
             HarnessLaunchOutcome {
                 outcome: "started".into(),
                 kind: HarnessTargetKind::InstalledCli,

@@ -445,7 +445,7 @@ export function SettingsWindow() {
       if (mountedRef.current) setTranslucentTb(status)
     },
     managedDsh: async () => {
-      const status = await nativeRuntime.managedDshStatus()
+      const status = await nativeRuntime.managedDshStatus(settingsRef.current.dshLaunch.subjectId)
       if (mountedRef.current) setManagedDsh(status)
     },
     deepseekWebAdapterConfig: async () => {
@@ -889,7 +889,7 @@ export function SettingsWindow() {
         ...settingsRef.current,
         dshLaunch: { ...settingsRef.current.dshLaunch, window: value },
       })}
-      onStopManagedDsh={() => void nativeRuntime.stopManagedDsh().then(() => { setNotice('已停止本应用启动的 DSH。'); refreshManagedDsh() }).catch((error) => setNotice(String(error)))}
+      onStopManagedDsh={() => void nativeRuntime.stopManagedDsh(settingsRef.current.dshLaunch.subjectId).then(() => { setNotice('已停止本应用启动的 DSH。'); refreshManagedDsh() }).catch((error) => setNotice(String(error)))}
       onChange={change}
       onRefreshTranslucentTb={refreshTranslucentTb}
       onLaunchTranslucentTb={() => void nativeRuntime.launchTranslucentTb().then(refreshTranslucentTb).catch((error) => setNotice(String(error)))}

@@ -445,6 +445,9 @@ async fn ensure_harness_ui(
     let target_id = target_id.unwrap_or_default();
     let profile = profile.unwrap_or_default();
     let worker = app.clone();
+    // 闭包要拿走一份用于记录，外部保留一份用于"这次是不是我启动的、pid 是多少"。
+    let subject_for_record = target_id.clone();
+    let record_from = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let managed = worker.state::<ManagedDshState>();
         harness_launch::ensure_ui(
@@ -457,6 +460,19 @@ async fn ensure_harness_ui(
     })
     .await
     .map_err(|error| format!("拉起 Harness 界面未完成：{error}"))
+    .map(|outcome| {
+        // 源码目录这一类由受管链启动，pid 记在受管状态里；把它落进"左轮弹仓"，这样壁纸重启后
+        // 仍然认得这个孩子（装机重启就丢归属，是今天好几个症状的共同根因）。
+        // 已安装的 CLI 不走这里：它在 `launch_installed_cli` 里自己记（那条路没有受管状态）。
+        if outcome.started && !subject_for_record.trim().starts_with("cli:") {
+            let state = record_from.state::<ManagedDshState>();
+            let pid = state.0.lock().ok().and_then(|managed| managed.as_ref().map(|child| child.child.id()));
+            if let Some(pid) = pid {
+                harness_launch::remember_child(subject_for_record.trim(), pid);
+            }
+        }
+        outcome
+    })
 }
 
 /// Start the chosen execution subject at most once per wallpaper process.
@@ -854,6 +870,7 @@ pub(crate) fn spawn_managed_dsh(
 fn managed_dsh_status(
     caller: tauri::WebviewWindow,
     state: tauri::State<'_, ManagedDshState>,
+    subject_id: Option<String>,
 ) -> Result<ManagedDshStatus, String> {
     require_wallpaper_surface(&caller)?;
     let mut managed = state
@@ -861,12 +878,29 @@ fn managed_dsh_status(
         .lock()
         .map_err(|_| "DSH 进程状态不可用".to_string())?;
     let Some(process) = managed.as_mut() else {
-        return Ok(ManagedDshStatus {
-            managed: false,
-            running: false,
-            pid: None,
-            root_path: None,
-            profile: None,
+        // 内存里没有孩子，不代表"本应用没启动过"：壁纸重启（例如每次装机）会丢掉内存里的记录，
+        // 而落盘的"左轮弹仓"还在。**只看对齐枪管的那一格**，并且要 pid 与创建时间都对上才算数
+        // —— 任何不确定都按"不是我启动的"回答（安全方向，宁可灰按钮，不可误杀）。
+        let recorded = subject_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|subject| !subject.is_empty())
+            .and_then(harness_launch::owned_child);
+        return Ok(match recorded {
+            Some(child) => ManagedDshStatus {
+                managed: true,
+                running: true,
+                pid: Some(child.pid),
+                root_path: None,
+                profile: None,
+            },
+            None => ManagedDshStatus {
+                managed: false,
+                running: false,
+                pid: None,
+                root_path: None,
+                profile: None,
+            },
         });
     };
     match process.child.try_wait() {
@@ -915,13 +949,29 @@ fn managed_dsh_status(
 fn stop_managed_dsh(
     caller: tauri::WebviewWindow,
     state: tauri::State<'_, ManagedDshState>,
+    subject_id: Option<String>,
 ) -> Result<(), String> {
     require_settings(&caller)?;
     let mut managed = state
         .0
         .lock()
         .map_err(|_| "DSH 进程状态不可用".to_string())?;
-    let Some(mut process) = managed.take() else {
+    let taken = managed.take();
+    drop(managed);
+    let Some(mut process) = taken else {
+        // 内存里没有孩子（壁纸重启过）⇒ 看落盘记录，而且**只有判定为真的那一格**才动手：
+        // pid 与创建时间都对上，才承认它是本应用启动的那个。对不上就什么都不做。
+        if let Some(subject) = subject_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(child) = harness_launch::owned_child(subject) {
+                #[cfg(windows)]
+                {
+                    let _ = std::process::Command::new("taskkill.exe")
+                        .args(["/PID", &child.pid.to_string(), "/T", "/F"])
+                        .output();
+                }
+                harness_launch::forget_child(subject);
+            }
+        }
         return Ok(());
     };
     // Scope termination to the exact process spawned by this application;
@@ -937,6 +987,10 @@ fn stop_managed_dsh(
         let _ = process.child.kill();
     }
     let _ = process.child.wait();
+    // 本应用停掉的孩子，要从"左轮弹仓"里清掉那一格（别的格子不动）。
+    if let Some(subject) = subject_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        harness_launch::forget_child(subject);
+    }
     Ok(())
 }
 
@@ -4412,6 +4466,12 @@ fn run_with_edition(lite: bool) {
     register_edition_commands!(builder)
         .setup(move |app| {
             native_bootstrap::report_tauri_ready();
+            // "这个孩子是不是我启动的"要跨壁纸重启成立，就得把记录落在本地数据目录里 ——
+            // 这个路径只有 Tauri 算得准（打包应用会被重定向），不能靠环境变量硬拼。
+            match app.path().app_local_data_dir() {
+                Ok(dir) => harness_launch::set_records_path(dir.join("managed-dsh.json")),
+                Err(error) => log::warn!("managed-child record path unavailable: {error}"),
+            }
             if let Err(error) = windows_integration::start_wallpaper_host(app.handle().clone()) {
                 log::error!("WorkerW wallpaper host failed: {error}");
             }
