@@ -992,6 +992,17 @@ export function apply(ctx: Context, config: Config = {}): void {
     if (!service || typeof service.list !== 'function') return undefined
     try {
       const all = await (service.list as () => Promise<unknown>).call(service)
+      if (Array.isArray(all) && all.length > 0) {
+        // 临时诊断（拿到字段名之后删掉）：工作区命名要按"最近活动"排序，而那个时间字段到底叫什么，
+        // 只有真机上的快照才说得清。打一条样本，别再靠猜。
+        try {
+          const sample = JSON.stringify(all[0])
+          ;(ctx as Context & { logger?: { info?: (message: string) => void } }).logger
+            ?.info?.(`wallpaper bridge diagnostic: visible session sample ${sample.slice(0, 400)}`)
+        } catch {
+          // 诊断失败不该影响主流程。
+        }
+      }
       return visibleSessionIdSet(all)
     } catch {
       return undefined
