@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import {
   CHECKOUT_ENDPOINT_PORT,
+  CLI_SUBJECT_PREFIX,
   DEFAULT_ENDPOINT_PORTS,
   OFFICIAL_SHELL_SUBJECT_ID,
   SHELL_SUBJECT_PREFIX,
@@ -273,6 +274,21 @@ describe('the configured subject decides the endpoint', () => {
     expect(unsupportedShellSubjectFallback('   ')).toBeNull()
     expect(unsupportedShellSubjectFallback(OFFICIAL_SHELL)).toBeNull()
     expect(unsupportedShellSubjectFallback(CHECKOUT)).toBeNull()
+  })
+
+  it('treats a globally installed CLI as the web shape, named by its launcher', () => {
+    // 第三类主体：本机全局安装的 DSH CLI（`npm i -g @deepseek-ai/dsh`）。无 AUMID、无源码树，
+    // 身份就是 PATH 上那个启动器；服务形状与检出一致 ⇒ 端口与 client 都沿用检出的规则。
+    const cli = `${CLI_SUBJECT_PREFIX}C:\\Users\\someone\\AppData\\Roaming\\npm\\dsh.cmd`
+    expect(subjectEndpointPorts({ subjectId: cli })).toEqual([CHECKOUT_ENDPOINT_PORT])
+    expect(subjectEndpointPorts({ subjectId: cli, extraPorts: [3081] }))
+      .toEqual([CHECKOUT_ENDPOINT_PORT, 3081])
+    expect(subjectClientKind(cli)).toBe('official-web')
+    // 不是壳：`shell:` 的规则不该套到它头上（也不会把它当成陌生 AUMID 而拒绝给端口）。
+    expect(isEmbeddedShellSubject(cli)).toBe(false)
+    expect(endpointScopeConfigured({ subjectId: cli })).toBe(true)
+    // 前缀与原生 `harness_targets.rs::CLI_ID_PREFIX` 必须一致。
+    expect(CLI_SUBJECT_PREFIX).toBe('cli:')
   })
 
   it('agrees with the shell table the rest of the bridge uses', () => {

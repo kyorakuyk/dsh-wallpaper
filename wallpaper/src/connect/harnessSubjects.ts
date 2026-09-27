@@ -12,16 +12,19 @@
  */
 import type { HarnessLaunchOutcome, HarnessTarget } from '../native/runtime.ts'
 
-/** The user-facing class name, which is also the reason the two classes behave
- * differently: one carries its own checkout, the other does not. */
+/** The user-facing class name, which is also the reason the classes behave
+ * differently: one carries its own checkout, another is a tree of your own, and the
+ * third is a CLI installed on this machine. */
 export function subjectKindLabel(kind: HarnessTarget['kind']): string {
-  // The design's own terms are 自带检出 / 源码检出, and they are exact: the two
-  // classes differ in whether the client carries its *own* checkout. Measured
-  // against what a user can see, though, "检出" names an implementation detail —
-  // what they are choosing between is a client that brings its own runtime and a
-  // source directory of their own. The labels therefore say that, and the two words
-  // never appear in the settings surface.
-  return kind === 'embedded-shell' ? '客户端' : '源码目录'
+  // The design's own terms are 自带检出 / 源码检出, and they are exact: the classes
+  // differ in whether the client carries its *own* checkout. Measured against what a
+  // user can see, though, "检出" names an implementation detail — what they are
+  // choosing between is a client that brings its own runtime, a source directory of
+  // their own, and (2026-09-27) a DSH CLI installed on this machine with npm. The
+  // labels say that, and the word 检出 never appears in the settings surface.
+  if (kind === 'embedded-shell') return '客户端'
+  if (kind === 'installed-cli') return '已安装的 CLI'
+  return '源码目录'
 }
 
 /**

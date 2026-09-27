@@ -139,6 +139,15 @@ export const SHELL_SUBJECT_PREFIX = 'shell:'
 export const OFFICIAL_SHELL_SUBJECT_ID = `${SHELL_SUBJECT_PREFIX}com.deepseek.dsh`
 
 /**
+ * The subject-id namespace for a **globally installed** DSH CLI (`npm i -g @deepseek-ai/dsh`).
+ *
+ * A third class, not a second spelling of a checkout: it has no source tree to name, so
+ * its id names the launcher on `PATH` instead. The native side spells this prefix in
+ * `harness_targets.rs::CLI_ID_PREFIX`, and `endpoints.spec.ts` pins the two together.
+ */
+export const CLI_SUBJECT_PREFIX = 'cli:'
+
+/**
  * DSH's own web default: the port a source checkout listens on unless the user
  * moved it with `--port`.
  */
@@ -204,6 +213,11 @@ export function subjectEndpointPorts(scope: EndpointScope): number[] | undefined
     // i.e. on a client the user did not choose.
     return usablePorts(SHELL_SUBJECTS[aumid]?.ports ?? [])
   }
+  // 已安装的 CLI 与源码检出同形状（都 boot 一个 profile、都在 DSH 自己的默认端口上服务 ✓）：
+  // 它只是没有树可指 ✗。所以端口规则与检出一致。
+  if (subject.toLowerCase().startsWith(CLI_SUBJECT_PREFIX)) {
+    return usablePorts([CHECKOUT_ENDPOINT_PORT, ...(scope.extraPorts ?? [])])
+  }
   return usablePorts([CHECKOUT_ENDPOINT_PORT, ...(scope.extraPorts ?? [])])
 }
 
@@ -248,6 +262,9 @@ export function endpointScopeOf(launch: {
 export function subjectClientKind(subjectId: string | undefined): HarnessClientKind | undefined {
   const subject = (subjectId ?? '').trim()
   if (!subject) return undefined
+  // 已安装的 CLI 明确按 `official-web` 处理（它没有自己的窗口 ✓，界面在浏览器 ✓）—— 与检出差
+  // 的只是"没有源码树" ✓，所以这里分开写，让"这是有意为之"看得见。
+  if (subject.toLowerCase().startsWith(CLI_SUBJECT_PREFIX)) return 'official-web'
   if (!subject.toLowerCase().startsWith(SHELL_SUBJECT_PREFIX)) return 'official-web'
   const aumid = subject.slice(SHELL_SUBJECT_PREFIX.length).trim().toLowerCase()
   return SHELL_SUBJECTS[aumid]?.kind
