@@ -142,6 +142,37 @@ fn launch_installed_cli(launcher: &str, profile: &str) -> HarnessLaunchOutcome {
     }
 }
 
+/// The command that raises the TUI in a console window of its own.
+///
+/// Deliberately different from the DSH CLI's command line, in three ways that each
+/// answer a question a user would otherwise ask:
+///
+/// * **it is a console program and that console should be visible** — the opposite of
+///   `CREATE_NO_WINDOW` above, because "run the TUI" means "put a terminal on screen",
+///   and a TUI without a terminal is a process talking to nobody;
+/// * **`cmd /k` rather than `/c`** — a TUI that cannot start (missing install, broken
+///   profile) prints why and exits, and with `/c` that message would vanish with the
+///   window before anyone could read it;
+/// * **no `--profile`** — unlike `dsh`, the TUI names its own profile (`dsh-tui`) and
+///   forwards the rest to it, so passing one here would be the wallpaper overriding a
+///   choice the tool already made.
+fn tui_launch_command(launcher: &Path) -> (PathBuf, Vec<String>) {
+    (
+        PathBuf::from("cmd.exe"),
+        vec![
+            "/c".to_string(),
+            "start".to_string(),
+            // The empty title is not decoration: `start` reads its first quoted
+            // argument as a window title, and without this an unquoted path would be
+            // taken as one.
+            String::new(),
+            "cmd".to_string(),
+            "/k".to_string(),
+            launcher.to_string_lossy().into_owned(),
+        ],
+    )
+}
+
 /// The program and arguments that start a **globally installed** DSH CLI.
 ///
 /// npm's Windows launcher is a `.cmd` batch file, and `CreateProcess` cannot run one
@@ -654,6 +685,27 @@ mod tests {
         let (program, args) = installed_cli_command(Path::new(r"C:\tools\dsh.exe"), "web");
         assert_eq!(program, PathBuf::from(r"C:\tools\dsh.exe"));
         assert_eq!(args, vec!["--profile", "web"]);
+    }
+
+    #[test]
+    fn the_tui_is_raised_in_a_console_that_stays_until_it_is_read() {
+        let (program, args) = tui_launch_command(Path::new(r"C:\Users\u\AppData\Roaming\npm\dst.cmd"));
+        assert_eq!(program, PathBuf::from("cmd.exe"));
+        assert_eq!(
+            args,
+            vec![
+                "/c",
+                "start",
+                // 空标题：`start` 会把第一个带引号的参数当窗口标题，少了它就会把路径当标题。
+                "",
+                "cmd",
+                // `/k` 而不是 `/c`：TUI 起不来时会打印原因然后退出，用 `/c` 那句话会随窗口一起消失。
+                "/k",
+                r"C:\Users\u\AppData\Roaming\npm\dst.cmd"
+            ]
+        );
+        // TUI 自己指定 profile（dsh-tui）⇒ 这里**不能**替它加 `--profile`。
+        assert!(!args.iter().any(|arg| arg == "--profile"));
     }
 
     #[test]
