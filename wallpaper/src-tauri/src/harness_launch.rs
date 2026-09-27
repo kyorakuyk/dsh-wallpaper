@@ -115,10 +115,60 @@ fn web_handoffs() -> &'static std::sync::Mutex<std::collections::HashMap<u16, St
     WEB_HANDOFF.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-/// 一份"这个孩子是壁纸启动的"记录，落在盘上，跨壁纸重启有效。
+/// 读一条记录。**任何不确定都降级为"没有记录"**：文件不存在、读不了、不是 JSON、字段对不上
+/// —— 全部当成空的弹仓。方向是刻意的：这份缓存只是参考不是授权，丢了最坏是"壁纸以为孩子不是
+/// 自己的"（少一个按钮可用），绝不会变成"去停别人的进程"。
+pub(crate) fn read_managed_children(path: &Path) -> ManagedChildren {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<ManagedChildren>(&text).ok())
+        .unwrap_or_default()
+}
+
+/// 原子写：先写临时文件再改名。
 ///
-/// 只记**当前选中的那个主体**的孩子：换主体后旧进程不追踪、也不去停（它还活着，只是不再算
-/// "我的"）。每次成功启动覆盖它。
+/// 直接覆写会让"写到一半被读"成为一种可能，而半个文件恰好可能解析成一个**缺少某格的**弹仓
+/// —— 那正是"壁纸认不出自己的孩子"的另一种成因，且难查。改名在同一分区上是原子的。
+pub(crate) fn write_managed_children(path: &Path, children: &ManagedChildren) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temp = path.with_extension("json.tmp");
+    std::fs::write(&temp, serde_json::to_vec_pretty(children)?)?;
+    std::fs::rename(&temp, path)
+}
+
+/// 每个主体一条记录 —— 左轮弹仓：一格一个主体。
+///
+/// **别的格子一律保留**，只动"对齐枪管"的那一格。理由是一个真实场景：用户先用 CLI 对话、
+/// 然后切到客户端、再切回 CLI —— 那时壁纸必须还能认出 CLI 那个孩子是自己的，否则它要么重复
+/// 启动一个，要么不敢停自己启动的那个。键是主体 id（`shell:<aumid>` / 目录路径 / `cli:<启动器>`），
+/// 不是端口：端口不是契约，而且不同主体可以先后用同一个端口。
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ManagedChildren {
+    /// 用 `BTreeMap`：落盘后顺序稳定，改动一眼可见。
+    #[serde(default)]
+    pub children: std::collections::BTreeMap<String, ManagedChild>,
+}
+
+impl ManagedChildren {
+    /// 当前下拉里选中的那个主体对应的记录（"对齐枪管"的那一格）。其它格子一概不看。
+    pub(crate) fn aligned(&self, subject_id: &str) -> Option<&ManagedChild> {
+        self.children.get(subject_id)
+    }
+
+    /// 成功启动后覆盖**这一格**；别的格子原样保留。
+    pub(crate) fn remember(&mut self, child: ManagedChild) {
+        self.children.insert(child.subject_id.clone(), child);
+    }
+
+    /// 由本应用停掉之后清掉**这一格**；别的格子不受影响。
+    pub(crate) fn forget(&mut self, subject_id: &str) {
+        self.children.remove(subject_id);
+    }
+}
+
+/// 一份"这个孩子是壁纸启动的"记录，落在盘上，跨壁纸重启有效。
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ManagedChild {
     /// 主体 id（`shell:<aumid>` / 目录路径 / `cli:<启动器>`）—— 不是端口：端口不是契约，
@@ -817,6 +867,49 @@ mod tests {
         );
         // TUI 自己指定 profile（dsh-tui）⇒ 这里**不能**替它加 `--profile`。
         assert!(!args.iter().any(|arg| arg == "--profile"));
+    }
+
+    #[test]
+    fn a_missing_or_broken_record_reads_as_an_empty_cylinder() {
+        let dir = std::env::temp_dir().join("dsh-wallpaper-managed-children-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("managed-dsh.json");
+        // 没有文件 ⇒ 空弹仓（不是错误）。
+        assert_eq!(read_managed_children(&path), ManagedChildren::default());
+        // 写进去、读回来，一格不多一格不少。
+        let mut cylinder = ManagedChildren::default();
+        cylinder.remember(ManagedChild {
+            subject_id: "cli:C:\\Users\\u\\AppData\\Roaming\\npm\\dsh.cmd".into(),
+            pid: 4242,
+            started_at: Some(1_700_000_000),
+        });
+        write_managed_children(&path, &cylinder).expect("write");
+        assert_eq!(read_managed_children(&path), cylinder);
+        // 坏文件 ⇒ 空弹仓：降级方向必须安全（宁可少一个按钮可用，不可多一次误杀）。
+        std::fs::write(&path, b"{ this is not json").expect("corrupt");
+        assert_eq!(read_managed_children(&path), ManagedChildren::default());
+        std::fs::write(&path, br#"{"children":{"x":{"subject_id":"x"}}}"#).expect("partial");
+        assert_eq!(read_managed_children(&path), ManagedChildren::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_revolver_keeps_every_subject_and_only_fires_the_aligned_one() {
+        let cli = r"cli:C:\Users\u\AppData\Roaming\npm\dsh.cmd";
+        let shell = "shell:com.deepseek.dsh";
+        let mut cylinder = ManagedChildren::default();
+        cylinder.remember(ManagedChild { subject_id: cli.into(), pid: 111, started_at: Some(1) });
+        // 切到客户端：CLI 那一格**保留**，只是不再对齐。
+        assert!(cylinder.aligned(shell).is_none());
+        assert_eq!(cylinder.aligned(cli).map(|child| child.pid), Some(111));
+        cylinder.remember(ManagedChild { subject_id: shell.into(), pid: 222, started_at: Some(2) });
+        // 切回 CLI：仍然认得那个孩子 —— 这就是"别的格子必须留着"的全部理由。
+        assert_eq!(cylinder.aligned(cli).map(|child| child.pid), Some(111));
+        assert_eq!(cylinder.aligned(shell).map(|child| child.pid), Some(222));
+        // 由本应用停掉客户端那一格，CLI 那一格不受影响。
+        cylinder.forget(shell);
+        assert!(cylinder.aligned(shell).is_none());
+        assert_eq!(cylinder.aligned(cli).map(|child| child.pid), Some(111));
     }
 
     #[test]
