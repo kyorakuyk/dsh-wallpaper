@@ -6,6 +6,7 @@ import {
   DEFAULT_SETTINGS,
   MAX_SETTINGS_SHORT_STRING,
   SETTINGS_VERSION,
+  assistantDay,
   loadSettings,
   normalizeReceivedSettings,
   normalizeSettings,
@@ -110,6 +111,25 @@ describe('settings normalization boundary', () => {
     for (const key of ['animationSpeed', 'portraitAmbientStrength', 'conversationOpacity', 'conversationBlur', 'portraitAmbientLength'] as const) {
       expect(Number.isFinite(normalizeSettings({ ...VALID, [key]: '1' as never })[key])).toBe(true)
     }
+  })
+
+  it('keeps the assistant day on a 04:00 boundary across months and years', () => {
+    // 用户定的规则：深夜还在做的事，"今天"还没过去 —— 00:30 与 03:59 都属前一天，04:00 才翻页。
+    // 桥用同一个规则给日会话命名，所以这条错了会让"同一段对话"在两侧变成两天。
+    expect(assistantDay(new Date(2026, 8, 27, 0, 30))).toBe('2026-09-26')
+    expect(assistantDay(new Date(2026, 8, 27, 3, 59))).toBe('2026-09-26')
+    expect(assistantDay(new Date(2026, 8, 27, 4, 0))).toBe('2026-09-27')
+    // 跨月与跨年：都是把时间往前挪 4 小时再取日历日。
+    expect(assistantDay(new Date(2026, 9, 1, 0, 30))).toBe('2026-09-30')
+    expect(assistantDay(new Date(2027, 0, 1, 0, 30))).toBe('2026-12-31')
+    // 边界小时可配且被夹在 0–23；0 = 零点跨日（旧行为）；坏值退回默认 4。
+    expect(assistantDay(new Date(2026, 8, 27, 0, 30), 0)).toBe('2026-09-27')
+    expect(assistantDay(new Date(2026, 8, 27, 0, 30), 23)).toBe('2026-09-26')
+    expect(assistantDay(new Date(2026, 8, 27, 0, 30), Number.NaN)).toBe('2026-09-26')
+    expect(DEFAULT_SETTINGS.dayBoundaryHour).toBe(4)
+    expect(normalizeSettings({ ...VALID, dayBoundaryHour: 99 }).dayBoundaryHour).toBe(23)
+    expect(normalizeSettings({ ...VALID, dayBoundaryHour: -5 }).dayBoundaryHour).toBe(0)
+    expect(normalizeSettings({ ...VALID, dayBoundaryHour: 3.6 }).dayBoundaryHour).toBe(4)
   })
 
   it('accepts non-boolean flags only as their default', () => {

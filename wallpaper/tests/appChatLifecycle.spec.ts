@@ -169,14 +169,19 @@ describe('App chat lifecycle isolation', () => {
     const { chatAdapterLifecycleKey, shouldIgnoreUnpairedResume, shouldStartNewConversationOnUnlock } = await import('../src/App.tsx')
     const beforeMidnight = new Date(2026, 7, 18, 23, 59, 0)
     const afterMidnight = new Date(2026, 7, 19, 0, 1, 0)
+    const afterBoundary = new Date(2026, 7, 19, 4, 1, 0)
 
     // Changing a policy in Settings changes neither adapter identity nor an
     // in-flight stream. The daily decision belongs to the later unlock event.
     expect(chatAdapterLifecycleKey('deepseek-api', 7)).toBe(chatAdapterLifecycleKey('deepseek-api', 7))
     expect(shouldStartNewConversationOnUnlock('daily', '2026-08-18', beforeMidnight)).toBe(false)
-    expect(shouldStartNewConversationOnUnlock('daily', '2026-08-18', afterMidnight)).toBe(true)
+    // 「助手日」的边界是 04:00（用户定的规则）：00:01 仍属**前一天** —— 深夜还在做的事不该被零点
+    // 从中间切走；到 04:01 才真的换新的一天 ✓。边界小时可配，0 = 退回"零点跨日"的旧行为。
+    expect(shouldStartNewConversationOnUnlock('daily', '2026-08-18', afterMidnight)).toBe(false)
+    expect(shouldStartNewConversationOnUnlock('daily', '2026-08-18', afterBoundary)).toBe(true)
+    expect(shouldStartNewConversationOnUnlock('daily', '2026-08-18', afterMidnight, 0)).toBe(true)
     expect(shouldStartNewConversationOnUnlock('new-on-unlock', '2026-08-19', afterMidnight)).toBe(true)
-    expect(shouldStartNewConversationOnUnlock('resume-last', '2026-08-18', afterMidnight)).toBe(false)
+    expect(shouldStartNewConversationOnUnlock('resume-last', '2026-08-18', afterBoundary)).toBe(false)
     expect(shouldIgnoreUnpairedResume(false, 'resume')).toBe(true)
     expect(shouldIgnoreUnpairedResume(false, 'unlocked')).toBe(false)
     expect(shouldIgnoreUnpairedResume(true, 'resume')).toBe(false)

@@ -27,7 +27,7 @@ import { MultiScreenWakeScene } from './scenes/MultiScreenWakeScene.tsx'
 import { SleepScene } from './scenes/SleepScene.tsx'
 import { WakeScene } from './scenes/WakeScene.tsx'
 import { INITIAL_RUNTIME_STATE, reduceRuntime } from './scenes/stateMachine.ts'
-import { BACKGROUND_OPTIONS, applyBubbleOverrides, assetUrl, loadSettings, localCalendarDay, normalizeReceivedSettings, resumeConversationId, saveConversationPointer, saveSettings, type WallpaperSettings } from './settings/store.ts'
+import { BACKGROUND_OPTIONS, DEFAULT_DAY_BOUNDARY_HOUR, applyBubbleOverrides, assetUrl, assistantDay, loadSettings, normalizeReceivedSettings, resumeConversationId, saveConversationPointer, saveSettings, type WallpaperSettings } from './settings/store.ts'
 import { nativeRuntime, type DesktopDisplayInfo, type ManagedDshAutostart, type NativeSendOptions } from './native/runtime.ts'
 import { reportNativeBootstrapReady } from './native/bootstrapHandoff.ts'
 import { listen } from '@tauri-apps/api/event'
@@ -400,9 +400,10 @@ export function shouldStartNewConversationOnUnlock(
   policy: WallpaperSettings['conversationPolicy'],
   previousUnlockDay: string,
   now: Date = new Date(),
+  boundaryHour: number = DEFAULT_DAY_BOUNDARY_HOUR,
 ): boolean {
   return policy === 'new-on-unlock'
-    || (policy === 'daily' && previousUnlockDay !== localCalendarDay(now))
+    || (policy === 'daily' && previousUnlockDay !== assistantDay(now, boundaryHour))
 }
 
 /**
@@ -568,9 +569,10 @@ export function App({ surface = 'combined' }: AppProps) {
   const apiAdapterOptionsRef = useRef<NativeSendOptions>(apiAdapterOptionsFromSettings(settings))
   const conversationPolicyRef = useRef(settings.conversationPolicy)
   // Keep the day from the last session return, not from the last render. A
-  // long-running process therefore notices local midnight when the user
-  // returns to the desktop and asks for a daily conversation.
-  const previousUnlockDayRef = useRef(localCalendarDay())
+  // long-running process therefore notices the day boundary when the user
+  // returns to the desktop and asks for a daily conversation. 「助手日」= 本地
+  // 04:00 起算，深夜还在做的事不会被零点切走（`assistantDay`）。
+  const previousUnlockDayRef = useRef(assistantDay(new Date(), settings.dayBoundaryHour))
   // This ref is updated synchronously by user/backend actions. React state is
   // intentionally asynchronous, so runtimeRef alone would leave a short gap
   // in which an old adapter could finish and persist its pointer under a new
@@ -1401,10 +1403,11 @@ export function App({ surface = 'combined' }: AppProps) {
           if (settingsRef.current.interactionLayout === 'taskbar-docked') setInteractionState('collapsed')
           const now = new Date()
           const policy = conversationPolicyRef.current
-          if (shouldStartNewConversationOnUnlock(policy, previousUnlockDayRef.current, now)) {
+          const boundaryHour = settingsRef.current.dayBoundaryHour
+          if (shouldStartNewConversationOnUnlock(policy, previousUnlockDayRef.current, now, boundaryHour)) {
             setConversationGeneration((value) => value + 1)
           }
-          previousUnlockDayRef.current = localCalendarDay(now)
+          previousUnlockDayRef.current = assistantDay(now, boundaryHour)
           observedLockOrSuspend = false
           if (!appCoreClient.native) baseDispatch({ type: 'UNLOCK', playWake: settingsRef.current.playWakeOnEveryUnlock && settingsRef.current.animationsEnabled && !settingsRef.current.skipWakeAnimation })
         }

@@ -133,6 +133,11 @@ export interface WallpaperSettings {
   defaultBackend: BackendMode
   autoSwitchHarness: boolean
   conversationPolicy: ConversationPolicy
+  /**
+   * 「助手日」的边界小时（0–23，默认 4）。跨日重置、日会话命名、会话指针的"哪一天"都以它为准：
+   * 4 表示一条助手日从本地 04:00 开始 —— 深夜还在做的事不会被零点切走。
+   */
+  dayBoundaryHour: number
   modelTierRules: ModelTierRule[]
   /** 气泡文案覆盖（key: 文案） */
   bubbleOverrides: Record<string, string>
@@ -175,11 +180,22 @@ export interface WallpaperSettings {
   harnessAutoResetAt?: number
 }
 
+/**
+ * 「助手日」的默认边界：本地 **04:00**。
+ *
+ * 用户定的规则（2026-09-27）：跨日不在零点，而在凌晨四点 —— 深夜还在做的事，在他心里"今天"
+ * 还没过去；00:30 开始的一件事到 04:00 之前都算前一天，日重置才会落在真正"新的一天开始"的
+ * 时刻，而不是把他正在做的事从中间切断（游戏里的跨日缓冲是同一个道理）。
+ * 声明在 `DEFAULT_SETTINGS` **之前**，因为默认值要引用它。
+ */
+export const DEFAULT_DAY_BOUNDARY_HOUR = 4
+
 export const DEFAULT_SETTINGS: WallpaperSettings = {
   version: SETTINGS_VERSION,
   defaultBackend: 'deepseek-web',
   autoSwitchHarness: false,
   conversationPolicy: 'resume-last',
+  dayBoundaryHour: DEFAULT_DAY_BOUNDARY_HOUR,
   modelTierRules: [],
   bubbleOverrides: {},
   animationsEnabled: true,
@@ -313,6 +329,8 @@ export function normalizeSettings(raw: unknown): WallpaperSettings {
     defaultBackend: oneOf(value.defaultBackend, BACKEND_MODES, DEFAULT_SETTINGS.defaultBackend),
     autoSwitchHarness: settingsBool(value.autoSwitchHarness, settingsBool(value.autoSwitchPersona, DEFAULT_SETTINGS.autoSwitchHarness)),
     conversationPolicy: oneOf(value.conversationPolicy, CONVERSATION_POLICIES, DEFAULT_SETTINGS.conversationPolicy),
+    // 0 是合法的（退回旧行为：零点跨日），所以用 boundedNumber 而不是"非零才算"。
+    dayBoundaryHour: Math.round(boundedNumber(value.dayBoundaryHour, DEFAULT_SETTINGS.dayBoundaryHour, 0, 23)),
     modelTierRules: normalizeModelTierRules(value.modelTierRules),
     bubbleOverrides: normalizeBubbleOverrides(value.bubbleOverrides),
     animationsEnabled: settingsBool(value.animationsEnabled, DEFAULT_SETTINGS.animationsEnabled),
@@ -617,6 +635,21 @@ export function localCalendarDay(now: Date = new Date()): string {
   return `${year}-${month}-${day}`
 }
 
+/**
+ * 「助手日」：把 `now` 往前挪 `boundaryHour` 小时，再取那个日历日。
+ *
+ * **一条规则、两侧同值**：桥用它给日会话命名（`wallpaper-<助手日>`），前端用它决定"要不要换
+ * 新会话"、以及会话指针属于哪一天。任何一边单独改动都会让"同一段对话"在两侧变成两天，所以
+ * 两侧都必须调用各自实现的同一个函数、取同一个边界小时（前端取设置 `dayBoundaryHour`，
+ * 桥取配置 `dayBoundaryHour`；P1 会加一条启动自检，不一致就报警而不是静默）。
+ */
+export function assistantDay(now: Date = new Date(), boundaryHour: number = DEFAULT_DAY_BOUNDARY_HOUR): string {
+  const boundary = Number.isFinite(boundaryHour)
+    ? Math.min(23, Math.max(0, Math.floor(boundaryHour)))
+    : DEFAULT_DAY_BOUNDARY_HOUR
+  return localCalendarDay(new Date(now.getTime() - boundary * 3_600_000))
+}
+
 export function loadConversationPointers(): ConversationPointers {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(CONVERSATION_KEY) ?? '{}')
@@ -624,27 +657,38 @@ export function loadConversationPointers(): ConversationPointers {
   } catch { return {} }
 }
 
-export function saveConversationPointer(backend: BackendMode, id: string, now: Date = new Date()): void {
+export function saveConversationPointer(
+  backend: BackendMode,
+  id: string,
+  now: Date = new Date(),
+  boundaryHour: number = DEFAULT_DAY_BOUNDARY_HOUR,
+): void {
   if (backend === 'deepseek-web' && !isValidConversationId(id)) return
   try {
     const pointers = loadConversationPointers()
     pointers[backend] = {
       id,
       updatedAt: now.getTime(),
-      day: localCalendarDay(now),
+      // 助手日而不是日历日：指针属于哪一天，要与"要不要换新会话"用的是同一条规则。
+      day: assistantDay(now, boundaryHour),
       ...(backend === 'harness' ? { bridgeRevision: HARNESS_POINTER_REVISION } : {}),
     }
     localStorage.setItem(CONVERSATION_KEY, JSON.stringify(pointers))
   } catch { /* unavailable storage: start a fresh conversation next time */ }
 }
 
-export function resumeConversationId(backend: BackendMode, policy: ConversationPolicy, now: Date = new Date()): string | undefined {
+export function resumeConversationId(
+  backend: BackendMode,
+  policy: ConversationPolicy,
+  now: Date = new Date(),
+  boundaryHour: number = DEFAULT_DAY_BOUNDARY_HOUR,
+): string | undefined {
   if (policy === 'new-on-unlock') return undefined
   const pointer = loadConversationPointers()[backend]
   if (!pointer) return undefined
   if (backend === 'harness'
     && (pointer as ConversationPointers['harness'])?.bridgeRevision !== HARNESS_POINTER_REVISION) return undefined
-  if (policy === 'daily' && pointer.day !== localCalendarDay(now)) return undefined
+  if (policy === 'daily' && pointer.day !== assistantDay(now, boundaryHour)) return undefined
   return backend === 'deepseek-web'
     ? isValidConversationId(pointer.id) ? pointer.id : undefined
     : pointer.id

@@ -119,6 +119,12 @@ export class AsyncWorkTracker {
 
 export interface Config {
   /**
+   * 「助手日」的边界小时（0–23，默认 4）：跨日不在零点而在凌晨四点 —— 深夜还在做的事，
+   * 在用户心里"今天"还没过去。日会话命名（`wallpaper-<助手日>`）以它为准。
+   * **必须与壁纸设置里的 `dayBoundaryHour` 同值**，否则"同一段对话"会在两侧变成两天。
+   */
+  dayBoundaryHour?: number
+  /**
    * Host-owned DSH data root. The bridge always creates its bearer token at
    * `<tokenRoot>/wallpaper/bridge-token`; it never treats a configured path as
    * a token file or rewrites ACLs on the configured root itself.
@@ -145,6 +151,7 @@ export const Config: Schema<Config> = Schema.object({
   workspacePath: Schema.string(),
   workspaceTitle: Schema.string(),
   desktopPermission: Schema.string(),
+  dayBoundaryHour: Schema.number(),
 }) as Schema<Config>
 
 interface LiveSession {
@@ -285,18 +292,59 @@ export function isLoopbackWebServerHost(host: unknown): host is '127.0.0.1' {
   return host === '127.0.0.1'
 }
 
-export function desktopEntryPrompt(cwd: string, workspaceTitle: string, permission: string): string {
-  return [
-    'This session is being accessed through the dsh-wallpaper desktop interaction entry, not the full Harness Web UI.',
-    `Desktop workspace: ${workspaceTitle}.`,
-    `Workspace root: ${cwd}. Treat this directory as the default and intended file boundary.`,
-    `Active permission preset: ${permission}. The native DSH permission service remains authoritative; do not imply access beyond it.`,
-    'For desktop replies, be concise and action-oriented. If a task needs a tool approval or a richer Harness control surface, ask the user to open Harness rather than pretending the wallpaper can approve it.',
-  ].join('\n')
-}
-
-function desktopPermission(config: Config): string {
-  return config.desktopPermission?.trim() || DEFAULT_DESKTOP_PERMISSION_PRESET
+/**
+ * 桌面入口的**简报**：这是"你是谁、能做什么、边界在哪、怎么改人格、记忆在哪"的唯一注入点。
+ *
+ * 只在创建/恢复桌面会话时注入（`desktopAgentSetup`），所以它只影响桌面工作区这一处的对话 ——
+ * 别的目录的会话看不到它，也不会被它污染（用户定的范围）。
+ *
+ * 措辞原则：**只说真话**。读是全局放行的、写只在桌面工作区内（越界会被沙箱直接拒绝），
+ * 这两件事都必须写清楚，否则助手会承诺做不到的事、或者在沙箱拒绝之后反复重试。
+ */
+export function desktopEntryPrompt(
+  cwd: string,
+  workspaceTitle: string,
+  permission: string,
+  options: { day?: string; memoryPath?: string; memory?: string } = {},
+): string {
+  const sections: string[] = [
+    [
+      '【你是谁】你是这台电脑桌面上的 DSH 助手：用户通过桌面上的输入岛跟你说话，',
+      '他看不到 Harness 的完整界面（工具面板、审批面板都在别处）。',
+      '所以每一轮都要用一两句话把"你做了什么、结果是什么、下一步要他做什么"说清楚，',
+      '不要假设他能看到你的工具调用或日志。',
+    ].join(''),
+    [
+      '【能力与边界】',
+      `- 读：可以搜索并读取这台电脑上的文件来回答他的问题（读是全局放行的）。`,
+      `- 写：只在桌面会话目录内可写：${cwd}（工作区标题：${workspaceTitle}）。`,
+      `- 越界写会被沙箱直接拒绝。遇到拒绝时**不要反复重试**：直说"这块需要你把目标目录放进桌面会话，`,
+      `  或者把权限提上去"，并等他决定。`,
+      `- 当前权限预设：${permission}。原生权限服务说了算，不要暗示自己有超出它的权限。`,
+      '- 破坏性、外发、花钱的动作先问；与他当前要求无关的改动不要顺手做。',
+    ].join('\n'),
+    [
+      '【说话人格与外观是两件事，别混】',
+      '- 说话人格（语气、称呼、要不要先问、有没有角色扮演）＝ **跟他说一声，你把它写进项目记忆**，下次会话照样生效。',
+      '- 外观（立绘、形态、气泡）＝ 设置中心 →「形态」/「外观」，那里改，与你无关。',
+      '- 他说"改人格"时，默认指说话人格。',
+    ].join('\n'),
+    [
+      '【项目记忆】',
+      options.memoryPath ? `- 文件：${options.memoryPath}（人可读，他自己也能打开改）` : '- 项目记忆文件在桌面会话目录里，名字是 项目记忆.md。',
+      '- 他说"记下来 / 以后都这样 / 别再问"⇒ 写它，并回一句"记下了：…"让他核对。',
+      '- 每次会话开始先读它；与此刻的说法冲突时以**此刻**为准，并把旧条目标注为"已被 X 取代"（不要静默删除）。',
+      '- 只放长期生效的要求与偏好，不放密码、令牌等敏感内容，也不放一次性任务。',
+    ].join('\n'),
+  ]
+  if (options.day) sections.push(`【今天】助手日：${options.day}（跨日边界是本地 04:00，深夜的事仍算前一天）。`)
+  if (options.memory) {
+    sections.push(`【项目记忆内容】（用户长期要求，按上面的规则使用）\n${options.memory}`)
+  }
+  sections.push(
+    '若某件事需要工具审批或更完整的 Harness 控制面，直接请用户打开 Harness；不要假装壁纸能替他批准。',
+  )
+  return sections.join('\n\n')
 }
 
 function desktopAgentSetup(
@@ -305,20 +353,81 @@ function desktopAgentSetup(
   cwd: string,
   workspaceTitle: string,
   permission: string,
+  promptOptions: { day?: string; memoryPath?: string; memory?: string } = {},
 ): (agentContext: Context) => Promise<void> {
   return async (agentContext) => {
     await host.mountPreset(agentContext, preset)
     agentContext.systemPrompt.context({
       name: DESKTOP_ENTRY_CONTEXT_NAME,
       order: -90,
-      text: desktopEntryPrompt(cwd, workspaceTitle, permission),
+      text: desktopEntryPrompt(cwd, workspaceTitle, permission, promptOptions),
     })
   }
 }
 
-function localDailyWallpaperSessionId(now: Date = new Date()): string {
-  const date = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-')
-  return `wallpaper-${date}`
+function desktopPermission(config: Config): string {
+  return config.desktopPermission?.trim() || DEFAULT_DESKTOP_PERMISSION_PRESET
+}
+
+/** 「助手日」的默认边界小时（与壁纸设置里的 `dayBoundaryHour` 同一默认值）。 */
+export const DEFAULT_DAY_BOUNDARY_HOUR = 4
+
+/** 桌面会话的**项目记忆**文件名：住在桌面工作区里，用户可读可改，卸载后保留。 */
+export const PROJECT_MEMORY_FILE_NAME = '项目记忆.md'
+
+/** 注入记忆的上限：它是"长期要求"清单，不是剪贴板。超长就截断并**说明**截断了。 */
+export const MAX_PROJECT_MEMORY_CHARS = 8_000
+
+/** 边界小时：配置值夹在 0–23，坏值退回默认（0 是合法的：零点跨日）。 */
+export function configuredDayBoundaryHour(config: Config): number {
+  const raw = config.dayBoundaryHour
+  return typeof raw === 'number' && Number.isFinite(raw)
+    ? Math.min(23, Math.max(0, Math.floor(raw)))
+    : DEFAULT_DAY_BOUNDARY_HOUR
+}
+
+/**
+ * 「助手日」：把本地时间往前挪 `boundaryHour` 小时，再取那个日历日。
+ *
+ * 用户定的规则（2026-09-27）：跨日不在零点而在**凌晨四点** —— 深夜还在做的事，在他心里"今天"
+ * 还没过去；00:30 开始的事到 04:00 之前都算前一天。这与壁纸设置里的 `assistantDay` 是**同一条
+ * 规则的两侧实现**：改一处就要改另一处（P1 会加一条启动自检，不一致就报警）。
+ */
+export function assistantDay(now: Date = new Date(), boundaryHour: number = DEFAULT_DAY_BOUNDARY_HOUR): string {
+  const boundary = Number.isFinite(boundaryHour)
+    ? Math.min(23, Math.max(0, Math.floor(boundaryHour)))
+    : DEFAULT_DAY_BOUNDARY_HOUR
+  const shifted = new Date(now.getTime() - boundary * 3_600_000)
+  return [shifted.getFullYear(), String(shifted.getMonth() + 1).padStart(2, '0'), String(shifted.getDate()).padStart(2, '0')].join('-')
+}
+
+export function localDailyWallpaperSessionId(
+  now: Date = new Date(),
+  boundaryHour: number = DEFAULT_DAY_BOUNDARY_HOUR,
+): string {
+  return `wallpaper-${assistantDay(now, boundaryHour)}`
+}
+
+/**
+ * 读桌面会话的**项目记忆**（`<工作区>/项目记忆.md`）。
+ *
+ * 用户定的机制：说话人格（语气、称呼、边界）这类"长期有效"的要求落在这里，**每条新会话都注入
+ * 一次**；范围就是桌面工作区这一处 —— 别的目录的对话不受影响（不污染它们）。读不到、读失败、
+ * 内容是空的，一律当作"没有记忆"：它从来不是创建会话的前提。
+ */
+export async function readProjectMemory(
+  workspacePath: string,
+  maxChars: number = MAX_PROJECT_MEMORY_CHARS,
+): Promise<string | undefined> {
+  try {
+    const text = (await readFile(join(workspacePath, PROJECT_MEMORY_FILE_NAME), 'utf8')).trim()
+    if (!text) return undefined
+    return text.length > maxChars
+      ? `${text.slice(0, maxChars)}\n（记忆过长，已截断到 ${maxChars} 字：请把已失效的条目删掉或精简。）`
+      : text
+  } catch {
+    return undefined
+  }
 }
 
 function recoveredDailyWallpaperSessionId(sessionId: string): string {
@@ -1494,7 +1603,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             // 可见性只在**每个请求开头读一次**：归档一个会话之后，用户期望的是"下次说话时
             // 自动换一条新的"，而不是继续往看不见的那条里发（用户实测报的"吞输入"）。
             const visible = await visibleStoredSessionIds()
-            const dailyId = localDailyWallpaperSessionId()
+            const dailyId = localDailyWallpaperSessionId(new Date(), configuredDayBoundaryHour(config))
             const recoveredDailyId = recoveredDailyWallpaperSessionId(dailyId)
             const recoveredDailyExists = automaticDailySession
               && storedAndVisible(workspace, recoveredDailyId, visible)
@@ -1547,6 +1656,8 @@ export function apply(ctx: Context, config: Config = {}): void {
             if (!host.permissionNames().includes(permission)) {
               return json(res, 409, { error: 'desktop-permission-unavailable', permission })
             }
+            // 项目记忆（`<工作区>/项目记忆.md`）：每条新会话注入一次；读不到就是"没有记忆"。
+            const memory = await readProjectMemory(workspace.path)
             const agentOptions = {
               provider: provider ?? defaults.provider,
               model: model ?? defaults.model,
@@ -1568,6 +1679,14 @@ export function apply(ctx: Context, config: Config = {}): void {
                 if (stopping) throw new Error('wallpaper bridge is shutting down')
                 let effectiveId = id
                 let handle
+                // 项目记忆 + 今天的助手日：**每条新会话都注入一次**（用户定的机制，范围只有桌面
+                // 工作区这一处）。读记忆失败也要照常建会话 —— 它不是前提。三次创建路径共用这一份
+                // setup，避免"三条路径三份措辞"。
+                const setup = desktopAgentSetup(host, preset, cwd, workspaceTitle, permission, {
+                  day: assistantDay(new Date(), configuredDayBoundaryHour(config)),
+                  memoryPath: join(workspace.path, PROJECT_MEMORY_FILE_NAME),
+                  ...(memory ? { memory } : {}),
+                })
                 if (resume) {
                   try {
                     stage = 'resume'
@@ -1575,7 +1694,7 @@ export function apply(ctx: Context, config: Config = {}): void {
                       resumeSessionId: SessionId(id),
                       provider: agentOptions.provider,
                       model: agentOptions.model,
-                      setup: desktopAgentSetup(host, preset, cwd, workspaceTitle, permission),
+                      setup,
                     })
                   } catch (error) {
                     if (!automaticDailySession) throw error
@@ -1595,7 +1714,7 @@ export function apply(ctx: Context, config: Config = {}): void {
                       agentPreset: preset,
                       provider: agentOptions.provider,
                       model: agentOptions.model,
-                      setup: desktopAgentSetup(host, preset, cwd, workspaceTitle, permission),
+                      setup,
                     })
                   }
                 } else {

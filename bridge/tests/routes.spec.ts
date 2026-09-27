@@ -326,10 +326,14 @@ async function provisionToken(
 describe('wallpaper bridge HTTP routes', () => {
   it('describes the desktop entry and its default capability boundary to DSH', () => {
     const prompt = desktopEntryPrompt('C:\\workspace\\dsh-wallpaper-desktop', '桌面会话', 'workspace-write')
-    expect(prompt).toContain('dsh-wallpaper desktop interaction entry')
+    // 简报是说给助手听的产品事实：工作区、权限、以及"用户看不到 Harness 界面"这个场景。
     expect(prompt).toContain('桌面会话')
+    expect(prompt).toContain('C:\\workspace\\dsh-wallpaper-desktop')
     expect(prompt).toContain('workspace-write')
-    expect(prompt).toContain('not the full Harness Web UI')
+    expect(prompt).toContain('他看不到 Harness 的完整界面')
+    // 能力边界只说真话：读放行、写只在工作区内、越界被拒时不要重试。
+    expect(prompt).toContain('越界写会被沙箱直接拒绝')
+    expect(prompt).toContain('不要反复重试')
   })
 
   it('declares both agent lifecycle and web-server dependencies for HTTP routes', async () => {
