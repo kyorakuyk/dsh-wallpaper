@@ -5,7 +5,7 @@ import { BACKGROUND_OPTIONS, MAX_PRICE_PER_MILLION, normalizedPrice, type Wallpa
 import { type SettingsPage } from './settingsProbes.ts'
 import type { AppearanceAssetSummary } from '../features/appearance/appearanceViewModel.ts'
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
-import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, LockScreenDiagnostics, ManagedDshStatus, ApiConversationListing, ApiKeyStatus } from '../native/runtime.ts'
+import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, DesktopWorkspaceStatus, LockScreenDiagnostics, ManagedDshStatus, ApiConversationListing, ApiKeyStatus } from '../native/runtime.ts'
 import { preferredDisplayId } from '../runtime/displayLayout.ts'
 import { harnessStateLabel } from '../connect/harnessLabels.ts'
 import type { AutostartStatus, HarnessEndpointScan, HarnessTarget } from '../native/runtime.ts'
@@ -47,6 +47,13 @@ export interface SettingsPanelProps {
   apiModelCatalog?: Array<{ id: string; name: string }>
   /** 上面那份列表的拉取时间（ISO 串）；来自持久化缓存，用来说明它的新鲜度。 */
   apiModelCatalogFetchedAt?: string
+  /**
+   * 「桌面会话」工作区落在哪儿（来自原生只读自检）。
+   *
+   * 位置规则与桥一致：**壁纸自己的数据目录**下的 `桌面会话`。装成 MSIX 之后这一点尤其要能看见——
+   * 安装目录每次升级被整体替换（写那里的必丢），数据目录则升级保留、卸载也留得下。
+   */
+  desktopWorkspace?: DesktopWorkspaceStatus
   /**
    * 壁纸此刻在用的 chat 模式（`undefined` = 还没读到快照）。
    *
@@ -684,6 +691,9 @@ export function SettingsPanel(props: SettingsPanelProps) {
       </>}
 
       {page === 'system' && <>
+        <Card title="数据与目录" description="「桌面会话」的工作区落在壁纸自己的数据目录里：升级安装会保留，卸载之后也留得下（它不是安装目录，MSIX 不会替换它）。">
+          <Field title="工作区" detail={props.desktopWorkspace ? (props.desktopWorkspace.workspaceExists ? props.desktopWorkspace.workspaceDirectory : props.desktopWorkspace.workspaceDirectory + '（还没创建；桥第一次用到时会在这里建出来）') : '正在读取…'}><span /></Field>
+        </Card>
         <Card title="Windows 集成">
           <Field title="登录后自动启动" detail={props.autostartBusy ? '正在更新 Windows 启动任务，请稍候；设置中心仍可继续使用。' : 'MSIX 优先使用 Windows StartupTask，旧版/开发版回退到当前用户启动项；版本更新会保留此状态。'}><Toggle label="登录后自动启动" checked={settings.autostart} onChange={(value) => set({ autostart: value })} disabled={props.autostartBusy} /></Field>
           <Field title="接管锁屏图片" detail={props.lockScreenBusy ? '正在应用系统锁屏设置，请稍候。' : '使用内置且已审计的熟睡画面；密码界面仍由 Windows 原生安全桌面处理。正式版需要 MSIX 包身份。'}><Toggle label="接管锁屏图片" checked={settings.lockScreenEnabled} onChange={props.onSetLockScreenEnabled} disabled={props.lockScreenBusy} /></Field>

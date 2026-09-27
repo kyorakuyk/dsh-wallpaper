@@ -3,7 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import type { BackendMode } from '../domain/types.ts'
 import { appCoreClient } from '../runtime/appCoreClient.ts'
-import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type ApiKeyStatus, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type HarnessEndpointScan, type HarnessTarget, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
+import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type ApiKeyStatus, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type DesktopWorkspaceStatus, type HarnessEndpointScan, type HarnessTarget, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
 import { loadSettings, saveSettings, type WallpaperSettings } from './store.ts'
 import {
   clientRaiseAction,
@@ -126,6 +126,8 @@ export function SettingsWindow() {
   const [apiModelCatalog, setApiModelCatalog] = useState<Array<{ id: string; name: string }>>()
   /** 上面那份列表是什么时候拉到的（来自持久化缓存）。 */
   const [apiModelCatalogFetchedAt, setApiModelCatalogFetchedAt] = useState<string>()
+  /** 「桌面会话」工作区路径（原生只读自检；系统页显示，方便核对）。 */
+  const [desktopWorkspace, setDesktopWorkspace] = useState<DesktopWorkspaceStatus>()
   /**
    * 壁纸**此刻**在用的 chat 模式。
    *
@@ -205,6 +207,11 @@ export function SettingsWindow() {
       setApiModelCatalogFetchedAt(cached.fetchedAt)
     }
     void readApiKeyStatus()
+    // 只读自检：把「桌面会话」落在哪儿读出来（位置规则与桥一致）。失败不打扰用户——
+    // 系统页会显示"正在读取…"，比弹一条不知所云的错误好。
+    void nativeRuntime.desktopWorkspaceStatus()
+      .then((status) => { if (mountedRef.current) setDesktopWorkspace(status) })
+      .catch(() => undefined)
   }, [])
 
   const refreshAppearance = () => void Promise.all([nativeAppearance.getState(), nativeAppearance.listAssets()])
@@ -875,6 +882,7 @@ export function SettingsWindow() {
       onSelectBackend={(backend) => { void selectBackend(backend) }}
       interactionEnabled={interactionEnabled}
       onSetInteractionEnabled={(enabled) => void appCoreClient.setInteractionEnabled(enabled).then((snapshot) => setInteractionEnabled(snapshot.interaction.enabled)).catch((error) => setNotice(String(error)))}
+      desktopWorkspace={desktopWorkspace}
       onClose={close}
     />
   </main>
