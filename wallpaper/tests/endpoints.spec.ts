@@ -2,6 +2,7 @@ import { describe, expect, it, vi, afterEach } from 'vitest'
 import {
   CHECKOUT_ENDPOINT_PORT,
   DEFAULT_ENDPOINT_PORTS,
+  OFFICIAL_SHELL_SUBJECT_ID,
   SHELL_SUBJECT_PREFIX,
   clientRaiseAction,
   endpointPriority,
@@ -14,6 +15,7 @@ import {
   subjectClientKind,
   subjectEndpointPorts,
   scanEndpoints,
+  unsupportedShellSubjectFallback,
   type EndpointScope,
   type HarnessEndpointCandidate,
 } from '../src/connect/endpoints.ts'
@@ -254,6 +256,23 @@ describe('the configured subject decides the endpoint', () => {
     expect(subjectClientKind(UNKNOWN_SHELL)).toBeUndefined()
     expect(subjectClientKind(`${SHELL_SUBJECT_PREFIX}com.unknown.client`)).toBeUndefined()
     expect(subjectClientKind(undefined)).toBeUndefined()
+  })
+
+  it('falls back to the official client when the stored subject is unsupported', () => {
+    // 设置里存着一个本 build 已不支持的壳主体（第三方客户端被移除前的遗留）：不静默、也不
+    // 卡在"未知主体"，而是落回官方桌面客户端并把原因说清楚。
+    const fallback = unsupportedShellSubjectFallback(UNKNOWN_SHELL)
+    expect(fallback?.subjectId).toBe(OFFICIAL_SHELL_SUBJECT_ID)
+    expect(fallback?.notice).toContain('已不再受支持')
+    expect(fallback?.notice).toContain('已切回官方桌面客户端')
+    // 落回去的那个 id 必须真的是本 build 认识的主体，否则等于换了个看不到的灯。
+    expect(subjectClientKind(OFFICIAL_SHELL_SUBJECT_ID)).toBe('official-desktop')
+    expect(subjectEndpointPorts({ subjectId: OFFICIAL_SHELL_SUBJECT_ID })).toEqual([19387])
+    // 反例：没有存值、存的是已知主体、或存的是源码目录路径 ⇒ **不动**（路径永远是合法身份）。
+    expect(unsupportedShellSubjectFallback(undefined)).toBeNull()
+    expect(unsupportedShellSubjectFallback('   ')).toBeNull()
+    expect(unsupportedShellSubjectFallback(OFFICIAL_SHELL)).toBeNull()
+    expect(unsupportedShellSubjectFallback(CHECKOUT)).toBeNull()
   })
 
   it('agrees with the shell table the rest of the bridge uses', () => {

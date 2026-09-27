@@ -96,6 +96,31 @@ const SHELL_SUBJECTS: Readonly<Record<string, { kind: HarnessClientKind; ports: 
 }
 
 /**
+ * The subject a stored choice must fall back to when this build no longer supports it.
+ *
+ * 2026-09-27：第三方桌面客户端被移除（它把本地接口锁在自己的授权后面，壁纸一律 403 ✓）。
+ * 可是**用户设置里可能还存着它的 AUMID** —— 如果就这么放着，主体下拉里没有它、端点卡片
+ * 只显示"已配置但无处可看"，用户看到的是一个永远点不亮的灯，而且没有任何解释 ✗。
+ *
+ * 所以：一个**壳形态、但本 build 认不出**的存储值，落回官方桌面客户端 ✓，并把原因说出来 ✓。
+ * 返回 `null` 表示"不用动"：没有存值、存的是源码目录（路径永远是合法的身份 ✓）、
+ * 或者存的是本 build 认识的主体 ✓。
+ */
+export function unsupportedShellSubjectFallback(
+  subjectId: string | undefined,
+): { subjectId: string; notice: string } | null {
+  const subject = (subjectId ?? '').trim()
+  if (subject === '' || !subject.startsWith(SHELL_SUBJECT_PREFIX)) return null
+  if (subjectClientKind(subject) !== undefined) return null
+  return {
+    subjectId: OFFICIAL_SHELL_SUBJECT_ID,
+    notice:
+      '原先选定的桌面客户端已不再受支持：它把本地接口锁在自己的授权后面，壁纸请求一律被拒绝；'
+      + '已切回官方桌面客户端。',
+  }
+}
+
+/**
  * The subject-id namespace for a shell that carries its own checkout.
  *
  * The same prefix as `harnessSubjects.isEmbeddedShellSubject`; the two are pinned
@@ -103,6 +128,15 @@ const SHELL_SUBJECTS: Readonly<Record<string, { kind: HarnessClientKind; ports: 
  * a source tree and hand it a checkout's port.
  */
 export const SHELL_SUBJECT_PREFIX = 'shell:'
+
+/**
+ * The official desktop client's subject id — the one subject this build always knows.
+ *
+ * Spelled here rather than at each call site because the fallback above *stores* it:
+ * a typo would persist a subject no scan ever produces. `endpoints.spec.ts` pins it
+ * against `SHELL_SUBJECTS`, so the two cannot drift apart.
+ */
+export const OFFICIAL_SHELL_SUBJECT_ID = `${SHELL_SUBJECT_PREFIX}com.deepseek.dsh`
 
 /**
  * DSH's own web default: the port a source checkout listens on unless the user

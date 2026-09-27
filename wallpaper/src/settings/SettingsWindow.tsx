@@ -12,6 +12,7 @@ import {
   raiseOutcomeNotice,
   subjectClientKind,
   subjectEndpointPorts,
+  unsupportedShellSubjectFallback,
   type HarnessClientKind,
 } from '../connect/endpoints.ts'
 import { launchOutcomeNotice, reachNeedsBrowser, subjectChoicePrompt } from '../connect/harnessSubjects.ts'
@@ -243,7 +244,13 @@ export function SettingsWindow() {
       setHarnessTargets(scan.targets)
       // The scan that just finished is the verification this list now carries.
       setCatalogVerifiedAt(Date.now())
-      if (announce) {
+      // 设置里存着的主体可能已经**不再受支持**（第三方客户端 2026-09-27 被移除）：那就落回官方
+      // 桌面客户端，并把原因当场说出来 —— 既不静默改设置，也不让用户对着一个永远点不亮的灯猜。
+      const fallback = unsupportedShellSubjectFallback(settingsRef.current.dshLaunch.subjectId)
+      if (fallback) {
+        change({ ...settingsRef.current, dshLaunch: { ...settingsRef.current.dshLaunch, subjectId: fallback.subjectId } })
+        setNotice(fallback.notice)
+      } else if (announce) {
         setNotice(subjectChoicePrompt(scan.targets) ?? (scan.targets.length > 0
           ? `扫描完成，发现 ${scan.targets.length} 个可选执行主体。`
           : '未发现 DSH 项目或已安装的客户端；可手动填写 DSH 项目根目录后再扫描。'))
