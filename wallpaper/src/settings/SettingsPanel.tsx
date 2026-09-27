@@ -345,6 +345,43 @@ export function PriceInput({
 export function SettingsPanel(props: SettingsPanelProps) {
   const { settings, harnessStatus, onChange, onClose, translucentTb, page } = props
   const set = (patch: Partial<WallpaperSettings>) => onChange({ ...settings, ...patch })
+  /** 「清除全部用户数据」的结果（成功后把"删了什么、还剩什么要你手动删"写在这一行里）。 */
+  const [clearDetail, setClearDetail] = useState<string>()
+  const [clearing, setClearing] = useState(false)
+  const clearUserData = async () => {
+    // 逐项写清会删什么、要你手动删什么：这类操作不可逆，值得在读清之前先拦一下。
+    const confirmed = window.confirm([
+      '将删除：',
+      '· 桌面会话工作区（' + (props.desktopWorkspace?.workspaceDirectory ?? '数据目录下的「桌面会话」') + '）',
+      '· 凭据管理器里保存的 DeepSeek API Key',
+      '',
+      '需要你自己删（本应用正在运行，删不干净）：',
+      '· 设置与网页登录态：' + (props.desktopWorkspace?.dataDirectory ?? '%LOCALAPPDATA%\\com.dsh.wallpaper（退出后删除）'),
+      '· 桥接凭据：~/.dsh/wallpaper',
+      '',
+      '继续？',
+    ].join('\n'))
+    if (!confirmed) return
+    setClearing(true)
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const result = await invoke<{
+        removed: string[]
+        credentialRemoved: boolean
+        manual: Array<{ what: string; path: string }>
+      }>('clear_user_data')
+      const done = [
+        ...result.removed.map((path) => `已删除 ${path}`),
+        result.credentialRemoved ? '已删除凭据管理器里的 API Key' : '凭据管理器里没有这条 Key（无需删除）',
+      ]
+      const manual = result.manual.map((entry) => `退出应用后手动删除：${entry.what} → ${entry.path}`)
+      setClearDetail([...done, ...manual].join('；'))
+    } catch (error) {
+      setClearDetail(`清除失败：${String(error)}`)
+    } finally {
+      setClearing(false)
+    }
+  }
   /**
    * The chosen subject, and whether it is the class that carries its own checkout.
    *
@@ -693,6 +730,16 @@ export function SettingsPanel(props: SettingsPanelProps) {
       {page === 'system' && <>
         <Card title="数据与目录" description="「桌面会话」的工作区落在壁纸自己的数据目录里：升级安装会保留，卸载之后也留得下（它不是安装目录，MSIX 不会替换它）。">
           <Field title="工作区" detail={props.desktopWorkspace ? (props.desktopWorkspace.workspaceExists ? props.desktopWorkspace.workspaceDirectory : props.desktopWorkspace.workspaceDirectory + '（还没创建；桥第一次用到时会在这里建出来）') : '正在读取…'}><span /></Field>
+          {/* 卸载时问不了（MSIX 没有自定义卸载界面），所以"想清干净的时候能清干净"这个入口放在这里。
+              原生只做它能证明做完的两件：工作区目录 + 凭据管理器里那条 Key；WebView2 配置目录正被
+              运行中的进程占用，删不干净，所以如实回报路径让用户退出后自己删。 */}
+          <Field title="清除全部用户数据" detail={clearDetail ?? '删除本应用的桌面会话工作区，以及凭据管理器里保存的 API Key。设置与网页登录态在 WebView2 配置目录里，需要退出应用后手动删除（下面会给出路径）。'}>
+            <button
+              className="settings-action secondary"
+              disabled={clearing}
+              onClick={() => { void clearUserData() }}
+            >{clearing ? '正在清除…' : '清除全部用户数据'}</button>
+          </Field>
         </Card>
         <Card title="Windows 集成">
           <Field title="登录后自动启动" detail={props.autostartBusy ? '正在更新 Windows 启动任务，请稍候；设置中心仍可继续使用。' : 'MSIX 优先使用 Windows StartupTask，旧版/开发版回退到当前用户启动项；版本更新会保留此状态。'}><Toggle label="登录后自动启动" checked={settings.autostart} onChange={(value) => set({ autostart: value })} disabled={props.autostartBusy} /></Field>
