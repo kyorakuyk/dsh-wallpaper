@@ -132,7 +132,7 @@ describe('App chat lifecycle isolation', () => {
   })
 
   it('keeps an API adapter lifecycle stable while committing later request settings', async () => {
-    const { apiAdapterOptionsFromSettings, chatAdapterLifecycleKey, updateApiAdapterOptions } = await import('../src/App.tsx')
+    const { apiAdapterOptionsFromSettings, chatAdapterLifecycleKey, updateApiAdapterOptions, subjectScopeKey } = await import('../src/App.tsx')
     const first = {
       deepseekApi: {
         baseUrl: 'https://api.deepseek.com',
@@ -150,7 +150,8 @@ describe('App chat lifecycle isolation', () => {
       },
     }
     const stableOptions = apiAdapterOptionsFromSettings(first)
-    const mountedLifecycle = chatAdapterLifecycleKey('deepseek-api', 7)
+    const scope = subjectScopeKey({ subjectId: 'cli:C:/npm/dsh.cmd', endpointPort: 3080 })
+    const mountedLifecycle = chatAdapterLifecycleKey('deepseek-api', 7, scope)
 
     // The mounted adapter holds this exact object. Updating it for the next
     // request must not manufacture a new lifecycle/effect identity.
@@ -161,19 +162,24 @@ describe('App chat lifecycle isolation', () => {
       priceInputPerMillion: 3,
       priceOutputPerMillion: 4,
     })
-    expect(chatAdapterLifecycleKey('deepseek-api', 7)).toBe(mountedLifecycle)
-    expect(chatAdapterLifecycleKey('deepseek-api', 8)).not.toBe(mountedLifecycle)
+    expect(chatAdapterLifecycleKey('deepseek-api', 7, scope)).toBe(mountedLifecycle)
+    expect(chatAdapterLifecycleKey('deepseek-api', 8, scope)).not.toBe(mountedLifecycle)
+    // 主体（端点范围）也必须进这个键：切换主体不会重建适配器，而适配器持有的是"连着哪个端点、
+    // 哪条会话"—— 换了主体却留着旧端点的会话，就是"灯说已连接、一发却说会话尚未建立"。
+    const shellScope = subjectScopeKey({ subjectId: 'shell:com.deepseek.dsh', endpointPort: 19387 })
+    expect(chatAdapterLifecycleKey('deepseek-api', 7, shellScope)).not.toBe(mountedLifecycle)
   })
 
   it('applies daily policy only when unlocking after a local calendar rollover', async () => {
-    const { chatAdapterLifecycleKey, shouldIgnoreUnpairedResume, shouldStartNewConversationOnUnlock } = await import('../src/App.tsx')
+    const { chatAdapterLifecycleKey, shouldIgnoreUnpairedResume, shouldStartNewConversationOnUnlock, subjectScopeKey } = await import('../src/App.tsx')
+    const scope = subjectScopeKey({ subjectId: 'cli:C:/npm/dsh.cmd', endpointPort: 3080 })
     const beforeMidnight = new Date(2026, 7, 18, 23, 59, 0)
     const afterMidnight = new Date(2026, 7, 19, 0, 1, 0)
     const afterBoundary = new Date(2026, 7, 19, 4, 1, 0)
 
     // Changing a policy in Settings changes neither adapter identity nor an
     // in-flight stream. The daily decision belongs to the later unlock event.
-    expect(chatAdapterLifecycleKey('deepseek-api', 7)).toBe(chatAdapterLifecycleKey('deepseek-api', 7))
+    expect(chatAdapterLifecycleKey('deepseek-api', 7, scope)).toBe(chatAdapterLifecycleKey('deepseek-api', 7, scope))
     expect(shouldStartNewConversationOnUnlock('daily', '2026-08-18', beforeMidnight)).toBe(false)
     // 「助手日」的边界是 04:00（用户定的规则）：00:01 仍属**前一天** —— 深夜还在做的事不该被零点
     // 从中间切走；到 04:01 才真的换新的一天 ✓。边界小时可配，0 = 退回"零点跨日"的旧行为。

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { NativeChatAdapter, ARCHIVED_SESSION_NOTICE, BLOCKED_TURN_NOTICE, isArchivedSessionError } from '../src/chat/nativeAdapter.ts'
+import { NativeChatAdapter, ARCHIVED_SESSION_NOTICE, BLOCKED_TURN_NOTICE, isArchivedSessionError, isMissingSessionError } from '../src/chat/nativeAdapter.ts'
 import type { ChatEvent, ChatMessage, ScopedChatEvent } from '../src/domain/types.ts'
 import { nativeRuntime, type NativeSendOptions } from '../src/native/runtime.ts'
 
@@ -395,6 +395,43 @@ describe('NativeChatAdapter stop lifecycle', () => {
  * 壁纸还绑在旧会话上，而那条会话已经没有人在听了。这一组测试把"换会话"这件事的全部后果
  * 钉住——包括**它必须被说出来**（用户的原则：不允许静默替换）。
  */
+/**
+ * "灯说已连接、一发却说没有会话"：切换主体**不会**重建适配器，探测范围换了、事件流与会话留在旧端点
+ * 上，于是发送被原生拒绝。与归档的关键区别是：这里**没有任何东西被替换掉**，所以恢复必须静默完成
+ * —— 用户只是第一次往这条端点上发话，不该收到"已换到新会话"的提示。
+ */
+describe('NativeChatAdapter missing-session recovery', () => {
+  const missing = () => new Error('HARNESS_NO_SESSION: Harness 会话尚未建立')
+
+  it('recognises the marker, and does not confuse it with an archived session', () => {
+    expect(isMissingSessionError('HARNESS_NO_SESSION: Harness 会话尚未建立')).toBe(true)
+    expect(isMissingSessionError(new Error('HARNESS_NO_SESSION: x'))).toBe(true)
+    expect(isMissingSessionError('HARNESS_SESSION_ARCHIVED: 这条会话已归档')).toBe(false)
+    expect(isMissingSessionError(undefined)).toBe(false)
+  })
+
+  it('connects and resends the same sentence once, without announcing a switch', async () => {
+    const native = new FakeNative()
+    try {
+      const adapter = await connectedHarness(native)
+      const events = collector(adapter)
+      native.sendErrors = [missing()]
+      native.connectSessionIds = ['session-on-this-endpoint']
+
+      await adapter.send('这句话要发出去')
+
+      // 连上（这一步才会 `POST /sessions` 建立会话），然后把原话再发一次。
+      expect(native.connectCalls).toHaveLength(2)
+      expect(native.chatSends.map((send) => send.text)).toEqual(['这句话要发出去', '这句话要发出去'])
+      // 静默：没有会话被替换，就不该出现"已换到新会话"那类通知。
+      expect(events.some((event) => event.type === 'conversation-reset')).toBe(false)
+      adapter.disconnect()
+    } finally {
+      native.restore()
+    }
+  })
+})
+
 describe('NativeChatAdapter archived-session recovery', () => {
   /** 原生侧抛出的就是这条字符串；这里用 Error 包一层，两种形状都要能认出来。 */
   const archived = () => new Error(`HARNESS_SESSION_ARCHIVED: 这条会话已在桌面端归档，桥不再接受它的消息。`)

@@ -40,6 +40,13 @@ const MAX_HARNESS_SSE_CHUNK_BYTES: usize = MAX_HARNESS_SSE_EVENT_BYTES;
 /// 与桥的 `session-archived` 一一对应，是一条**跨进程契约**：改这里就要改渲染端的判断，
 /// 两边各有一条测试钉住同一个字面量。
 pub const HARNESS_SESSION_ARCHIVED: &str = "HARNESS_SESSION_ARCHIVED";
+/// "这条会话还没建立"的稳定标记，与渲染端 `nativeAdapter.ts` 的 `HARNESS_NO_SESSION` 一一对应。
+///
+/// 为什么需要它：会话是在 `POST /sessions` 时建立的，而**切换主体不会重建渲染端的聊天适配器**
+/// （适配器持有的是"连着哪个端点、哪条会话"）。于是出现这样一种边界：原生侧的探测范围已换成新主体
+/// （指示灯因此变绿），事件流和会话却还留在旧端点上 —— 用户看到"已连接"，一发消息却被告知会话没有
+/// 建立。一句普通字符串渲染端接不住，只能把它显示出来；带上这个标记，它就能**先连上再重发一次**。
+pub const HARNESS_NO_SESSION: &str = "HARNESS_NO_SESSION";
 
 const MAX_HARNESS_SESSION_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_HARNESS_HISTORY_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
@@ -3079,7 +3086,7 @@ pub async fn harness_send(state: tauri::State<'_, ChatState>, text: String) -> R
         .lock()
         .map_err(|_| "Harness session state poisoned")?
         .clone()
-        .ok_or("Harness 会话尚未建立")?;
+        .ok_or_else(|| format!("{HARNESS_NO_SESSION}: Harness 会话尚未建立"))?;
     let token = read_bridge_token()?;
     let url = harness_url(port, &format!("/sessions/{}/messages", urlencoding::encode(&session_id)));
     let client = bridge_request_client()?;

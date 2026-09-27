@@ -40,6 +40,20 @@ export function isArchivedSessionError(error: unknown): boolean {
 }
 
 /**
+ * 原生侧"这条端点还没有会话"的稳定标记，与 `chat.rs` 的 `HARNESS_NO_SESSION` 一一对应。
+ *
+ * 触发它的情形是"看着连上了、其实没有会话"：**切换主体不会重建适配器**（适配器持有的是"连着哪
+ * 个端点、哪条会话"），于是探测范围换了、事件流与会话留在旧端点上。与"被归档"不同，这里**没有
+ * 任何东西被替换掉** —— 用户只是第一次往这条端点上发话，所以恢复可以静默完成：连上（`POST
+ * /sessions` 会建立会话），再把这句话原样发一次，不发任何"已换到新会话"的提示。
+ */
+export const HARNESS_NO_SESSION = 'HARNESS_NO_SESSION'
+
+export function isMissingSessionError(error: unknown): boolean {
+  return String(error ?? '').includes(HARNESS_NO_SESSION)
+}
+
+/**
  * 换会话时**必须**说清楚的一句。用户归档掉一条会话之后，桥拒绝它的消息，我们能做的只有
  * 在今天的新会话里重发——但"把用户刚说的话挪到另一条会话里"这件事不能静默发生（用户对主体
  * 的同一原则：不允许静默替换），所以这句话就是他看到的凭据。
@@ -332,6 +346,18 @@ export class NativeChatAdapter extends EventChatAdapter {
     } catch (error) {
       if (this.turnToken === turnToken) this.turnActive = false
       this.stopHistoryReconciliation()
+      if (allowArchivedRecovery && this.mode === 'harness' && !this.disposed && isMissingSessionError(error)) {
+        // 没有会话 ⇒ 建立它，再把这句原话发一次。
+        try {
+          await this.openEventScope()
+        } catch (connectError) {
+          const message = `${String(error)} 重新连接这条端点也没有成功：${String(connectError)}`
+          this.emit({ type: 'error', code: 'NATIVE_SEND_FAILED', recoverable: true, message })
+          throw new Error(message)
+        }
+        await this.runTurn(text, options?.model ? { model: options.model } : undefined, false)
+        return
+      }
       if (allowArchivedRecovery && this.mode === 'harness' && !this.disposed && isArchivedSessionError(error)) {
         const failure = await this.recoverArchivedSession()
         if (!failure) {

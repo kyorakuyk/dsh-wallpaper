@@ -403,8 +403,26 @@ export function disposeChatAdapter(
 export function chatAdapterLifecycleKey(
   backend: BackendMode,
   conversationGeneration: number,
+  subjectScope: string,
 ): string {
-  return `${backend}:${conversationGeneration}`
+  return `${backend}:${conversationGeneration}:${subjectScope}`
+}
+
+/**
+ * 主体范围在生命周期键里的形态。
+ *
+ * 主体**必须**进这个键：切换主体不会重建聊天适配器，而适配器持有的正是"连着哪一个端点、哪一条
+ * 会话"。实测的边界情况是：从 CLI 切到官壳时，原生侧收到了新的探测范围（指示灯因此变绿），但事件
+ * 流与那条会话仍留在旧端点上 —— 用户看到的就是"灯说已连接，一发消息却说会话尚未建立"。
+ */
+export function subjectScopeKey(launch: {
+  subjectId?: string
+  rootPath?: string
+  endpointPort?: number
+  extraEndpointPorts?: readonly number[]
+}): string {
+  const scope = endpointScopeOf(launch)
+  return [scope.subjectId ?? '', scope.endpointPort ?? '', (scope.extraPorts ?? []).join(',')].join('|')
 }
 
 /**
@@ -881,7 +899,7 @@ export function App({ surface = 'combined' }: AppProps) {
   // The WorkerW host is permanently desktop-sized. Both the floating window
   // and the taskbar capsule now use CSS placement inside that one viewport.
   const interactionDirection = 'center' as const
-  const adapterLifecycleKey = chatAdapterLifecycleKey(runtime.backend, conversationGeneration)
+  const adapterLifecycleKey = chatAdapterLifecycleKey(runtime.backend, conversationGeneration, subjectScopeKey(settings.dshLaunch))
 
   // Commit settings into the stable holder after React commits the matching
   // render.  Mutating the ref during render could leak a discarded concurrent
