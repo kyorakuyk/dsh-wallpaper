@@ -36,6 +36,7 @@
 | 文档 | 主题 |
 | --- | --- |
 | `build-and-publish-timings.md` | 构建与发布耗时实测：本地发布 103.5s→65.5s 的做法、CI 缓存的坑、以及量耗时的方法 |
+| `dsh-plugin-host-compat.md` | 桥插件与 DSH 宿主 0.2.0-rc.1 的兼容实测：判词、范围覆盖表、验证命令、部署坑与升级流程 |
 | `input-island-focus-phase-a-evidence.md` | 输入岛焦点问题的 A 阶段取证 |
 | `input-island-focus-native-route-closed.md` | 同问题的结论记录（含一处被推翻的结论及其更正） |
 | `input-model-desktop-hit-testing.md` | 桌面上的一次点击归谁（前台桌面收不到 DOM 鼠标事件的取证） |
