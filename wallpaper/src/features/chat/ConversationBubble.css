@@ -83,7 +83,10 @@
   box-sizing: border-box;
   width: 100%;
   margin: 0 0 -1px;
-  padding: 0 var(--dsh-chat-gutter);
+  /* 轨道**不**吃 gutter：它的内容盒直接等于输入框那个盒子的内容盒（用户要求"粉色对齐黄色"）。
+     盒子内部那几行（输入框 / 顶栏 / 底栏 / 工具条）仍然吃 gutter，所以框里的文字照旧有内边距 ——
+     一个文本框的内边距和"文字列与盒子同宽"是两件事，之前把它们混成一个数，才改错了对象。 */
+  padding: 0;
   overflow: hidden;
   border: 0;
   border-radius: 0;
@@ -329,10 +332,9 @@
   backdrop-filter: blur(34px) saturate(132%);
   transition: transform var(--dsh-duration-normal) var(--dsh-ease-standard), box-shadow var(--dsh-duration-normal) ease;
 }
-/* 轨道（history）、输入框（composer）、顶栏与底栏共用**同一条**左右内缩。
-   以前它们各写一个数字，于是必然漂移：轨道靠 history-wrap 的宽度 clamp 缩进 29px，输入框自己
-   缩进 21px，长回答的左边缘与输入文字的左边缘差 7px —— 看起来像两块没对齐的面板，而不是同一个
-   界面。现在只有这一个数，改它四处一起走。 */
+/* 盒子内部那几行（输入框、顶栏、底栏、用量行、岛上工具条）共用**同一条**左右内缩。
+   以前它们各写一个数字，于是必然漂移：输入框自己写 21px，顶栏写 22px，底栏写 18px。
+   轨道（.dsh-chat__history-wrap）**不**用这个数：它的文字列等于盒子的宽度。 */
 .dsh-chat { --dsh-chat-gutter: 18px; }
 .dsh-chat[data-persistent='true'] {
   --dsh-chat-gutter: 22px;

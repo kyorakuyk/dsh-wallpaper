@@ -5,6 +5,9 @@ import { composerPlaceholder, formatCost, isBusyActivity, sessionCostSummary, tu
 import { growHistoryWindow, historyWindow, HISTORY_RENDER_WINDOW } from './streamRender.ts'
 import { harnessStateLabel } from '../../connect/harnessLabels.ts'
 import { MarkdownBody } from './MarkdownBody.tsx'
+// 调试量尺（画内容边缘引导线）：本程序**不给入口**，默认不挂载。
+// 需要时把下面两行注释打开 —— 见 src/features/chat/LayoutProbe.tsx 的说明。
+// import { LayoutProbe } from './LayoutProbe.tsx'
 import './ConversationBubble.css'
 
 /** Optional speaker labels for themes that want explicit attribution. */
@@ -267,6 +270,8 @@ export function ConversationBubble(props: ConversationBubbleProps) {
     data-interaction-region="chat"
     aria-label="AI 对话"
   >
+    {/* 调试量尺：需要时与上面的 import 一起打开（本程序不给入口）。 */}
+    {/* {showHistory && <LayoutProbe />} */}
     {showHistory && <div className="dsh-chat__history-wrap">
       <div
         className="dsh-chat__history"
