@@ -622,16 +622,15 @@ export function SettingsPanel(props: SettingsPanelProps) {
               />
             </Field>
           )}
-                    <Field title="本应用启动的 DSH" detail={props.managedDsh.managed
-                      ? (shellSelected
-                        // 官壳没有静默退出：停掉它，用户自己的客户端会当场消失，并弹一条"宿主意外退出"
-                        // 的报错框（实测：客户端把被强制结束的宿主当崩溃报 —— 那条弹窗是它的说法，不是
-                        // 壁纸崩了）。这句话就是那个后果的预告。
-                        ? '该 DSH 由本应用启动，可以在这里停止它。注意：它是官方客户端，停止后会当场关闭，并可能弹一条"宿主意外退出"的提示。'
-                        : '该 DSH 由本应用启动，可以在这里停止它。')
+                    {/* 官壳不显示这一项（用户要求）：它的退出方式是托盘菜单，用户手里本来就有；
+                        而停它会当场关掉用户自己的客户端、并弹一条"宿主意外退出"的报错框 —— 与其预告这个
+                        后果，不如不给这个入口。另外两类（源码目录、已安装的 CLI）没有托盘也没有窗口，
+                        要停只能开终端敲命令，摩擦大得多，所以它们照常显示。 */}
+                    {!shellSelected && <Field title="本应用启动的 DSH" detail={props.managedDsh.managed
+                      ? '该 DSH 由本应用启动，可以在这里停止它。'
                       : '本应用没有启动 DSH；其他人启动的实例不会被停止。'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshManagedDsh}>刷新</button>{/* 启用条件跟**是不是本应用启动的**走，不跟"有没有在跑"走：只要 3080 上有别的东西在跑，
                         旧写法就会点亮一个点了没反应的按钮（实测：装机重启后壁纸丢了"这是我的孩子"的记录）。 */}
-                    <button className="settings-action secondary" disabled={!props.managedDsh.managed} onClick={props.onStopManagedDsh}>停止本应用启动的 DSH</button></span></Field>
+                    <button className="settings-action secondary" disabled={!props.managedDsh.managed} onClick={props.onStopManagedDsh}>停止本应用启动的 DSH</button></span></Field>}
         </Card>
         <Card title="DeepSeek 网页入口（实验）" description="在壁纸里用你的网页版账号对话；登录后直连。"><Field title="页面" detail="页面和登录状态由独立 WebView2 配置目录保存；本应用不读取、复制或记录 Cookie。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开应用内页面</button></Field>{/* 适配器那行的说明里**不再显示本地 override 的文件路径**（用户要求）：那是一串
             `%APPDATA%\com.dsh.wallpaper\deepseek-web-adapter.override.json`，对"网页结构变了才需要动它"
