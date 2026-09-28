@@ -189,7 +189,13 @@
   border-radius: 0;
   background: transparent;
   color: var(--dsh-text-strong);
+  /* 用户的话比助手的更大更重（用户要求）：一是他刚说过的那句最该一眼找到，二是让"我说的话"
+     与"它回的话"在视觉上分开，而不是靠左对齐/右对齐这种要停下来辨认的线索。 */
+  font-size: 15px;
+  font-weight: 650;
 }
+/* 助手回答与用户那句话之间多留一段（用户要求）：一行挨着一行时，回答读起来像用户话的续行。 */
+.dsh-chat__message--user + .dsh-chat__message--assistant { margin-top: 16px; }
 .dsh-chat__message-usage { padding: 0 5px; color: var(--dsh-text-faint); font-size: 10px; }
 /*
  * 最小 Markdown 的三样（代码围栏、行内代码、列表）。
