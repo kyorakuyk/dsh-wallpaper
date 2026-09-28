@@ -622,7 +622,14 @@ export function SettingsPanel(props: SettingsPanelProps) {
               />
             </Field>
           )}
-                    <Field title="本应用启动的 DSH" detail={props.managedDsh.managed ? '该 DSH 由本应用启动，可以在这里停止它。' : '本应用没有启动 DSH；其他人启动的实例不会被停止。'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshManagedDsh}>刷新</button>{/* 启用条件跟**是不是本应用启动的**走，不跟"有没有在跑"走：只要 3080 上有别的东西在跑，
+                    <Field title="本应用启动的 DSH" detail={props.managedDsh.managed
+                      ? (shellSelected
+                        // 官壳没有静默退出：停掉它，用户自己的客户端会当场消失，并弹一条"宿主意外退出"
+                        // 的报错框（实测：客户端把被强制结束的宿主当崩溃报 —— 那条弹窗是它的说法，不是
+                        // 壁纸崩了）。这句话就是那个后果的预告。
+                        ? '该 DSH 由本应用启动，可以在这里停止它。注意：它是官方客户端，停止后会当场关闭，并可能弹一条"宿主意外退出"的提示。'
+                        : '该 DSH 由本应用启动，可以在这里停止它。')
+                      : '本应用没有启动 DSH；其他人启动的实例不会被停止。'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshManagedDsh}>刷新</button>{/* 启用条件跟**是不是本应用启动的**走，不跟"有没有在跑"走：只要 3080 上有别的东西在跑，
                         旧写法就会点亮一个点了没反应的按钮（实测：装机重启后壁纸丢了"这是我的孩子"的记录）。 */}
                     <button className="settings-action secondary" disabled={!props.managedDsh.managed} onClick={props.onStopManagedDsh}>停止本应用启动的 DSH</button></span></Field>
         </Card>
