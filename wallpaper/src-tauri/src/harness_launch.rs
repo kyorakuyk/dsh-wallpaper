@@ -933,11 +933,20 @@ fn ask_shell_to_focus(
 /// checkout reports the answer immediately instead of waiting for a window that
 /// does not exist, and the caller can open a browser without a pointless delay.
 fn reveal(port: u16, kind: HarnessTargetKind) -> crate::client_window::RaiseOutcome {
-    let deadline = if kind == HarnessTargetKind::EmbeddedShell {
-        std::time::Instant::now() + UI_WINDOW_TIMEOUT
-    } else {
-        std::time::Instant::now()
-    };
+    // 只有官壳拥有自己的窗口；源码目录与已安装 CLI 的界面是**浏览器**。
+    //
+    // 原来这里对它们也调一次 `raise_client_window`，而那个函数的做法是"找占用该端口的进程，再找
+    // 属于这个进程的任意可见窗口"。对 CLI 来说那是个 Node 宿主：它可能没有窗口，也可能沿着进程
+    // 祖先走到**启动它的终端或编辑器**。实测过：用户选了浏览器，被拉到前台的是别人的窗口。
+    // 所以这里直接如实回答"没有窗口"，让调用方走用户选的那条路（浏览器），而不是拿一个碰巧
+    // 存在的窗口当作主体的界面。等待窗口的宽限只留给官壳，那也是它唯一有意义的地方。
+    if kind != HarnessTargetKind::EmbeddedShell {
+        return crate::client_window::RaiseOutcome {
+            outcome: "no-window",
+            raised: false,
+        };
+    }
+    let deadline = std::time::Instant::now() + UI_WINDOW_TIMEOUT;
     loop {
         let raise = crate::client_window::raise_client_window(port);
         if raise.outcome == "no-window" && std::time::Instant::now() < deadline {
