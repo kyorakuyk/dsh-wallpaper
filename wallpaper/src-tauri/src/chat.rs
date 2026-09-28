@@ -2752,7 +2752,19 @@ pub async fn harness_connect(
     // failed attempt at a new client would silently repoint the old conversation
     // at a client that never answered.
     let port = endpoint_port.unwrap_or_else(|| state.harness_port());
-    cancel_harness_stream(&state);
+    // 这一行是这几轮最缺的东西：连接尝试**必须留下痕迹**。此前日志里只有"启动/门票"那类，
+    // 于是"切换主体后到底连了哪个端口"只能靠猜 —— 而真正的原因恰恰是：不带端点参数时，原生会
+    // 退回"这条会话当初钉下的端口"，那个端口属于**上一个**主体。
+    log::info!(
+        "harness connect: requested_port={:?} resolved_port={port} pinned_port={} resume={} model={}",
+        endpoint_port,
+        state.harness_port(),
+        resume_session_id.is_some(),
+        model.as_deref().unwrap_or("-")
+    );
+    // **先建新的，成功之后才拆旧的**（make-before-break）。这里原来是直接 `cancel_harness_stream`：
+    // 于是切换主体失败时，用户连原本能用的那条连接也一起丢了 —— 而紧挨着的这段注释早就承诺过
+    // "失败的连接不得改动已有会话的端点"，只是事件流那一半没做到。取消挪到新会话建立之后。
     let token = read_bridge_token()?;
     let client = bridge_request_client()?;
     let model = model
@@ -2806,6 +2818,7 @@ pub async fn harness_connect(
         // `sessions` is the route the Bridge must have registered for the
         // capability it advertised, so a 404 here is a version/installation
         // problem rather than a transient connection failure.
+        log::warn!("harness connect failed: port={port} status={}", response.status());
         return Err(harness_http_error(response.status(), "sessions"));
     }
     let session = parse_harness_connection(
@@ -2824,6 +2837,9 @@ pub async fn harness_connect(
     // so every later request for this conversation goes to the client that
     // actually answered.
     state.set_harness_port(port);
+    // 新会话已经建立，现在才放弃旧的：这一步之后"当前连接"才真正换人。切换失败时根本走不到这里，
+    // 旧的事件流与会话原样留着（用户要的正是这个：没连上就继续持有旧的，但界面按未接入处理）。
+    cancel_harness_stream(&state);
     if let Err(error) = connect_harness_events(
         app,
         state.inner().clone(),

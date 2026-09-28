@@ -7,6 +7,13 @@ export interface NativeSendOptions {
   newConversation?: boolean
   baseUrl?: string
   model?: string
+  /**
+   * Harness 专用：这次连接**要连哪个端点**（端口）。
+   *
+   * 不给就会退回原生"这条会话当初钉下的端口"，而那个端口属于上一个主体 —— 切换主体之后新建的
+   * 会话仍连在旧端点上，于是灯照着新主体、会话却在旧端点（"看着连上、一发却说没有会话"）。
+   */
+  endpointPort?: number
   /** CNY per million input tokens. Omitted means pricing is not configured. */
   priceInputPerMillion?: number
   /** CNY per million output tokens. Omitted means pricing is not configured. */
@@ -311,7 +318,7 @@ export interface NativeRuntime {
   listenChat(listener: (event: ScopedChatEvent) => void): Promise<() => void>
   sendChat(mode: BackendMode, text: string, options?: NativeSendOptions): Promise<string | undefined>
   cancelChat(mode: BackendMode): Promise<void>
-  connectHarness(resumeSessionId: string | undefined, connectionId: string, model?: string): Promise<string>
+  connectHarness(resumeSessionId: string | undefined, connectionId: string, model?: string, endpointPort?: number): Promise<string>
   harnessHistory(): Promise<ChatMessage[]>
   harnessPresets(): Promise<Array<{ id: string; name?: string; description?: string; trust: 'system' | 'user'; broken?: string; isDefault: boolean }>>
   setHarnessPreset(preset: string): Promise<void>
@@ -600,9 +607,9 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('cancel_chat', { mode })
   },
-  async connectHarness(resumeSessionId, connectionId, model) {
+  async connectHarness(resumeSessionId, connectionId, model, endpointPort) {
     const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<string>('connect_harness', { resumeSessionId, connectionId, model })
+    return invoke<string>('connect_harness', { resumeSessionId, connectionId, model, endpointPort })
   },
   async harnessHistory() {
     const { invoke } = await import('@tauri-apps/api/core')

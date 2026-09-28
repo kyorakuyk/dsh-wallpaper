@@ -355,6 +355,26 @@ export function updateApiAdapterOptions(
   return options
 }
 
+/**
+ * Harness 适配器的选项：模型 + **这一主体自己的端点**。
+ *
+ * 端点必须由渲染端给出。原生 `harness_connect` 在没有端点参数时退回"这条会话当初钉下的端口"，
+ * 而那个端口属于**上一个**主体（`set_harness_port` 的注释写明这是刻意的：改下拉不该把一条已开的
+ * 会话连带改向）。于是切换主体后新建的会话仍然连在旧端点上 —— 探测范围已经换成新主体（灯因此
+ * 变绿），会话却留在旧端点，用户看到的就是"已连接，一发消息却说会话尚未建立"。
+ *
+ * 两种情况下不给端口，交给原生按钉住的端口处理：主体有多个候选端口（无从判断该用哪个），
+ * 或压根没选主体。
+ */
+export function harnessAdapterOptionsFromSettings(
+  settings: Pick<WallpaperSettings, 'dshLaunch'>,
+  model: string | undefined,
+): NativeSendOptions {
+  const ports = subjectEndpointPorts(endpointScopeOf(settings.dshLaunch)) ?? []
+  const endpointPort = settings.dshLaunch.endpointPort ?? (ports.length === 1 ? ports[0] : undefined)
+  return { model, endpointPort }
+}
+
 type ConversationPointerAdapter = ChatAdapter & {
   conversationId?: () => string | undefined
 }
@@ -1302,8 +1322,8 @@ export function App({ surface = 'combined' }: AppProps) {
             adapterBackend,
             adapterBackend === 'deepseek-api'
               ? apiAdapterOptionsRef.current
-              : adapterBackend === 'harness' && harnessModelChoice
-                ? { model: harnessModelChoice }
+              : adapterBackend === 'harness'
+                ? harnessAdapterOptionsFromSettings(settings, harnessModelChoice)
                 : {},
             // Harness owns its own daily workspace/session lifecycle. Never
             // feed it a renderer-local resume pointer, which could belong to
