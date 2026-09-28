@@ -284,10 +284,15 @@ export function ConversationBubble(props: ConversationBubbleProps) {
         </button>}
         {renderedMessages.map((message, index) => <article key={message.id} className={`dsh-chat__message dsh-chat__message--${message.role}`} style={{ ['--message-index' as string]: String(Math.max(0, renderedMessages.length - index - 1)) }}>
           {props.speakerLabels?.[message.role]?.trim() && <span className="dsh-chat__message-label">{props.speakerLabels[message.role]}</span>}
-          {message.role === 'assistant'
-            // 助手正文走最小 Markdown（代码块、行内代码、粗体、列表）；用户自己的字原样显示。
-            ? <MarkdownBody text={message.content} />
-            : <p className="dsh-chat__message-body">{message.content}</p>}
+          {message.role === 'user'
+            // 用户自己的字原样显示；**其余一律当模型输出**走最小 Markdown。
+            //
+            // 判据刻意写成"不是用户"而不是"等于 assistant"：三条后端（网页入口、API、Harness）的
+            // 角色名来自三个不同的上游，将来再加一个后端也不该因为角色字符串不同就静默退化成纯文本
+            // （实测：网页入口那条路的助手消息就没吃到 Markdown，而它确实叫 assistant —— 与其继续
+            // 逐个核对上游，不如把这条规矩说死：只有用户输入是不可改写的）。
+            ? <p className="dsh-chat__message-body">{message.content}</p>
+            : <MarkdownBody text={message.content} />}
           <UsageLine usage={message.usage} />
         </article>)}
         {streamText && <article className="dsh-chat__message dsh-chat__message--assistant">
