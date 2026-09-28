@@ -4187,6 +4187,19 @@ const HARNESS_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_se
 #[cfg(not(feature = "lite"))]
 const HARNESS_TRANSITION_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1_200);
 
+/// 切换主体之后，"连接中"至少要占住这段时间，多快拿到结论都不改口。
+///
+/// 与渲染端的最短停留（`HARNESS_SWITCH_BUFFER_MS`）是同一个数字的两半：**这一半是权威**（它决定
+/// 发布什么状态），那一半只管界面上的灯。实测过的坑：新主体的第一份结论会被"从没连过就发布所见"
+/// 那条老规则立刻发出去，于是黄灯一步都没出现、直接变灰 —— 用户看到的就是"没有尝试连接的阶段"。
+#[cfg(not(feature = "lite"))]
+const HARNESS_SWITCH_HOLD: std::time::Duration = std::time::Duration::from_millis(1_200);
+
+/// 切换缓冲期内发布的原因码：界面上它对应"连接中"，与其它任何原因都不同（诊断里一眼能看出
+/// "这是刚换了主体、还在缓冲"，而不是"主体不在"或"桥不兼容"）。
+#[cfg(not(feature = "lite"))]
+const HARNESS_CONNECTING_REASON: &str = "connecting";
+
 /// How long "not answering" may last before the subject is called dead *when there is
 /// nothing to prove it with*.
 ///
@@ -4315,6 +4328,13 @@ fn start_harness_monitor(app: tauri::AppHandle) {
         let mut scope = harness_scope_key();
         // 换了主体必须**发布一次**：界面上那条状态属于上一个对象，不发布就会一直停在它上面。
         let mut force_publish = false;
+        // 切换主体后**先只发布"连接中"**，多快拿到新主体的结论都不改变这一点。
+        //
+        // 实测：新主体的第一份结论会被"从没连过就发布所见"那条老规则立刻发出去（日志：
+        // `scope changed → Offline (probing false)`），于是界面上根本没有黄灯，直接变成灰 ——
+        // 而用户要的是"切换后固定 1–2s 的黄灯缓冲"。缓冲期内发布的状态是"还没定"，这正是黄灯的
+        // 唯一含义；结论晚 1.2 秒再说，不会晚过任何人的耐心，却让中间态真的看得见。
+        let mut scope_changed_at: Option<std::time::Instant> = None;
         loop {
             let current_scope = harness_scope_key();
             if current_scope != scope {
@@ -4323,8 +4343,6 @@ fn start_harness_monitor(app: tauri::AppHandle) {
                 );
                 scope = current_scope;
                 // 忘了"曾经连上过"、忘了属主、忘了理由：它们说的都是**上一个**主体。
-                // 并以"正在连"的状态发布（`probing: true`）：换了主体之后，在答案回来之前，
-                // 唯一诚实的话就是"连接中" —— 既不是上一个主体的"已连接"，也不是新主体的"离线"。
                 monitor = HarnessMonitorState {
                     probing: true,
                     ..HarnessMonitorState::default()
@@ -4333,7 +4351,10 @@ fn start_harness_monitor(app: tauri::AppHandle) {
                 watched = None;
                 last_reason = None;
                 force_publish = true;
+                scope_changed_at = Some(std::time::Instant::now());
             }
+            let holding = scope_changed_at
+                .is_some_and(|at| at.elapsed() < HARNESS_SWITCH_HOLD);
             let (port, status) = probe_current_endpoint().await;
             if let Ok(mut cache) = harness_status_cache().write() {
                 *cache = status.clone();
@@ -4389,7 +4410,28 @@ fn start_harness_monitor(app: tauri::AppHandle) {
                 }
                 _ => reason.clone(),
             };
-            if publish || force_publish || reason_for_state != last_reason {
+            // 缓冲期结束的那一 tick：缓冲期内压住的结论现在要发出来。
+            if scope_changed_at.is_some() && !holding {
+                scope_changed_at = None;
+                force_publish = true;
+            }
+            if holding {
+                // 缓冲期内**只**发布"连接中"：不发布新主体的结论，也不发布上一个主体的残留。
+                // 状态用 Offline + probing（界面上就是黄灯 + "连接中"），理由是这两件事都是真的：
+                // 此刻确实没有连上，也确实还在连。
+                if last_reason.as_deref() != Some(HARNESS_CONNECTING_REASON) {
+                    last_reason = Some(HARNESS_CONNECTING_REASON.to_string());
+                    log::info!("harness availability: connecting (held for the switch buffer)");
+                    if let Some(core) = app.try_state::<AppCore>() {
+                        let snapshot = core.dispatch(AppAction::SetHarnessDiagnostic {
+                            availability: HarnessAvailability::Offline,
+                            reason_code: Some(HARNESS_CONNECTING_REASON.to_string()),
+                            probing: true,
+                        });
+                        emit_app_snapshot(&app, &snapshot);
+                    }
+                }
+            } else if publish || force_publish || reason_for_state != last_reason {
                 force_publish = false;
                 log::info!(
                     "harness availability: {:?} (probing {}, owner {:?} alive {:?}, reason {:?})",
