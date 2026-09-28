@@ -1994,7 +1994,7 @@ export function App({ surface = 'combined' }: AppProps) {
     </div>
     : conversationBubble
 
-  return <div className={`wallpaper-root surface-${surface} effort-${runtime.reasoningEffort ?? 'normal'} workspace-${workspace}${wakeEnter ? ' wake-enter' : ''}`} data-workspace={workspace}>
+  return <div className={`wallpaper-root phase-${runtime.phase} surface-${surface} effort-${runtime.reasoningEffort ?? 'normal'} workspace-${workspace}${wakeEnter ? ' wake-enter' : ''}`} data-workspace={workspace}>
     {scene}
     {wakeEnter && <div className="wake-curtain-out" style={{ animationDuration: `${WAKE_CURTAIN_OUT_MS}ms` }} />}
     <>

@@ -5,6 +5,7 @@ import type { PersonaManifest } from '../persona/types.ts'
 import { placeholderPortrait } from '../ui/whale.ts'
 import { assetUrl } from '../runtime/assets.ts'
 import { decodeImageSource } from '../native/bootstrapHandoff.ts'
+import './wakeTransition.css'
 
 export interface WakeSceneProps {
   persona: PersonaManifest

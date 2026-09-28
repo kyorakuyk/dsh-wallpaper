@@ -33,8 +33,12 @@ describe('wake hand-off assets and transition', () => {
     expect(vite).not.toContain('frame-2-eyes.webp')
   })
 
-  it('draws the curtain and the portrait ghost', async () => {
-    const css = await readFile(resolve(wallpaperRoot, 'src/styles.css'), 'utf8')
+  it('draws the curtain, the layering and the portrait ghost', async () => {
+    // The sheet travels with WakeScene because the Lite edition never loads
+    // styles.css: put these rules there and Lite gets an unstyled black div.
+    const css = await readFile(resolve(wallpaperRoot, 'src/scenes/wakeTransition.css'), 'utf8')
+    const scene = await readFile(resolve(wallpaperRoot, 'src/scenes/WakeScene.tsx'), 'utf8')
+    expect(scene).toContain("import './wakeTransition.css'")
     expect(css).toContain('.wake-curtain {')
     expect(css).toContain('.wake-curtain-out {')
     expect(css).toContain('@keyframes wake-curtain-in')
@@ -43,6 +47,25 @@ describe('wake hand-off assets and transition', () => {
     expect(css).toContain('@keyframes portrait-from-ghost')
     // Reduced motion must not leave the user staring at a black screen.
     expect(css).toMatch(/prefers-reduced-motion[\s\S]*?\.wake-curtain-out \{ animation-duration: 1ms/)
+  })
+
+  it('keeps the animation above the desktop interaction layer while it plays', async () => {
+    // The reported bug: during the frame animation the input island painted over
+    // the frames. The rule needs both the sheet and the phase class on the root,
+    // so a missing half has to fail here rather than on screen.
+    const css = await readFile(resolve(wallpaperRoot, 'src/scenes/wakeTransition.css'), 'utf8')
+    for (const phase of ['phase-booting', 'phase-locked', 'phase-waking']) {
+      expect(css, phase).toContain(`.wallpaper-root.${phase} .scene`)
+      expect(css, phase).toContain(`.lite-wallpaper-root.lite-${phase} .scene`)
+    }
+    expect(css).toMatch(/\.wallpaper-root\.phase-waking \.scene,[\s\S]*?z-index: 100;/)
+    // ...and the desktop itself must stay out of that rule: on idle the island
+    // belongs on top.
+    expect(css).not.toContain('.phase-idle .scene')
+    const app = await readFile(resolve(wallpaperRoot, 'src/App.tsx'), 'utf8')
+    expect(app).toContain('phase-${runtime.phase}')
+    const lite = await readFile(resolve(wallpaperRoot, 'src/lite/LiteApp.tsx'), 'utf8')
+    expect(lite).toContain('lite-phase-${phase}')
   })
 
   it('only plays the hand-off when the animation itself played', async () => {
