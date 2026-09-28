@@ -172,7 +172,12 @@ export function subjectOptionLabel(target: HarnessTarget, all: readonly HarnessT
   // 主体的名字里**已经**说了类别时不再重复：已安装的 CLI 那条的标签就叫"已安装的DSH CLI"，
   // 拼成"已安装的 CLI · 已安装的DSH CLI"是把同一件事说两遍（用户指出来了）。判据用"以类别
   // 名开头"，因为那是这一条名字本身的写法，而不是我们拼出来的。
-  return name.startsWith(kind) ? name : `${kind} · ${name}`
+  const base = name.startsWith(kind) ? name : `${kind} · ${name}`
+  // 版本号跟在名字后面，因为它回答的是同一类问题 —— "这一条是谁"：0.2.0-rc.1 的客户端与
+  // 0.1.0-rc.5 的源码树能不能接上同一个 bridge，答案并不相同。读不到版本时**一个字都不加**：
+  // 写"未知"会让用户以为我们查过这一条（见 `HarnessTarget.version`）。
+  const version = target.version?.trim()
+  return version ? `${base} · ${version}` : base
 }
 export function launchOutcomeNotice(outcome: {
   outcome: string

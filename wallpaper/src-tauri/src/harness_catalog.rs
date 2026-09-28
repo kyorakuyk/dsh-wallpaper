@@ -104,6 +104,7 @@ mod tests {
         crate::harness_targets::build_scan_for_tests(&[ScannedShortcut {
             aumid: "com.deepseek.dsh".into(),
             directory: r"C:\Start Menu".into(),
+            target: None,
         }])
     }
 
@@ -140,5 +141,25 @@ mod tests {
         )
         .expect("written");
         assert!(load_from(&wrong_version).is_none());
+    }
+
+    /// 版本号是后加的字段，而缓存文件是**上一个版本写下的**：那份文件里没有 `version`。
+    ///
+    /// 它必须照旧读得回来（那几条主体只是没有版本），否则一次升级就会让用户手里已验证过的
+    /// 列表消失，逼他重新扫描 —— 缓存的全部意义就是不必如此。
+    #[test]
+    fn a_record_written_before_the_version_field_still_loads() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("older-build.json");
+        std::fs::write(
+            &path,
+            r#"{"schemaVersion":1,"verifiedAtMs":1700000000000,"targets":[{"id":"shell:com.deepseek.dsh","kind":"embedded-shell","client":"official-desktop","label":"官方桌面客户端","source":"C:\\Start Menu","identity":{"aumid":"com.deepseek.dsh","rootPath":null,"defaultPorts":[19387]},"launch":{"kind":"apps-folder","alias":"shell:AppsFolder\\com.deepseek.dsh"},"capabilities":{"singleInstance":true,"ownsWindow":true,"canStartHidden":true,"needsProfile":false}}],"requiresSubjectChoice":false}"#,
+        )
+        .expect("written");
+
+        let loaded = load_from(&path).expect("an older record is still a record");
+        assert_eq!(loaded.targets.len(), 1);
+        assert_eq!(loaded.targets[0].version, None);
+        assert_eq!(loaded.targets[0].label, "官方桌面客户端");
     }
 }

@@ -190,6 +190,15 @@ export interface HarnessTarget {
   /** Which client shape this subject answers as, reusing the endpoint scan's vocabulary. */
   client: 'official-desktop' | 'official-web'
   label: string
+  /**
+   * 该主体自己声明的版本号，由扫描读出；读不到就没有这个字段。
+   *
+   * 三种来源不同（客户端读 exe 的 VERSIONINFO、源码目录读它自己的 package.json、已安装 CLI 读
+   * npm 全局包清单），但含义只有一个：**那个东西自己说自己是什么版本**。缺失时前缀一条都不加，
+   * 而不是写"未知"：我们没读到和我们读到了"未知"是两件事，占位符抹掉了这个区别，还会让用户以为
+   * 这一条被检查过。
+   */
+  version?: string
   /** Where the scan found it: a checkout's scan origin, or a shell's shortcut directory. */
   source: string
   identity: {
