@@ -4,6 +4,7 @@ import { Button, Glass, Icon } from '../../ui/primitives/index.ts'
 import { composerPlaceholder, formatCost, isBusyActivity, sessionCostSummary, turnUsageSummary } from './conversationViewModel.ts'
 import { growHistoryWindow, historyWindow, HISTORY_RENDER_WINDOW } from './streamRender.ts'
 import { harnessStateLabel } from '../../connect/harnessLabels.ts'
+import { MarkdownBody } from './MarkdownBody.tsx'
 import './ConversationBubble.css'
 
 /** Optional speaker labels for themes that want explicit attribution. */
@@ -283,12 +284,15 @@ export function ConversationBubble(props: ConversationBubbleProps) {
         </button>}
         {renderedMessages.map((message, index) => <article key={message.id} className={`dsh-chat__message dsh-chat__message--${message.role}`} style={{ ['--message-index' as string]: String(Math.max(0, renderedMessages.length - index - 1)) }}>
           {props.speakerLabels?.[message.role]?.trim() && <span className="dsh-chat__message-label">{props.speakerLabels[message.role]}</span>}
-          <p className="dsh-chat__message-body">{message.content}</p>
+          {message.role === 'assistant'
+            // 助手正文走最小 Markdown（代码块、行内代码、粗体、列表）；用户自己的字原样显示。
+            ? <MarkdownBody text={message.content} />
+            : <p className="dsh-chat__message-body">{message.content}</p>}
           <UsageLine usage={message.usage} />
         </article>)}
         {streamText && <article className="dsh-chat__message dsh-chat__message--assistant">
           {props.speakerLabels?.assistant?.trim() && <span className="dsh-chat__message-label">{props.speakerLabels.assistant}</span>}
-          <p className="dsh-chat__message-body">{streamText}<span className="dsh-chat__caret" aria-hidden="true" /></p>
+          <MarkdownBody text={streamText} /><span className="dsh-chat__caret" aria-hidden="true" />
         </article>}
       </div>
     </div>}

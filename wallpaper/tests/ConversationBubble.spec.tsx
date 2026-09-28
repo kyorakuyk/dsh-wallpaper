@@ -195,6 +195,34 @@ describe('ConversationBubble', () => {
     expect(empty).not.toContain('dsh-chat__history-note')
   })
 
+  it('renders the assistant as markdown but never rewrites what the user typed', () => {
+    const base = {
+      activity: 'idle' as const,
+      modelLabel: 'deepseek-chat',
+      streamingText: '',
+      // 转写只在展开时渲染 —— 不展开的话这条测试什么都没测到（第一版就是这么假绿的）。
+      historyExpanded: true,
+      ...callbacks,
+    }
+    const assistant = renderToStaticMarkup(<ConversationBubble
+      {...base}
+      backend="deepseek-web"
+      messages={[{ id: 'a', role: 'assistant', content: '看这段：\n```ts\nconst a = 1\n```\n- 一\n- 二', createdAt: 0 }]}
+    />)
+    expect(assistant).toContain('dsh-chat__code')
+    expect(assistant).toContain('dsh-chat__list')
+
+    // 用户自己的字原样显示：他敲的反引号和星号往往**正是字面意思**，"我打的字被它改了"比排版问题
+    // 严重得多，所以这条规则由结构保证（用户消息根本不走 MarkdownBody）。
+    const user = renderToStaticMarkup(<ConversationBubble
+      {...base}
+      backend="deepseek-web"
+      messages={[{ id: 'u', role: 'user', content: '```ts\nconst a = 1\n```', createdAt: 0 }]}
+    />)
+    expect(user).not.toContain('dsh-chat__code')
+    expect(user).toContain('```ts')
+  })
+
   it('shows the amber light while connecting, and the dark one only when it is gone', () => {
     // 三段语义：连上（绿）／正在连（黄呼吸）／不在了（熄灭）。"正在连"时 `harnessReady`
     // 是 false，所以黄灯必须优先于熄灭态——否则"启动中"与"已经死了"看起来一模一样，而这两件

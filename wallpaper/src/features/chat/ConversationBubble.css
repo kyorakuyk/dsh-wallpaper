@@ -191,6 +191,41 @@
   color: var(--dsh-text-strong);
 }
 .dsh-chat__message-usage { padding: 0 5px; color: var(--dsh-text-faint); font-size: 10px; }
+/*
+ * 最小 Markdown 的三样（代码围栏、行内代码、列表）。
+ *
+ * 段落之间原来靠 `pre-wrap` 里的空行撑开，现在空行被解析吃掉了，所以由下面这几条规则补上间距 ——
+ * 否则解析之后两段会贴在一起，看起来比不解析更糟。
+ */
+.dsh-chat__message-body + .dsh-chat__message-body,
+.dsh-chat__message-body + .dsh-chat__list,
+.dsh-chat__message-body + .dsh-chat__code,
+.dsh-chat__list + .dsh-chat__message-body,
+.dsh-chat__list + .dsh-chat__list,
+.dsh-chat__code + .dsh-chat__message-body,
+.dsh-chat__code + .dsh-chat__code { margin-top: 9px; }
+.dsh-chat__code {
+  overflow-x: auto;
+  margin: 9px 0 0;
+  padding: 9px 11px;
+  border: 1px solid rgba(139, 196, 235, .16);
+  border-radius: 9px;
+  background: rgba(4, 13, 25, .55);
+  color: #d7e8f5;
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Cascadia Mono', monospace;
+  font-size: 12px;
+  /* 代码块里**不折行**：横向滚动比"任意位置断行"诚实得多（断行会把一行代码切成语义不明的碎片）。 */
+  white-space: pre;
+}
+.dsh-chat__inline-code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(139, 196, 235, .14);
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Cascadia Mono', monospace;
+  font-size: .92em;
+}
+.dsh-chat__list { margin: 9px 0 0; padding-left: 20px; }
+.dsh-chat__list li { margin-top: 3px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .dsh-chat__caret { display: inline-block; width: 2px; height: 1em; margin-left: 4px; vertical-align: -2px; background: var(--dsh-accent-soft); animation: dsh-chat-caret 900ms steps(1) infinite; }
 
 .dsh-chat__card {
