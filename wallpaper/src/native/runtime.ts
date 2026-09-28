@@ -61,7 +61,24 @@ export interface ManagedDshAutostart {
   pid?: number
   external: boolean
 }
-export interface AutostartStatus { enabled: boolean; source: 'startup-task' | 'run' | 'none' | 'disabled-by-user' | 'disabled-by-policy' | 'unsupported' }
+export interface AutostartStatus {
+  enabled: boolean
+  source: 'startup-task' | 'run' | 'none' | 'disabled-by-user' | 'disabled-by-policy' | 'unsupported'
+  /**
+   * Why the state is what it is, from the side that knows (Windows refused the
+   * startup task, the recorded entry names another build, the registry could
+   * not be read). `null` when nothing needs explaining — for example when a
+   * packaged build's startup task is simply on.
+   */
+  reason: string | null
+}
+/**
+ * The state a browser preview reports: there is no Windows process to ask, so
+ * the page must say that instead of showing an unchecked switch as "off".
+ */
+export function unsupportedAutostart(): AutostartStatus {
+  return { enabled: false, source: 'unsupported', reason: '当前系统不支持本应用的开机自启。' }
+}
 /**
  * One endpoint from the native scan. `kind` is the expected client shape for a
  * known port; `bridgeFound` is true only when a wallpaper Bridge answered, so a
@@ -483,12 +500,12 @@ export const nativeRuntime: NativeRuntime = {
     return invoke<LockScreenDiagnostics>('get_lock_screen_diagnostics')
   },
   async setAutostart(enabled) {
-    if (!await tauriAvailable()) return { enabled: false, source: 'unsupported' }
+    if (!await tauriAvailable()) return unsupportedAutostart()
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<AutostartStatus>('set_autostart', { enabled })
   },
   async autostartStatus() {
-    if (!await tauriAvailable()) return { enabled: false, source: 'unsupported' }
+    if (!await tauriAvailable()) return unsupportedAutostart()
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<AutostartStatus>('autostart_status')
   },

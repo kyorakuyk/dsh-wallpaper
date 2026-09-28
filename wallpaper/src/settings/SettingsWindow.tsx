@@ -19,6 +19,8 @@ import {
 } from '../connect/endpoints.ts'
 import { launchOutcomeNotice, reachNeedsBrowser, subjectChoicePrompt } from '../connect/harnessSubjects.ts'
 import { SettingsPanel, backendModeLabel, type SettingsPanelHarnessStatus } from './SettingsPanel.tsx'
+import { autostartRefusalNotice } from './autostartCopy.ts'
+import { createAutostartQueue, type AutostartQueue } from './autostartQueue.ts'
 import {
   createProbeScheduler,
   createSettingsProbeController,
@@ -102,7 +104,10 @@ export function SettingsWindow() {
    * so the card needs the actual source (`none`, disabled by the user, disabled
    * by policy) to say whether a login-time start will really happen.
    */
-  const [autostartState, setAutostartState] = useState<AutostartStatus>({ enabled: false, source: 'none' })
+  // `reason: null` with source `none` is the state Rust never produces: it is
+  // this page's placeholder until the first read comes back, and the row says
+  // so instead of showing an unchecked switch as a fact.
+  const [autostartState, setAutostartState] = useState<AutostartStatus>({ enabled: false, source: 'none', reason: null })
   /**
    * Endpoint discovery result. `endpointScanDone` is deliberately separate from
    * an empty list: "not scanned yet" and "scanned and found nothing" need
@@ -147,6 +152,13 @@ export function SettingsWindow() {
   const settingsRef = useRef(settings)
   const lockScreenOperationRef = useRef(false)
   const autostartOperationRef = useRef(false)
+  /**
+   * What the autostart switch currently stands for: the user's latest request
+   * while one is on the wire, otherwise the state Windows last reported. A
+   * toggle only travels to Rust when it differs from this, so a refused or
+   * superseded change can always be asked for again.
+   */
+  const latestAutostartRef = useRef(settings.autostart)
   /**
    * The shape of the subject the reach action reaches.
    *
@@ -413,12 +425,17 @@ export function SettingsWindow() {
     }
   }
 
-  const refreshAutostartStatus = async () => {    if (!nativeRuntime.isNative) return
+  const refreshAutostartStatus = async () => {
+    if (!nativeRuntime.isNative) return
     try {
       const status: AutostartStatus = await nativeRuntime.autostartStatus()
       const current = settingsRef.current
       if (!mountedRef.current) return
       setAutostartState(status)
+      // A toggle is on the wire: its read-back is newer than this probe's, so
+      // this one must not write the older value into the switch.
+      if (autostartOperationRef.current) return
+      latestAutostartRef.current = status.enabled
       if (current.autostart !== status.enabled) {
         const next = { ...current, autostart: status.enabled }
         settingsRef.current = next
@@ -775,9 +792,43 @@ export function SettingsWindow() {
   // A reload or a real teardown cancels every probe that has not started yet.
   useEffect(() => () => probeController.dispose(), [probeController])
 
+  /**
+   * The autostart switch, serialized (see `createAutostartQueue`). Built on
+   * first use: it captures the commit path, the notice channel and the mounted
+   * guard, all of which exist by the time a user can move the switch.
+   */
+  const autostartQueueRef = useRef<AutostartQueue>()
+  const autostartQueue = () => {
+    if (!autostartQueueRef.current) {
+      autostartQueueRef.current = createAutostartQueue({
+        send: (enabled) => nativeRuntime.setAutostart(enabled),
+        onBusy: (busy) => {
+          autostartOperationRef.current = busy
+          if (mountedRef.current) setAutostartBusy(busy)
+        },
+        onSettled: (status, requested) => {
+          if (!mountedRef.current) return
+          setAutostartState(status)
+          // A newer toggle is already queued: its own read-back decides the
+          // switch, and committing this older one would put the switch back
+          // where the user just moved it from.
+          if (latestAutostartRef.current !== requested) return
+          latestAutostartRef.current = status.enabled
+          commitSettings({ ...settingsRef.current, autostart: status.enabled })
+          const refusal = autostartRefusalNotice(status, requested)
+          if (refusal) setNotice(refusal)
+        },
+        onError: (error) => {
+          if (mountedRef.current) setNotice(`开机自启更新失败：${String(error)}`)
+        },
+      })
+    }
+    return autostartQueueRef.current
+  }
+
   const change = (next: WallpaperSettings) => {
     const previous = settingsRef.current
-    const autostartChanged = next.autostart !== previous.autostart
+    const autostartChanged = next.autostart !== latestAutostartRef.current
     // System lock-screen ownership is deliberately excluded from the normal
     // immediate-save path. The dedicated async operation above is the only
     // place allowed to persist or broadcast a change to this field.
@@ -785,21 +836,12 @@ export function SettingsWindow() {
       ? next
       : { ...next, lockScreenEnabled: previous.lockScreenEnabled }
     if (autostartChanged) {
-      if (autostartOperationRef.current) return
-      autostartOperationRef.current = true
-      setAutostartBusy(true)
-      void nativeRuntime.setAutostart(next.autostart)
-        .then((status) => {
-          const current = settingsRef.current
-          if (mountedRef.current) setAutostartState(status)
-          commitSettings({ ...current, autostart: status.enabled })
-          if (status.enabled !== next.autostart) setNotice('Windows 没有接受这次开机自启变更，请检查系统启动应用权限。')
-        })
-        .catch((error) => setNotice(`开机自启更新失败：${String(error)}`))
-        .finally(() => {
-          autostartOperationRef.current = false
-          setAutostartBusy(false)
-        })
+      // The switch follows the user at once; Windows' answer decides whether it
+      // stays there. A second toggle is queued instead of dropped, and the
+      // response of the request it replaces cannot move the switch back.
+      latestAutostartRef.current = next.autostart
+      commitSettings(normalNext)
+      autostartQueue().request(next.autostart)
       return
     }
     commitSettings(normalNext)

@@ -10,6 +10,7 @@ import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, DesktopWorkspa
 import { preferredDisplayId } from '../runtime/displayLayout.ts'
 import { harnessStateLabel } from '../connect/harnessLabels.ts'
 import type { AutostartStatus, HarnessEndpointScan, HarnessTarget } from '../native/runtime.ts'
+import { autostartDetail } from './autostartCopy.ts'
 import { catalogAgeLabel, displaySubjectPath, sameSubject, subjectOptionLabel } from '../connect/harnessSubjects.ts'
 import { OfficialPersonaCards } from '../persona/OfficialPersonaCards.tsx'
 import './SettingsPanel.css'
@@ -808,7 +809,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
           </Field>
         </Card>
         <Card title="Windows 集成">
-          <Field title="登录后自动启动" detail={props.autostartBusy ? '正在更新 Windows 启动任务，请稍候；设置中心仍可继续使用。' : 'MSIX 优先使用 Windows StartupTask，旧版/开发版回退到当前用户启动项；版本更新会保留此状态。'}><Toggle label="登录后自动启动" checked={settings.autostart} onChange={(value) => set({ autostart: value })} disabled={props.autostartBusy} /></Field>
+          <Field title="登录后自动启动" detail={props.autostartBusy ? '正在更新 Windows 启动任务，请稍候；设置中心仍可继续使用。' : autostartDetail(props.autostart)}><Toggle label="登录后自动启动" checked={settings.autostart} onChange={(value) => set({ autostart: value })} disabled={props.autostartBusy} /></Field>
           <Field title="接管锁屏图片" detail={props.lockScreenBusy ? '正在应用系统锁屏设置，请稍候。' : '使用内置且已审计的熟睡画面；密码界面仍由 Windows 原生安全桌面处理。正式版需要 MSIX 包身份。'}><Toggle label="接管锁屏图片" checked={settings.lockScreenEnabled} onChange={props.onSetLockScreenEnabled} disabled={props.lockScreenBusy} /></Field>
           <div className="lockscreen-diagnostics">
             <div className="lockscreen-diagnostics__row"><div><strong>接管状态</strong><small>{props.lockScreenDiagnostics?.managedImageActive ? '正在使用大肥鱼的熟睡画面' : '未检测到本应用的锁屏图片'}</small></div>{props.lockScreenDiagnostics?.managedImageActive ? <button className="settings-action secondary" disabled={props.lockScreenBusy} onClick={props.onRestoreLockScreen}>打开 Windows 锁屏设置</button> : props.lockScreenDiagnostics?.staleBackup ? <button className="settings-action secondary" disabled={props.lockScreenBusy} onClick={props.onClearStaleLockScreenBackup}>{props.lockScreenBusy ? '正在清理…' : '清理旧恢复点（删除原图副本）'}</button> : null}</div>

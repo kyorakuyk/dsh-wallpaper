@@ -3187,10 +3187,17 @@ const RUN_KEY_PATH: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 const RUN_KEY_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(windows)]
 const RUN_VALUE_NAME: &str = "dsh-wallpaper";
-/// The `<Application Id>` declared by `packaging/msix/AppxManifest.xml`. The
+/// The `<Application Id>` declared by this edition's `AppxManifest.xml`. The
 /// shell needs it, together with the package family name, to address the
 /// packaged app's launch alias.
-#[cfg(windows)]
+///
+/// The two editions ship different manifests *and* different packages
+/// (`com.dsh.wallpaper` / `com.dsh.wallpaper.lite`), so one shared value made
+/// the Lite package record an alias for an application its manifest does not
+/// declare — an entry that resolves to nothing at logon.
+#[cfg(all(windows, feature = "lite"))]
+const PACKAGE_APPLICATION_ID: &str = "WallpaperLite";
+#[cfg(all(windows, not(feature = "lite")))]
 const PACKAGE_APPLICATION_ID: &str = "Wallpaper";
 
 /// The per-user autostart value a packaged build must record.
@@ -3344,18 +3351,87 @@ fn run_entry_command() -> Result<Option<String>, String> {
     Ok(Some(value.trim_end_matches('\0').to_string()))
 }
 
+/// What the compatibility Run entry says now, together with the two values
+/// that produced the answer.
+///
+/// The read-back decides what the settings page shows, so it must not guess:
+/// "nothing is recorded", "another build is recorded" and "the registry could
+/// not be read" used to collapse into one silent `false`, and a log line could
+/// then contradict the switch without either side saying which value it saw.
+/// Errors are folded in rather than propagated for the same reason — the
+/// caller has to be able to name which of the three states it is in.
+#[cfg(windows)]
+#[derive(Debug)]
+pub(crate) struct RunEntryCheck {
+    pub(crate) matches: bool,
+    /// The recorded value, when the registry read succeeded.
+    pub(crate) recorded: Option<String>,
+    /// The value this build needs, when it could be computed.
+    pub(crate) expected: Option<String>,
+    /// Why the check could not be completed, when it could not.
+    pub(crate) error: Option<String>,
+}
+
+#[cfg(windows)]
+pub(crate) fn check_run_entry() -> RunEntryCheck {
+    let expected = match current_run_entry_command() {
+        Ok(command) => command,
+        Err(error) => {
+            return RunEntryCheck {
+                matches: false,
+                recorded: None,
+                expected: None,
+                error: Some(error),
+            }
+        }
+    };
+    let recorded = match run_entry_command() {
+        Ok(value) => value,
+        Err(error) => {
+            return RunEntryCheck {
+                matches: false,
+                recorded: None,
+                expected: Some(expected),
+                error: Some(error),
+            }
+        }
+    };
+    let matches = match recorded.as_deref() {
+        Some(value) => autostart_commands_match(value, &expected),
+        None => false,
+    };
+    RunEntryCheck {
+        matches,
+        recorded,
+        expected: Some(expected),
+        error: None,
+    }
+}
+
+/// Why the compatibility entry does not carry autostart, in the words the
+/// settings page shows. Deliberately shorter than the log line: the page names
+/// the state, the log names the values.
+#[cfg(windows)]
+fn run_entry_refusal(check: &RunEntryCheck) -> String {
+    if let Some(error) = check.error.as_deref() {
+        return error.to_string();
+    }
+    match check.recorded.as_deref() {
+        None => "当前用户启动项里没有 DSH Wallpaper。".into(),
+        Some(_) => "当前用户启动项指向的不是本次安装的版本。".into(),
+    }
+}
+
 /// Whether the per-user Run entry launches this exact build. A recorded path
 /// is not evidence of working autostart by itself: it may name a `WindowsApps`
 /// directory that a package update has already deleted.
 #[cfg(windows)]
 pub(crate) fn run_entry_matches_current_build() -> Result<bool, String> {
-    let Some(recorded) = run_entry_command()? else {
-        return Ok(false);
-    };
-    Ok(autostart_commands_match(
-        &recorded,
-        &current_run_entry_command()?,
-    ))
+    let check = check_run_entry();
+    match check.error {
+        Some(error) => Err(error),
+        None => Ok(check.matches),
+    }
 }
 
 /// The exact `reg.exe` invocation that records the entry. Kept apart from the
@@ -3458,6 +3534,15 @@ pub(crate) fn set_startup_task(enabled: bool) -> Result<Option<bool>, String> {
 pub(crate) struct AutostartStatus {
     pub(crate) enabled: bool,
     pub(crate) source: String,
+    /// Why the state is what it is, in the words the settings page shows.
+    ///
+    /// The renderer used to guess: every refusal produced the same sentence
+    /// about "系统启动应用权限", which sends the user to a Windows setting that
+    /// on this machine was never the problem. The cause is known here — Windows
+    /// refused the startup task with a specific code, the recorded entry names
+    /// another build, or the registry could not be read — so it travels out
+    /// instead of a canned sentence.
+    pub(crate) reason: Option<String>,
 }
 
 #[cfg(windows)]
@@ -3495,49 +3580,120 @@ pub(crate) fn remove_legacy_run_entry() -> Result<(), String> {
 
 #[cfg(windows)]
 pub(crate) fn autostart_status() -> Result<AutostartStatus, String> {
+    // One read-back, one log line, one set of values for every branch below:
+    // when the switch and the log disagree about autostart, this is the line
+    // that says which value each side was looking at.
+    let check = check_run_entry();
+    log::info!(
+        "开机自启回读：matches={} recorded={:?} expected={:?} error={:?}",
+        check.matches,
+        check.recorded,
+        check.expected,
+        check.error
+    );
+
     if has_package_identity()? {
         let task_id = HSTRING::from("DshWallpaperStartup");
-        if let Ok(task) = StartupTask::GetAsync(&task_id).and_then(|operation| operation.get()) {
-            let state = task
-                .State()
-                .map_err(|error| format!("无法读取 DSH Wallpaper 启动任务状态：{error}"))?;
-            let (enabled, source) = match state {
-                StartupTaskState::Enabled | StartupTaskState::EnabledByPolicy => {
-                    (true, "startup-task")
-                }
-                StartupTaskState::DisabledByUser => (false, "disabled-by-user"),
-                StartupTaskState::DisabledByPolicy => (false, "disabled-by-policy"),
-                // A package update can add StartupTask to an app that was
-                // previously using the HKCU Run compatibility path. Keep the
-                // effective preference enabled until the user explicitly
-                // changes it; otherwise the new package would appear to have
-                // silently turned autostart off during an update. A Run entry
-                // only counts while it still launches this build: an entry left
-                // by a superseded version names a deleted `WindowsApps`
-                // directory and would otherwise report working autostart that
-                // no longer exists.
-                StartupTaskState::Disabled => {
-                    if run_entry_matches_current_build()? {
-                        (true, "run")
-                    } else {
-                        (false, "startup-task")
+        match StartupTask::GetAsync(&task_id).and_then(|operation| operation.get()) {
+            Ok(task) => {
+                let state = task
+                    .State()
+                    .map_err(|error| format!("无法读取 DSH Wallpaper 启动任务状态：{error}"))?;
+                let status = match state {
+                    StartupTaskState::Enabled | StartupTaskState::EnabledByPolicy => {
+                        AutostartStatus {
+                            enabled: true,
+                            source: "startup-task".into(),
+                            reason: None,
+                        }
                     }
+                    StartupTaskState::DisabledByUser => AutostartStatus {
+                        enabled: false,
+                        source: "disabled-by-user".into(),
+                        reason: Some(
+                            "Windows 已禁用本应用的开机启动任务；可在系统设置的「启动应用」里重新允许。"
+                                .into(),
+                        ),
+                    },
+                    StartupTaskState::DisabledByPolicy => AutostartStatus {
+                        enabled: false,
+                        source: "disabled-by-policy".into(),
+                        reason: Some("Windows 策略禁止本应用开机启动。".into()),
+                    },
+                    // A package update can add StartupTask to an app that was
+                    // previously using the HKCU Run compatibility path. Keep the
+                    // effective preference enabled until the user explicitly
+                    // changes it; otherwise the new package would appear to have
+                    // silently turned autostart off during an update. A Run entry
+                    // only counts while it still launches this build: an entry left
+                    // by a superseded version names a deleted `WindowsApps`
+                    // directory and would otherwise report working autostart that
+                    // no longer exists.
+                    StartupTaskState::Disabled => {
+                        if check.matches {
+                            AutostartStatus {
+                                enabled: true,
+                                source: "run".into(),
+                                reason: Some(
+                                    "Windows 启动任务处于关闭状态，当前由当前用户启动项承载。".into(),
+                                ),
+                            }
+                        } else {
+                            AutostartStatus {
+                                enabled: false,
+                                source: "startup-task".into(),
+                                reason: Some(run_entry_refusal(&check)),
+                            }
+                        }
+                    }
+                    other => AutostartStatus {
+                        enabled: false,
+                        source: "startup-task".into(),
+                        reason: Some(format!(
+                            "Windows 启动任务未启用（状态码 {}）；当前用户启动项里没有本应用。",
+                            other.0
+                        )),
+                    },
+                };
+                return Ok(status);
+            }
+            // A package installed before the StartupTask extension was added is
+            // still readable through the compatibility Run entry — and so is an
+            // install where Windows refuses to instantiate the task at all,
+            // which is what happens on the machine this was diagnosed on:
+            // `GetAsync` answers E_INVALIDARG while the Run entry works. The
+            // refusal is carried out as the reason, because "Windows 启动任务
+            // 不可用" and "没有开启自启" were previously the same silent `false`.
+            Err(error) => {
+                log::warn!(
+                    "启动任务不可用（GetAsync({task_id:?}) 失败：{error}）；本次改走 Run 键兼容路径"
+                );
+                if check.matches {
+                    return Ok(AutostartStatus {
+                        enabled: true,
+                        source: "run".into(),
+                        reason: Some(format!(
+                            "Windows 启动任务不可用（{error}）；当前由当前用户启动项承载。"
+                        )),
+                    });
                 }
-                _ => (false, "startup-task"),
-            };
-            return Ok(AutostartStatus {
-                enabled,
-                source: source.into(),
-            });
+                return Ok(AutostartStatus {
+                    enabled: false,
+                    source: "none".into(),
+                    reason: Some(format!(
+                        "Windows 启动任务不可用（{error}）；{}",
+                        run_entry_refusal(&check)
+                    )),
+                });
+            }
         }
-        // A package installed before the StartupTask extension was added is
-        // still readable through the compatibility Run entry.
     }
 
-    if run_entry_matches_current_build()? {
+    if check.matches {
         return Ok(AutostartStatus {
             enabled: true,
             source: "run".into(),
+            reason: None,
         });
     }
     // An entry recorded by a superseded version is deliberately not reported
@@ -3546,7 +3702,53 @@ pub(crate) fn autostart_status() -> Result<AutostartStatus, String> {
     Ok(AutostartStatus {
         enabled: false,
         source: "none".into(),
+        reason: Some(run_entry_refusal(&check)),
     })
+}
+
+/// Apply the user's autostart choice and report the state Windows ends up in.
+///
+/// The result is read back from the system in every case: `reg.exe` can report
+/// success for a value Windows then ignores, and a settings page that shows the
+/// requested state instead of the real one is how "关掉之后打不开" survived
+/// three releases. The change is logged together with its outcome, so a refusal
+/// that never reaches the log cannot happen again.
+#[cfg(windows)]
+pub(crate) fn set_autostart(enabled: bool) -> Result<AutostartStatus, String> {
+    let outcome = if set_startup_task(enabled)?.is_some() {
+        // A package StartupTask is the authoritative autostart path. Drop any
+        // legacy Run value left by an older build so the single-instance guard
+        // does not needlessly process a second launch attempt.
+        let _ = remove_legacy_run_entry();
+        autostart_status()
+    } else {
+        // 注册表 Run 键：开机自启 dsh-wallpaper
+        //  开启: 写入当前构建需要的启动命令
+        //  关闭: 删除该值
+        // An MSIX install must record the shell's version-stable launch alias
+        // rather than its own versioned `WindowsApps` path, which the next
+        // package update deletes.
+        let write = if enabled {
+            current_run_entry_command().and_then(|command| write_run_entry(&command))
+        } else {
+            remove_legacy_run_entry()
+        };
+        match write {
+            Ok(()) => autostart_status(),
+            Err(error) => Err(error),
+        }
+    };
+    match &outcome {
+        Ok(status) => log::info!(
+            "开机自启变更：requested={} enabled={} source={} reason={:?}",
+            enabled,
+            status.enabled,
+            status.source,
+            status.reason
+        ),
+        Err(error) => log::warn!("开机自启变更失败：requested={enabled} error={error}"),
+    }
+    outcome
 }
 
 /// Carry an enabled autostart preference across a package update.
@@ -3603,7 +3805,13 @@ pub(crate) fn autostart_status() -> Result<AutostartStatus, String> {
     Ok(AutostartStatus {
         enabled: false,
         source: "unsupported".into(),
+        reason: Some("当前系统不支持本应用的开机自启。".into()),
     })
+}
+
+#[cfg(not(windows))]
+pub(crate) fn set_autostart(_: bool) -> Result<AutostartStatus, String> {
+    autostart_status()
 }
 
 #[cfg(not(windows))]
@@ -3976,9 +4184,11 @@ mod tests {
     #[test]
     fn packaged_autostart_records_the_version_stable_shell_alias() {
         let command = packaged_run_entry_command("com.dsh.wallpaper_pdxj8y3r6rm5g");
+        // The application half is this edition's own `<Application Id>`; the
+        // test below checks it against the manifest that edition ships.
         assert_eq!(
             command,
-            r"explorer.exe shell:AppsFolder\com.dsh.wallpaper_pdxj8y3r6rm5g!Wallpaper"
+            format!(r"explorer.exe shell:AppsFolder\com.dsh.wallpaper_pdxj8y3r6rm5g!{PACKAGE_APPLICATION_ID}")
         );
         // Whatever identifies the release must stay out of the autostart value:
         // a package update deletes the directory that carries it.
@@ -4012,6 +4222,78 @@ mod tests {
     fn a_missing_expected_command_never_matches() {
         assert!(!autostart_commands_match("anything", ""));
         assert!(!autostart_commands_match("", ""));
+    }
+
+    #[test]
+    fn the_autostart_alias_names_the_edition_it_was_installed_from() {
+        // Two editions, two manifests, two `<Application Id>`s. The alias half
+        // has to come from the manifest of the edition that recorded it: the
+        // shell resolves `family!id`, and an id the package does not declare
+        // launches nothing at logon.
+        let (manifest, id) = if cfg!(feature = "lite") {
+            (
+                include_str!("../../../packaging/msix/AppxManifest-Lite.xml"),
+                "WallpaperLite",
+            )
+        } else {
+            (
+                include_str!("../../../packaging/msix/AppxManifest.xml"),
+                "Wallpaper",
+            )
+        };
+        assert_eq!(id, PACKAGE_APPLICATION_ID);
+        assert!(
+            manifest.contains(&format!(r#"<Application Id="{id}""#)),
+            "{id} is not the application this edition's manifest declares"
+        );
+        let command = packaged_run_entry_command("com.dsh.wallpaper_pdxj8y3r6rm5g");
+        assert!(command.ends_with(&format!("!{id}")), "{command}");
+    }
+
+    #[test]
+    fn a_working_run_entry_is_recognised_as_this_build() {
+        // The value this machine's Run key holds for 0.2.0.178: the toggle
+        // reported it as "not applied" while the status read for the same value
+        // logged `source=run enabled=true`. Both halves of the alias are pinned
+        // by the test above, so this one fails if either drifts.
+        let expected = packaged_run_entry_command("com.dsh.wallpaper_pdxj8y3r6rm5g");
+        let recorded = format!(
+            r"explorer.exe shell:AppsFolder\com.dsh.wallpaper_pdxj8y3r6rm5g!{PACKAGE_APPLICATION_ID}"
+        );
+        assert!(autostart_commands_match(&recorded, &expected));
+        // `reg.exe add /D` stores quoting when the value arrives quoted from a
+        // shell, and a quoted value still launches the same application.
+        assert!(autostart_commands_match(&format!("\"{recorded}\""), &expected));
+    }
+
+    #[test]
+    fn a_refused_autostart_names_its_own_state() {
+        let absent = RunEntryCheck {
+            matches: false,
+            recorded: None,
+            expected: Some("expected".into()),
+            error: None,
+        };
+        let stale = RunEntryCheck {
+            matches: false,
+            recorded: Some("old".into()),
+            expected: Some("expected".into()),
+            error: None,
+        };
+        let unreadable = RunEntryCheck {
+            matches: false,
+            recorded: None,
+            expected: None,
+            error: Some("无法读取当前用户开机启动项（错误码 5）。".into()),
+        };
+        assert!(run_entry_refusal(&absent).contains("没有"));
+        assert_ne!(run_entry_refusal(&absent), run_entry_refusal(&stale));
+        // A read failure is reported as itself, never as "nothing is recorded":
+        // those two states need different fixes.
+        assert_eq!(
+            run_entry_refusal(&unreadable),
+            "无法读取当前用户开机启动项（错误码 5）。"
+        );
     }
 
     #[test]

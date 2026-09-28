@@ -1737,30 +1737,11 @@ async fn get_lock_screen_diagnostics(
 }
 
 fn set_autostart_blocking(enabled: bool) -> Result<windows_integration::AutostartStatus, String> {
-    #[cfg(windows)]
-    {
-        if windows_integration::set_startup_task(enabled)?.is_some() {
-            // A package StartupTask is the authoritative autostart path. Drop
-            // any legacy Run value left by an older build so the single-instance
-            // guard does not needlessly process a second launch attempt.
-            let _ = windows_integration::remove_legacy_run_entry();
-            return windows_integration::autostart_status();
-        }
-        // 注册表 Run 键：开机自启 dsh-wallpaper
-        //  开启: 写入当前构建需要的启动命令
-        //  关闭: 删除该值
-        // An MSIX install must record the shell's version-stable launch alias
-        // rather than its own versioned `WindowsApps` path, which the next
-        // package update deletes.
-        if enabled {
-            windows_integration::write_run_entry(
-                &windows_integration::current_run_entry_command()?
-            )?;
-        } else {
-            windows_integration::remove_legacy_run_entry()?;
-        }
-    }
-    windows_integration::autostart_status()
+    // The whole operation lives next to the Windows calls it makes: which path
+    // is authoritative, what is written, and — new — the read-back that decides
+    // whether the settings page may call the change applied. This wrapper only
+    // keeps it off the UI thread.
+    windows_integration::set_autostart(enabled)
 }
 
 #[tauri::command]

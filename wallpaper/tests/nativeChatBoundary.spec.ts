@@ -122,7 +122,10 @@ describe('native chat boundary', () => {
     ])
     expect(manifest).toContain('windows.startupTask')
     expect(manifest).toContain('DshWallpaperStartup')
-    expect(lib).toContain('windows_integration::set_startup_task')
+    // The operation moved next to the Windows calls it makes, so the assertion
+    // follows it: the command wrapper only keeps it off the UI thread.
+    expect(lib).toContain('windows_integration::set_autostart(enabled)')
+    expect(windows).toContain('set_startup_task(enabled)')
     // The per-user Run entry remains the fallback for builds Windows will not
     // start through a StartupTask.
     expect(windows).toContain('Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run')
