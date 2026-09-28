@@ -1391,6 +1391,9 @@ fn wait_for_shell(
     // 最近一次枚举里"屏幕上有没有这个家族的东西"。规则 2 用它回答"它是不是又回来了"。
     let mut on_screen = false;
     let mut sweeps = 0u32;
+    // 铺在壳窗口前面的那层冻结画面（只在后台启动里用；见 `client_window::LaunchCover`）。
+    // 拿它换的不是"更快"，而是"没有可见的一帧"：壳的 show() 会画在这层底下。
+    let mut cover: Option<crate::client_window::LaunchCover> = None;
     let mut hidden_windows = 0u32;
     // 抬到 1 毫秒只在这一场里需要（[`SHELL_HIDE_TICK`] 的兑现条件），出作用域就还回去 ——
     // 它最多活 [`SHELL_HIDE_EPISODE`]，而且只出现在一次后台启动里。
@@ -1501,6 +1504,10 @@ fn wait_for_shell(
                     visible_at = visible_at.or(Some(now));
                     hidden_at = Some(std::time::Instant::now());
                     visible_frame = visible_frame_ms(visible_at, hidden_at).or(visible_frame);
+                    // 窗口已经不在屏上了：那层冻结画面留着只会挡住用户。
+                    if cover.take().is_some() {
+                        timeline.mark("cover-removed", "the window is off screen: the frozen frame is no longer needed");
+                    }
                     log::info!(
                         "harness shell window hidden: windows={} source=sweep sweep={}ms",
                         sweep.hidden,
@@ -1526,6 +1533,24 @@ fn wait_for_shell(
                             "window-exists-hidden",
                             format!("pid={} class={class}", handle.pid()),
                         );
+                        // 句柄已知、而它还没显示：这正是"让它出生在一层面底下"的那个窗口期
+                        // （实测这里比壳显示早三百多毫秒）。铺面本身只是一次截屏，几毫秒。
+                        let captured_at = std::time::Instant::now();
+                        match crate::client_window::raise_launch_cover(*handle) {
+                            Some(layer) => {
+                                cover = Some(layer);
+                                timeline.mark(
+                                    "cover-raised",
+                                    format!("capture={}ms", captured_at.elapsed().as_millis()),
+                                );
+                            }
+                            // 那块地方此刻不是我们的画面（别的程序盖在上面）：宁可不铺，
+                            // 也不把别人正在动的画面冻住一秒。
+                            None => timeline.mark(
+                                "cover-skipped",
+                                "that part of the screen is not ours right now",
+                            ),
+                        }
                     }
                 }
             }
@@ -1541,6 +1566,7 @@ fn wait_for_shell(
                         crate::client_window::WatchWindowState::Lost
                     ) {
                         watched = None;
+                        cover = None;
                         timeline.mark(
                             "watched-window-lost",
                             "the watched handle is no longer a hideable interface window",
@@ -1551,6 +1577,10 @@ fn wait_for_shell(
                             hidden_windows += 1;
                             hidden_at = Some(std::time::Instant::now());
                             visible_frame = visible_frame_ms(visible_at, hidden_at).or(visible_frame);
+                            // 窗口已经不在屏上了：那层冻结画面留着只会挡住用户。
+                            if cover.take().is_some() {
+                                timeline.mark("cover-removed", "the window is off screen: the frozen frame is no longer needed");
+                            }
                             log::info!(
                                 "harness shell window hidden: windows=1 source=tick tick={}ms",
                                 SHELL_HIDE_TICK.as_millis()

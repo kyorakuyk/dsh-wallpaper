@@ -33,7 +33,24 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SW_RESTORE, SW_SHOW,
 };
 #[cfg(windows)]
-use windows::core::BOOL;
+use windows::core::{w, BOOL, PCWSTR};
+#[cfg(windows)]
+use windows::Win32::Graphics::Gdi::{
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, EndPaint,
+    GetDC, InvalidateRect, ReleaseDC, SelectObject, UpdateWindow, HBITMAP, HDC, HGDIOBJ,
+    PAINTSTRUCT, SRCCOPY,
+};
+#[cfg(windows)]
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(windows)]
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, RegisterClassExW,
+    SetWindowLongPtrW, WindowFromPoint, CREATESTRUCTW, GWLP_USERDATA, SW_SHOWNA,
+    WM_ERASEBKGND, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WNDCLASSEXW, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+};
+#[cfg(windows)]
+use windows::Win32::Foundation::{HINSTANCE, LRESULT, POINT, WPARAM};
 
 /// What happened when the wallpaper asked for a client's interface.
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
@@ -1314,6 +1331,229 @@ pub fn open_loopback_url(port: u16, path: &str) -> Result<(), String> {
     {
         let _ = url;
         Err("当前平台不支持打开浏览器".into())
+    }
+}
+
+
+/// 一次后台启动里，盖在壳窗口将来会出现的那块屏幕上的"冻结画面"。
+///
+/// 为什么要它：壳的 `show()` 与我们的隐藏之间有一段躲不掉的赛跑 —— 实测三次分别是 80ms、31ms、
+/// 以及把枚举移出 tick 之后的个位数毫秒，**用户仍然看得见**。那条路上还有一个物理下限：壳画出
+/// 第一帧、我们再跨进程把它按下去，这中间必然经过一次呈现。所以换个轴：不去比它快，而是**让它
+/// 出生在一层面底下**。
+///
+/// 关键在于时间：句柄在壳显示之前几百毫秒就已经存在（实测 +2648ms 拿到句柄、+2970ms 才显示），
+/// 所以我们有充裕时间先铺面。而这层面之所以用户看不见，是因为铺之前**先把那块屏幕原样截下来**，
+/// 铺上之后画面与刚才逐像素相同 —— 它在视觉上等于不存在，却挡住了壳的窗口。
+///
+/// 三条自我约束：
+/// * **只在"那块地方此刻是我们的画面"时才铺**：如果矩形中心属于别的程序的窗口，就不铺（把别人
+///   正在动的东西冻住一秒钟，比闪一下更讨厌）。
+/// * **不激活、不吃鼠标**（`WS_EX_NOACTIVATE | WS_EX_TRANSPARENT`）：用户这一瞬间的点击照旧落到
+///   原来那个窗口上。
+/// * **活得比需要更短**：隐藏一落地就撤（`Drop` 保证任何返回路径都会撤）。
+pub(crate) struct LaunchCover {
+    #[cfg(windows)]
+    hwnd: HWND,
+    #[cfg(windows)]
+    state: *mut CoverState,
+    raised_at: std::time::Instant,
+}
+
+#[cfg(windows)]
+struct CoverState {
+    memory: HDC,
+    bitmap: HBITMAP,
+    width: i32,
+    height: i32,
+}
+
+#[cfg(windows)]
+const COVER_CLASS: PCWSTR = w!("DSHWallpaperLaunchCover");
+
+#[cfg(windows)]
+unsafe extern "system" fn cover_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match message {
+        WM_NCCREATE => {
+            let create = lparam.0 as *const CREATESTRUCTW;
+            if !create.is_null() {
+                let state = (*create).lpCreateParams as *mut CoverState;
+                unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize) };
+            }
+            LRESULT(1)
+        }
+        WM_PAINT => {
+            let state = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut CoverState;
+            let mut paint = PAINTSTRUCT::default();
+            let hdc = unsafe { BeginPaint(hwnd, &mut paint) };
+            if !state.is_null() && !hdc.0.is_null() {
+                let state = unsafe { &*state };
+                // 逐像素搬回来：这层要的效果就是"和刚才一模一样"。
+                let _ = unsafe {
+                    BitBlt(hdc, 0, 0, state.width, state.height, Some(state.memory), 0, 0, SRCCOPY)
+                };
+            }
+            let _ = unsafe { EndPaint(hwnd, &paint) };
+            LRESULT(0)
+        }
+        WM_ERASEBKGND => LRESULT(1),
+        WM_NCDESTROY => {
+            unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
+            LRESULT(0)
+        }
+        _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
+}
+
+/// 那块地方此刻是不是"我们的画面"。
+///
+/// 判断依据是矩形中心点下面的那个窗口属于谁：属于本进程（壁纸自己的界面）或桌面（`Progman`/
+/// `WorkerW`，壁纸的背景就画在里面）才算数；属于任何别的程序就不铺 —— 我们不该把别人正在动的
+/// 画面冻住，哪怕只有一秒。
+#[cfg(windows)]
+fn cover_is_our_surface(x: i32, y: i32) -> bool {
+    let under = unsafe { WindowFromPoint(POINT { x, y }) };
+    if under.is_invalid() {
+        return false;
+    }
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(under, Some(&mut pid)) };
+    if pid == unsafe { windows::Win32::System::Threading::GetCurrentProcessId() } {
+        return true;
+    }
+    let class = class_name(under).to_ascii_lowercase();
+    class == "progman" || class == "workerw"
+}
+
+/// 在 `target` 窗口的矩形上铺一层冻结画面。`None` = 这块地方不该铺（不在屏上，或此刻不是我们的画面）。
+#[cfg(windows)]
+pub(crate) fn raise_launch_cover(target: WindowHandle) -> Option<LaunchCover> {
+    let mut rect = RECT::default();
+    if unsafe { GetWindowRect(target.hwnd(), &mut rect) }.is_err() {
+        return None;
+    }
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    // 先注册窗口类 —— 少这一步，`CreateWindowExW` 会失败，而失败在这里是**静默**的（只是不铺），
+    // 于是我们会以为遮盖生效了。所以它必须先过。
+    if !register_cover_class() {
+        return None;
+    }
+    if !cover_is_our_surface(rect.left + width / 2, rect.top + height / 2) {
+        return None;
+    }
+
+    // 截屏：把这块屏幕原样抄进一块内存位图。
+    let screen = unsafe { GetDC(None) };
+    if screen.0.is_null() {
+        return None;
+    }
+    let memory = unsafe { CreateCompatibleDC(Some(screen)) };
+    let bitmap = if memory.0.is_null() {
+        unsafe { ReleaseDC(None, screen) };
+        return None;
+    } else {
+        unsafe { CreateCompatibleBitmap(screen, width, height) }
+    };
+    if bitmap.0.is_null() {
+        unsafe { DeleteDC(memory) };
+        unsafe { ReleaseDC(None, screen) };
+        return None;
+    }
+    let previous = unsafe { SelectObject(memory, HGDIOBJ(bitmap.0)) };
+    let captured = unsafe {
+        BitBlt(memory, 0, 0, width, height, Some(screen), rect.left, rect.top, SRCCOPY)
+    };
+    let _ = unsafe { SelectObject(memory, previous) };
+    unsafe { ReleaseDC(None, screen) };
+    if captured.is_err() {
+        unsafe { DeleteObject(HGDIOBJ(bitmap.0)) };
+        unsafe { DeleteDC(memory) };
+        return None;
+    }
+
+    let state = Box::into_raw(Box::new(CoverState { memory, bitmap, width, height }));
+    let hwnd = match unsafe {
+        CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+            COVER_CLASS,
+            w!("DSH Wallpaper launch cover"),
+            WS_POPUP,
+            rect.left,
+            rect.top,
+            width,
+            height,
+            None,
+            None,
+            Some(cover_instance()),
+            Some(state.cast()),
+        )
+    } {
+        Ok(hwnd) => hwnd,
+        Err(error) => {
+            log::warn!("launch cover: 无法创建遮盖窗口（{error}）");
+            unsafe { drop(Box::from_raw(state)) };
+            return None;
+        }
+    };
+    // `SW_SHOWNA` 不激活；随后立刻同步重绘一次，确保它**在壳显示之前**就已经画好 —— 否则就白铺了。
+    let _ = unsafe { ShowWindow(hwnd, SW_SHOWNA) };
+    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    let _ = unsafe { UpdateWindow(hwnd) };
+    Some(LaunchCover { hwnd, state, raised_at: std::time::Instant::now() })
+}
+
+#[cfg(windows)]
+fn cover_instance() -> HINSTANCE {
+    match unsafe { GetModuleHandleW(None) } {
+        Ok(module) => HINSTANCE(module.0),
+        Err(_) => HINSTANCE::default(),
+    }
+}
+
+#[cfg(windows)]
+fn register_cover_class() -> bool {
+    use std::sync::OnceLock;
+    static REGISTERED: OnceLock<bool> = OnceLock::new();
+    *REGISTERED.get_or_init(|| {
+        let class = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            lpfnWndProc: Some(cover_proc),
+            hInstance: cover_instance(),
+            lpszClassName: COVER_CLASS,
+            ..Default::default()
+        };
+        let atom = unsafe { RegisterClassExW(&class) };
+        if atom == 0 {
+            log::warn!("launch cover: 窗口类注册失败");
+        }
+        atom != 0
+    })
+}
+
+impl Drop for LaunchCover {
+    fn drop(&mut self) {
+        log::info!(
+            "launch cover removed after {}ms",
+            self.raised_at.elapsed().as_millis()
+        );
+        #[cfg(windows)]
+        {
+            let _ = unsafe { DestroyWindow(self.hwnd) };
+            if !self.state.is_null() {
+                let state = unsafe { Box::from_raw(self.state) };
+                unsafe { DeleteObject(HGDIOBJ(state.bitmap.0)) };
+                unsafe { DeleteDC(state.memory) };
+            }
+        }
     }
 }
 
