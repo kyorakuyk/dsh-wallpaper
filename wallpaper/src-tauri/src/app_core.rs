@@ -121,6 +121,10 @@ pub struct AppSnapshot {
     pub harness_probing: bool,
     pub wallpaper_host: WallpaperHostStatus,
     pub interaction: InteractionState,
+    /// 输入岛是否被当前布局固定在桌面上（中央玻璃悬浮）。
+    ///
+    /// 悬浮球据此判定"岛在前台"，而不依赖热区列表 —— 那个列表在重挂载与相位切换时有空窗期。
+    pub island_pinned: bool,
     /// When true, message content must not be rendered by either WebView.
     pub privacy_screen: bool,
     pub error: Option<String>,
@@ -138,6 +142,7 @@ impl Default for AppSnapshot {
             harness_probing: false,
             wallpaper_host: WallpaperHostStatus::default(),
             interaction: InteractionState::default(),
+            island_pinned: false,
             privacy_screen: false,
             error: None,
         }
@@ -156,6 +161,13 @@ pub enum AppAction {
     CloseSettings,
     ToggleHistory,
     SetInteractionEnabled(bool),
+    /// 中央玻璃悬浮把输入岛**固定在桌面上**（`ConversationBubble` 的 `persistent`）。
+    ///
+    /// 悬浮球的职责是"把岛叫出来"，岛常驻时它没有职责。判据不能只看热区列表：岛在重挂载、
+    /// 相位切换时会有几十毫秒不在列表里，球恰好会抓住那个空窗弹出来（实测日志
+    /// `island_visible=false region_count=0` 之后紧接 `floating ball: shown reason=approach`）。
+    /// 因此布局把它作为**状态**报给原生，而不是让原生从瞬时列表里推断。
+    SetIslandPinned(bool),
     DesktopForegroundChanged(bool),
     SelectBackend(BackendMode),
     SetActivity(Activity),
@@ -245,6 +257,7 @@ impl AppCore {
                     }
                 }
             }
+            AppAction::SetIslandPinned(pinned) => state.island_pinned = pinned,
             AppAction::DesktopForegroundChanged(desktop_foreground) => {
                 state.interaction.desktop_foreground = desktop_foreground;
             }
@@ -326,6 +339,25 @@ mod tests {
         let snapshot = core.dispatch(AppAction::DesktopForegroundChanged(false));
         assert!(snapshot.interaction.settings_open);
         assert!(snapshot.interaction.visible);
+    }
+
+    /// 中央玻璃悬浮下岛是常驻的，悬浮球据此永不弹出。
+    ///
+    /// 两件必须成立的事：这个标记要真的进快照（原生读的就是它），而且**不能**被相位切换清掉——
+    /// 锁屏/苏醒时岛会短暂不渲染，若那时标记被清，球就会在最不该出现的时刻弹出来。
+    #[test]
+    fn the_pinned_island_flag_survives_phase_changes() {
+        let core = AppCore::default();
+        assert!(!core.snapshot().island_pinned);
+        core.dispatch(AppAction::SetIslandPinned(true));
+        assert!(core.snapshot().island_pinned);
+        core.dispatch(AppAction::Lock);
+        assert_eq!(core.snapshot().phase, SystemPhase::Locked);
+        assert!(core.snapshot().island_pinned);
+        core.dispatch(AppAction::Unlock { play_wake: true });
+        assert!(core.snapshot().island_pinned);
+        core.dispatch(AppAction::SetIslandPinned(false));
+        assert!(!core.snapshot().island_pinned);
     }
 }
 

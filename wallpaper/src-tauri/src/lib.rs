@@ -1375,6 +1375,11 @@ fn dispatch_app_action(
         "auth-ready" => AppAction::AuthReady,
         "recover" => AppAction::Recover,
         "fail" => AppAction::Fail(value.unwrap_or_else(|| "未知错误".into())),
+        "set-island-pinned" => AppAction::SetIslandPinned(match value.as_deref() {
+            Some("true") => true,
+            Some("false") => false,
+            _ => return Err("invalid island pinned flag".into()),
+        }),
         "set-activity" => AppAction::SetActivity(match value.as_deref() {
             Some("idle") => Activity::Idle,
             Some("sending") => Activity::Sending,

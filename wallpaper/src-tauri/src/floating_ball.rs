@@ -683,6 +683,8 @@ pub fn start_ball_monitor(app: AppHandle) {
         let mut last_geometry_refresh = std::time::Instant::now();
         let mut pop_cooldown_until: Option<std::time::Instant> = None;
         let mut cooldown_logged = false;
+        // 岛常驻这条只在状态变化时记一次，不刷屏。
+        let mut pinned_logged = false;
         // 点过球之后的状态：等输入岛接管。岛一旦发布 `chat` 热区就解除；
         // 超时（安全阀）也解除，免得球永远不出现。
         let mut waiting_for_island_since: Option<std::time::Instant> = None;
@@ -765,7 +767,23 @@ pub fn start_ball_monitor(app: AppHandle) {
             //
             // 这是用户明确提出的要求：「当输入岛处于可见状态的时候，悬浮球就不应该弹出来」。
             // 判据来自前端发布的热区列表（含 id `chat` 即展开态），所以不需要为它再加 IPC。
-            let island_visible = windows_integration::island_visible_from_regions();
+            // 岛常驻（中央玻璃悬浮）⇒ 球没有职责，永远不弹。
+            //
+            // 这一条是**状态**判据，不是从热区列表推出来的：实测（用户的报告）在中央玻璃悬浮下
+            // 岛一直在屏幕上，但前端重挂载时会发布一次空列表，日志里
+            // `interaction regions: island_visible=false region_count=0` 之后紧接
+            // `floating ball: shown reason=approach` —— 球抓的就是那个空窗。列表判据保留给
+            // 任务栏停靠胶囊（那种布局下岛真的会消失）。
+            let island_pinned = app
+                .try_state::<crate::app_core::AppCore>()
+                .map(|core| core.snapshot().island_pinned)
+                .unwrap_or(false);
+            if island_pinned && !pinned_logged {
+                pinned_logged = true;
+                log::info!("floating ball: staying hidden reason=island-pinned (center-glass layout)");
+            }
+            let regions_visible = windows_integration::island_visible_from_regions();
+            let island_visible = island_pinned || regions_visible;
             let retract = take_retract_request();
             if retract {
                 // 点过球 = 把场面交给输入岛。冷却期内即使热区列表短暂没有 chat，
@@ -820,7 +838,9 @@ pub fn start_ball_monitor(app: AppHandle) {
                 shown = false;
                 log::info!(
                     "floating ball: hidden reason={} {}",
-                    if island_visible {
+                    if island_pinned {
+                        "island-pinned"
+                    } else if regions_visible {
                         "island-visible"
                     } else {
                         "retract-requested"

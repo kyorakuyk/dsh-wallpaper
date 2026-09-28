@@ -702,6 +702,21 @@ export function App({ surface = 'combined' }: AppProps) {
    * decides *how* something is drawn must not be able to re-trigger an event that means
    * "this session just started".
    */
+  /**
+   * 中央玻璃悬浮（`interactionLayout === 'floating'`）把输入岛固定在桌面上，悬浮球因此没有职责。
+   *
+   * 这条必须作为**状态**报给原生，不能让原生从热区列表推断：岛在重挂载与相位切换时有几十毫秒
+   * 不在列表里，球会抓住那个空窗弹出来（实测日志 `island_visible=false region_count=0` 之后紧接
+   * `floating ball: shown reason=approach`）。用户报告的就是这一幕。
+   *
+   * 调用点是**事件**（启动、设置变更），不是以偏好为依赖的 effect —— 那条护栏是历史教训的产物
+   * （见 tests/interactionLayout.spec.ts：偏好不该能重新触发"这次会话刚开始"）。
+   */
+  const reportIslandPinned = (layout: WallpaperSettings['interactionLayout']) => {
+    if (!appCoreClient.native) return
+    dispatchCore('set-island-pinned', { value: layout === 'floating' ? 'true' : 'false' })
+  }
+
   const settingsRef = useRef(settings)
   settingsRef.current = settings
 
@@ -1120,6 +1135,8 @@ export function App({ surface = 'combined' }: AppProps) {
    */
   useEffect(() => {
     const playWake = settingsRef.current.animationsEnabled && !settingsRef.current.skipWakeAnimation
+    // 布局报一次"岛是否常驻"：中央玻璃悬浮把岛钉在桌面上，悬浮球因此永不弹出（见 reportIslandPinned）。
+    reportIslandPinned(settingsRef.current.interactionLayout)
     const timer = setTimeout(() => {
       if (appCoreClient.native) dispatchCore('boot-ready', { playWake })
       else baseDispatch({ type: 'BOOT_READY', playWake })
@@ -1137,7 +1154,14 @@ export function App({ surface = 'combined' }: AppProps) {
     // the desktop renderer a value of the wrong type.
     return listenUntilDisposed<WallpaperSettings>(
       (emit) => listen<WallpaperSettings>('settings-changed', (event) => emit(event.payload)),
-      (payload) => setSettings(normalizeReceivedSettings(payload)),
+      (payload) => {
+        const next = normalizeReceivedSettings(payload)
+        // 布局真正变了才报：偏好可以改画什么，但不该反复触发一次副作用。
+        if (next.interactionLayout !== settingsRef.current.interactionLayout) {
+          reportIslandPinned(next.interactionLayout)
+        }
+        setSettings(next)
+      },
       { onError: (error) => patchRuntime({ error: String(error) }) },
     ).dispose
   }, [])

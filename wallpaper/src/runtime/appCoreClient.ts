@@ -15,6 +15,8 @@ export type AppCoreAction =
   | 'open-chat' | 'close-chat' | 'open-settings' | 'close-settings'
   | 'toggle-history' | 'auth-required' | 'auth-ready' | 'recover' | 'fail'
   | 'set-activity' | 'set-harness'
+  // 布局把"岛是否常驻"作为状态报给原生（中央玻璃悬浮 ⇒ 悬浮球永不弹出）。
+  | 'set-island-pinned'
 
 const isNative = '__TAURI_INTERNALS__' in window
 
