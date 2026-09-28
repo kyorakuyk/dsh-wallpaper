@@ -80,6 +80,14 @@ export function MarkdownBody({ text }: { text: string }) {
   const blocks = useMemo(() => parseMarkdown(text), [text])
   return <>
     {blocks.map((block, index) => {
+      if (block.kind === 'heading') {
+        // 真的用 h1–h6：字号由 CSS 收在轨道能承受的范围内。这是转写不是文档，所以不做锚点、
+        // 不做出大纲，级别只决定字号与间距。`data-level` 让样式不必按六个标签名各写一遍。
+        const Tag = `h${block.level}` as 'h1'
+        return <Tag key={index} className="dsh-chat__heading" data-level={block.level}>
+          {Inline({ tokens: parseInline(block.text) })}
+        </Tag>
+      }
       if (block.kind === 'code') {
         return <pre
           key={index}

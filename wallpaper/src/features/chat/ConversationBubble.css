@@ -208,10 +208,32 @@
 .dsh-chat__message-body + .dsh-chat__message-body,
 .dsh-chat__message-body + .dsh-chat__list,
 .dsh-chat__message-body + .dsh-chat__code,
+.dsh-chat__message-body + .dsh-chat__heading,
 .dsh-chat__list + .dsh-chat__message-body,
 .dsh-chat__list + .dsh-chat__list,
 .dsh-chat__code + .dsh-chat__message-body,
-.dsh-chat__code + .dsh-chat__code { margin-top: 9px; }
+.dsh-chat__code + .dsh-chat__code,
+.dsh-chat__heading + .dsh-chat__message-body { margin-top: 9px; }
+
+/* 标题：字号从 17px 收到 13.5px。这是岛里的转写，不是文档 —— h1 按浏览器默认的 2em 会把
+   一段十几行的回答撑成海报，所以每一级都自己定尺寸，级差只有 1px 左右。 */
+.dsh-chat__heading {
+  margin: 14px 0 0;
+  font-weight: 650;
+  line-height: 1.35;
+  color: var(--dsh-text-strong, #eaf4ff);
+}
+.dsh-chat__heading:first-child { margin-top: 0; }
+.dsh-chat__heading[data-level='1'] { font-size: 17px; }
+.dsh-chat__heading[data-level='2'] { font-size: 16px; }
+.dsh-chat__heading[data-level='3'] { font-size: 15px; }
+.dsh-chat__heading[data-level='4'] { font-size: 14.5px; }
+.dsh-chat__heading[data-level='5'] { font-size: 14px; }
+.dsh-chat__heading[data-level='6'] { font-size: 13.5px; }
+/* 标题后面紧跟正文时节间距要比"标题压标题"小一点，读起来才是一组。 */
+.dsh-chat__heading + .dsh-chat__message-body,
+.dsh-chat__heading + .dsh-chat__list,
+.dsh-chat__heading + .dsh-chat__code { margin-top: 6px; }
 .dsh-chat__code {
   overflow-x: auto;
   margin: 9px 0 0;

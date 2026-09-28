@@ -8,16 +8,20 @@
  *  2. 纯函数可以被钉住行为，"库升级后渲染变了"不是我想在深夜排查的东西；
  *  3. 少即是稳：没被点名的语法保持**字面**显示，用户看到的就是他写的。
  *
- * 支持：代码围栏、有序/无序列表（含嵌套）、表格、引用、分割线；
+ * 支持：代码围栏、有序/无序列表（含嵌套与任务清单）、表格、引用、分割线、标题；
  *      行内代码、粗体、斜体、删除线（且允许互相嵌套，例如**加粗里含 `代码`**）。
- * 不支持（刻意）：标题、链接、图片、任务清单、下划线斜体（`a_b_c` 里的下划线常常是标识符的
+ * 不支持（刻意）：链接、图片、下划线斜体（`a_b_c` 里的下划线常常是标识符的
  * 一部分，认它会把 `snake_case` 撕成斜体）。
+ *
+ * 标题是 2026-09-28 加的：网页端抽取改成"按结构还原 markdown"之后，`<h2>` 会变成 `## …`，
+ * 而 API 端本来就会发 `## …` —— 不支持就等于把 `##` 原样摆在用户面前。
  */
 
 export type MarkdownAlign = 'left' | 'center' | 'right'
 
 export type MarkdownBlock =
   | { kind: 'paragraph'; text: string }
+  | { kind: 'heading'; level: number; text: string }
   | { kind: 'code'; language?: string; text: string }
   | { kind: 'list'; ordered: boolean; items: MarkdownListItem[] }
   | { kind: 'table'; align: MarkdownAlign[]; head: string[]; rows: string[][] }
@@ -53,6 +57,8 @@ const UNORDERED = /^(\s*)[-*+]\s+(.*)$/
 const ORDERED = /^(\s*)\d+[.)]\s+(.*)$/
 /** 分割线：整行只有三个以上同样的 `-`/`*`/`_`（允许空格）。 */
 const RULE = /^\s{0,3}([-*_])\s*(?:\1\s*){2,}$/
+/** ATX 标题：1–6 个 `#` 之后**必须有空格**（或行尾），所以 `#标签`、`####### x` 都还是普通文字。 */
+const HEADING = /^\s{0,3}(#{1,6})(?:[ \t]+(.*))?$/
 const QUOTE = /^\s{0,3}>\s?(.*)$/
 const TABLE_ROW = /^\s*\|(.+)\|\s*$/
 /** 任务清单标记：`[x]` / `[ ]`（大小写都认）。 */
@@ -168,6 +174,14 @@ export function parseMarkdown(source: string): MarkdownBlock[] {
     if (RULE.test(line)) {
       flushParagraph()
       blocks.push({ kind: 'rule' })
+      continue
+    }
+    // 标题要在围栏之后判断：代码块里的 `#` 是注释，不是标题（围栏那一支已经把整块吃掉了）。
+    // `#` 后面没有空格就不算标题 —— `#标签`、`####### 七个` 都保持字面，与列表标记同一套规矩。
+    const heading = line.match(HEADING)
+    if (heading) {
+      flushParagraph()
+      blocks.push({ kind: 'heading', level: heading[1]!.length, text: (heading[2] ?? '').trim() })
       continue
     }
     const quote = line.match(QUOTE)
