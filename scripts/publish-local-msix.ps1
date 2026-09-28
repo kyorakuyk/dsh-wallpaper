@@ -414,17 +414,38 @@ if ($git) {
   }
 }
 
+# 检查与构建**并行**跑。
+#
+# 实测（0.2.0.199，本机）：一次发布 103.5s = 检查 43.5s（类型 4.9 + 前端 11.1 + Rust 27.5）+ 构建 55.3s。
+# 两者互不干扰 —— 检查用默认 target 目录和 node，构建用隔离的 artifacts/msix-test/cargo-target，
+# 所以并行之后总时长从"两者相加"变成"取较长的一个"（约 55-60s）。
+#
+# 代价说清楚：检查**失败**时，构建已经跑过了（今天会在构建前就停）。日常是检查通过，所以换来的是每次
+# 省掉整段检查时间；失败时多花的是构建那几十秒。
+$checksJob = $null
 if (-not $SkipChecks) {
-  Push-Location $script:RepoRoot
-  try {
-    Invoke-CheckedCommand 'pnpm' @('typecheck') 'TypeScript 类型检查'
-    Invoke-CheckedCommand 'pnpm' @('test') '前端与 Bridge 测试'
-    Invoke-CheckedCommand 'cargo' @('test', '--manifest-path', 'wallpaper/src-tauri/Cargo.toml', '--locked', '--all-targets') 'Rust 测试'
-    if ($Edition -eq 'lite') {
-      Invoke-CheckedCommand 'cargo' @('check', '--manifest-path', 'wallpaper/src-tauri/Cargo.toml', '--locked', '--no-default-features', '--features', 'lite', '--bin', 'dsh-wallpaper-lite') 'Lite 原生目标检查'
-      Invoke-CheckedCommand 'cargo' @('test', '--manifest-path', 'wallpaper/src-tauri/Cargo.toml', '--locked', '--no-default-features', '--features', 'lite', '--lib') 'Lite 原生测试'
+  $checkCommands = @(
+    @{ File = 'pnpm'; Args = @('typecheck'); Stage = 'TypeScript 类型检查' }
+    @{ File = 'pnpm'; Args = @('test'); Stage = '前端与 Bridge 测试' }
+    @{ File = 'cargo'; Args = @('test', '--manifest-path', 'wallpaper/src-tauri/Cargo.toml', '--locked', '--all-targets'); Stage = 'Rust 测试' }
+  )
+  if ($Edition -eq 'lite') {
+    $checkCommands += @{ File = 'cargo'; Args = @('check', '--manifest-path', 'wallpaper/src-tauri/Cargo.toml', '--locked', '--no-default-features', '--features', 'lite', '--bin', 'dsh-wallpaper-lite'); Stage = 'Lite 原生目标检查' }
+    $checkCommands += @{ File = 'cargo'; Args = @('test', '--manifest-path', 'wallpaper/src-tauri/Cargo.toml', '--locked', '--no-default-features', '--features', 'lite', '--lib'); Stage = 'Lite 原生测试' }
+  }
+  Write-Host "`n==> 自动化检查已在后台开始（与下面的构建并行）"
+  $checksJob = Start-Job -ScriptBlock {
+    param($Root, $Commands)
+    Set-Location -LiteralPath $Root
+    $failed = @()
+    foreach ($command in $Commands) {
+      Write-Output ("==> " + $command.Stage)
+      & $command.File @($command.Args) 2>&1 | ForEach-Object { Write-Output $_ }
+      if ($LASTEXITCODE -ne 0) { $failed += ("{0}（退出码 {1}）" -f $command.Stage, $LASTEXITCODE) }
     }
-  } finally { Pop-Location }
+    if ($failed.Count -gt 0) { throw ("检查失败：" + ($failed -join '；')) }
+    Write-Output '所有自动化检查通过。'
+  } -ArgumentList $script:RepoRoot, $checkCommands
 } else {
   Write-Warning '已跳过自动化检查。'
 }
@@ -447,6 +468,15 @@ try {
 if ($Edition -eq 'lite') {
   Write-Host "`n==> 验证 Lite 产物边界"
   & $script:LiteBoundaryScript
+}
+
+if ($checksJob) {
+  Write-Host "`n==> 收集并行检查结果"
+  $checksOutput = @(Receive-Job -Job $checksJob -Wait -AutoRemoveJob 2>&1)
+  $checksOutput | ForEach-Object { Write-Host ("    " + $_) }
+  if ($checksJob.State -eq 'Failed' -or ($checksOutput -join "`n") -notmatch '所有自动化检查通过。') {
+    throw '自动化检查未通过；本次没有安装任何东西。'
+  }
 }
 
 Write-Host "`n==> 使用 CurrentUser\My 证书库中的私钥签名"
