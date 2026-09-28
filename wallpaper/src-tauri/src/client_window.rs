@@ -44,6 +44,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
+    GetWindowLongW, GWL_EXSTYLE,
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, RegisterClassExW,
     SetWindowLongPtrW, WindowFromPoint, CREATESTRUCTW, GWLP_USERDATA, SW_SHOWNA,
     WM_ERASEBKGND, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WNDCLASSEXW, WS_EX_NOACTIVATE,
@@ -1410,24 +1411,41 @@ unsafe extern "system" fn cover_proc(
     }
 }
 
-/// 那块地方此刻是不是"我们的画面"。
+/// 那层冻结画面能不能真的盖在壳窗口上面 —— 只在**确实盖不住**的时候才让开。
 ///
-/// 判断依据是矩形中心点下面的那个窗口属于谁：属于本进程（壁纸自己的界面）或桌面（`Progman`/
-/// `WorkerW`，壁纸的背景就画在里面）才算数；属于任何别的程序就不铺 —— 我们不该把别人正在动的
-/// 画面冻住，哪怕只有一秒。
+/// 第一版这里写的是"那块地方必须是我们自己的画面（本进程或桌面），否则不铺"，理由是"不该把
+/// 别人正在动的画面冻住一秒"。实测把它自己否掉了：用户屏幕上那块区域当时正好有别的窗口，于是
+/// 遮盖面礼貌地让开、壳照旧闪了一下。**这个规则想反了** —— 不铺的后果不是"那个程序保持可见"，
+/// 而是"壳的窗口照样压在它上面"，比一块冻住的画面糟得多。截图本来就包含那个程序的像素，所以
+/// 铺上去对用户来说依然是逐像素连续的，只是它那一秒不动。
+///
+/// 唯一真正让开的情形，是**我们可能根本画不上去**：外来窗口既置顶（`WS_EX_TOPMOST`）又把目标
+/// 矩形整个盖住 —— 那基本就是独占全屏的样子，那种画面上我们的面不会出现，铺了也只是骗自己。
 #[cfg(windows)]
-fn cover_is_our_surface(x: i32, y: i32) -> bool {
+fn cover_can_show_above(covered: RECT, x: i32, y: i32) -> bool {
     let under = unsafe { WindowFromPoint(POINT { x, y }) };
     if under.is_invalid() {
-        return false;
+        return true;
     }
     let mut pid = 0u32;
     unsafe { GetWindowThreadProcessId(under, Some(&mut pid)) };
     if pid == unsafe { windows::Win32::System::Threading::GetCurrentProcessId() } {
         return true;
     }
-    let class = class_name(under).to_ascii_lowercase();
-    class == "progman" || class == "workerw"
+    // 普通窗口：我们的面是置顶的，一定盖得住它。
+    let topmost = unsafe { GetWindowLongW(under, GWL_EXSTYLE) } & WS_EX_TOPMOST.0 as i32 != 0;
+    if !topmost {
+        return true;
+    }
+    let mut rect = RECT::default();
+    if unsafe { GetWindowRect(under, &mut rect) }.is_err() {
+        return true;
+    }
+    let fills_our_place = rect.left <= covered.left
+        && rect.top <= covered.top
+        && rect.right >= covered.right
+        && rect.bottom >= covered.bottom;
+    !fills_our_place
 }
 
 /// 在 `target` 窗口的矩形上铺一层冻结画面。`None` = 这块地方不该铺（不在屏上，或此刻不是我们的画面）。
@@ -1447,7 +1465,7 @@ pub(crate) fn raise_launch_cover(target: WindowHandle) -> Option<LaunchCover> {
     if !register_cover_class() {
         return None;
     }
-    if !cover_is_our_surface(rect.left + width / 2, rect.top + height / 2) {
+    if !cover_can_show_above(rect, rect.left + width / 2, rect.top + height / 2) {
         return None;
     }
 

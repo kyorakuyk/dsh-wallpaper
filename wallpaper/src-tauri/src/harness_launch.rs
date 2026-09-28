@@ -1544,11 +1544,10 @@ fn wait_for_shell(
                                     format!("capture={}ms", captured_at.elapsed().as_millis()),
                                 );
                             }
-                            // 那块地方此刻不是我们的画面（别的程序盖在上面）：宁可不铺，
-                            // 也不把别人正在动的画面冻住一秒。
+                            // 只在"我们可能根本画不上去"时才走到这里：外来窗口既置顶又占满整屏。
                             None => timeline.mark(
                                 "cover-skipped",
-                                "that part of the screen is not ours right now",
+                                "a foreign topmost window fills the screen there; our layer would not be seen",
                             ),
                         }
                     }
