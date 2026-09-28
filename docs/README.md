@@ -30,6 +30,7 @@
 | `startup-render-handoff-implementation-plan.md` | 启动渲染交接 |
 | `theme-and-asset-customization-plan.md` | 主题与素材自定义 |
 | `v0.3-product-rewrite-plan.md` | v0.3 产品化重写 |
+| `wallpaper-update-detection-plan.md` | 壁纸更新检测与立绘更新气泡（待施工；含标签约定、状态机与验收条件） |
 
 **evidence/**
 
