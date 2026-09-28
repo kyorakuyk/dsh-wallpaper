@@ -122,6 +122,37 @@ pnpm -C bridge test
    `profile "desktop" is managed exclusively by the Electron application`。
    所以官方桌面壳那条路只能在**壳内部**（它自己的插件管理器）刷新或授权。
 
+3. **`desktop` profile 的 `file:` 依赖永不重链（2026-09-29 实测；这条让"壳连不上"复发过一次）**。
+   该 profile 的 `package.json` 把桥声明为
+   `"dsh-wallpaper-bridge": "file:D:/Family/DeepSeekHarness/plugins/dsh-wallpaper/bridge"`，
+   pnpm 依此**硬链接**文件进 `profiles/desktop/node_modules/dsh-wallpaper-bridge/`；而 tsdown 重建是"删旧建新"，
+   仓库里换了新 inode，profile 里的副本仍指着旧 inode ⇒ 上面第 1 条那个坑，在这里**无法用 `remove`+`add` 修**（因为第 2 条）。
+   实测：
+
+   - 仓库 `package.json` 已是 `0.1.3`（peer 放宽），profile 里仍是 `0.1.2`（peer 还是 `^0.1.0-rc.5`，严格 semver 判定
+     `0.2.0-rc.1` **不满足**它），`lib/` 时间戳停在 09-27 19:15；
+   - 壳启动时会**重写自己的 `cordis.yml`**（`desktop/cordis.yml` 的 mtime 正好是拉起壳那一刻），但**不会**重新链接这个依赖；
+   - 症状：`19387` 上桥的 `/api/wallpaper/v1/status` 与任意无意义路径**都返回 401**（判据：两条都 401 = 插件未挂载），
+     壁纸「连接」页显示未连接；壁纸日志里只有"拉起壳成功"，之后再无桥就绪记录；
+   - 壳自己的 stderr 抓不到（它由 `explorer.exe shell:AppsFolder\…` 拉起，不走壁纸的子进程），
+     所以"skipping profile bundle"那句原文只在 CLI 那条路上能直接看到。
+
+   修复（不动 CLI、也不碰壳正在内存里跑的代码）：把仓库当前构建**镜像**进部署目录，然后**重启壳**。
+
+   ```powershell
+   $repo = 'D:\Family\DeepSeekHarness\plugins\dsh-wallpaper\bridge'
+   $dest = "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\dsh-wallpaper-bridge"
+   Copy-Item $dest "$dest.bak-before-bridge-refresh-<日期>" -Recurse -Force        # 先备份
+   foreach ($f in 'package.json','cordis.patch.yml','README.md') { Copy-Item "$repo\$f" $dest -Force }
+   Get-ChildItem "$repo\lib" -File | ForEach-Object { Copy-Item $_.FullName "$dest\lib\" -Force }
+   # 顺手清掉上游已不存在的孤儿块文件（旧 index.js 的产物）
+   Get-ChildItem "$dest\lib" -File | Where-Object { -not (Test-Path "$repo\lib\$($_.Name)") } | Remove-Item -Force
+   ```
+
+   验收：两侧 `lib/` 逐文件 SHA256 相同；重启壳后 `/status` 返回 200，且无意义路径仍是 401。
+
+   **这是每轮重建桥之后都要重做一次的动作**：只要 profile 还是 `file:` 指向本仓库，坑就会复现。想根治：要么让壁纸在拉起壳之前自己做这次镜像，要么把桥发成真正的 npm 包、交给壳的插件管理器升级。
+
 ---
 
 ## 七、临时逃生口：精确版本豁免
