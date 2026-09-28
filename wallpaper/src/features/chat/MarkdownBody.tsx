@@ -32,28 +32,31 @@ function Inline({ tokens }: { tokens: InlineToken[] }): ReactNode {
  * 层级先归一化成 0、1、2…：模型写两空格、四空格、制表符都有，逐个去猜它用了哪种缩进会把
  * "缩进差一点"变成"结构差一层"。归一化之后只看"比上一层深"这件事。
  */
-function listTree(items: readonly MarkdownListItem[], ordered: boolean, level = 0): ReactNode {
+function listTree(items: readonly MarkdownListItem[], ordered: boolean): ReactNode {
   const levels = [...new Set(items.map((item) => item.depth))].sort((a, b) => a - b)
   const normalised = items.map((item) => ({ ...item, depth: levels.indexOf(item.depth) }))
-  const walk = (from: number, depth: number): { nodes: ReactNode[]; next: number } => {
+  const walk = (from: number, depth: number): ReactNode[] => {
     const nodes: ReactNode[] = []
     let index = from
     while (index < normalised.length) {
       const item = normalised[index]!
-      if (item.depth < depth) break
-      if (item.depth > depth) break
+      // 比这一层浅 ⇒ 交给上层；比这一层深 ⇒ 它是**下面那个 li** 的孩子，由内层递归接管。
+      if (item.depth !== depth) break
       let end = index + 1
       while (end < normalised.length && normalised[end]!.depth > depth) end += 1
       const children = normalised.slice(index + 1, end)
       nodes.push(<li key={index}>
         {Inline({ tokens: parseInline(item.text) })}
-        {children.length > 0 ? listTree(children, ordered, depth + 1) : null}
+        {/* 子列表**从 0 层重新开始**：每一层各自归一化过，所以这里必须再传 0。
+            原来传的是 depth + 1，于是子项（归一化后是 0）在第一项就 break，嵌套内容整段消失 ——
+            用户看到的"不是三层"就是这个。 */}
+        {children.length > 0 ? listTree(children, children[0]!.ordered) : null}
       </li>)
       index = end
     }
-    return { nodes, next: index }
+    return nodes
   }
-  const { nodes } = walk(0, level === 0 ? 0 : level)
+  const nodes = walk(0, 0)
   return ordered
     ? <ol className="dsh-chat__list">{nodes}</ol>
     : <ul className="dsh-chat__list">{nodes}</ul>

@@ -31,15 +31,41 @@ describe('conversation markdown', () => {
         kind: 'list',
         ordered: false,
         items: [
-          { text: '一', depth: 0 },
-          { text: '二\n续行', depth: 0 },
-          { text: '嵌套', depth: 1 },
-          { text: '三', depth: 0 },
+          { text: '一', depth: 0, ordered: false },
+          { text: '二\n续行', depth: 0, ordered: false },
+          { text: '嵌套', depth: 1, ordered: false },
+          { text: '三', depth: 0, ordered: false },
         ],
       },
     ])
     expect(parseMarkdown('1. 甲\n2) 乙')).toEqual([
-      { kind: 'list', ordered: true, items: [{ text: '甲', depth: 0 }, { text: '乙', depth: 0 }] },
+      {
+        kind: 'list',
+        ordered: true,
+        items: [{ text: '甲', depth: 0, ordered: true }, { text: '乙', depth: 0, ordered: true }],
+      },
+    ])
+  })
+
+  it('reads a real nested list from a session, mixed markers and all', () => {
+    // **原文**（从官壳宿主的会话历史里取出来的真实消息，空格按原文保留）。这份fixture 存在的
+    // 理由很实在：之前两轮我照截图推断缩进，改了两版都没修对；真实输入一次就把问题说清了 ——
+    // 每层缩进 2 空格、共 4 层、且同一棵树里混着 `1.` 与 `-`。
+    const source = ['- 第一层', '  - 第二层', '    - 第三层', '      - 第四层', '1. 有序第一层', '   - 无序第二层', '     1. 有序第二层'].join('\n')
+    const blocks = parseMarkdown(source)
+    // 中间没有空行 ⇒ 整段是**一棵**列表：混着 `-` 与 `1.` 也仍是一棵树（这正是原文的样子，
+    // 而每一项各自记着自己的标记）。
+    const list = blocks[0]
+    expect(list?.kind).toBe('list')
+    if (list?.kind !== 'list') return
+    expect(list.items.map((item) => [item.text, item.depth, item.ordered])).toEqual([
+      ['第一层', 0, false],
+      ['第二层', 1, false],
+      ['第三层', 2, false],
+      ['第四层', 3, false],
+      ['有序第一层', 0, true],
+      ['无序第二层', 1, false],
+      ['有序第二层', 2, true],
     ])
   })
 
@@ -51,9 +77,9 @@ describe('conversation markdown', () => {
         kind: 'list',
         ordered: false,
         items: [
-          { text: '父', depth: 0 },
-          { text: '子', depth: 1 },
-          { text: '另一个', depth: 0 },
+          { text: '父', depth: 0, ordered: false },
+          { text: '子', depth: 1, ordered: false },
+          { text: '另一个', depth: 0, ordered: false },
         ],
       },
     ])

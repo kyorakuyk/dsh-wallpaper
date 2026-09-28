@@ -24,10 +24,15 @@ export type MarkdownBlock =
   | { kind: 'quote'; text: string }
   | { kind: 'rule' }
 
-/** 列表项：`depth` 是缩进层级（0 为顶层），由渲染端还原成嵌套的 `ul`/`ol`。 */
+/** 列表项：`depth` 是缩进层级（0 为顶层），`ordered` 是**它自己那一行的标记**。
+ *
+ * 为什么每项各自记：原文实测（官壳那个宿主上的真实消息）同一棵树里混着 `1.` 与 `-` —— 按整块
+ * 一个类型渲染的话，"1. 有序第二层"会变成圆点，分类就没了。
+ */
 export interface MarkdownListItem {
   text: string
   depth: number
+  ordered: boolean
 }
 
 /** 行内片段。`children` 让粗体里能套代码、代码里不能再套任何东西。 */
@@ -190,7 +195,7 @@ export function parseMarkdown(source: string): MarkdownBlock[] {
     if (item) {
       flushParagraph()
       const ordered = !UNORDERED.test(line)
-      const items: MarkdownListItem[] = [{ text: item[2] ?? '', depth: depthOf(item[1] ?? '') }]
+      const items: MarkdownListItem[] = [{ text: item[2] ?? '', depth: depthOf(item[1] ?? ''), ordered }]
       for (index += 1; index < lines.length; index += 1) {
         const next = lines[index] ?? ''
         if (next.trim() === '') {
@@ -204,8 +209,13 @@ export function parseMarkdown(source: string): MarkdownBlock[] {
         }
         const nextItem = next.match(UNORDERED) ?? next.match(ORDERED)
         if (nextItem) {
-          // 列表内部的类型可以变（`-` 下挂 `1.` 子列表），这里按顶层那一行的类型渲染，够用且不猜。
-          items.push({ text: nextItem[2] ?? '', depth: depthOf(nextItem[1] ?? '') })
+          // 每一项记**它自己那一行**的标记：原文实测（官壳宿主上的真实消息）同一棵树里混着
+          // `1.` 与 `-`，按整块一个类型渲染会把"1. 有序第二层"变成圆点，分类就没了。
+          items.push({
+            text: nextItem[2] ?? '',
+            depth: depthOf(nextItem[1] ?? ''),
+            ordered: !UNORDERED.test(next),
+          })
           continue
         }
         if (/^\s+\S/.test(next)) {
