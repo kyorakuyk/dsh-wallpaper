@@ -1394,6 +1394,8 @@ fn wait_for_shell(
     // 铺在壳窗口前面的那层冻结画面（只在后台启动里用；见 `client_window::LaunchCover`）。
     // 拿它换的不是"更快"，而是"没有可见的一帧"：壳的 show() 会画在这层底下。
     let mut cover: Option<crate::client_window::LaunchCover> = None;
+    // "窗口要显示"的现场通知（`SetWinEventHook`）。它连同 `pump_show_events` 一起工作。
+    let mut show_watch: Option<crate::client_window::ShowEventWatch> = None;
     let mut hidden_windows = 0u32;
     // 抬到 1 毫秒只在这一场里需要（[`SHELL_HIDE_TICK`] 的兑现条件），出作用域就还回去 ——
     // 它最多活 [`SHELL_HIDE_EPISODE`]，而且只出现在一次后台启动里。
@@ -1533,23 +1535,20 @@ fn wait_for_shell(
                             "window-exists-hidden",
                             format!("pid={} class={class}", handle.pid()),
                         );
-                        // 句柄已知、而它还没显示：这正是"让它出生在一层面底下"的那个窗口期
-                        // （实测这里比壳显示早三百多毫秒）。铺面本身只是一次截屏，几毫秒。
-                        let captured_at = std::time::Instant::now();
-                        match crate::client_window::raise_launch_cover(*handle) {
-                            Some(layer) => {
-                                cover = Some(layer);
-                                timeline.mark(
-                                    "cover-raised",
-                                    format!("capture={}ms", captured_at.elapsed().as_millis()),
-                                );
-                            }
-                            // 只在"我们可能根本画不上去"时才走到这里：外来窗口既置顶又占满整屏。
-                            None => timeline.mark(
-                                "cover-skipped",
-                                "a foreign topmost window fills the screen there; our layer would not be seen",
-                            ),
+                        // 句柄已知、它还没显示：现在装上"窗口要显示"的现场通知。它比轮询早一个阶段 ——
+                        // 轮询问的是"可见了吗"（那时 DWM 可能已经合成上屏），而事件是壳自己那次
+                        // ShowWindow 里发出来的。装了必须抽消息，见循环里的 `pump_show_events`。
+                        show_watch = crate::client_window::watch_show_events(*handle);
+                        if show_watch.is_some() {
+                            timeline.mark("show-hook-installed", format!("pid={}", handle.pid()));
                         }
+                        // FREEZE（按用户 2026-09-30 的指示冻结这一方向，不是删除）：这里原来会铺一层
+                        // "先截屏、再盖上去"的冻结画面，让壳出生在它底下。实测两次都仍然可见 —— 第一次
+                        // 是被上面那条守卫自己挡掉了，第二次守卫收窄之后依旧没能阻止，用户判断这个方向
+                        // 不再值得投入，改为试 SetWinEventHook 把观测点提前一个阶段。
+                        // 恢复办法：把这十行取消注释、并去掉下面那行 `let _ = &mut cover;`。
+                        // 代码本体（`client_window::raise_launch_cover` 与 `LaunchCover`）原样保留。
+                        let _ = &mut cover;
                     }
                 }
             }
@@ -1627,6 +1626,38 @@ fn wait_for_shell(
                     }
                 }
                 (None, None) => {}
+            }
+        }
+
+        // 出上下文的事件钩子靠这个消息队列投递：不抽消息，回调永远不会来（而日志里看上去会像
+        // "钩子装了却没反应"）。它必须在这个线程做 —— 钩子就是在这一步注册的。
+        if hide_window && show_watch.is_some() {
+            crate::client_window::pump_show_events();
+            if hidden_at.is_none() {
+                if let Some((seen_at, hidden_by_event)) = crate::client_window::take_show_event() {
+                    timeline.mark(
+                        "show-event",
+                        format!("the shell asked to show its window, {}ms into the watch",
+                            seen_at.duration_since(started_at).as_millis()),
+                    );
+                    if hidden_by_event {
+                        visible_at = Some(seen_at);
+                        hidden_at = Some(std::time::Instant::now());
+                        visible_frame = visible_frame_ms(visible_at, hidden_at).or(visible_frame);
+                        hidden_windows += 1;
+                        log::info!("harness shell window hidden: windows=1 source=show-event");
+                        timeline.mark("hide-landed", format!("windows=1 sweeps={sweeps} via=show-event"));
+                        timeline.mark(
+                            "visible-frame",
+                            format!("{}ms (measured from the show event)", visible_frame.unwrap_or(0)),
+                        );
+                    } else {
+                        timeline.mark(
+                            "show-event-refused",
+                            "the window that asked to show is no longer a hideable interface window",
+                        );
+                    }
+                }
             }
         }
 

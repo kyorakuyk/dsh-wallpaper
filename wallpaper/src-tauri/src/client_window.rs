@@ -43,7 +43,11 @@ use windows::Win32::Graphics::Gdi::{
 #[cfg(windows)]
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 #[cfg(windows)]
+use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
+    DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, EVENT_OBJECT_SHOW,
+    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
     GetWindowLongW, GWL_EXSTYLE,
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, RegisterClassExW,
     SetWindowLongPtrW, WindowFromPoint, CREATESTRUCTW, GWLP_USERDATA, SW_SHOWNA,
@@ -1571,6 +1575,138 @@ impl Drop for LaunchCover {
                 unsafe { DeleteObject(HGDIOBJ(state.bitmap.0)) };
                 unsafe { DeleteDC(state.memory) };
             }
+        }
+    }
+}
+
+
+/// 壳的窗口"要显示"这一事实的**现场通知**，而不是等我们轮到问它。
+///
+/// 为什么值得换掉轮询：轮询问的是"它现在可见了吗" —— 而那一刻 DWM 可能已经把那帧合成上屏了。
+/// `EVENT_OBJECT_SHOW` 是壳自己那次 `ShowWindow` 过程中发出来的事件，跨进程投递到**调用
+/// `SetWinEventHook` 的那个线程**的消息队列里，观测点因此提前一个阶段：我们在"它变成可见"之前
+/// 就得到消息。代价是那个线程必须抽消息（[`pump_show_events`]），否则回调永远不会来。
+///
+/// 只用 `WINEVENT_OUTOFCONTEXT`：`WINEVENT_INCONTEXT` 要把我们的代码装进目标进程，那是注入，
+/// 本项目不做。
+pub(crate) struct ShowEventWatch {
+    #[cfg(windows)]
+    hook: HWINEVENTHOOK,
+    #[cfg(windows)]
+    _target_pid: u32,
+}
+
+#[cfg(windows)]
+struct ShowWatchState {
+    target: WindowHandle,
+    /// 事件到达的时刻（"它要显示了"）。
+    seen_at: Option<std::time::Instant>,
+    /// 就地隐藏的结果：`Some(true)` 表示已经按下去了。
+    hidden: Option<bool>,
+}
+
+#[cfg(windows)]
+static SHOW_WATCH: std::sync::OnceLock<std::sync::Mutex<ShowWatchState>> =
+    std::sync::OnceLock::new();
+
+#[cfg(windows)]
+unsafe extern "system" fn show_event_proc(
+    _hook: HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    id_object: i32,
+    id_child: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    // 只关心"某个顶层窗口要显示"这一件事：别的事件（移动、重命名、焦点）在这里没有意义。
+    if event != EVENT_OBJECT_SHOW || id_object != 0 || id_child != 0 {
+        return;
+    }
+    let Some(state) = SHOW_WATCH.get() else { return };
+    let Ok(mut state) = state.lock() else { return };
+    if hwnd != state.target.hwnd() {
+        return;
+    }
+    state.seen_at = Some(std::time::Instant::now());
+    // 就地按下去：从回调里做这件事是安全的（出上下文钩子的回调跑在我们自己的线程上），而且
+    // 这正是整件事的意义 —— 把"发现"和"按下"之间的时间缩到一次调用。
+    if state.hidden.is_none() {
+        // 复核句柄还是不是我们能碰的东西（回收的、换了属主的、变成弹出物的都不碰）。注意这里
+        // **不能**要求它"此刻可见"：这个事件的意义正是在"可见"之前到达 —— 要求可见会让回调
+        // 永远不动手，钩子装了等于没装（这条是复查时抓到的，不是事后补的说明）。
+        let ours = !matches!(watch_window_state(state.target), WatchWindowState::Lost);
+        state.hidden = Some(ours && hide_window(state.target));
+    }
+}
+
+/// 盯住 `target` 所属进程里"窗口要显示"的事件。失败返回 `None`（那就退回轮询）。
+#[cfg(windows)]
+pub(crate) fn watch_show_events(target: WindowHandle) -> Option<ShowEventWatch> {
+    let state = SHOW_WATCH.get_or_init(|| {
+        std::sync::Mutex::new(ShowWatchState {
+            target,
+            seen_at: None,
+            hidden: None,
+        })
+    });
+    if let Ok(mut guard) = state.lock() {
+        guard.target = target;
+        guard.seen_at = None;
+        guard.hidden = None;
+    }
+    let hook = unsafe {
+        SetWinEventHook(
+            EVENT_OBJECT_SHOW,
+            EVENT_OBJECT_SHOW,
+            None,
+            Some(show_event_proc),
+            target.pid(),
+            0,
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+        )
+    };
+    if hook.is_invalid() {
+        log::warn!("show-event hook: 注册失败，退回轮询");
+        return None;
+    }
+    Some(ShowEventWatch {
+        hook,
+        _target_pid: target.pid(),
+    })
+}
+
+/// 抽一次消息。**必须**由调用 `watch_show_events` 的那个线程周期性调用 —— 出上下文的事件钩子就是
+/// 这样被投递的；不抽消息，回调永远不会来，而这件事在日志里会表现成"钩子装了但没反应"。
+#[cfg(windows)]
+pub(crate) fn pump_show_events() {
+    let mut message = MSG::default();
+    while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+        let _ = unsafe { TranslateMessage(&message) };
+        unsafe { DispatchMessageW(&message) };
+    }
+}
+
+/// 取走"要显示了"这件事（以及就地隐藏是否成功）。取过就清空，不重复上报。
+#[cfg(windows)]
+pub(crate) fn take_show_event() -> Option<(std::time::Instant, bool)> {
+    let state = SHOW_WATCH.get()?;
+    let mut state = state.lock().ok()?;
+    match (state.seen_at.take(), state.hidden.take()) {
+        (Some(at), Some(hidden)) => Some((at, hidden)),
+        (Some(at), None) => {
+            state.seen_at = Some(at);
+            None
+        }
+        _ => None,
+    }
+}
+
+impl Drop for ShowEventWatch {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            unsafe { UnhookWinEvent(self.hook) };
         }
     }
 }
