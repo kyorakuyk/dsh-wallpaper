@@ -3351,6 +3351,73 @@ fn run_entry_command() -> Result<Option<String>, String> {
     Ok(Some(value.trim_end_matches('\0').to_string()))
 }
 
+/// The value line `reg query` prints, pulled out of its report.
+///
+/// The output is a blank line, the key path in brackets and the value itself,
+/// with name, type and data separated by runs of spaces:
+///
+/// ```text
+///
+/// HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
+///     dsh-wallpaper    REG_SZ    explorer.exe shell:AppsFolder\...!Wallpaper
+/// ```
+///
+/// Only the type token is used as a delimiter, because the data contains spaces
+/// of its own.
+#[cfg(windows)]
+fn parse_reg_query_value(output: &str, value_name: &str) -> Option<String> {
+    for line in output.lines() {
+        let Some(rest) = line.trim().strip_prefix(value_name) else {
+            continue;
+        };
+        // The name has to be a whole token: `dsh-wallpaper-old` is another value.
+        if !rest.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let rest = rest.trim_start();
+        let Some(type_end) = rest.find(char::is_whitespace) else {
+            continue;
+        };
+        if !rest[..type_end].starts_with("REG_") {
+            continue;
+        }
+        return Some(rest[type_end..].trim_start().to_string());
+    }
+    None
+}
+
+/// What a child `reg.exe` — and therefore the shell at logon — sees in the same
+/// key.
+///
+/// MSIX redirects a packaged app's HKCU writes into a private per-user hive
+/// which is *merged over* the real key when the app reads it. An in-process
+/// delete therefore leaves a tombstone that hides the real value from the app
+/// only, while Windows keeps launching the app at logon: the app reported
+/// 「当前用户启动项里没有 DSH Wallpaper」 for a value that was sitting in the
+/// real key the whole time. The manifest declares this key unvirtualized, and
+/// this read is the cross-check that says whether that declaration is in force.
+#[cfg(windows)]
+fn run_entry_command_via_child() -> Result<Option<String>, String> {
+    use std::process::Command;
+    let mut cmd = Command::new("reg");
+    std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x08000000);
+    cmd.args(["query", RUN_KEY_PATH, "/v", RUN_VALUE_NAME]);
+    let output = cmd.output().map_err(|error| error.to_string())?;
+    match output.status.code() {
+        Some(0) => Ok(parse_reg_query_value(
+            &String::from_utf8_lossy(&output.stdout),
+            RUN_VALUE_NAME,
+        )),
+        // `reg.exe` answers 1 for "no such key or value", which is the same state
+        // the in-process read reports as "nothing recorded".
+        Some(1) => Ok(None),
+        other => Err(format!(
+            "无法读取当前用户开机启动项（reg.exe 退出码 {}）",
+            other.unwrap_or(-1)
+        )),
+    }
+}
+
 /// What the compatibility Run entry says now, together with the two values
 /// that produced the answer.
 ///
@@ -3400,6 +3467,18 @@ pub(crate) fn check_run_entry() -> RunEntryCheck {
         Some(value) => autostart_commands_match(value, &expected),
         None => false,
     };
+    // The two views are supposed to be the same key, and they silently were not:
+    // the app read its own private tombstone while the real value stayed exactly
+    // where the app had just written it. The manifest declares this key
+    // unvirtualized; this is where a regression of that declaration becomes a
+    // line in the log instead of a settings page that contradicts Windows.
+    match run_entry_command_via_child() {
+        Ok(child) if child == recorded => {}
+        Ok(child) => log::warn!(
+            "开机自启回读：包内视图与 reg.exe 视图不一致（包内={recorded:?} reg={child:?}）；写入虚拟化又对 Run 键生效了，开关显示的将不是登录时真正执行的那个值"
+        ),
+        Err(error) => log::warn!("开机自启回读：reg.exe 交叉检查失败：{error}"),
+    }
     RunEntryCheck {
         matches,
         recorded,
@@ -4264,6 +4343,48 @@ mod tests {
         // `reg.exe add /D` stores quoting when the value arrives quoted from a
         // shell, and a quoted value still launches the same application.
         assert!(autostart_commands_match(&format!("\"{recorded}\""), &expected));
+    }
+
+    #[test]
+    fn a_reg_query_report_is_read_as_the_recorded_value() {
+        // Captured on this machine: `reg query <Run key> /v dsh-wallpaper`.
+        let report = "\r\nHKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\r\n    dsh-wallpaper    REG_SZ    explorer.exe shell:AppsFolder\\com.dsh.wallpaper_pdxj8y3r6rm5g!Wallpaper\r\n\r\n";
+        assert_eq!(
+            parse_reg_query_value(report, RUN_VALUE_NAME).as_deref(),
+            Some(r"explorer.exe shell:AppsFolder\com.dsh.wallpaper_pdxj8y3r6rm5g!Wallpaper")
+        );
+        // A different value whose name merely starts the same is not ours.
+        assert_eq!(
+            parse_reg_query_value("    dsh-wallpaper-old    REG_SZ    x", RUN_VALUE_NAME),
+            None
+        );
+        // A line that is not a typed value must not be handed out as data.
+        assert_eq!(
+            parse_reg_query_value("    dsh-wallpaper    NOT_A_TYPE    x", RUN_VALUE_NAME),
+            None
+        );
+    }
+
+    #[test]
+    fn the_run_key_is_declared_unvirtualized_by_the_manifest_this_edition_ships() {
+        // MSIX redirects a packaged app's HKCU writes into a private per-user
+        // hive that is merged over the real key when it reads. For the Run key
+        // that means an in-process delete leaves a tombstone which hides the
+        // real value from the app while Windows keeps launching it at logon —
+        // 「当前用户启动项里没有 DSH Wallpaper」 for a value sitting right there.
+        let manifest = if cfg!(feature = "lite") {
+            include_str!("../../../packaging/msix/AppxManifest-Lite.xml")
+        } else {
+            include_str!("../../../packaging/msix/AppxManifest.xml")
+        };
+        let excluded = format!(
+            "<virtualization:ExcludedKey>HKEY_CURRENT_USER\\{RUN_KEY_SUBKEY}</virtualization:ExcludedKey>"
+        );
+        assert!(
+            manifest.contains(&excluded),
+            "the manifest this edition ships does not declare {excluded}"
+        );
+        assert!(manifest.contains(r#"<rescap:Capability Name="unvirtualizedResources" />"#));
     }
 
     #[test]
