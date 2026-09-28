@@ -226,6 +226,32 @@
 }
 .dsh-chat__list { margin: 9px 0 0; padding-left: 20px; }
 .dsh-chat__list li { margin-top: 3px; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* 嵌套列表：向内再缩进一档（父项的行内内容已经缩进过，这里只补子列表自己的缩进）。 */
+.dsh-chat__list .dsh-chat__list { margin-top: 3px; padding-left: 18px; }
+/* 表格：外层滚动、内层真表格。表格自己保证列对齐 —— 这正是"靠空格对齐"做不到的那件事。 */
+.dsh-chat__table-scroll { overflow-x: auto; margin: 9px 0 0; }
+.dsh-chat__table { border-collapse: collapse; font-size: 12px; }
+.dsh-chat__table th,
+.dsh-chat__table td {
+  padding: 5px 9px;
+  border: 1px solid rgba(139, 196, 235, .16);
+  /* 单元格内按词折行：`overflow-wrap: anywhere` 会把长串切成语义无关的碎片，那正是截图里的坏法。 */
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+.dsh-chat__table th { background: rgba(139, 196, 235, .1); color: var(--dsh-text-strong); font-weight: 600; }
+/* 引用：左侧一道竖线，像一个被引住的段落。 */
+.dsh-chat__quote {
+  margin: 9px 0 0;
+  padding: 2px 0 2px 11px;
+  border-left: 2px solid rgba(139, 196, 235, .35);
+  color: var(--dsh-text-muted, #c3d6e4);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* 分割线：一条细线，不抢视线。 */
+.dsh-chat__rule { height: 0; margin: 11px 0 0; border: 0; border-top: 1px solid rgba(139, 196, 235, .22); }
 .dsh-chat__caret { display: inline-block; width: 2px; height: 1em; margin-left: 4px; vertical-align: -2px; background: var(--dsh-accent-soft); animation: dsh-chat-caret 900ms steps(1) infinite; }
 
 .dsh-chat__card {

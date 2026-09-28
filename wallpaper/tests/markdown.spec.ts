@@ -2,41 +2,75 @@ import { describe, expect, it } from 'vitest'
 import { parseInline, parseMarkdown } from '../src/features/chat/markdown.ts'
 
 /**
- * 这套解析只做用户点名的四样：代码围栏、行内代码、粗体、列表。这里钉住的正是"多做的那部分不做"——
- * 没有被点名的语法必须保持**字面**显示，否则界面会开始自作主张地改写用户看到的东西。
+ * 这套解析只认用户点名的语法。这里既钉"要生效的"，也钉"必须保持字面"的 —— 后者同样重要：界面
+ * 自作主张改写用户看到的东西，比少渲染一种语法糟糕得多。
  */
 describe('conversation markdown', () => {
-  it('splits paragraphs on blank lines and keeps line breaks inside one', () => {
-    const blocks = parseMarkdown('第一行\n第二行\n\n下一段')
-    expect(blocks).toEqual([
+  it('splits paragraphs on blank lines, keeping line breaks inside one', () => {
+    expect(parseMarkdown('第一行\n第二行\n\n下一段')).toEqual([
       { kind: 'paragraph', text: '第一行\n第二行' },
       { kind: 'paragraph', text: '下一段' },
     ])
   })
 
-  it('makes a fenced block, with or without a language', () => {
+  it('makes a fenced block, with or without a language, closed or not', () => {
     expect(parseMarkdown('```ts\nconst a = 1\n```')).toEqual([
       { kind: 'code', language: 'ts', text: 'const a = 1' },
     ])
     expect(parseMarkdown('```\nplain\n```')).toEqual([{ kind: 'code', text: 'plain' }])
-  })
-
-  it('treats an unclosed fence as code to the end', () => {
-    // 流式输出时围栏常常先开一半：这一刻用户就该看到"这是代码"，而不是半截普通文字。
+    // 未闭合也成块：流式输出时围栏先开一半，那一刻就该显示"这是代码"。
     expect(parseMarkdown('说明\n```js\nconst a = 1')).toEqual([
       { kind: 'paragraph', text: '说明' },
       { kind: 'code', language: 'js', text: 'const a = 1' },
     ])
   })
 
-  it('groups loose and numbered lists, merging an indented continuation', () => {
-    expect(parseMarkdown('- 一\n- 二\n  续行\n\n1. 甲\n2) 乙')).toEqual([
-      { kind: 'list', ordered: false, items: ['一', '二\n续行'] },
-      { kind: 'list', ordered: true, items: ['甲', '乙'] },
+  it('keeps list nesting as depth, and merges an indented continuation', () => {
+    expect(parseMarkdown('- 一\n- 二\n  续行\n  - 嵌套\n- 三')).toEqual([
+      {
+        kind: 'list',
+        ordered: false,
+        items: [
+          { text: '一', depth: 0 },
+          { text: '二\n续行', depth: 0 },
+          { text: '嵌套', depth: 1 },
+          { text: '三', depth: 0 },
+        ],
+      },
+    ])
+    expect(parseMarkdown('1. 甲\n2) 乙')).toEqual([
+      { kind: 'list', ordered: true, items: [{ text: '甲', depth: 0 }, { text: '乙', depth: 0 }] },
     ])
   })
 
-  it('reads inline code before bold, so stars inside backticks stay literal', () => {
+  it('reads a strict table, and leaves everything else alone', () => {
+    expect(parseMarkdown('| 名称 | 值 |\n| :--- | ---: |\n| a | 1 |\n| b | 2 |')).toEqual([
+      {
+        kind: 'table',
+        align: ['left', 'right'],
+        head: ['名称', '值'],
+        rows: [['a', '1'], ['b', '2']],
+      },
+    ])
+    // 列数不一致 ⇒ 不是表格，保持字面。
+    expect(parseMarkdown('| a | b |\n| --- |\n| 1 | 2 |')).toEqual([
+      { kind: 'paragraph', text: '| a | b |\n| --- |\n| 1 | 2 |' },
+    ])
+    // 缺分隔行 ⇒ 不是表格（正文里一个竖线不该被吃掉）。
+    expect(parseMarkdown('| a | b |\n| 1 | 2 |')).toEqual([
+      { kind: 'paragraph', text: '| a | b |\n| 1 | 2 |' },
+    ])
+  })
+
+  it('reads quotes and rules', () => {
+    expect(parseMarkdown('> 引用第一行\n> 继续\n\n---\n\n***')).toEqual([
+      { kind: 'quote', text: '引用第一行\n继续' },
+      { kind: 'rule' },
+      { kind: 'rule' },
+    ])
+  })
+
+  it('reads inline code, bold, italic and strike — and nests them', () => {
     expect(parseInline('前 `a**b**` 后')).toEqual([
       { kind: 'text', text: '前 ' },
       { kind: 'code', text: 'a**b**' },
@@ -44,20 +78,35 @@ describe('conversation markdown', () => {
     ])
     expect(parseInline('这是**重点**。')).toEqual([
       { kind: 'text', text: '这是' },
-      { kind: 'bold', text: '重点' },
+      { kind: 'bold', children: [{ kind: 'text', text: '重点' }] },
       { kind: 'text', text: '。' },
+    ])
+    // 模型真会写"粗体里含行内代码"，所以这里是递归而不是一层扫描。
+    expect(parseInline('**加粗里含 `代码` 也行**')).toEqual([
+      {
+        kind: 'bold',
+        children: [
+          { kind: 'text', text: '加粗里含 ' },
+          { kind: 'code', text: '代码' },
+          { kind: 'text', text: ' 也行' },
+        ],
+      },
+    ])
+    expect(parseInline('*斜* 与 ~~删~~')).toEqual([
+      { kind: 'italic', children: [{ kind: 'text', text: '斜' }] },
+      { kind: 'text', text: ' 与 ' },
+      { kind: 'strike', children: [{ kind: 'text', text: '删' }] },
     ])
   })
 
-  it('leaves everything else exactly as written', () => {
-    // 没被点名的语法一律字面显示：标题、引用、表格、HTML 片段都当普通文字。
-    const tables = parseMarkdown('## 标题\n\n| a | b |\n| - | - |\n\n<b>粗</b> 和 ![图](x.png)')
-    expect(tables).toEqual([
+  it('leaves what it does not implement exactly as written', () => {
+    // 刻意不做下划线斜体：`a_b_c` 里的下划线常常是标识符的一部分，认它会把 snake_case 撕开。
+    expect(parseInline('snake_case_name')).toEqual([{ kind: 'text', text: 'snake_case_name' }])
+    expect(parseMarkdown('## 标题\n\n<b>粗</b> 和 ![图](x.png)')).toEqual([
       { kind: 'paragraph', text: '## 标题' },
-      { kind: 'paragraph', text: '| a | b |\n| - | - |' },
       { kind: 'paragraph', text: '<b>粗</b> 和 ![图](x.png)' },
     ])
-    // 并且 `<b>` 只是**文字片段**，不是任何元素：这条路不存在把文本当 HTML 渲染的分支。
+    // `<b>` 只是文字片段，不是元素：这条路上不存在把文本当 HTML 渲染的分支。
     expect(parseInline('<b>粗</b>')).toEqual([{ kind: 'text', text: '<b>粗</b>' }])
   })
 })

@@ -1,68 +1,119 @@
 /**
- * 会话轨道用的一小套 Markdown 解析：**只认用户要的那几样**，其余一律当普通文字。
+ * 会话轨道用的一小套 Markdown 解析：**只认用户点名的那些**，其余一律当普通文字。
  *
  * 为什么不是"接一个 Markdown 库"：
  *
  *  1. 这条轨道喂进来的东西不可信 —— 模型输出、用户粘贴的网页片段、DSH 的日志都会到这里。任何
  *     "把文本当 HTML 处理"的路径都是注入面，所以这里**只产出结构化数据**，绝不产出 HTML 字符串；
- *  2. 需要的语法只有代码块、行内代码、粗体、列表。多解析出来的东西（表格、图片、链接自动识别）
- *     在这块窄轨道里只会添乱：表格要正确渲染得靠等宽列宽，而这里的正文是比例字体；
- *  3. 纯函数可以被钉住行为，而"库升级后渲染变了"不是我想在深夜排查的东西。
+ *  2. 纯函数可以被钉住行为，"库升级后渲染变了"不是我想在深夜排查的东西；
+ *  3. 少即是稳：没被点名的语法保持**字面**显示，用户看到的就是他写的。
  *
- * 支持的块：
- *   - 代码围栏（三反引号，可有语言标注；**未闭合也成块** —— 流式输出时围栏常常先开一半）
- *   - 有序 / 无序列表（`-` `*` `+` 与 `1.`；缩进续行并入上一条）
- *   - 段落（连续非空行合成一段，空行分段）
- * 行内：`code`、**bold**。
- * 其它一切（`##`、`>`、`|`、`![..]`、`<b>`…）按字面显示 —— 与现在完全一致。
+ * 支持：代码围栏、有序/无序列表（含嵌套）、表格、引用、分割线；
+ *      行内代码、粗体、斜体、删除线（且允许互相嵌套，例如**加粗里含 `代码`**）。
+ * 不支持（刻意）：标题、链接、图片、任务清单、下划线斜体（`a_b_c` 里的下划线常常是标识符的
+ * 一部分，认它会把 `snake_case` 撕成斜体）。
  */
+
+export type MarkdownAlign = 'left' | 'center' | 'right'
 
 export type MarkdownBlock =
   | { kind: 'paragraph'; text: string }
   | { kind: 'code'; language?: string; text: string }
-  | { kind: 'list'; ordered: boolean; items: string[] }
+  | { kind: 'list'; ordered: boolean; items: MarkdownListItem[] }
+  | { kind: 'table'; align: MarkdownAlign[]; head: string[]; rows: string[][] }
+  | { kind: 'quote'; text: string }
+  | { kind: 'rule' }
 
-/** 行内片段：文字、代码、粗体。渲染端只把它变成文本节点与 `<code>`/`<strong>`。 */
+/** 列表项：`depth` 是缩进层级（0 为顶层），由渲染端还原成嵌套的 `ul`/`ol`。 */
+export interface MarkdownListItem {
+  text: string
+  depth: number
+}
+
+/** 行内片段。`children` 让粗体里能套代码、代码里不能再套任何东西。 */
 export type InlineToken =
   | { kind: 'text'; text: string }
   | { kind: 'code'; text: string }
-  | { kind: 'bold'; text: string }
+  | { kind: 'bold'; children: InlineToken[] }
+  | { kind: 'italic'; children: InlineToken[] }
+  | { kind: 'strike'; children: InlineToken[] }
 
 const FENCE = /^\s{0,3}(?:```|~~~)\s*([\w+#.-]*)\s*$/
 const UNORDERED = /^(\s*)[-*+]\s+(.*)$/
 const ORDERED = /^(\s*)\d+[.)]\s+(.*)$/
+/** 分割线：整行只有三个以上同样的 `-`/`*`/`_`（允许空格）。 */
+const RULE = /^\s{0,3}([-*_])\s*(?:\1\s*){2,}$/
+const QUOTE = /^\s{0,3}>\s?(.*)$/
+const TABLE_ROW = /^\s*\|(.+)\|\s*$/
+
+/** 缩进层级：两个空格算一层，制表符算一层。Markdown 允许四空格，两空格是模型最常用的写法。 */
+function depthOf(indent: string): number {
+  let depth = 0
+  for (const ch of indent) depth += ch === '\t' ? 1 : 0
+  return depth + Math.floor(indent.replace(/\t/g, '').length / 2)
+}
 
 /**
- * 行内解析：**先代码后粗体**，因为反引号里的星号没有强调含义（`` `a**b**` `` 就是一个标识符）。
- * 不处理转义：这条轨道上没人写 `\*`，而"支持转义"意味着更多能出错的地方。
+ * 行内解析。**先代码后强调**：反引号里的星号没有强调含义（`` `a**b**` `` 就是一个标识符）。
+ *
+ * 递归而不是一层扫到底，是因为"粗体里含行内代码"是模型真会写的形状（用户实测输出里就有）。
  */
 export function parseInline(source: string): InlineToken[] {
   const tokens: InlineToken[] = []
-  let rest = source
   const push = (token: InlineToken) => {
-    if (token.text.length === 0) return
-    const last = tokens[tokens.length - 1]
-    if (token.kind === 'text' && last?.kind === 'text') last.text += token.text
-    else tokens.push(token)
+    if (token.kind === 'text') {
+      if (token.text.length === 0) return
+      const last = tokens[tokens.length - 1]
+      if (last?.kind === 'text') last.text += token.text
+      else tokens.push(token)
+      return
+    }
+    tokens.push(token)
   }
+  let rest = source
   while (rest.length > 0) {
     const code = rest.match(/^([^`]*)`([^`]+)`/)
-    const bold = rest.match(/^([^*]*)\*\*([^*]+)\*\*/)
-    const next = [code, bold]
+    const bold = rest.match(/^([^*]*(?:\*(?!\*)[^*]*)*)\*\*([^*]+)\*\*/)
+    const strike = rest.match(/^([^~]*)~~([^~]+)~~/)
+    const italic = rest.match(/^([^*]*)\*([^*\s][^*]*?)\*/)
+    const found = [code, bold, strike, italic]
       .filter((match): match is RegExpMatchArray => Boolean(match))
       .sort((a, b) => (a[1] ?? '').length - (b[1] ?? '').length)[0]
-    if (!next) {
+    if (!found) {
       push({ kind: 'text', text: rest })
       break
     }
-    const at = (next[1] ?? '').length
+    const at = (found[1] ?? '').length
+    const body = found[2] ?? ''
     push({ kind: 'text', text: rest.slice(0, at) })
-    push(next === code
-      ? { kind: 'code', text: next[2] ?? '' }
-      : { kind: 'bold', text: next[2] ?? '' })
-    rest = rest.slice(at + next[0].length - (next[1] ?? '').length)
+    if (found === code) push({ kind: 'code', text: body })
+    else if (found === bold) push({ kind: 'bold', children: parseInline(body) })
+    else if (found === strike) push({ kind: 'strike', children: parseInline(body) })
+    else push({ kind: 'italic', children: parseInline(body) })
+    rest = rest.slice(at + (found[0] ?? '').length - at)
   }
   return tokens
+}
+
+function cellsOf(line: string): string[] | undefined {
+  const match = line.match(TABLE_ROW)
+  if (!match) return undefined
+  return (match[1] ?? '').split('|').map((cell) => cell.trim())
+}
+
+function alignOf(separator: string): MarkdownAlign[] | undefined {
+  const match = separator.match(TABLE_ROW) ?? separator.match(/^\s*\|?(.*?)\|?\s*$/)
+  if (!match) return undefined
+  const cells = (match[1] ?? '').split('|').map((cell) => cell.trim())
+  if (cells.length === 0) return undefined
+  const align: MarkdownAlign[] = []
+  for (const cell of cells) {
+    if (!/^:?-{1,}:?$/.test(cell)) return undefined
+    const left = cell.startsWith(':')
+    const right = cell.endsWith(':')
+    align.push(left && right ? 'center' : right ? 'right' : 'left')
+  }
+  return align
 }
 
 export function parseMarkdown(source: string): MarkdownBlock[] {
@@ -91,30 +142,67 @@ export function parseMarkdown(source: string): MarkdownBlock[] {
       }
       // 未闭合的围栏也成块：流式输出时它先开一半，用户此刻就该看到"这是代码"。
       const language = (fence[1] ?? '').trim()
-      blocks.push({
-        kind: 'code',
-        ...(language ? { language } : {}),
-        text: body.join('\n'),
-      })
+      blocks.push({ kind: 'code', ...(language ? { language } : {}), text: body.join('\n') })
       if (!closed) break
       continue
+    }
+    if (RULE.test(line)) {
+      flushParagraph()
+      blocks.push({ kind: 'rule' })
+      continue
+    }
+    const quote = line.match(QUOTE)
+    if (quote) {
+      flushParagraph()
+      const body: string[] = [quote[1] ?? '']
+      for (index += 1; index < lines.length; index += 1) {
+        const next = (lines[index] ?? '').match(QUOTE)
+        if (!next) {
+          index -= 1
+          break
+        }
+        body.push(next[1] ?? '')
+      }
+      blocks.push({ kind: 'quote', text: body.join('\n') })
+      continue
+    }
+    // 表格：首行有竖线、第二行是分隔行、且列数一致。三条缺一条就当普通文字 —— 正文里一个竖线
+    // 不该被吃掉，而"看起来像表格"的排版事故比"没渲染表格"更让人困惑。
+    const head = cellsOf(line)
+    if (head && head.length >= 2) {
+      const align = alignOf(lines[index + 1] ?? '')
+      if (align && align.length === head.length) {
+        flushParagraph()
+        const rows: string[][] = []
+        for (index += 2; index < lines.length; index += 1) {
+          const row = cellsOf(lines[index] ?? '')
+          if (!row) {
+            index -= 1
+            break
+          }
+          rows.push(row)
+        }
+        blocks.push({ kind: 'table', align, head, rows })
+        continue
+      }
     }
     const item = line.match(UNORDERED) ?? line.match(ORDERED)
     if (item) {
       flushParagraph()
-      const ordered = UNORDERED.test(line) === false
-      const items: string[] = [item[2] ?? '']
-      // 缩进更深的后续行并入上一条（Markdown 的软换行），空行结束这个列表。
+      const ordered = !UNORDERED.test(line)
+      const items: MarkdownListItem[] = [{ text: item[2] ?? '', depth: depthOf(item[1] ?? '') }]
       for (index += 1; index < lines.length; index += 1) {
         const next = lines[index] ?? ''
         if (next.trim() === '') break
         const nextItem = next.match(UNORDERED) ?? next.match(ORDERED)
         if (nextItem) {
-          items.push(nextItem[2] ?? '')
+          // 列表内部的类型可以变（`-` 下挂 `1.` 子列表），这里按顶层那一行的类型渲染，够用且不猜。
+          items.push({ text: nextItem[2] ?? '', depth: depthOf(nextItem[1] ?? '') })
           continue
         }
         if (/^\s+\S/.test(next)) {
-          items[items.length - 1] = `${items[items.length - 1]}\n${next.trim()}`
+          const last = items[items.length - 1]
+          if (last) last.text = `${last.text}\n${next.trim()}`
           continue
         }
         index -= 1
