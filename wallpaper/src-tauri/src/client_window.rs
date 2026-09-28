@@ -48,7 +48,8 @@ use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVE
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, EVENT_OBJECT_SHOW,
     WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
-    GetSystemMetrics, GetWindowLongW, GetWindowPlacement, SetWindowPlacement, SetWindowPos,
+    GetSystemMetrics, GetWindowLongW, GetWindowPlacement, IsWindow, SetWindowPlacement,
+    SetWindowPos,
     WINDOWPLACEMENT,
     SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED, SM_CXVIRTUALSCREEN,
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, GWL_EXSTYLE,
@@ -1725,7 +1726,7 @@ impl Drop for ShowEventWatch {
 ///
 /// 代价是必须记得原处：展示路径要**先挪回再显示**，否则壳保存的窗口位置会一路漂移。
 #[cfg(windows)]
-static MOVED_OFFSCREEN: std::sync::OnceLock<std::sync::Mutex<Option<(String, WINDOWPLACEMENT)>>> =
+static MOVED_OFFSCREEN: std::sync::OnceLock<std::sync::Mutex<Option<(String, isize, WINDOWPLACEMENT)>>> =
     std::sync::OnceLock::new();
 
 /// `-32000` 是 Windows 用来标记"最小化"的特殊坐标，撞上它等于给窗口换了个状态；所以不用它，
@@ -1785,7 +1786,10 @@ pub(crate) fn move_offscreen(handle: WindowHandle) -> bool {
     if let Ok(mut guard) = slot.lock() {
         // 同一家族只记第一次：第二次挪动记下的"原处"已经是屏幕之外了。
         if guard.is_none() {
-            *guard = Some((executable, placement));
+            // **连句柄一起记**：恢复时按这个句柄走。用"家族里随便哪个窗口"去恢复是不够的 ——
+            // 实测那样会在第一个成功的调用上短路（`any()`），而家族里还有别的窗口，真正被挪走
+            // 的那个就可能永远留在屏幕外。这正是用户看到的"跑到屏幕右侧外"。
+            *guard = Some((executable, handle.raw, placement));
         }
     }
     true
@@ -1798,24 +1802,41 @@ pub(crate) fn move_offscreen(handle: WindowHandle) -> bool {
 pub(crate) fn restore_from_offscreen(executable: &str) -> bool {
     let Some(slot) = MOVED_OFFSCREEN.get() else { return false };
     let Ok(mut guard) = slot.lock() else { return false };
-    let Some((recorded, placement)) = guard.clone() else { return false };
+    let Some((recorded, raw, placement)) = guard.clone() else { return false };
     if !same_executable_path(&recorded, executable) {
         return false;
     }
-    let restored = family_windows(executable).iter().any(|window| {
-        let hwnd = window.handle.hwnd();
-        let placed = unsafe { SetWindowPlacement(hwnd, &placement) }.is_ok();
-        // `SetWindowPlacement` 会带上 `showCmd`，而它有可能把窗口显示出来 —— 我们恢复的时候
-        // 调用方要么刚把它藏好、要么正准备显示，但无论哪种，这里都不该由它决定可见性。
-        if placed && unsafe { IsWindowVisible(hwnd) }.as_bool() && placement.showCmd != SW_SHOWMAXIMIZED.0 as u32 {
-            let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
+    // 先按记下的那个句柄恢复（句柄可能已经被回收，所以要确认它还在、而且仍是那个进程的窗口）。
+    let mut restored = false;
+    let recorded_handle = HWND(raw as *mut core::ffi::c_void);
+    if unsafe { IsWindow(Some(recorded_handle)) }.as_bool() {
+        restored |= place_and_keep_hidden(recorded_handle, &placement);
+    }
+    // 句柄没了（窗口被重建）才退回整个家族；这里**不短路**，每个窗口都试一遍。
+    if !restored {
+        for window in family_windows(executable) {
+            restored |= place_and_keep_hidden(window.handle.hwnd(), &placement);
         }
-        placed
-    });
+    }
     if restored {
         *guard = None;
     }
     restored
+}
+
+/// 写回放置状态，并且**不因为这次写入而改变可见性**。
+///
+/// `SetWindowPlacement` 会带上 `showCmd`，它有可能把窗口显示出来 —— 而我们恢复的时候，调用方
+/// 要么刚把它藏好、要么正准备显示，可见性不该是"写个位置"的副作用。
+#[cfg(windows)]
+fn place_and_keep_hidden(hwnd: HWND, placement: &WINDOWPLACEMENT) -> bool {
+    if unsafe { SetWindowPlacement(hwnd, placement) }.is_err() {
+        return false;
+    }
+    if placement.showCmd != SW_SHOWMAXIMIZED.0 as u32 && unsafe { IsWindowVisible(hwnd) }.as_bool() {
+        let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
+    }
+    true
 }
 
 #[cfg(test)]
