@@ -2864,6 +2864,17 @@ fn harness_scope_key() -> String {
     }
 }
 
+/// 主体范围变化时的叫醒通道。
+///
+/// 不加这个，探测器只在自己排定的 tick 上醒来 —— 日志实测：切换发生在 01:10:13，`connecting`
+/// 到 01:10:15 才发布（界面这两秒仍写着"已连接"），结论又等到 01:10:23 才发出（灰灯迟了 8 秒）。
+/// 进程退出那条路早就有一条一模一样的叫醒通道（`exits`），主体变化凭什么要等。
+#[cfg(not(feature = "lite"))]
+fn harness_scope_notify() -> &'static tokio::sync::Notify {
+    static NOTIFY: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+    NOTIFY.get_or_init(tokio::sync::Notify::new)
+}
+
 /// The ports the wallpaper may probe, in order — never widened by what answers.
 ///
 /// The order carries the "connected ⇒ sticky" rule as well: the endpoint already
@@ -3001,6 +3012,9 @@ fn apply_endpoint_scope(
         if let Ok(mut guard) = state.active.lock() {
             *guard = None;
         }
+        // 立刻叫醒探测器：切换主体这一步是用户动作，界面必须在**这一拍**进入"连接中"，
+        // 而不是等下一次排定的探测（实测迟 2–5 秒，用户看到的是切换后仍写着"已连接"）。
+        harness_scope_notify().notify_one();
     }
     Ok(serde_json::json!({
         "port": port,
@@ -4458,6 +4472,8 @@ fn start_harness_monitor(app: tauri::AppHandle) {
             tokio::select! {
                 _ = tokio::time::sleep(harness_probe_interval(monitor.probing)) => {}
                 _ = exits.notified() => {}
+                // 切换主体也叫醒这一轮：见 `harness_scope_notify`。
+                _ = harness_scope_notify().notified() => {}
             }
         }
     });
