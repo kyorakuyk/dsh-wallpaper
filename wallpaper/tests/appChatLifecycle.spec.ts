@@ -170,6 +170,14 @@ describe('App chat lifecycle isolation', () => {
     expect(chatAdapterLifecycleKey('deepseek-api', 7, shellScope)).not.toBe(mountedLifecycle)
   })
 
+  it('keeps the amber light on for a fixed moment after a subject switch', async () => {
+    const { HARNESS_SWITCH_BUFFER_MS } = await import('../src/App.tsx')
+    // 用户要的是"固定 1–2s 的黄灯缓冲后立刻载入"：答案常常一次往返就回来，灯跟着一闪而过，
+    // 用户看不到"它在连"，只觉得界面抖了一下。所以这是**最短停留**，不是超时。
+    expect(HARNESS_SWITCH_BUFFER_MS).toBeGreaterThanOrEqual(1_000)
+    expect(HARNESS_SWITCH_BUFFER_MS).toBeLessThanOrEqual(2_000)
+  })
+
   it('loads the minimal preset by default, and passes a chosen one through', async () => {
     const { DEFAULT_HARNESS_PRESET, harnessAdapterOptionsFromSettings } = await import('../src/App.tsx')
 

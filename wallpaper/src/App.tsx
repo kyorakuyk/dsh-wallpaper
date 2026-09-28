@@ -364,6 +364,18 @@ export function updateApiAdapterOptions(
 export const DEFAULT_HARNESS_PRESET = 'minimal'
 
 /**
+ * 切换主体之后，黄灯（"连接中"）至少要亮这么久。
+ *
+ * 用户的要求是"进入固定 1–2s 的黄灯缓冲后**立刻载入**"：答案往往一次性就回来了，如果灯跟着答案
+ * 一闪而过，用户根本看不到"它在连"，只会觉得界面抖了一下。所以这是**最短停留**，不是超时。
+ *
+ * 顺带说清"缓存"在这里指什么：**不是缓存会话 id**。桥的规矩是"只有没有 resume id 时才去建
+ * '今天这条桌面会话'"（每日边界 04:00，你们自己定的），把昨天的 id 存下来再恢复就等于悄悄破了
+ * 那条边界。所以切回来时该做的是"端点保持热 + 这一小段缓冲"，让宿主用一次往返把今天的会话交回来。
+ */
+export const HARNESS_SWITCH_BUFFER_MS = 1_200
+
+/**
  * Harness 适配器的选项：模型 + 预设。
  *
  * **端点不在这里**：`connect_harness` 命令自己按主体范围解析端口（源码注释原话"resolved here
@@ -603,6 +615,8 @@ export function App({ surface = 'combined' }: AppProps) {
    * 红灯时点滑槽＝立刻拉起对应 harness 进程并发一次握手申请，而黄灯时只需要等。
    */
   const [harnessFailed, setHarnessFailed] = useState(false)
+  /** 切换主体之后黄灯的**最短**停留（见 `HARNESS_SWITCH_BUFFER_MS`）。 */
+  const [harnessBuffering, setHarnessBuffering] = useState(false)
   const [nativeHandoffGeneration, setNativeHandoffGeneration] = useState<number>()
   const harnessLaunchPendingRef = useRef(false)
   const harnessLaunchStartedAtRef = useRef<number>()
@@ -641,6 +655,22 @@ export function App({ surface = 'combined' }: AppProps) {
   // each IPC call. Serialize this queue so a late `streaming` dispatch cannot
   // be processed after the terminal `done` dispatch.
   const coreDispatchQueueRef = useRef<Promise<unknown>>(Promise.resolve())
+  /**
+   * 切换主体之后，黄灯**至少**亮满 `HARNESS_SWITCH_BUFFER_MS`。
+   *
+   * 依赖与下面那个"把主体范围交给原生"的 effect 相同 —— 同一件事触发两处：原生开始按新主体探测，
+   * 界面则先进入"连接中"。启动时也会走一次，那是对的：那时确实还在连。
+   */
+  useEffect(() => {
+    setHarnessBuffering(true)
+    const timer = window.setTimeout(() => setHarnessBuffering(false), HARNESS_SWITCH_BUFFER_MS)
+    return () => window.clearTimeout(timer)
+  }, [
+    settings.dshLaunch.subjectId,
+    settings.dshLaunch.rootPath,
+    settings.dshLaunch.endpointPort,
+    settings.dshLaunch.extraEndpointPorts,
+  ])
   // Do not put mutable API request settings in the adapter lifecycle effect.
   // The adapter captures this object by reference and snapshots it only when
   // sending, so a settings edit changes the next request without disconnecting
@@ -1759,6 +1789,7 @@ export function App({ surface = 'combined' }: AppProps) {
       harnessAvailability={runtime.harness}
       harnessStarting={harnessStarting}
       harnessFailed={harnessFailed}
+      harnessSuspect={harnessTransitioning || harnessBuffering}
       onStartHarness={async () => {
         if (harnessLaunchPendingRef.current) return
         // 红灯时点滑槽＝**动手再试一次**：拉起对应 harness 进程（这一步本身就是"握手申请"的前半，
@@ -1816,11 +1847,7 @@ export function App({ surface = 'combined' }: AppProps) {
       modelLabels={modelLabels}
       modelSwitchDisabledReason={modelSwitchDisabledReason}
       harnessReady={isHarnessReady(runtime.harness)}
-      // 黄灯 = **连接与断开的中间态**（用户要求它是呼吸灯）：正在把 harness 后台拉起来、
-      // 宿主在装载 Bridge、或者已经连上但暂时失联还没判死。它不是告警，所以是呼吸而不是闪烁。
-      // 两个来源各自算：原生监控把 `harnessProbing` 随快照发下来（它能看到端口属主的进程是否
-      // 还活着），浏览器预览那条路自己在本地探针里判断。
-      harnessSuspect={harnessTransitioning}
+      // 黄灯（`harnessSuspect`）在面板顶部那处统一给：原生的 `harnessProbing` + 刚才那段最短停留。
       // 每个后端都接上：它是"拉起当前主体可视化窗口"的快捷键，与岛上当前是哪个后端无关
       // （用户要求的是"每个样式"都有这个按钮）。没有主体可拉时，原生会退到"这个端点上
       // 应答的那台"，所以网页模式下点击也不会落空。
