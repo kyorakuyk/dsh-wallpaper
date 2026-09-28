@@ -10,7 +10,7 @@ import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, DesktopWorkspa
 import { preferredDisplayId } from '../runtime/displayLayout.ts'
 import { harnessStateLabel } from '../connect/harnessLabels.ts'
 import type { AutostartStatus, HarnessEndpointScan, HarnessTarget } from '../native/runtime.ts'
-import { autostartDetail } from './autostartCopy.ts'
+import { autostartDetail, autostartKnown } from './autostartCopy.ts'
 import { catalogAgeLabel, displaySubjectPath, sameSubject, subjectOptionLabel } from '../connect/harnessSubjects.ts'
 import { OfficialPersonaCards } from '../persona/OfficialPersonaCards.tsx'
 import './SettingsPanel.css'
@@ -602,7 +602,9 @@ export function SettingsPanel(props: SettingsPanelProps) {
               onChange={(value) => set({ dshLaunch: { ...settings.dshLaunch, autoStartWithWallpaper: value } })}
             />
           </Field>
-          {settings.dshLaunch.autoStartWithWallpaper && !props.autostart.enabled && (
+          {/* 未读到不等于没开：状态由「系统」页的 probe 读取，占位值的 enabled 也是 false，
+              所以这条警告只在确实读到是关的时候出现，否则它会为开着的自启报错。 */}
+          {settings.dshLaunch.autoStartWithWallpaper && autostartKnown(props.autostart) && !props.autostart.enabled && (
             <Field title="壁纸开机自启未生效" detail="开机后自动启动 DSH 依赖壁纸自身的开机自启。">{
               props.autostart.source === 'disabled-by-user'
                 ? 'Windows 任务管理器已禁用本应用的自启项，因此「随壁纸启动 DSH」只会在你手动打开壁纸后生效。'

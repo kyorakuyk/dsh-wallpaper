@@ -11,6 +11,20 @@ import type { AutostartStatus } from '../native/runtime.ts'
  * as `reason`; these two helpers only decide how to show it.
  */
 
+/**
+ * Whether this is a state Windows reported, rather than this page's own
+ * placeholder before the first read comes back.
+ *
+ * Rust never reports `none` without a reason: every "nothing is in effect" path
+ * says what it looked at. So `none` with no reason is the renderer's "还没读到"
+ * marker, and a warning must not be raised from it — the 常规 page warned
+ * 「壁纸开机自启未生效」 for an autostart that was on, purely because nobody had
+ * opened the 系统 page yet and its probe is the only thing that reads the state.
+ */
+export function autostartKnown(status: AutostartStatus): boolean {
+  return status.source !== 'none' || status.reason !== null
+}
+
 /** Which path is carrying autostart right now, or why none is. */
 export function autostartDetail(status: AutostartStatus): string {
   const cause = status.reason ? ` ${status.reason}` : ''

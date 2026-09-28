@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import type { AutostartStatus } from '../src/native/runtime.ts'
-import { autostartDetail, autostartRefusalNotice } from '../src/settings/autostartCopy.ts'
+import { autostartDetail, autostartKnown, autostartRefusalNotice } from '../src/settings/autostartCopy.ts'
 import { createAutostartQueue } from '../src/settings/autostartQueue.ts'
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'src')
@@ -118,6 +118,17 @@ describe('autostart copy', () => {
     expect(autostartDetail(status({ reason: '当前用户启动项里没有 DSH Wallpaper。' }))).toContain('没有 DSH Wallpaper')
   })
 
+  it('tells "not read yet" apart from "really off"', () => {
+    // Rust never reports `none` without naming what it looked at, so the
+    // placeholder is the only state with neither. The 常规 page warned
+    // 「壁纸开机自启未生效」 from that placeholder for an autostart that was on.
+    expect(autostartKnown(status())).toBe(false)
+    expect(autostartKnown(status({ reason: '当前用户启动项里没有 DSH Wallpaper。' }))).toBe(true)
+    expect(autostartKnown(status({ enabled: true, source: 'run' }))).toBe(true)
+    expect(autostartKnown(status({ enabled: true, source: 'startup-task' }))).toBe(true)
+    expect(autostartDetail(status())).toContain('正在读取')
+  })
+
   it('explains a refusal with the reason Rust reported', () => {
     const reason = 'Windows 启动任务不可用（参数错误。 (0x80070057)）；当前用户启动项里没有 DSH Wallpaper。'
     expect(autostartRefusalNotice(status({ reason }), true)).toBe(`开机自启没有打开：${reason}`)
@@ -142,5 +153,8 @@ describe('the settings pages refuse to guess', () => {
     }
     const panel = await readFile(resolve(sourceRoot, 'settings/SettingsPanel.tsx'), 'utf8')
     expect(panel).toContain('autostartDetail(props.autostart)')
+    // The 常规 page's 「未生效」 warning must not fire from the placeholder: the
+    // state it reads only arrives when the 系统 page opens.
+    expect(panel).toContain('autostartKnown(props.autostart) && !props.autostart.enabled')
   })
 })
