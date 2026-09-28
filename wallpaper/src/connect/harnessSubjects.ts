@@ -165,19 +165,19 @@ function parentName(path: string): string {
  * a select is for.
  */
 export function subjectOptionLabel(target: HarnessTarget, all: readonly HarnessTarget[]): string {
-  const duplicated = all.filter((other) => other.label === target.label).length > 1
-  const parent = duplicated && target.identity.rootPath ? parentName(target.identity.rootPath) : ''
-  const name = parent ? `${target.label}（${parent}）` : target.label
-  const kind = subjectKindLabel(target.kind)
-  // 主体的名字里**已经**说了类别时不再重复：已安装的 CLI 那条的标签就叫"已安装的DSH CLI"，
-  // 拼成"已安装的 CLI · 已安装的DSH CLI"是把同一件事说两遍（用户指出来了）。判据用"以类别
-  // 名开头"，因为那是这一条名字本身的写法，而不是我们拼出来的。
-  const base = name.startsWith(kind) ? name : `${kind} · ${name}`
   // 版本号跟在名字后面，因为它回答的是同一类问题 —— "这一条是谁"：0.2.0-rc.1 的客户端与
   // 0.1.0-rc.5 的源码树能不能接上同一个 bridge，答案并不相同。读不到版本时**一个字都不加**：
   // 写"未知"会让用户以为我们查过这一条（见 `HarnessTarget.version`）。
   const version = target.version?.trim()
-  return version ? `${base} · ${version}` : base
+  const suffix = version ? ` · ${version}` : ''
+  // 客户端与 CLI 的名字本身已经说清自己是什么（"官方桌面客户端"/"DSH CLI"），再冠一次类别词就是
+  // 同一件事说两遍 —— 用户实测点名了这一点。只有源码目录的名字是个仓库名，必须带类别词。
+  if (target.kind !== 'checkout') return `${target.label}${suffix}`
+  // 同一个仓库的两份检出末段同名，这是常态而不是边角：那时用上一级目录区分，并省掉恒定的仓库名，
+  // 于是"源码目录 · deepseek-harness（DeepSeekHarness.old）"缩成"源码目录 · DeepSeekHarness.old"。
+  const duplicated = all.filter((other) => other.label === target.label).length > 1
+  const parent = duplicated && target.identity.rootPath ? parentName(target.identity.rootPath) : ''
+  return `源码目录 · ${parent || target.label}${suffix}`
 }
 export function launchOutcomeNotice(outcome: {
   outcome: string

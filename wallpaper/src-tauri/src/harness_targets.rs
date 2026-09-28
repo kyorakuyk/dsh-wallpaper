@@ -441,7 +441,8 @@ fn installed_cli_target(launcher: &Path) -> HarnessTarget {
         id: format!("{CLI_ID_PREFIX}{path}"),
         kind: HarnessTargetKind::InstalledCli,
         client: HarnessClientKind::OfficialWeb,
-        label: "已安装的 DSH CLI".to_string(),
+        // 自报家门式的短标签：它已经说了自己是 CLI，界面上不必再冠一次类别词。
+        label: "DSH CLI".to_string(),
         version: installed_cli_version(launcher),
         // The settings row shows where a subject came from; for this class that is
         // the launcher itself, which is also its identity.

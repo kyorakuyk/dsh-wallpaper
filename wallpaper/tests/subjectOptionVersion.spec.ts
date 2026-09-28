@@ -55,7 +55,7 @@ function installedCli(version?: string): HarnessTarget {
     id: `cli:${launcher}`,
     kind: 'installed-cli',
     client: 'official-web',
-    label: '已安装的 DSH CLI',
+    label: 'DSH CLI',
     version,
     source: launcher,
     identity: { defaultPorts: [3080] },
@@ -71,28 +71,30 @@ function installedCli(version?: string): HarnessTarget {
 
 describe('the version segment of one 运行方式 option', () => {
   it('follows the name the user reads, for all three kinds', () => {
+    // 客户端与 CLI 的名字本身就说清了它们是什么，所以不冠类别词（用户实测点名：冠了就是同一件事说两遍）。
     const shell = subject({ version: '0.2.0-rc.1' })
-    expect(subjectOptionLabel(shell, [shell])).toBe('客户端 · 官方桌面客户端 · 0.2.0-rc.1')
+    expect(subjectOptionLabel(shell, [shell])).toBe('官方桌面客户端 · 0.2.0-rc.1')
 
+    // 源码目录的名字只是个仓库名，必须带类别词；只有一棵时不必区分，就用仓库名本身。
     const tree = checkout('D:\\Family\\DeepSeekHarness\\deepseek-harness', '0.1.0-rc.5')
     expect(subjectOptionLabel(tree, [tree])).toBe('源码目录 · deepseek-harness · 0.1.0-rc.5')
 
     const cli = installedCli('0.2.0-rc.1')
-    expect(subjectOptionLabel(cli, [cli])).toBe('已安装的 CLI · 已安装的 DSH CLI · 0.2.0-rc.1')
+    expect(subjectOptionLabel(cli, [cli])).toBe('DSH CLI · 0.2.0-rc.1')
   })
 
   it('is left out entirely when the scan could not read one', () => {
     // 没有这个字段：标签就是今天的样子，一个字符都没变。
     const unknown = subject()
-    expect(subjectOptionLabel(unknown, [unknown])).toBe('客户端 · 官方桌面客户端')
+    expect(subjectOptionLabel(unknown, [unknown])).toBe('官方桌面客户端')
     // 空白版本与没有版本是同一件事：不留一段空的 ` · `，也不写占位符。
     const blank = subject({ version: '   ' })
-    expect(subjectOptionLabel(blank, [blank])).toBe('客户端 · 官方桌面客户端')
+    expect(subjectOptionLabel(blank, [blank])).toBe('官方桌面客户端')
     // 两条都没有版本，仍然是两条可区分的条目（靠目录名那一段）。
     const left = checkout('D:\\Family\\DeepSeekHarness\\deepseek-harness')
     const right = checkout('C:\\DeepSeekHarness.old\\deepseek-harness')
-    expect(subjectOptionLabel(left, [left, right])).toBe('源码目录 · deepseek-harness（DeepSeekHarness）')
-    expect(subjectOptionLabel(right, [left, right])).toBe('源码目录 · deepseek-harness（DeepSeekHarness.old）')
+    expect(subjectOptionLabel(left, [left, right])).toBe('源码目录 · DeepSeekHarness')
+    expect(subjectOptionLabel(right, [left, right])).toBe('源码目录 · DeepSeekHarness.old')
   })
 
   it('keeps two trees of the same name apart with their own versions', () => {
@@ -100,10 +102,10 @@ describe('the version segment of one 运行方式 option', () => {
     const left = checkout('D:\\Family\\DeepSeekHarness\\deepseek-harness', '0.1.0-rc.5')
     const right = checkout('C:\\DeepSeekHarness.old\\deepseek-harness', '0.2.0-rc.1')
     expect(subjectOptionLabel(left, [left, right])).toBe(
-      '源码目录 · deepseek-harness（DeepSeekHarness） · 0.1.0-rc.5',
+      '源码目录 · DeepSeekHarness · 0.1.0-rc.5',
     )
     expect(subjectOptionLabel(right, [left, right])).toBe(
-      '源码目录 · deepseek-harness（DeepSeekHarness.old） · 0.2.0-rc.1',
+      '源码目录 · DeepSeekHarness.old · 0.2.0-rc.1',
     )
   })
 })
