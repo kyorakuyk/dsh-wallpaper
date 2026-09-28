@@ -6,12 +6,13 @@ import { BACKGROUND_OPTIONS, MAX_PRICE_PER_MILLION, normalizedPrice, type Wallpa
 import { type SettingsPage } from './settingsProbes.ts'
 import type { AppearanceAssetSummary } from '../features/appearance/appearanceViewModel.ts'
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
-import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, DesktopWorkspaceStatus, LockScreenDiagnostics, ManagedDshStatus, ApiConversationListing, ApiKeyStatus } from '../native/runtime.ts'
+import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, DesktopWorkspaceStatus, LockScreenDiagnostics, ManagedDshInstance, ManagedDshStatus, ApiConversationListing, ApiKeyStatus } from '../native/runtime.ts'
 import { preferredDisplayId } from '../runtime/displayLayout.ts'
 import { harnessStateLabel } from '../connect/harnessLabels.ts'
 import type { AutostartStatus, HarnessEndpointScan, HarnessTarget } from '../native/runtime.ts'
 import { autostartDetail, autostartKnown } from './autostartCopy.ts'
-import { catalogAgeLabel, displaySubjectPath, sameSubject, subjectOptionLabel } from '../connect/harnessSubjects.ts'
+import { catalogAgeLabel, displaySubjectPath, instanceLabel, sameSubject, subjectAlias, subjectOptionLabel } from '../connect/harnessSubjects.ts'
+import { launchArgsIssue } from '../connect/launchArgs.ts'
 import { OfficialPersonaCards } from '../persona/OfficialPersonaCards.tsx'
 import './SettingsPanel.css'
 
@@ -122,13 +123,29 @@ export interface SettingsPanelProps {
   onOpenTui: () => void
   /** 用户选的路线。存进 `dshLaunch.window`；缺省按浏览器（与旧档案行为一致）。 */
   onSelectWindow: (value: 'browser' | 'tui') => void
+  /**
+   * 「启动参数」改了一次。
+   *
+   * 改它同时**清掉显式的端点 pin**（`dshLaunch.endpointPort`），理由与"换主体就清 pin"完全一样：
+   * 那条 pin 是"用户当年为那次启动选的端口"，而这次启动的参数已经把它推翻了。留着它会让
+   * 「打开界面」去敲上一代端口 —— 实测过同一类矛盾（主体换成 3080 的 CLI、pin 还停在 19387，
+   * 于是打开把官方客户端的窗口拉到了前台）。
+   */
+  onSelectLaunchArgs: (args: string) => void
   /** Which action the current selection takes, for the button label. */
   reachAction: 'browser' | 'window'
   /** Opening waits for the client to answer, so the button reports that wait. */
   openBusy: boolean
   managedDsh: ManagedDshStatus
+  /** 实例下拉里的行与「全部停止」是否正忙（刷新或停止在飞）。 */
+  managedDshBusy: boolean
   onRefreshManagedDsh: () => void
-  onStopManagedDsh: () => void
+  /** 停掉下拉里点名的那一个实例。 */
+  onStopManagedInstance: (instanceKey: string) => void
+  /** 停掉本应用启动的**全部**实例（原「停止本应用启动的 DSH」那个动作）。 */
+  onStopAllManagedDsh: () => void
+  /** 给选中的源码目录起别名；空串表示"用目录名"。 */
+  onSelectSubjectAlias: (alias: string) => void
   deepseekWebAdapterConfig?: DeepSeekWebAdapterConfigStatus
   onRefreshDeepSeekWebAdapterConfig: () => void
   onOpenDeepSeekWebAdapterConfig: () => void
@@ -207,8 +224,8 @@ export function historyPressure(totalBytes: number, budgetBytes: number): number
   return Math.max(0, Math.min(100, Math.round(totalBytes / budgetBytes * 100)))
 }
 
-function Card({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
-  return <section className="settings-card"><header><h2>{title}</h2>{description && <p>{description}</p>}</header><div className="settings-card__body">{children}</div></section>
+function Card({ title, description, action, children }: { title: string; description?: string; action?: ReactNode; children: ReactNode }) {
+  return <section className="settings-card"><header><div className="settings-card__heading"><h2>{title}</h2>{description && <p>{description}</p>}</div>{action && <div className="settings-card__action">{action}</div>}</header><div className="settings-card__body">{children}</div></section>
 }
 
 function Field({ title, detail, children }: { title: string; detail?: string; children: ReactNode }) {
@@ -242,6 +259,80 @@ export function harnessEndpointKindLabel(kind: HarnessEndpointScan['kind']): str
     case 'official-desktop': return '桌面客户端'
     default: return 'Web / CLI'
   }
+}
+
+/**
+ * 卡片标题右上角的「当前已启动实例」。
+ *
+ * 每一行读作 `别名 · 端口`，行尾的 × 停掉**那一个**实例。同一个源码目录起了两个端口时，这是
+ * 唯一能分清"我要停的是哪一个"的地方 —— 所以行文字必须带端口，而不是只写一个名字。
+ *
+ * 行**不是**可选项：这里的下拉是一个清单，不是单选。点行不做任何事（没有"选中"这个状态），
+ * 要动就动行尾那个 ×。做成"可选"会让人以为选中它就会改掉「打开界面」的目标，而那条路由
+ * 「启动参数」里的端口决定（`endpoints.ts`），两个真相来源只会互相打架。
+ *
+ * 它复用了 `Choice` 的那套样式类，因为外观该与同一个窗口里的其他下拉一致。
+ */
+function RunningInstances({ instances, targets, aliases, busy, onStopInstance, onStopAll, onRefresh }: {
+  instances: readonly ManagedDshInstance[]
+  targets: readonly HarnessTarget[]
+  aliases: Readonly<Record<string, string>> | undefined
+  busy: boolean
+  onStopInstance: (instanceKey: string) => void
+  onStopAll: () => void
+  onRefresh: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const root = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const close = (event: MouseEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false) }
+    window.addEventListener('mousedown', close)
+    return () => window.removeEventListener('mousedown', close)
+  }, [])
+  const labelFor = (instance: ManagedDshInstance) => instanceLabel(instance.subjectId, instance.port, targets, aliases)
+  // 只有一行时直接把那一行写在按钮上：用户不必为了读到一个名字而先点开一次。
+  const triggerText = instances.length === 0
+    ? '当前已启动实例（无）'
+    : instances.length === 1
+      ? labelFor(instances[0]!)
+      : `当前已启动实例（${instances.length} 个）`
+  return <div className={`settings-choice settings-instances ${open ? 'is-open' : ''}`} ref={root}>
+    <button
+      type="button"
+      className="settings-choice__trigger"
+      aria-label="当前已启动实例"
+      aria-expanded={open}
+      onClick={() => setOpen((shown) => !shown)}
+    >
+      <span>{triggerText}</span><i>⌄</i>
+    </button>
+    {open && <div className="settings-choice__menu settings-instances__menu" role="list" aria-label="当前已启动实例">
+      {instances.length === 0
+        ? <span className="settings-choice__empty">本应用没有启动 DSH；其他人启动的实例不会被列在这里，也不会被停止。</span>
+        : instances.map((instance) => {
+            const label = labelFor(instance)
+            return <div className="settings-instances__row" role="listitem" key={instance.instanceKey}>
+              <span className="settings-instances__name" title={instance.subjectId}>{label}</span>
+              <button
+                type="button"
+                className="settings-instances__stop"
+                aria-label={`停止实例 ${label}`}
+                disabled={busy}
+                onClick={() => onStopInstance(instance.instanceKey)}
+              >
+                ×
+              </button>
+            </div>
+          })}
+      <div className="settings-instances__footer">
+        <button type="button" className="settings-action secondary" disabled={busy} onClick={onRefresh}>刷新</button>
+      </div>
+    </div>}
+    {/* 「全部停止」紧挨着下拉，因为它们是同一个动作的两个范围：一个是"停这一个"，一个是"都停"。
+        原来卡片底部那个「停止本应用启动的 DSH」按钮已经被它取代 —— 两个控件做同一件事，
+        用户就得猜它们有什么区别（而答案曾经是"没有区别"）。 */}
+    <button className="settings-action secondary" disabled={busy || instances.length === 0} onClick={onStopAll}>全部停止</button>
+  </div>
 }
 
 function displayLabel(display: DesktopDisplayInfo, index: number): string {  const number = /DISPLAY(\d+)/i.exec(display.id)?.[1]
@@ -407,6 +498,13 @@ export function SettingsPanel(props: SettingsPanelProps) {
   // 已安装的 CLI 没有"源码目录"这回事：它拿的是别人装好的东西，路径只有它的启动器有意义，
   // 而启动器由扫描决定、不由用户填写。所以给这一类别单独收起那一行，而不是让它显示一个空框。
   const cliSelected = selectedSubject?.kind === 'installed-cli'
+  /**
+   * 「启动参数」这一串现在能不能用。
+   *
+   * 判据是"启动器会不会收到一个它理解不了的词"，而不是"这串字好不好看"：条数、长度、控制字符。
+   * 有意见时那句话**顶掉**下面那段用法说明 —— 一行同时说两件事，用户只会读到第一件。
+   */
+  const argsIssue = launchArgsIssue(settings.dshLaunch.args)
   // 「打开」能做什么，由主体决定：官壳只有自己的窗口，源码树只有浏览器，只有"已安装的 CLI"真的有
   // 两条路可选。**单项不做成下拉** —— 那是一个点了没反应、也无法改变的控件。
   const openRoutes: Array<{ value: 'browser' | 'tui'; label: string }> = !settings.dshLaunch.subjectId
@@ -504,7 +602,19 @@ export function SettingsPanel(props: SettingsPanelProps) {
             "壁纸自身开机自启" and "你的系统自启设置"; the page has one name for it, so
             the toggle points at that page instead of introducing a second.
         */}
-        <Card title="DeepSeek Harness 连接" description="当第一次使用与本机含有多个不同dsh时使用">
+        <Card
+          title="DeepSeek Harness 连接"
+          description="当第一次使用与本机含有多个不同dsh时使用"
+          action={<RunningInstances
+            instances={props.managedDsh.instances}
+            targets={props.harnessTargets}
+            aliases={settings.dshLaunch.aliases}
+            busy={props.managedDshBusy}
+            onStopInstance={props.onStopManagedInstance}
+            onStopAll={props.onStopAllManagedDsh}
+            onRefresh={props.onRefreshManagedDsh}
+          />}
+        >
           {/* 旧的卡片描述留档（不再显示）：选择由谁来接管复杂工作：客户端自带运行环境，源码目录由本应用启动。
               已经在运行的实例不会被接管或关闭。 */}
           {/*
@@ -538,7 +648,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
                     ...(settings.dshLaunch.subjectId && !props.harnessTargets.some((target) => sameSubject(target.id, settings.dshLaunch.subjectId))
                       ? [{ value: settings.dshLaunch.subjectId, label: `当前：${displaySubjectPath(settings.dshLaunch.subjectId)}` }]
                       : []),
-                    ...props.harnessTargets.map((target) => ({ value: target.id, label: subjectOptionLabel(target, props.harnessTargets) })),
+                    ...props.harnessTargets.map((target) => ({ value: target.id, label: subjectOptionLabel(target, props.harnessTargets, settings.dshLaunch.aliases) })),
                   ]}
                 />
               )}
@@ -550,12 +660,43 @@ export function SettingsPanel(props: SettingsPanelProps) {
           {!shellSelected && <>
             {/*
               这几项属于**源码目录**，所以选中客户端时整块消失；选中已安装的 CLI 时只有"源码目录"
-              一行消失（其余两项对它仍然有意义：档案名、启动命令）。目录本身是只读的：没有手工
+              一行消失（其余几项对它仍然有意义：档案名、启动参数）。目录本身是只读的：没有手工
               填写的地方，列表由扫描填，可编辑的字段会是一个改了也没用的输入框。
             */}
             {!cliSelected && <Field title="源码目录" detail="这份源码的位置；扫描会用它作为下一次查找的提示路径。"><span className="settings-static">{displaySubjectPath(selectedSubject?.identity.rootPath ?? settings.dshLaunch.rootPath)}</span></Field>}
+            {/* 别名只对**源码目录**有意义：另外两类没有需要区分的同名克隆（它们各自只有一个
+                身份），给它一个改了也不影响任何显示的输入框就是多一个能填错的地方。 */}
+            {!cliSelected && <Field
+              title="起别名"
+              detail={`只在「运行方式」和实例下拉里显示，留空就用目录名（${selectedSubject?.label ?? '目录名'}）。两个同名目录原本靠上一级目录区分，别名会顶替那一段。`}
+            >
+              <input
+                value={subjectAlias(settings.dshLaunch.subjectId, settings.dshLaunch.aliases)}
+                placeholder="留空时使用目录名"
+                aria-label="起别名"
+                maxLength={64}
+                onChange={(e) => props.onSelectSubjectAlias(e.target.value)}
+              />
+            </Field>}
             <Field title="数据档案（Profile）" detail="这份源码使用的档案名；不同档案的会话互不相通。"><input value={settings.dshLaunch.profile} placeholder="desktop" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, profile: e.target.value || 'desktop' } })} /></Field>
-            <Field title="启动命令" detail="一般留空即可。只有在需要用别的程序启动它时，才填写那个程序的完整路径（不能带参数）。"><input value={settings.dshLaunch.command ?? ''} placeholder="留空时使用内置的启动方式" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, command: e.target.value || undefined, trustedCommandForAutoStart: e.target.value ? settings.dshLaunch.trustedCommandForAutoStart : false } })} /></Field>
+            {/*
+              「启动参数」取代了原来的「启动命令」。这不是换了措辞，而是**收掉了一项能力**：
+              原来的框里可以填任意一个程序、由壁纸去执行它；现在只能往我们自己选定的那个启动器
+              后面加词。用户的要求正是如此，而且它顺手解决了两件事：不再需要"自动启动要不要用
+              这个自定义命令"那一次授权（跑的是谁没变），参数在手动与自动两条路上一视同仁。
+            */}
+            <Field
+              title="启动参数"
+              detail={argsIssue ?? `追加到启动器后面的参数，例如 --port 3081。留空就用默认端口；参数按你写的原样传递，不经过命令行解释器（引号只在这里解释一次）。TUI 没有端口概念。目前支持的组合是官方桌面客户端加一个实例；换端口不隔离会话与工作区（隔离单位是 DSH_HOME，不是端口），再起第二个实例会与它共用同一份会话与工作区记录。`}
+            >
+              <input
+                value={settings.dshLaunch.args ?? ''}
+                placeholder="留空时使用默认启动方式"
+                aria-label="启动参数"
+                maxLength={512}
+                onChange={(e) => props.onSelectLaunchArgs(e.target.value)}
+              />
+            </Field>
           </>}
           {/*
             One action, named for what the user wants (see it), not for the two things it
@@ -613,27 +754,10 @@ export function SettingsPanel(props: SettingsPanelProps) {
                   : '壁纸自身尚未设置开机自启，因此「随壁纸启动 DSH」只会在你手动打开壁纸后生效。请在「常规」中开启壁纸自启。'
             }</Field>
           )}
-          {settings.dshLaunch.command && settings.dshLaunch.autoStartWithWallpaper && (
-            <Field
-              title="自动启动不使用自定义启动命令"
-              detail="node.exe / pnpm 以外的启动器在无人值守时自动执行需要你明确同意。手动「启动」始终使用该命令。"
-            >
-              <Toggle
-                label="允许自动启动使用该命令"
-                checked={settings.dshLaunch.trustedCommandForAutoStart}
-                onChange={(value) => set({ dshLaunch: { ...settings.dshLaunch, trustedCommandForAutoStart: value } })}
-              />
-            </Field>
-          )}
-                    {/* 官壳不显示这一项（用户要求）：它的退出方式是托盘菜单，用户手里本来就有；
-                        而停它会当场关掉用户自己的客户端、并弹一条"宿主意外退出"的报错框 —— 与其预告这个
-                        后果，不如不给这个入口。另外两类（源码目录、已安装的 CLI）没有托盘也没有窗口，
-                        要停只能开终端敲命令，摩擦大得多，所以它们照常显示。 */}
-                    {!shellSelected && <Field title="本应用启动的 DSH" detail={props.managedDsh.managed
-                      ? '该 DSH 由本应用启动，可以在这里停止它。'
-                      : '本应用没有启动 DSH；其他人启动的实例不会被停止。'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshManagedDsh}>刷新</button>{/* 启用条件跟**是不是本应用启动的**走，不跟"有没有在跑"走：只要 3080 上有别的东西在跑，
-                        旧写法就会点亮一个点了没反应的按钮（实测：装机重启后壁纸丢了"这是我的孩子"的记录）。 */}
-                    <button className="settings-action secondary" disabled={!props.managedDsh.managed} onClick={props.onStopManagedDsh}>停止本应用启动的 DSH</button></span></Field>}
+          {/* 这里原来有一行警告加一个授权复选框：自动启动要不要用自定义启动命令。
+              它随「启动命令」一起消失 —— 现在只有「启动参数」，跑的是谁由本应用决定，那个授权
+              问题不成立。卡片底部原来还有一个停止按钮（"本应用启动的 DSH"），它与标题右上角的
+              「全部停止」是同一个动作，已经合并到那一处（见 `RunningInstances`）。 */}
         </Card>
         <Card title="DeepSeek 网页入口（实验）" description="在壁纸里用你的网页版账号对话；登录后直连。"><Field title="页面" detail="页面和登录状态由独立 WebView2 配置目录保存；本应用不读取、复制或记录 Cookie。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开应用内页面</button></Field>{/* 适配器那行的说明里**不再显示本地 override 的文件路径**（用户要求）：那是一串
             `%APPDATA%\com.dsh.wallpaper\deepseek-web-adapter.override.json`，对"网页结构变了才需要动它"

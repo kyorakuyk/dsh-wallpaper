@@ -32,6 +32,7 @@
  * never chose.
  */
 import { interpretHarnessBridgeStatus, type HarnessStatus } from './harness.ts'
+import { launchSettingsPort } from './launchArgs.ts'
 
 /** The client shapes, in the priority order the wallpaper defaults to. */
 export type HarnessClientKind = 'official-desktop' | 'official-web'
@@ -193,6 +194,14 @@ export interface EndpointScope {
   endpointPort?: number
   /** Ports the user added for a checkout that does not listen on the default. */
   extraPorts?: readonly number[]
+  /**
+   * 「启动参数」的原文，用来读出这个主体被要求在哪个端口上服务。
+   *
+   * 它属于**主体自己**，和"用户额外加的端口"不是一回事：额外端口是"它可能听在别的端口上"，
+   * 而这里的 `--port 3081` 是"我们就是这样启动它的"。这也是并行实例能被「打开界面」正确
+   * 找到的原因 —— 端口从设置一路流到浏览器地址，中间不需要任何猜测。
+   */
+  args?: string
 }
 
 function usablePorts(ports: readonly number[]): number[] {
@@ -214,10 +223,15 @@ function usablePorts(ports: readonly number[]): number[] {
  * * an explicit pin is one port, the user's own statement about where their DSH is;
  * * a shell owns the port compiled into it, and nothing else — a shell cannot be
  *   moved to another port, so a second port for it would mean another client;
- * * a source tree listens on DSH's default, plus any port the user added for it by
+ * * a source tree or installed CLI listens on the port its own 「启动参数」 names
+ *   (`--port 3081`), else on DSH's default, plus any port the user added for it by
  *   hand. An added port is admissible because adding it *is* the user telling the
  *   wallpaper which subject answers there; anything a scan merely found answering
  *   is not, which is why discovery can never widen this set.
+ *
+ * `args` is read from the settings, never from what a scan found — that distinction is
+ * the whole "no substitution" rule, and it is why the dropdown can show a running
+ * instance on 3081 the wallpaper started while a scan-found 3080 stays invisible.
  *
  * `undefined` (nothing chosen yet) is not the same as `[]` (chosen, but this build
  * cannot say where it answers): the first keeps the shipped priority order, the
@@ -236,12 +250,12 @@ export function subjectEndpointPorts(scope: EndpointScope): number[] | undefined
     // i.e. on a client the user did not choose.
     return usablePorts(SHELL_SUBJECTS[aumid]?.ports ?? [])
   }
+  // 「启动参数」里点名的端口排在最前面：它是这个主体**被要求**服务的地方，比默认端口更具体。
   // 已安装的 CLI 与源码检出同形状（都 boot 一个 profile、都在 DSH 自己的默认端口上服务 ✓）：
   // 它只是没有树可指 ✗。所以端口规则与检出一致。
-  if (subject.toLowerCase().startsWith(CLI_SUBJECT_PREFIX)) {
-    return usablePorts([CHECKOUT_ENDPOINT_PORT, ...(scope.extraPorts ?? [])])
-  }
-  return usablePorts([CHECKOUT_ENDPOINT_PORT, ...(scope.extraPorts ?? [])])
+  const declared = launchSettingsPort(scope.args)
+  const base = declared === undefined ? [CHECKOUT_ENDPOINT_PORT] : [declared, CHECKOUT_ENDPOINT_PORT]
+  return usablePorts([...base, ...(scope.extraPorts ?? [])])
 }
 
 /** True when the settings name the subject whose endpoints may be used. */
@@ -264,11 +278,13 @@ export function endpointScopeOf(launch: {
   rootPath?: string
   endpointPort?: number
   extraEndpointPorts?: readonly number[]
+  args?: string
 }): EndpointScope {
   return {
     subjectId: launch.subjectId ?? launch.rootPath,
     endpointPort: launch.endpointPort,
     extraPorts: launch.extraEndpointPorts,
+    args: launch.args,
   }
 }
 

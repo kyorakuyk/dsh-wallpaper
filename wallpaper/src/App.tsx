@@ -9,6 +9,7 @@ import { personaIdFor, resolveModelTier } from './domain/modelTier.ts'
 import { isHarnessReady } from './connect/harness.ts'
 import { monitorHarnessEndpoint } from './connect/harnessEndpoint.ts'
 import { endpointScopeOf, subjectEndpointPorts } from './connect/endpoints.ts'
+import { parseLaunchArgs } from './connect/launchArgs.ts'
 import { HARNESS_STATE_DETAILS } from './connect/harnessLabels.ts'
 import { isEmbeddedShellSubject, isInstalledCliSubject, reachNeedsBrowser } from './connect/harnessSubjects.ts'
 import {
@@ -256,13 +257,13 @@ export function dshAutostartNotice(result: ManagedDshAutostart): string | null {
     case 'root-path-invalid':
       return '已开启「随壁纸启动 DSH」，但配置的根目录不是可识别的 DSH 项目；请在设置中心修正。'
     case 'launcher-missing':
-      return '已开启「随壁纸启动 DSH」，但未找到 Node.js 或 pnpm。请在设置中心填写启动命令的完整路径，或安装后重试。'
+      return '已开启「随壁纸启动 DSH」，但未找到 Node.js 或 pnpm。请在设置中心确认这两个程序已安装，并能在命令提示符里直接运行。'
     case 'profile-invalid':
       return '已开启「随壁纸启动 DSH」，但配置的 profile 名称无效（只能包含字母、数字、连字符或下划线）。请在设置中心修正。'
-    case 'command-not-confirmed':
-      return '「随壁纸启动 DSH」不会在无人值守时执行自定义启动命令。请在设置中心确认使用该命令，或清空它改用内建启动器。'
+    case 'launch-args-invalid':
+      return '已开启「随壁纸启动 DSH」，但「启动参数」无效。请在设置中心修正后重试。'
     default:
-      return '已开启「随壁纸启动 DSH」，但进程启动失败。请在设置中心检查根目录与启动命令。'
+      return '已开启「随壁纸启动 DSH」，但进程启动失败。请在设置中心检查根目录与启动参数。'
   }
 }
 
@@ -915,7 +916,7 @@ export function App({ surface = 'combined' }: AppProps) {
           targetId: subjectId,
           port,
           profile: launch.profile,
-          command: launch.command,
+          args: parseLaunchArgs(launch.args),
         })
         if (reachNeedsBrowser(ensured.outcome)) {
           const live = port > 0
@@ -1243,7 +1244,10 @@ export function App({ surface = 'combined' }: AppProps) {
     let disposed = false
     const check = async () => {
       try {
-        const managed = await nativeRuntime.managedDshStatus()
+        // 带上主体：`managed` / `running` 是"**我这次启动的那个孩子**还在不在"的答案。并行实例
+        // 之后，不带主体就变成"本应用启动的任意实例还在不在"—— 于是另一个主体的实例会让这条
+        // 判定一直说"还在"，而这次启动其实已经退了（一次静默的假阴性，比一条假警报更坏）。
+        const managed = await nativeRuntime.managedDshStatus(settingsRef.current.dshLaunch.subjectId ?? settingsRef.current.dshLaunch.rootPath)
         if (disposed || !harnessLaunchPendingRef.current) return
         const outcome = harnessLaunchOutcome(
           { availability: runtime.harness, reasonCode: runtime.harnessReasonCode },
@@ -1300,8 +1304,7 @@ export function App({ surface = 'combined' }: AppProps) {
         const result = await nativeRuntime.autostartHarnessTarget({
           targetId: subjectId,
           profile: settings.dshLaunch.profile,
-          command: settings.dshLaunch.command,
-          trustedCommand: settings.dshLaunch.trustedCommandForAutoStart,
+          args: parseLaunchArgs(settings.dshLaunch.args),
         })
         if (disposed) return
         if (result.outcome === 'started' || result.outcome === 'started-unconfirmed') {
@@ -1860,7 +1863,7 @@ export function App({ surface = 'combined' }: AppProps) {
           await nativeRuntime.launchHarnessTarget({
             targetId: subjectId,
             profile: settings.dshLaunch.profile,
-            command: settings.dshLaunch.command,
+            args: parseLaunchArgs(settings.dshLaunch.args),
           })
         } catch (error) {
           harnessLaunchPendingRef.current = false

@@ -77,7 +77,30 @@ export interface HarnessModelSettings {
 export interface DshLaunchSettings {
   rootPath?: string
   profile: string
-  command?: string
+  /**
+   * 「启动参数」：追加到启动器后面的额外参数，一个字符串（如 `--port 3081`）。
+   *
+   * 它取代了原来的 `command`（一个可执行的程序路径），这是一次**能力上的收缩**：任选一个程序
+   * 让壁纸去跑，是项目决定不要的能力；而把词追加到启动器后面，启动器的身份仍然由扫描决定、
+   * 由原生侧保管。原生收到的是一份 `argv` 数组（渲染层已经分好词，见 `connect/launchArgs.ts`），
+   * 所以这一段永远不经过命令行解释器 —— 没有变量展开、没有 `;`、没有管道。
+   *
+   * 与 `command` 的另一处不同：它**对手动启动与开机自启一视同仁**。原来那条"自动启动不使用
+   * 自定义启动命令"的警示与它那个复选框因此一并消失 —— 参数不改变"跑的是谁"，需要用户额外
+   * 授权的那个问题也随之不成立。
+   */
+  args?: string
+  /**
+   * 每个主体一个别名（键是主体 id）。
+   *
+   * 只影响**它怎么被称呼**，不影响它怎么被启动：源码目录在「运行方式」里原本只显示一份上级
+   * 目录名（两个同名克隆时用来区分），别名把这最后一段也交给用户。为空表示"用目录名" ——
+   * 也就是今天的行为，一个字符都不变。
+   *
+   * 按主体 id 存，而不是按"当前主体"存一个值：用户可能在两棵树之间来回切，别名的归属必须
+   * 跟着树走，否则切回去就会发现名字换了人。
+   */
+  aliases?: Record<string, string>
   /**
    * The chosen harness execution subject, as an id from the target scan.
    *
@@ -100,14 +123,6 @@ export interface DshLaunchSettings {
    * card says explicitly.
    */
   autoStartWithWallpaper: boolean
-  /**
-   * Explicit confirmation that `command` may be used by the *automatic* path.
-   *
-   * The manual "启动" button always honours `command`. Executing an arbitrary
-   * configured program unattended at every wallpaper start is a different
-   * trust decision, so it stays off until the user confirms it in settings.
-   */
-  trustedCommandForAutoStart: boolean
   /**
    * The port of the DSH endpoint to talk to, or undefined for "auto".
    *
@@ -236,7 +251,7 @@ export const DEFAULT_SETTINGS: WallpaperSettings = {
   multiScreen: { enabled: false, backgrounds: {} },
   deepseekApi: { baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
   harnessModel: {},
-  dshLaunch: { profile: 'desktop', autoStartWithWallpaper: false, trustedCommandForAutoStart: false },
+  dshLaunch: { profile: 'desktop', autoStartWithWallpaper: false },
 }
 
 const KEY = 'dsh-wallpaper:settings:v10'
@@ -450,15 +465,20 @@ function normalizeDshLaunchSettings(raw: unknown): DshLaunchSettings {
   if (raw === null || typeof raw !== 'object') return structuredClone(DEFAULT_SETTINGS.dshLaunch)
   const value = raw as Record<string, unknown>
   const profile = typeof value.profile === 'string' ? value.profile.trim() : ''
+  const aliases = normalizeSubjectAliases(value.aliases)
   return {
     profile: profile.length > 0 && profile.length <= MAX_SETTINGS_SHORT_STRING ? profile : DEFAULT_SETTINGS.dshLaunch.profile,
     rootPath: optionalText(value.rootPath),
-    command: optionalText(value.command),
+    /*
+      旧档案里的 `command`（一个可执行程序路径）与 `trustedCommandForAutoStart`（它那次授权）
+      在这里被**丢掉**，而不是被改写成「启动参数」：一个程序路径与一串参数不是同一种东西，
+      把 `C:\tools\dsh.exe` 当成参数追加到我们自己的启动器后面，只会让启动器收到一个它不认识的
+      词、然后启动失败 —— 那比"这一项没了"更难懂。设置界面也不再有这两个键，写回一次就清干净。
+    */
+    args: optionalText(value.args),
     subjectId: optionalText(value.subjectId),
-    // Both new flags default to `false` for an upgraded profile. Auto-starting a
-    // resident service is opt-in, and so is trusting a custom launcher with it.
+    // 开机自动启动一个常驻服务是选择性加入的；只有字面的 true 才算开了。
     autoStartWithWallpaper: value.autoStartWithWallpaper === true,
-    trustedCommandForAutoStart: value.trustedCommandForAutoStart === true,
     // Only a usable TCP port is accepted; anything else falls back to "auto",
     // which keeps the shipped priority order rather than pinning a bad port and
     // reporting `offline` forever.
@@ -466,9 +486,32 @@ function normalizeDshLaunchSettings(raw: unknown): DshLaunchSettings {
     ...(normalizeExtraPorts(value.extraEndpointPorts).length > 0
       ? { extraEndpointPorts: normalizeExtraPorts(value.extraEndpointPorts) }
       : {}),
+    ...(Object.keys(aliases).length > 0 ? { aliases } : {}),
     // 只认这两个值；缺省不写入，读的时候按 `browser` 处理（与旧档案行为一致 ✓）。
     ...(value.window === 'tui' ? { window: 'tui' as const } : {}),
   }
+}
+
+/**
+ * 别名表：键是主体 id、值是要显示的名字。
+ *
+ * 键与值都按"用户会看到的字符串"收紧：控制字符会让同一行文字在标签里换行或错位，空值等价于
+ * "没起别名"（所以在写回时也被丢掉，而不是存一个空串）。上限沿用设置短串那一档 —— 别名是一行
+ * 标签的一部分，不是一段说明。
+ */
+function normalizeSubjectAliases(raw: unknown): Record<string, string> {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const aliases: Record<string, string> = {}
+  for (const [subjectId, alias] of Object.entries(raw as Record<string, unknown>)) {
+    if (subjectId.trim().length === 0 || subjectId.length > MAX_SETTINGS_STRING) continue
+    if (typeof alias !== 'string') continue
+    const name = alias.trim()
+    if (name.length === 0 || name.length > MAX_SETTINGS_SHORT_STRING) continue
+    // eslint-disable-next-line no-control-regex
+    if (/[\u0000-\u001f\u007f]/.test(name)) continue
+    aliases[subjectId] = name
+  }
+  return aliases
 }
 
 function validPort(value: unknown): boolean {

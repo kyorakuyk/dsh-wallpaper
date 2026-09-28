@@ -314,10 +314,17 @@ pub(crate) fn known_shell_ports(aumid: &str) -> Option<Vec<u16>> {
 /// * a shell owns the port compiled into it — the port is part of the client, so a
 ///   second one would mean a second client, which is also why a checkout's added
 ///   ports deliberately do not apply to it;
-/// * a source tree owns DSH's own web default, plus the ports the user added for
-///   it by hand (adding one *is* the user saying which subject answers there);
+/// * a source tree or installed CLI owns **the port its own 「启动参数」 names**
+///   (`--port 3081`, read by `harness_launch::port_from_args`), else DSH's own web
+///   default, plus the ports the user added for it by hand (adding one *is* the user
+///   saying which subject answers there);
 /// * an unknown shell AUMID yields an empty set, which is not the same as "nothing
 ///   configured" — see below.
+///
+/// `declared_port` 就是这个"参数里点名的端口"，由调用方从设置里读出来交给这里。它排在最前面，
+/// 因为它是**我们要求这个主体服务的地方**，比默认端口更具体：并行实例的第二个在 3081 上，而
+/// 壁纸的探针如果还盯着 3080，那个实例就会永远显示成离线 —— 桥明明在隔壁一个端口上应答。
+/// 这也正是渲染层 `subjectEndpointPorts` 的同一套规则：两边必须给出同一个答案。
 ///
 /// The empty return is loaded with meaning, and there are two of them, so callers
 /// must pass the subject id rather than only this list: an **empty id** means
@@ -325,15 +332,30 @@ pub(crate) fn known_shell_ports(aumid: &str) -> Option<Vec<u16>> {
 /// while an **empty set for a non-empty id** means the subject is configured but
 /// this build cannot say where it answers, which must be reported as unreachable
 /// rather than as a reason to fall back to another client.
-pub(crate) fn subject_endpoint_ports(subject_id: &str, extra_ports: &[u16]) -> Vec<u16> {
+pub(crate) fn subject_endpoint_ports(
+    subject_id: &str,
+    extra_ports: &[u16],
+    declared_port: Option<u16>,
+) -> Vec<u16> {
     let subject = subject_id.trim();
     if subject.is_empty() {
         return Vec::new();
     }
     if let Some(aumid) = subject.strip_prefix(SHELL_ID_PREFIX) {
+        // 壳的端口编译在它自己的包里，参数改不了它 —— 这也是这里刻意**不看** `declared_port`
+        // 的原因：给它另一个端口等于说那是另一个客户端。
         return known_shell_ports(aumid).unwrap_or_default();
     }
-    let mut ports = vec![crate::HARNESS_DEFAULT_PORT];
+    let mut ports: Vec<u16> = Vec::new();
+    if let Some(declared) = declared_port {
+        if declared != 0 {
+            ports.push(declared);
+        }
+    }
+    let default = crate::HARNESS_DEFAULT_PORT;
+    if !ports.contains(&default) {
+        ports.push(default);
+    }
     for port in extra_ports {
         if *port != 0 && !ports.contains(port) {
             ports.push(*port);
@@ -1226,40 +1248,65 @@ mod tests {
         // A shell owns the port compiled into it, and nothing else: 3080 is
         // another client's.
         assert_eq!(
-            subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}{OFFICIAL}"), &[]),
+            subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}{OFFICIAL}"), &[], None),
             vec![19387]
         );
         // 第三方客户端已移除 ⇒ 它的 AUMID 现在与陌生 AUMID 一样：**一个端口都不给**（而不是
         // "给 43120 然后探测失败"）。这正是与 `endpoints.ts` 必须一致的那条规则。
         assert_eq!(
-            subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}{UNSUPPORTED_AUMID}"), &[]),
+            subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}{UNSUPPORTED_AUMID}"), &[], None),
             Vec::<u16>::new()
         );
         assert_eq!(
-            subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}com.unknown.client"), &[]),
+            subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}com.unknown.client"), &[], None),
             Vec::<u16>::new()
         );
         // The id is matched the same way the launcher matches it.
         assert_eq!(
-            subject_endpoint_ports("shell:COM.DeepSeek.DSH", &[]),
+            subject_endpoint_ports("shell:COM.DeepSeek.DSH", &[], None),
             vec![19387]
         );
         // A source tree owns DSH's own default plus the ports the user added for it.
-        assert_eq!(subject_endpoint_ports(r"D:\tree", &[]), vec![3080]);
-        assert_eq!(subject_endpoint_ports(r"D:\tree", &[3081, 3081, 0]), vec![3080, 3081]);
+        assert_eq!(subject_endpoint_ports(r"D:\tree", &[], None), vec![3080]);
+        assert_eq!(subject_endpoint_ports(r"D:\tree", &[3081, 3081, 0], None), vec![3080, 3081]);
+    }
+
+    /// 「启动参数」里点名的端口排在最前面，而且**不再应用在壳上**。
+    ///
+    /// 这一条就是并行实例能不能被壁纸看见的分界线：第二个实例在 3081 上服务，而探针若还盯着
+    /// 3080，它会永远显示成离线 —— 桥明明在隔壁一个端口上应答。渲染层的 `subjectEndpointPorts`
+    /// 给出的是同一个列表（`[3081, 3080, …]`），两边必须逐项一致。
+    #[test]
+    fn a_declared_port_leads_the_subject_s_own_ports() {
+        assert_eq!(subject_endpoint_ports(r"D:\tree", &[], Some(3081)), vec![3081, 3080]);
+        assert_eq!(
+            subject_endpoint_ports(r"D:\tree", &[9000], Some(3081)),
+            vec![3081, 3080, 9000]
+        );
+        // DSH 自己的默认端口仍然在表里：同一个主体的另一个实例可能就在那儿，而壁纸两边都要能用。
+        assert_eq!(subject_endpoint_ports(r"D:\tree", &[], Some(3080)), vec![3080]);
+        // `--port 0`（让系统挑）不是一个可以拿去探测的端口，所以它被当作"没声明"。
+        assert_eq!(subject_endpoint_ports(r"D:\tree", &[], Some(0)), vec![3080]);
+        // 壳的端口编译在它自己的包里：参数改不了它，也不该让壁纸去别处找它。
+        assert_eq!(
+            subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}{OFFICIAL}"), &[], Some(4000)),
+            vec![19387]
+        );
     }
 
     /// The two empty answers mean opposite things, and conflating them is how the
     /// wallpaper would end up on the shipped priority order with a subject chosen.
     #[test]
     fn an_empty_subject_and_an_unplaceable_one_are_different() {
-        assert!(subject_endpoint_ports("", &[3081]).is_empty());
-        assert!(subject_endpoint_ports("   ", &[3081]).is_empty());
+        assert!(subject_endpoint_ports("", &[3081], None).is_empty());
+        assert!(subject_endpoint_ports("   ", &[3081], None).is_empty());
+        // 这一点不因为参数而改变：没有主体就是没有主体，端口不能凭空造出一个主体来。
+        assert!(subject_endpoint_ports("", &[3081], Some(3082)).is_empty());
         // Configured, but this build cannot say where it answers: no port, and the
         // caller must say so rather than scanning elsewhere.
-        assert!(subject_endpoint_ports("shell:com.unknown.client", &[]).is_empty());
+        assert!(subject_endpoint_ports("shell:com.unknown.client", &[], None).is_empty());
         // A checkout with added ports is never empty, even before any scan.
-        assert!(!subject_endpoint_ports(r"D:\tree", &[]).is_empty());
+        assert!(!subject_endpoint_ports(r"D:\tree", &[], None).is_empty());
     }
 
     /// 每个主体自己声明的版本号，以及"读不到"这一情形必须与"有版本"一样是正常结果。

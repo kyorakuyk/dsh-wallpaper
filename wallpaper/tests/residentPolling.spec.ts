@@ -64,9 +64,12 @@ describe('native exit lifecycle', () => {
     expect(shutdown).toContain('restore_desktop_icons()')
     expect(shutdown).toContain('native_bootstrap::destroy()')
     expect(shutdown).toContain('unregister_session_events(app)')
-    // Only the DSH child this process launched is stopped.
+    // Only the DSH instances this process launched are stopped — and now that means
+    // **every one of them**: parallel instances put more than one child in the map, and
+    // leaving one behind would leave a host nobody owns after the wallpaper exits.
     expect(shutdown).toContain('stop_process_tree(')
-    expect(shutdown).toContain('managed.take()')
+    expect(shutdown).toContain('std::mem::take(&mut *managed)')
+    expect(shutdown).toMatch(/for \(_, mut process\) in std::mem::take\(&mut \*managed\)/)
     // 而且要**安静地**停：taskkill 是控制台程序，从 GUI 进程起它时若不带 CREATE_NO_WINDOW，
     // 退出时会闪一个黑框；用 `.output()` 还会为它建管道并一直等到它结束。
     const clientWindow = await readNative('src/client_window.rs')

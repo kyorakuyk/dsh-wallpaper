@@ -108,4 +108,18 @@ describe('the version segment of one 运行方式 option', () => {
       '源码目录 · DeepSeekHarness.old · 0.2.0-rc.1',
     )
   })
+
+  it('lets a stored 别名 take the disambiguator’s place, not a new segment after it', () => {
+    // 用户点名的形状：`源码目录 · 别名 · 版本`。别名顶掉的是**上级目录那一段**，因为两者的用途
+    // 是同一个 —— 把两个同名克隆分开。加在它后面只会让这一行更长、更难认。
+    const left = checkout('D:\\Family\\DeepSeekHarness\\deepseek-harness', '0.1.0-rc.5')
+    const right = checkout('C:\\DeepSeekHarness.old\\deepseek-harness', '0.2.0-rc.1')
+    const aliases = { [left.id]: '主树' }
+    expect(subjectOptionLabel(left, [left, right], aliases)).toBe('源码目录 · 主树 · 0.1.0-rc.5')
+    // 没起别名的那一条照旧（别名是按主体存的，不会影响别人）。
+    expect(subjectOptionLabel(right, [left, right], aliases)).toBe('源码目录 · DeepSeekHarness.old · 0.2.0-rc.1')
+    // 别名不改变另外两类的行：它们各自只有一个身份，没有需要区分的东西。
+    const shell = subject({ version: '0.2.0-rc.1' })
+    expect(subjectOptionLabel(shell, [shell], { [shell.id]: '我的客户端' })).toBe('官方桌面客户端 · 0.2.0-rc.1')
+  })
 })

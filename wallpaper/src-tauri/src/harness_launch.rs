@@ -27,6 +27,110 @@ use std::path::{Path, PathBuf};
 
 use crate::harness_targets::{known_shell, HarnessTargetKind, CLI_ID_PREFIX, SHELL_ID_PREFIX};
 
+// ---------------------------------------------------------------------------
+// 「启动参数」：分词结果、实例键、以及参数里声明的端口
+// ---------------------------------------------------------------------------
+
+/// 参数条数上限。够写端口、host、路径，又不足以拼出一条完整的命令行。
+pub(crate) const MAX_LAUNCH_ARGS: usize = 32;
+/// 单个参数长度上限。超过这个长度更像误粘贴，而不是一个参数。
+pub(crate) const MAX_LAUNCH_ARG_LENGTH: usize = 512;
+/// DSH 自己的 web 默认端口，也是"参数里没写 `--port`"时实例所在的端口。
+const DEFAULT_LAUNCH_PORT: u16 = 3080;
+
+/// 实例键里主体 id 与每个参数之间的分隔符。
+///
+/// 选 `U+001F`（单元分隔符）是因为它**不可能出现在 Windows 路径里**，也不会出现在合法的参数里
+/// （`normalize_launch_args` 明确拒绝控制字符）。用途只有一个：让"同一个主体的两个不同实例"
+/// 拿到两个不同的键。
+const INSTANCE_KEY_SEPARATOR: char = '\u{1f}';
+
+/// 一份「这个孩子是哪个实例」的键：主体 id，加上它被启动时用的参数。
+///
+/// 这就是"并行实例"的全部机制。上一版只有主体 id 一格，于是"同一个源码目录、两个不同端口"
+/// 必然互相覆盖：启动第二个会顶掉第一个的记录，状态列表只剩一行，而停止按钮会停错人。
+///
+/// 参数为空时键**恰好等于主体 id**：默认实例沿用旧记录的形状，所以升级之前写下的弹仓不需要
+/// 任何迁移就能继续对齐（这是刻意留的一条向后兼容，不是巧合）。
+pub(crate) fn instance_key(subject_id: &str, args: &[String]) -> String {
+    let subject = subject_id.trim();
+    if args.is_empty() {
+        return subject.to_string();
+    }
+    let mut key = String::from(subject);
+    for arg in args {
+        key.push(INSTANCE_KEY_SEPARATOR);
+        key.push_str(arg);
+    }
+    key
+}
+
+/// 参数里声明的监听端口，或者 `None`。
+///
+/// 与渲染层的 `connect/launchArgs.ts::launchPortFromArgs` 是**同一组规则的两份实现**，因为
+/// 两边各有一个问题只有自己答得了：渲染层要给「打开界面」算出浏览器地址，原生要在启动前检查
+/// "这个端口是不是已经被别人占了"。两份由各自的测试用同一组例子钉住（`--port 3081`、
+/// `--port=3081`、重复旗标只认第一个、非数字不认）—— 和 `SHELL_APPS` 与 `SHELL_SUBJECTS` 那对
+/// 必须一致的常量是同一个理由：一致性靠测试，不靠"记得两边都改"。
+///
+/// 读不到就说读不到：绝不猜一个端口。猜错的代价是去敲一扇没人应门的窗，或者更坏 —— 把
+/// "端口被占"报成一个不存在的冲突。
+pub(crate) fn port_from_args(args: &[String]) -> Option<u16> {
+    let mut index = 0;
+    while index < args.len() {
+        let argument = args[index].as_str();
+        let value = match argument.strip_prefix("--port=") {
+            Some(inline) => Some(inline),
+            None if argument == "--port" => args.get(index + 1).map(String::as_str),
+            None => None,
+        };
+        if let Some(value) = value {
+            return value
+                .parse::<u32>()
+                .ok()
+                .filter(|port| (1..=65535).contains(port))
+                .map(|port| port as u16);
+        }
+        index += 1;
+    }
+    None
+}
+
+/// 这个实例会在哪个端口上服务：参数里点名的，或者 DSH 自己的默认端口。
+pub(crate) fn instance_port(args: &[String]) -> u16 {
+    port_from_args(args).unwrap_or(DEFAULT_LAUNCH_PORT)
+}
+
+/// 把渲染层交来的参数洗一遍，或者说出为什么不能用。
+///
+/// 原生是**信任边界**，即使渲染层已经分好词：这里的检查不是"再分一次词"（那是注入的成因），而是
+/// 确认这份数组的形状是一个启动器能接受的 argv —— 条数、长度、以及**没有控制字符**。最后一条是
+/// 功能需要而非洁癖：实例键用 `U+001F` 分隔，参数里再出现同一个字符就会让两个不同的实例撞成
+/// 一个键，而那正是本功能要解决的问题。
+pub(crate) fn normalize_launch_args(args: Option<Vec<String>>) -> Result<Vec<String>, String> {
+    let Some(args) = args else { return Ok(Vec::new()) };
+    if args.len() > MAX_LAUNCH_ARGS {
+        return Err(format!("启动参数最多 {MAX_LAUNCH_ARGS} 个"));
+    }
+    let mut cleaned = Vec::with_capacity(args.len());
+    for arg in args {
+        let value = arg.trim();
+        // 空参数没有任何用处，却会变成启动器上一个莫名其妙的空词；静默丢掉比报错好，
+        // 因为用户看见的是"我多打了一个空格"。
+        if value.is_empty() {
+            continue;
+        }
+        if value.chars().count() > MAX_LAUNCH_ARG_LENGTH {
+            return Err(format!("单个启动参数不能超过 {MAX_LAUNCH_ARG_LENGTH} 个字符"));
+        }
+        if value.chars().any(|character| character.is_control()) {
+            return Err("启动参数里不能包含控制字符".to_string());
+        }
+        cleaned.push(value.to_string());
+    }
+    Ok(cleaned)
+}
+
 /// How long a shell is given to answer before its start is reported as
 /// unconfirmed. Generous on purpose: an Electron client's first start after a
 /// login is slow, and a false "failed" would be worse than a slow "started".
@@ -72,8 +176,11 @@ impl HarnessLaunchOutcome {
 /// A decided launch, before anything is started.
 ///
 /// Splitting the decision out is what makes the interesting rules testable: which
-/// class a stored id resolves to, whether a profile is even meaningful, and
-/// whether an unattended start is allowed to run the configured launcher.
+/// class a stored id resolves to, whether a profile is even meaningful, and what
+/// exactly the launcher will be told.
+///
+/// 两个变体都带 `args`，而不是带一个"启动命令"：跑的是谁由**这个 build** 决定（源码树走受管链、
+/// 已安装 CLI 走它自己），用户能加的只有后面的词。这是这次改动里唯一真正的能力边界移动。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LaunchPlan {
     /// Hand the alias to the Windows shell. No path, no arguments: the shell
@@ -90,15 +197,20 @@ pub(crate) enum LaunchPlan {
     Checkout {
         root_path: String,
         profile: String,
-        command: Option<String>,
+        /// 「启动参数」，按原样追加在启动器与档案之后。
+        args: Vec<String>,
     },
     /// Spawn a globally installed DSH CLI (`npm i -g @deepseek-ai/dsh`).
     ///
     /// It differs from a checkout in the one way that matters here: there is no tree to
     /// run a launcher *from*, only the launcher itself. Everything else — the profile it
-    /// boots, the port it answers on — is the same, which is why the caller cannot tell
-    /// the two apart once the command line is decided.
-    InstalledCli { launcher: String, profile: String },
+    /// boots, the port it answers on, the extra arguments it is given — is the same,
+    /// which is why the caller cannot tell the two apart once the command line is decided.
+    InstalledCli {
+        launcher: String,
+        profile: String,
+        args: Vec<String>,
+    },
 }
 
 /// The web app's own hand-off address, per port.
@@ -124,28 +236,41 @@ pub(crate) fn set_records_path(path: PathBuf) {
     let _ = RECORDS_PATH.set(path);
 }
 
-/// 记住"这个主体当前的孩子是 pid"，并落盘。
+/// 记住"这个主体的这个实例当前的孩子是 pid"，并落盘。
 ///
-/// 只动**对齐枪管**的那一格：别的格子原样保留，这样"CLI → 客户端 → 切回 CLI"时壁纸仍然认得
-/// CLI 那个孩子。写失败只记日志、不影响启动本身（这份记录是参考，不是启动的前提）。
+/// 只动**这一个实例**那一格：别的格子原样保留，这样"CLI → 客户端 → 切回 CLI"时壁纸仍然认得
+/// CLI 那个孩子，而"同一个源码目录起了两个端口"两个实例也都各自留着记录。写失败只记日志、
+/// 不影响启动本身（这份记录是参考，不是启动的前提）。
 ///
 /// `port` 与 `handoff` 是**为门票**留的：门票每次启动现生成，但它在那个宿主活着期间一直有效，
 /// 所以存下来是对的 —— 壁纸重启（例如每次装机）之后，"宿主还在跑、票却随着上一个进程丢掉"这种
 /// 情况就不必靠重启宿主来解决。前提是它必须**随进程一起作废**，那由读取时的 pid + 创建时间
 /// 校验保证（见 `handoff_in`）。
-pub(crate) fn remember_child(subject_id: &str, pid: u32, port: Option<u16>, handoff: Option<String>) {
+///
+/// `port` 现在**还多了一个用途**：实例下拉里的 `别名 · 端口` 那一行就是从它来的。它仍然不是
+/// 身份（身份永远是 pid + 创建时间），只是这个实例最有用的一条描述。
+pub(crate) fn remember_child(
+    subject_id: &str,
+    args: &[String],
+    pid: u32,
+    port: Option<u16>,
+    handoff: Option<String>,
+) {
     let Some(path) = RECORDS_PATH.get() else { return };
+    let key = instance_key(subject_id, args);
     let mut cylinder = read_managed_children(path);
     // 同一个孩子被记两次很常见（先记下"它是我的"，稍后才解析到门票）。没有票的那次不能把
     // 已有票抹掉；而**换了 pid** 就是另一个进程，票必须作废，不能继承。
-    let (port, handoff) = match cylinder.aligned(subject_id) {
+    let (port, handoff) = match cylinder.children.get(&key) {
         Some(previous) if previous.pid == pid => {
             (port.or(previous.port), handoff.or_else(|| previous.handoff.clone()))
         }
         _ => (port, handoff),
     };
     cylinder.remember(ManagedChild {
+        instance_key: key,
         subject_id: subject_id.to_string(),
+        args: args.to_vec(),
         pid,
         started_at: crate::client_window::process_started_at(pid),
         port,
@@ -158,31 +283,74 @@ pub(crate) fn remember_child(subject_id: &str, pid: u32, port: Option<u16>, hand
     }
 }
 
-/// 由本应用停掉之后清掉**对齐枪管**的那一格；别的格子不受影响。
-pub(crate) fn forget_child(subject_id: &str) {
+/// 由本应用停掉之后清掉**这一个实例**那一格；别的格子不受影响。
+pub(crate) fn forget_instance(instance_key: &str) {
     let Some(path) = RECORDS_PATH.get() else { return };
     let mut cylinder = read_managed_children(path);
-    cylinder.forget(subject_id);
+    cylinder.forget(instance_key);
     if let Err(error) = write_managed_children(path, &cylinder) {
         log::warn!("harness managed-child record not written: {error}");
     }
 }
 
-/// 这个主体**当前对齐那一格**的记录（不做存活校验，校验由 `owns_live_process` 负责）。
-pub(crate) fn recorded_child(subject_id: &str) -> Option<ManagedChild> {
-    let path = RECORDS_PATH.get()?;
-    read_managed_children(path).aligned(subject_id).cloned()
+/// 这个主体**所有**记着的实例（不做存活校验，校验由 [`owned_instances`] 负责）。
+pub(crate) fn recorded_instances(subject_id: &str) -> Vec<ManagedChild> {
+    let Some(path) = RECORDS_PATH.get() else { return Vec::new() };
+    read_managed_children(path).for_subject(subject_id)
 }
 
-/// 这个主体记着的孩子**此刻是否真的还是同一个进程**。
+/// 这个实例记着的端口（**观察到**的那一个：那是端口属主，比"我们要求它听在哪儿"更硬）。
+pub(crate) fn recorded_port(instance_key: &str) -> Option<u16> {
+    let path = RECORDS_PATH.get()?;
+    read_managed_children(path)
+        .children
+        .get(instance_key)
+        .and_then(|child| child.port)
+}
+
+/// 这个实例记着的孩子**此刻是否真的还是同一个进程**。
 ///
 /// 任一不确定（没有记录、读不到记录、进程已退出、创建时间对不上）都返回 `None`：调用方据此
 /// 认为"不是我启动的"，于是既不会去停它，也不会声称拥有它。
-pub(crate) fn owned_child(subject_id: &str) -> Option<ManagedChild> {
-    let child = recorded_child(subject_id)?;
+pub(crate) fn owned_instance(instance_key: &str) -> Option<ManagedChild> {
+    let path = RECORDS_PATH.get()?;
+    let child = read_managed_children(path).children.get(instance_key).cloned()?;
     let live_pid = Some(child.pid).filter(|pid| crate::client_window::process_is_alive(*pid));
     let live_start = live_pid.and_then(crate::client_window::process_started_at);
     owns_live_process(Some(&child), live_pid, live_start).then_some(child)
+}
+
+/// 这个主体此刻仍然活着、且确实是本应用启动的那些实例。
+pub(crate) fn owned_instances(subject_id: &str) -> Vec<ManagedChild> {
+    recorded_instances(subject_id)
+        .into_iter()
+        .filter(|child| owned_instance(&child.instance_key).is_some())
+        .collect()
+}
+
+/// 本应用启动的**每一个**仍然活着的实例，官壳除外。
+///
+/// 官壳那一类**必须**被排除，它不在本应用的管辖范围内：它是用户自己的客户端，退出方式是它
+/// 自己的托盘菜单。`ensure_harness_ui` 会给它写下一条记录（那条记录是给"门票"用的），所以
+/// 这里不能只靠"壳没有孩子"这个假设，而是明确按 id 前缀过滤。
+pub(crate) fn owned_instances_all() -> Vec<ManagedChild> {
+    let Some(path) = RECORDS_PATH.get() else { return Vec::new() };
+    read_managed_children(path)
+        .children
+        .values()
+        .filter(|child| !is_managed_by_us(&child.subject_id))
+        .filter(|child| owned_instance(&child.instance_key).is_some())
+        .cloned()
+        .collect()
+}
+
+/// 这一类主体是不是"本应用可以启动、也可以停止"的那一类。
+///
+/// 唯一的否定答案就是官壳：它不归本应用管（`docs/design/harness-subject-and-ui-design.md` 里
+/// 那条"绝不接管他人实例"的底线，对用户自己的客户端同样成立）。名字里说的是"我们"而不是
+/// "别人"，因为这条规则的另一半是：源码目录与已安装 CLI 是我们启动的，就可以由我们停止。
+pub(crate) fn is_managed_by_us(subject_id: &str) -> bool {
+    !subject_id.trim().starts_with(SHELL_ID_PREFIX)
 }
 
 /// 读一条记录。**任何不确定都降级为"没有记录"**：文件不存在、读不了、不是 JSON、字段对不上
@@ -208,12 +376,16 @@ pub(crate) fn write_managed_children(path: &Path, children: &ManagedChildren) ->
     std::fs::rename(&temp, path)
 }
 
-/// 每个主体一条记录 —— 左轮弹仓：一格一个主体。
+/// 每个**实例**一条记录 —— 左轮弹仓：一格一个实例。
 ///
-/// **别的格子一律保留**，只动"对齐枪管"的那一格。理由是一个真实场景：用户先用 CLI 对话、
+/// **别的格子一律保留**，只动被点名的那个实例。理由是一个真实场景：用户先用 CLI 对话、
 /// 然后切到客户端、再切回 CLI —— 那时壁纸必须还能认出 CLI 那个孩子是自己的，否则它要么重复
-/// 启动一个，要么不敢停自己启动的那个。键是主体 id（`shell:<aumid>` / 目录路径 / `cli:<启动器>`），
-/// 不是端口：端口不是契约，而且不同主体可以先后用同一个端口。
+/// 启动一个，要么不敢停自己启动的那个。第二个场景是并行实例：同一个源码目录在 3080 与 3081 上
+/// 各起一个，两个都要留着自己的记录，否则"起第二个"就会把第一个的归属抹掉。
+///
+/// **键是实例键**（`主体 id` + 参数，见 [`instance_key`]），不是主体 id、也不是端口：
+/// 端口不是契约（同一个端口可以被不同主体先后使用），而参数是"我们到底启动了什么"的一部分。
+/// 主体 id 另存为字段，所以"这个主体的所有实例"是一次字段比较，不需要从键里解析前缀。
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ManagedChildren {
     /// 用 `BTreeMap`：落盘后顺序稳定，改动一眼可见。
@@ -222,35 +394,48 @@ pub(crate) struct ManagedChildren {
 }
 
 impl ManagedChildren {
-    /// 当前下拉里选中的那个主体对应的记录（"对齐枪管"的那一格）。其它格子一概不看。
-    pub(crate) fn aligned(&self, subject_id: &str) -> Option<&ManagedChild> {
-        self.children.get(subject_id)
+    /// 这个主体记着的所有实例。其它主体一概不看。
+    pub(crate) fn for_subject(&self, subject_id: &str) -> Vec<ManagedChild> {
+        let subject = subject_id.trim();
+        self.children
+            .values()
+            .filter(|child| child.subject_id.trim() == subject)
+            .cloned()
+            .collect()
     }
 
     /// 成功启动后覆盖**这一格**；别的格子原样保留。
     pub(crate) fn remember(&mut self, child: ManagedChild) {
-        self.children.insert(child.subject_id.clone(), child);
+        self.children.insert(child.instance_key.clone(), child);
     }
 
     /// 由本应用停掉之后清掉**这一格**；别的格子不受影响。
-    pub(crate) fn forget(&mut self, subject_id: &str) {
-        self.children.remove(subject_id);
+    pub(crate) fn forget(&mut self, instance_key: &str) {
+        self.children.remove(instance_key);
     }
 }
 
 /// 一份"这个孩子是壁纸启动的"记录，落在盘上，跨壁纸重启有效。
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ManagedChild {
+    /// 实例键（`主体 id` + 参数）。**身份不是它**：身份是 pid + 创建时间；这个键只回答
+    /// "这是同一个主体的哪一个实例"，也就是"停止"要停哪一个、下拉里哪一行。
+    #[serde(default)]
+    pub instance_key: String,
     /// 主体 id（`shell:<aumid>` / 目录路径 / `cli:<启动器>`）—— 不是端口：端口不是契约，
     /// 而且不同主体可以先后用同一个端口。
     pub subject_id: String,
+    /// 启动这个实例时用的「启动参数」。存下来是为了让下拉与日志能说清"这一行是哪一个"，
+    /// 也为了让旧记录（没有这个字段）读成"没有参数"而不是整份记录作废。
+    #[serde(default)]
+    pub args: Vec<String>,
     pub pid: u32,
     /// 进程创建时间（内核给的）。**必须和 pid 一起比**：pid 回收得很快，只比 pid 会让壁纸
     /// 把别人的进程认成自己的孩子，然后去停它 —— 那就破了"绝不接管他人实例"这条底线。
     /// `None` 表示取不到（平台不提供）⇒ 判定一律为"不是我启动的"，宁可少一个按钮可用。
     pub started_at: Option<u64>,
-    /// 这一格的孩子当时在哪个端口上服务。**只用来找回门票**，身份依旧是 pid + 创建时间：
-    /// 端口不是契约，不能拿它当"这是我的"的证据。
+    /// 这个实例的孩子当时在哪个端口上服务。**身份依旧是 pid + 创建时间**：端口不是契约，
+    /// 不能拿它当"这是我的"的证据。它的两个用途是找回门票，以及在下拉里显示 `别名 · 端口`。
     #[serde(default)]
     pub port: Option<u16>,
     /// 那次启动打印出来的门票（`/?token=…`）。它在那个宿主活着期间一直有效，所以值得存下来；
@@ -350,7 +535,7 @@ pub(crate) fn redact_handoff(path: &str) -> String {
     }
 }
 
-/// Start a globally installed CLI: `<launcher> --profile <profile>`.
+/// Start a globally installed CLI: `<launcher> --profile <profile> <启动参数>`.
 ///
 /// `--profile` is passed explicitly rather than left to the CLI's own default: this
 /// subject exists so the wallpaper can reach the *web/app* shape over HTTP, and that is
@@ -364,12 +549,12 @@ pub(crate) fn redact_handoff(path: &str) -> String {
 /// and dropping it is what left the browser opening a page that could only say
 /// "authentication required". The reader keeps draining for the child's whole life — a
 /// pipe closed early would hand the CLI a write error it does not deserve.
-fn launch_installed_cli(launcher: &str, profile: &str) -> HarnessLaunchOutcome {
-    let (program, args) = installed_cli_command(Path::new(launcher), profile);
+fn launch_installed_cli(launcher: &str, profile: &str, args: &[String]) -> HarnessLaunchOutcome {
+    let (program, command_args) = installed_cli_command(Path::new(launcher), profile, args);
     let wants_handoff = profile.trim() == "web";
     let mut command = std::process::Command::new(&program);
     command
-        .args(&args)
+        .args(&command_args)
         .stdin(std::process::Stdio::null())
         .stdout(if wants_handoff {
             std::process::Stdio::piped()
@@ -384,7 +569,7 @@ fn launch_installed_cli(launcher: &str, profile: &str) -> HarnessLaunchOutcome {
         command.creation_flags(CREATE_NO_WINDOW);
     }
     log::info!(
-        "harness installed-cli launch: program={} args={args:?}",
+        "harness installed-cli launch: program={} args={command_args:?}",
         program.display()
     );
     match command.spawn() {
@@ -398,6 +583,7 @@ fn launch_installed_cli(launcher: &str, profile: &str) -> HarnessLaunchOutcome {
                     // 为什么非要在这一处记：启动有三条入口（设置里的「打开」、壁纸面的「启动主体」、
                     // 开机自启），只有这一处**知道端口**，也只有这一处能确定"是我们启动的"。
                     let subject = format!("{CLI_ID_PREFIX}{launcher}");
+                    let record_args = args.to_vec();
                     std::thread::spawn(move || {
                         use std::io::BufRead;
                         for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -413,7 +599,13 @@ fn launch_installed_cli(launcher: &str, profile: &str) -> HarnessLaunchOutcome {
                                 // 端口可能比门票晚一点点才被登记到内核表里；短暂轮询，不空等。
                                 for _ in 0..40 {
                                     if let Some(pid) = crate::client_window::endpoint_process_id(port) {
-                                        remember_child(&subject, pid, Some(port), Some(path.clone()));
+                                        remember_child(
+                                            &subject,
+                                            &record_args,
+                                            pid,
+                                            Some(port),
+                                            Some(path.clone()),
+                                        );
                                         break;
                                     }
                                     std::thread::sleep(std::time::Duration::from_millis(250));
@@ -454,21 +646,25 @@ fn launch_installed_cli(launcher: &str, profile: &str) -> HarnessLaunchOutcome {
 /// * **no `--profile`** — unlike `dsh`, the TUI names its own profile (`dsh-tui`) and
 ///   forwards the rest to it, so passing one here would be the wallpaper overriding a
 ///   choice the tool already made.
-pub(crate) fn tui_launch_command(launcher: &Path) -> (PathBuf, Vec<String>) {
-    (
-        PathBuf::from("cmd.exe"),
-        vec![
-            "/c".to_string(),
-            "start".to_string(),
-            // The empty title is not decoration: `start` reads its first quoted
-            // argument as a window title, and without this an unquoted path would be
-            // taken as one.
-            String::new(),
-            "cmd".to_string(),
-            "/k".to_string(),
-            launcher.to_string_lossy().into_owned(),
-        ],
-    )
+///
+/// 「启动参数」**照常追加**：它加的是"启动器后面的话"，而这条路的启动器是 TUI 自己。实测这一侧
+/// **没有** `--port`（`@deepseek-harness-tui/dsh-tui` 的 bin 里没有任何端口旗标，它是个 ink 终端
+/// 程序，不监听 HTTP），所以 `--port 3081` 只对 web 那条路有意义 —— 这一点写在这里，是为了让
+/// "TUI 为什么不换端口"有一个能读到的答案，而不是看起来像漏了。
+pub(crate) fn tui_launch_command(launcher: &Path, args: &[String]) -> (PathBuf, Vec<String>) {
+    let mut command_args = vec![
+        "/c".to_string(),
+        "start".to_string(),
+        // The empty title is not decoration: `start` reads its first quoted
+        // argument as a window title, and without this an unquoted path would be
+        // taken as one.
+        String::new(),
+        "cmd".to_string(),
+        "/k".to_string(),
+        launcher.to_string_lossy().into_owned(),
+    ];
+    command_args.extend(args.iter().cloned());
+    (PathBuf::from("cmd.exe"), command_args)
 }
 
 /// The program and arguments that start a **globally installed** DSH CLI.
@@ -477,9 +673,19 @@ pub(crate) fn tui_launch_command(launcher: &Path) -> (PathBuf, Vec<String>) {
 /// directly — it needs `cmd /c` in front of it. A `.exe` (a different packaging, or a
 /// future npm) is spawned as-is, so this decides by extension instead of assuming.
 ///
+/// `args` are appended **last**, after the launcher's own flags. That order is not
+/// cosmetic: the DSH launcher parses only the flags it owns and hands everything after
+/// the first unrecognised token to the booted profile's app (see the installed
+/// `lib/types/args.d.ts`), so `--port 3081` only reaches the web app when it follows
+/// `--profile web`. Appending is exactly what 「启动参数」 promises.
+///
 /// Pure, and that is the point: the spawn site stays boring, and the tests can read
 /// the exact command line a stored subject would produce on this machine.
-fn installed_cli_command(launcher: &Path, profile: &str) -> (PathBuf, Vec<String>) {
+pub(crate) fn installed_cli_command(
+    launcher: &Path,
+    profile: &str,
+    args: &[String],
+) -> (PathBuf, Vec<String>) {
     let mut profile_args = vec!["--profile".to_string(), profile.to_string()];
     // `dsh web` 的默认行为是"起服务**并且打开默认浏览器**"。这个决定该由壁纸来做：设置里选的
     // 是浏览器还是终端里的 TUI，而且开机自启时更不该自己弹窗。`--no-open` 是 **web 应用自己的**
@@ -487,65 +693,63 @@ fn installed_cli_command(launcher: &Path, profile: &str) -> (PathBuf, Vec<String
     if profile.trim() == "web" {
         profile_args.push("--no-open".to_string());
     }
+    profile_args.extend(args.iter().cloned());
     let extension = launcher
         .extension()
         .map(|value| value.to_string_lossy().to_ascii_lowercase());
     match extension.as_deref() {
         Some("cmd") | Some("bat") => {
-            let mut args = vec!["/c".to_string(), launcher.to_string_lossy().into_owned()];
-            args.extend(profile_args);
-            (PathBuf::from("cmd.exe"), args)
+            let mut command_args = vec!["/c".to_string(), launcher.to_string_lossy().into_owned()];
+            command_args.extend(profile_args);
+            (PathBuf::from("cmd.exe"), command_args)
         }
         _ => (launcher.to_path_buf(), profile_args),
     }
 }
 
-/// Who is asking for the start, which is what decides the two rules that differ.
+/// Who is asking for the start, which is what decides the one rule that still differs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LaunchTrigger {
-    /// A control the user just pressed. The configured launcher is used as given,
-    /// and a window is shown — they asked for the thing on screen.
+    /// A control the user just pressed. A window is shown — they asked for the
+    /// thing on screen.
     Manual,
-    /// The wallpaper's own unattended start. Only an allowlisted launcher runs
-    /// without explicit consent, and a shell that supports it keeps its window out
+    /// The wallpaper's own unattended start, which may keep a shell's window out
     /// of sight (§5.1).
-    Automatic { trusted_command: bool },
+    ///
+    /// 它**不再**带"自定义启动命令是否已获授权"这一位：那个设置已经不在了（现在只有「启动参数」，
+    /// 而参数加不了参数以外的任何东西 —— 启动器本身永远是扫描决定的、原生自己选的）。原来那一问
+    /// 的前提是"无人值守时要不要执行用户随手填的一个程序"，前提消失，问题也随之消失。
+    Automatic,
 }
 
 impl LaunchTrigger {
     fn is_automatic(self) -> bool {
-        matches!(self, Self::Automatic { .. })
-    }
-
-    fn trusted_command(self) -> bool {
-        matches!(self, Self::Automatic { trusted_command: true })
+        matches!(self, Self::Automatic)
     }
 }
 
 /// Decide how to start `id`, or refuse with a closed code.
 ///
-/// The trigger is the one input that changes behaviour, and it changes it in two
-/// places on purpose: only an unattended start hides a window (§5.1 defines that
-/// as the startup behaviour), and only an unattended start needs consent for a
-/// custom launcher, because running an arbitrary configured program at every login
-/// is a different trust decision from a button press.
+/// The trigger is the one input that changes behaviour, and it changes it in one
+/// place on purpose: only an unattended start hides a shell's window (§5.1 defines
+/// that as the startup behaviour). It does **not** change what runs — the launcher
+/// is always one this build picked, for both paths, and `args` is therefore honoured
+/// identically whether the user pressed a button or the wallpaper started it.
 pub(crate) fn plan_launch(
     id: &str,
     profile: &str,
-    command: Option<&str>,
+    args: &[String],
     trigger: LaunchTrigger,
 ) -> Result<LaunchPlan, &'static str> {
-    let command = command.map(str::trim).filter(|value| !value.is_empty());
     if let Some(launcher) = id.trim().strip_prefix(CLI_ID_PREFIX) {
         let launcher = launcher.trim();
         if launcher.is_empty() {
             return Err("unknown-target");
         }
-        // 已安装的 CLI 自己就是程序 —— 没有树、没有自定义启动器，所以"要不要用户确认"
-        // 这个问题对它不成立：它不是用户随手填的命令，而是扫描扫出来的一个已安装命令。
         return Ok(LaunchPlan::InstalledCli {
             launcher: launcher.to_string(),
             profile: profile.trim().to_string(),
+            args: args.to_vec(),
         });
     }
     if let Some(aumid) = id.trim().strip_prefix(SHELL_ID_PREFIX) {
@@ -568,16 +772,10 @@ pub(crate) fn plan_launch(
     if root_path.is_empty() {
         return Err("unknown-target");
     }
-    if trigger.is_automatic()
-        && !crate::is_allowlisted_auto_start_launcher(command)
-        && !trigger.trusted_command()
-    {
-        return Err("command-not-confirmed");
-    }
     Ok(LaunchPlan::Checkout {
         root_path: root_path.to_string(),
         profile: profile.trim().to_string(),
-        command: command.map(str::to_string),
+        args: args.to_vec(),
     })
 }
 
@@ -593,15 +791,19 @@ pub(crate) fn run_launch(
             port,
             hide_window,
         } => launch_shell(aumid, alias, *port, *hide_window),
-        LaunchPlan::InstalledCli { launcher, profile } => launch_installed_cli(launcher, profile),
+        LaunchPlan::InstalledCli {
+            launcher,
+            profile,
+            args,
+        } => launch_installed_cli(launcher, profile, args),
         LaunchPlan::Checkout {
             root_path,
             profile,
-            command,
-        } => match crate::spawn_managed_dsh(managed, root_path, profile, command.as_deref()) {
+            args,
+        } => match crate::spawn_managed_dsh(managed, root_path, root_path, profile, args) {
             // `spawn_managed_dsh` returns the existing pid when this process
-            // already owns a running child, so "started" also covers "already
-            // managed"; ownership is the same either way.
+            // already owns a running child for this instance, so "started" also
+            // covers "already managed"; ownership is the same either way.
             Ok(pid) => HarnessLaunchOutcome {
                 outcome: "started".into(),
                 kind: HarnessTargetKind::Checkout,
@@ -781,7 +983,7 @@ pub(crate) fn ensure_ui(
     subject_id: &str,
     port: u16,
     profile: &str,
-    command: Option<&str>,
+    args: &[String],
     managed: &crate::ManagedDshState,
 ) -> HarnessUiOutcome {
     let kind = subject_kind(subject_id);
@@ -791,7 +993,7 @@ pub(crate) fn ensure_ui(
     let plan = if subject_id.trim().is_empty() {
         None
     } else {
-        match plan_launch(subject_id, profile, command, LaunchTrigger::Manual) {
+        match plan_launch(subject_id, profile, args, LaunchTrigger::Manual) {
             Ok(plan) => Some(plan),
             Err(code) => {
                 return HarnessUiOutcome {
@@ -973,17 +1175,35 @@ fn wait_for_endpoint(port: u16, timeout: std::time::Duration) -> bool {
 mod tests {
     use super::*;
 
+    /// 一条最小的实例记录（测试用）。字段多的结构体，用构造函数比到处写全字段更不容易看漏。
+    fn child(instance_key: &str, subject_id: &str, pid: u32, started_at: Option<u64>) -> ManagedChild {
+        ManagedChild {
+            instance_key: instance_key.into(),
+            subject_id: subject_id.into(),
+            args: Vec::new(),
+            pid,
+            started_at,
+            port: None,
+            handoff: None,
+        }
+    }
+
+    fn argv(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
     #[test]
     fn an_installed_cli_starts_through_cmd_because_npm_ships_a_batch_file() {
-        let (program, args) = installed_cli_command(
+        let (program, command_args) = installed_cli_command(
             Path::new(r"C:\Users\u\AppData\Roaming\npm\dsh.cmd"),
             "web",
+            &[],
         );
         // `CreateProcess` cannot execute a `.cmd`; without `cmd /c` this would fail
         // with "not a valid application" on every machine that has the CLI.
         assert_eq!(program, PathBuf::from("cmd.exe"));
         assert_eq!(
-            args,
+            command_args,
             vec![
                 "/c",
                 r"C:\Users\u\AppData\Roaming\npm\dsh.cmd",
@@ -995,23 +1215,55 @@ mod tests {
             ]
         );
         // 别的档案不带它：这是 web 应用自己的旗标，未知档案的 app 未必认这个参数。
-        let (_, desktop) = installed_cli_command(Path::new(r"C:\tools\dsh.exe"), "desktop");
+        let (_, desktop) = installed_cli_command(Path::new(r"C:\tools\dsh.exe"), "desktop", &[]);
         assert_eq!(desktop, vec!["--profile", "desktop"]);
     }
 
     #[test]
-    fn a_native_launcher_is_started_directly() {
-        let (program, args) = installed_cli_command(Path::new(r"C:\tools\dsh.exe"), "web");
+    fn launch_args_are_appended_after_the_launcher_s_own_flags() {
+        // 顺序不是装饰：DSH 的启动器只解析自己那几个旗标，**第一个不认识的词之后**整段原样交给
+        // 被 boot 的档案（实测 `lib/types/args.d.ts` 就是这么写的）。`--port` 是 web 应用自己的
+        // 旗标，所以它必须在 `--profile web` 之后才到得了那个应用。
+        let (program, command_args) = installed_cli_command(
+            Path::new(r"C:\Users\u\AppData\Roaming\npm\dsh.cmd"),
+            "web",
+            &argv(&["--port", "3081"]),
+        );
+        assert_eq!(program, PathBuf::from("cmd.exe"));
+        assert_eq!(
+            command_args,
+            vec![
+                "/c",
+                r"C:\Users\u\AppData\Roaming\npm\dsh.cmd",
+                "--profile",
+                "web",
+                "--no-open",
+                "--port",
+                "3081"
+            ]
+        );
+        // 原生启动器（.exe）同样追加在最后。
+        let (program, command_args) =
+            installed_cli_command(Path::new(r"C:\tools\dsh.exe"), "web", &argv(&["--port", "3082"]));
         assert_eq!(program, PathBuf::from(r"C:\tools\dsh.exe"));
-        assert_eq!(args, vec!["--profile", "web", "--no-open"]);
+        assert_eq!(command_args, vec!["--profile", "web", "--no-open", "--port", "3082"]);
+    }
+
+    #[test]
+    fn a_native_launcher_is_started_directly() {
+        let (program, command_args) =
+            installed_cli_command(Path::new(r"C:\tools\dsh.exe"), "web", &[]);
+        assert_eq!(program, PathBuf::from(r"C:\tools\dsh.exe"));
+        assert_eq!(command_args, vec!["--profile", "web", "--no-open"]);
     }
 
     #[test]
     fn the_tui_is_raised_in_a_console_that_stays_until_it_is_read() {
-        let (program, args) = tui_launch_command(Path::new(r"C:\Users\u\AppData\Roaming\npm\dst.cmd"));
+        let (program, command_args) =
+            tui_launch_command(Path::new(r"C:\Users\u\AppData\Roaming\npm\dst.cmd"), &[]);
         assert_eq!(program, PathBuf::from("cmd.exe"));
         assert_eq!(
-            args,
+            command_args,
             vec![
                 "/c",
                 "start",
@@ -1024,18 +1276,130 @@ mod tests {
             ]
         );
         // TUI 自己指定 profile（dsh-tui）⇒ 这里**不能**替它加 `--profile`。
-        assert!(!args.iter().any(|arg| arg == "--profile"));
+        assert!(!command_args.iter().any(|arg| arg == "--profile"));
+        // 「启动参数」照常追加：它加的是启动器后面的话，而这条路的启动器就是 TUI 自己。
+        let (_, with_args) = tui_launch_command(
+            Path::new(r"C:\Users\u\AppData\Roaming\npm\dst.cmd"),
+            &argv(&["--model", "flash"]),
+        );
+        assert_eq!(
+            &with_args[with_args.len() - 2..],
+            &["--model".to_string(), "flash".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_port_a_launch_declares_is_read_the_way_dsh_declares_it() {
+        // 实测 `dsh web --help`：`--port <port>  listen port; pass 0 to let the OS pick a free one`。
+        assert_eq!(port_from_args(&argv(&["--port", "3081"])), Some(3081));
+        assert_eq!(port_from_args(&argv(&["--port=3082"])), Some(3082));
+        assert_eq!(port_from_args(&argv(&["--no-open", "--port", "8080", "--x"])), Some(8080));
+        // 没有参数 ⇒ DSH 自己的默认端口（web 与 CLI 都在 3080 上服务）。
+        assert_eq!(port_from_args(&[]), None);
+        assert_eq!(instance_port(&[]), 3080);
+        assert_eq!(instance_port(&argv(&["--port", "3081"])), 3081);
+        // 读不出来就说读不出来：绝不猜。
+        assert_eq!(port_from_args(&argv(&["--port"])), None);
+        assert_eq!(port_from_args(&argv(&["--port", "abc"])), None);
+        // `--port 0` 是 web 应用自己的合法用法（让系统挑），但它不是一个可以拿去检查占用的端口。
+        assert_eq!(port_from_args(&argv(&["--port", "0"])), None);
+        assert_eq!(port_from_args(&argv(&["--port", "70000"])), None);
+        // 重复旗标只认**第一个**：后一个不该被当成答案（那正是"解析器替你猜"）。
+        assert_eq!(port_from_args(&argv(&["--port", "3081", "--port", "3082"])), Some(3081));
+    }
+
+    #[test]
+    fn launch_args_are_shape_checked_but_never_re_split() {
+        // 空词被丢掉：用户多打一个空格不该变成启动器上一个空参数。
+        assert_eq!(normalize_launch_args(Some(argv(&["  ", "--port", " 3081 "]))).unwrap(), argv(&["--port", "3081"]));
+        assert_eq!(normalize_launch_args(None).unwrap(), Vec::<String>::new());
+        // 控制字符要拒绝，而且理由是**功能需要**：实例键用 U+001F 分隔，参数里再出现同一个字符
+        // 就会让两个不同的实例撞成一个键。
+        assert_eq!(
+            normalize_launch_args(Some(argv(&["a\u{1f}b"]))),
+            Err("启动参数里不能包含控制字符".to_string())
+        );
+        assert!(normalize_launch_args(Some(argv(&["--port\n3081"]))).is_err());
+        assert!(normalize_launch_args(Some(vec!["x".repeat(MAX_LAUNCH_ARG_LENGTH + 1)])).is_err());
+        assert!(normalize_launch_args(Some(vec!["x".into(); MAX_LAUNCH_ARGS + 1])).is_err());
+        // 参数里的 `;` 与 `|` 是普通字符 —— 这里没有命令行解释器，原样传下去才是对的。
+        assert_eq!(normalize_launch_args(Some(argv(&["a;b", "c|d"]))).unwrap(), argv(&["a;b", "c|d"]));
+    }
+
+    #[test]
+    fn two_instances_of_one_subject_are_two_keys() {
+        let subject = r"D:\Family\DeepSeekHarness\deepseek-harness";
+        // 不同的参数 ⇒ 两个键：这正是"同一个主体并行起两个端口"能共存的原因。
+        assert_ne!(
+            instance_key(subject, &argv(&["--port", "3081"])),
+            instance_key(subject, &argv(&["--port", "3082"]))
+        );
+        // 同样的参数 ⇒ 同一个键：那是**同一个实例**，重复按「启动」不该多出一个。
+        assert_eq!(
+            instance_key(subject, &argv(&["--port", "3081"])),
+            instance_key(subject, &argv(&["--port", "3081"]))
+        );
+        // 没有参数时键恰好等于主体 id：升级前写下的记录不需要迁移就能继续对齐。
+        assert_eq!(instance_key(subject, &[]), subject);
+        assert_eq!(instance_key(&format!("  {subject}  "), &[]), subject);
+        // 键里带得出参数，所以两条记录不会长得一模一样。
+        assert!(instance_key(subject, &argv(&["--port", "3081"])).contains("3081"));
+    }
+
+    #[test]
+    fn the_cylinder_keeps_every_instance_of_every_subject() {
+        let cli = r"cli:C:\Users\u\AppData\Roaming\npm\dsh.cmd";
+        let tree = r"D:\Family\DeepSeekHarness\deepseek-harness";
+        let mut cylinder = ManagedChildren::default();
+        // 同一个源码目录的两个实例：一个默认端口、一个 3081。
+        cylinder.remember(child(tree, tree, 111, Some(1)));
+        cylinder.remember(child(
+            &instance_key(tree, &argv(&["--port", "3081"])),
+            tree,
+            222,
+            Some(2),
+        ));
+        // 另一个主体：CLI。
+        cylinder.remember(child(cli, cli, 333, Some(3)));
+        // 一个主体问"我的实例有哪些" ⇒ 两个，第三个不属于它。
+        let tree_instances = cylinder.for_subject(tree);
+        assert_eq!(tree_instances.len(), 2);
+        assert_eq!(
+            tree_instances.iter().map(|c| c.pid).collect::<Vec<_>>(),
+            vec![111, 222]
+        );
+        assert_eq!(cylinder.for_subject(cli).len(), 1);
+        // 停掉 3081 那一个：另一格与另一个主体都不受影响 —— 这就是"只停一个实例"。
+        cylinder.forget(&instance_key(tree, &argv(&["--port", "3081"])));
+        assert_eq!(cylinder.for_subject(tree).len(), 1);
+        assert_eq!(cylinder.for_subject(tree)[0].pid, 111);
+        assert_eq!(cylinder.for_subject(cli).len(), 1);
+        // 路径里带 `#` 也不会让两个主体撞在一起：查找按**字段**比，不从键里解析前缀。
+        let odd = r"D:\a#b";
+        cylinder.remember(child(&instance_key(odd, &argv(&["--port", "1"])), odd, 444, Some(4)));
+        assert_eq!(cylinder.for_subject(odd).len(), 1);
+        assert_eq!(cylinder.for_subject(tree).len(), 1);
+    }
+
+    #[test]
+    fn the_official_shell_is_never_one_of_our_instances() {
+        // 官壳那条记录是给"门票"用的（`ensure_harness_ui` 会写下它），但停止列表里绝不能有它：
+        // 它不是本应用的孩子，退出方式是它自己的托盘菜单。
+        assert!(!is_managed_by_us("shell:com.deepseek.dsh"));
+        assert!(is_managed_by_us(r"D:\Family\DeepSeekHarness\deepseek-harness"));
+        assert!(is_managed_by_us(r"cli:C:\Users\u\AppData\Roaming\npm\dsh.cmd"));
+        // 前后空白不该改变判定（存下来的 id 一路都被 trim 过）。
+        assert!(!is_managed_by_us("  shell:com.deepseek.dsh  "));
     }
 
     #[test]
     fn a_ticket_is_only_used_while_the_process_that_earned_it_is_the_same_one() {
         let mut cylinder = ManagedChildren::default();
+        let cli = r"cli:C:\Users\u\AppData\Roaming\npm\dsh.cmd";
         cylinder.remember(ManagedChild {
-            subject_id: "cli:C:\\Users\\u\\AppData\\Roaming\\npm\\dsh.cmd".into(),
-            pid: 4242,
-            started_at: Some(1_700_000_000),
-            port: Some(3080),
             handoff: Some("/?token=SECRET".into()),
+            port: Some(3080),
+            ..child(cli, cli, 4242, Some(1_700_000_000))
         });
         // 那一格正占着这个端口、也仍是同一个进程 ⇒ 票可用（这正是"壁纸重启、宿主还在跑"能省下一次重启的原因）。
         assert_eq!(
@@ -1051,17 +1415,30 @@ mod tests {
         // 端口）⇒ 不能把它的票拿出来用。这一条是写这个测试时才发现的漏洞：原先只问"是不是我们的
         // 进程"，于是会退回到另一格上。
         cylinder.remember(ManagedChild {
-            subject_id: "D:\\checkout".into(),
-            pid: 77,
-            started_at: Some(1),
             port: Some(3080),
-            handoff: None,
+            ..child(r"D:\checkout", r"D:\checkout", 77, Some(1))
         });
         assert_eq!(handoff_in(&cylinder, 3080, |child| child.pid == 77), None);
         assert_eq!(
             handoff_in(&cylinder, 3080, |child| child.pid == 4242).as_deref(),
             Some("/?token=SECRET")
         );
+        // 并行实例也要能各自领到自己的票：同一主体的 3080 与 3081 两张票互不串门。
+        cylinder.remember(ManagedChild {
+            port: Some(3081),
+            handoff: Some("/?token=SECOND".into()),
+            ..child(
+                &instance_key("D:\\checkout", &argv(&["--port", "3081"])),
+                "D:\\checkout",
+                78,
+                Some(2),
+            )
+        });
+        assert_eq!(
+            handoff_in(&cylinder, 3081, |child| child.pid == 78).as_deref(),
+            Some("/?token=SECOND")
+        );
+        assert_eq!(handoff_in(&cylinder, 3080, |child| child.pid == 78), None);
     }
 
     #[test]
@@ -1083,13 +1460,8 @@ mod tests {
         assert_eq!(read_managed_children(&path), ManagedChildren::default());
         // 写进去、读回来，一格不多一格不少。
         let mut cylinder = ManagedChildren::default();
-        cylinder.remember(ManagedChild {
-            subject_id: "cli:C:\\Users\\u\\AppData\\Roaming\\npm\\dsh.cmd".into(),
-            pid: 4242,
-            started_at: Some(1_700_000_000),
-            port: None,
-            handoff: None,
-        });
+        let cli = r"cli:C:\Users\u\AppData\Roaming\npm\dsh.cmd";
+        cylinder.remember(child(cli, cli, 4242, Some(1_700_000_000)));
         write_managed_children(&path, &cylinder).expect("write");
         assert_eq!(read_managed_children(&path), cylinder);
         // 坏文件 ⇒ 空弹仓：降级方向必须安全（宁可少一个按钮可用，不可多一次误杀）。
@@ -1101,45 +1473,35 @@ mod tests {
     }
 
     #[test]
-    fn the_revolver_keeps_every_subject_and_only_fires_the_aligned_one() {
-        let cli = r"cli:C:\Users\u\AppData\Roaming\npm\dsh.cmd";
-        let shell = "shell:com.deepseek.dsh";
-        let mut cylinder = ManagedChildren::default();
-        cylinder.remember(ManagedChild { subject_id: cli.into(), pid: 111, started_at: Some(1), port: None, handoff: None });
-        // 切到客户端：CLI 那一格**保留**，只是不再对齐。
-        assert!(cylinder.aligned(shell).is_none());
-        assert_eq!(cylinder.aligned(cli).map(|child| child.pid), Some(111));
-        cylinder.remember(ManagedChild { subject_id: shell.into(), pid: 222, started_at: Some(2), port: None, handoff: None });
-        // 切回 CLI：仍然认得那个孩子 —— 这就是"别的格子必须留着"的全部理由。
-        assert_eq!(cylinder.aligned(cli).map(|child| child.pid), Some(111));
-        assert_eq!(cylinder.aligned(shell).map(|child| child.pid), Some(222));
-        // 由本应用停掉客户端那一格，CLI 那一格不受影响。
-        cylinder.forget(shell);
-        assert!(cylinder.aligned(shell).is_none());
-        assert_eq!(cylinder.aligned(cli).map(|child| child.pid), Some(111));
+    fn a_record_written_before_instances_existed_still_reads() {
+        // 升级路径：旧记录没有 `instance_key`，也没有 `args`。它必须读成"这个主体的默认实例"，
+        // 而不是整份弹仓作废 —— 否则装机重启之后，用户会发现自己启动的 DSH 不认了。
+        let legacy = br#"{"children":{"cli:C:\\dsh.cmd":{"subject_id":"cli:C:\\dsh.cmd","pid":9,"started_at":5,"port":3080,"handoff":null}}}"#;
+        let cylinder: ManagedChildren = serde_json::from_slice(legacy).expect("legacy record");
+        let recorded = cylinder.for_subject(r"cli:C:\dsh.cmd");
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].pid, 9);
+        assert!(recorded[0].args.is_empty());
+        // 空的实例键仍然能按主体 id 找到（默认实例的键就是主体 id）。
+        assert_eq!(instance_key(r"cli:C:\dsh.cmd", &[]), r"cli:C:\dsh.cmd");
     }
 
     #[test]
     fn ownership_needs_the_pid_and_the_start_time_to_agree() {
-        let child = ManagedChild {
-            subject_id: "cli:C:\\Users\\u\\AppData\\Roaming\\npm\\dsh.cmd".into(),
-            pid: 4242,
-            started_at: Some(1_700_000_000),
-            port: None,
-            handoff: None,
-        };
+        let cli = r"cli:C:\Users\u\AppData\Roaming\npm\dsh.cmd";
+        let recorded = child(cli, cli, 4242, Some(1_700_000_000));
         // 两项都对上：是自己的孩子。
-        assert!(owns_live_process(Some(&child), Some(4242), Some(1_700_000_000)));
+        assert!(owns_live_process(Some(&recorded), Some(4242), Some(1_700_000_000)));
         // pid 相同但创建时间不同 ⇒ 那是回收后的**另一个**进程：绝不能认领，更不能去停它。
-        assert!(!owns_live_process(Some(&child), Some(4242), Some(1_700_000_999)));
+        assert!(!owns_live_process(Some(&recorded), Some(4242), Some(1_700_000_999)));
         // pid 不同 / 进程已不在 / 没有记录。
-        assert!(!owns_live_process(Some(&child), Some(4243), Some(1_700_000_000)));
-        assert!(!owns_live_process(Some(&child), None, None));
+        assert!(!owns_live_process(Some(&recorded), Some(4243), Some(1_700_000_000)));
+        assert!(!owns_live_process(Some(&recorded), None, None));
         assert!(!owns_live_process(None, Some(4242), Some(1_700_000_000)));
         // 创建时间任一侧取不到 ⇒ 判定为"不是我启动的"（安全方向，绝不误杀）。
-        let unknown = ManagedChild { started_at: None, ..child.clone() };
+        let unknown = ManagedChild { started_at: None, ..recorded.clone() };
         assert!(!owns_live_process(Some(&unknown), Some(4242), Some(1_700_000_000)));
-        assert!(!owns_live_process(Some(&child), Some(4242), None));
+        assert!(!owns_live_process(Some(&recorded), Some(4242), None));
     }
 
     #[test]
@@ -1149,7 +1511,7 @@ mod tests {
         let (port, path) = web_handoff_path(printed).expect("handoff");
         assert_eq!(port, 3080);
         assert_eq!(path, "/?token=w03-O64JxomJCRw9Any3kg9Nap09jNg56tJbeU6pE4s");
-        // 换端口也认（端口不是契约）。
+        // 换端口也认（端口不是契约）——并行实例的第二张票就是这样被读出来的。
         assert_eq!(web_handoff_path("dsh web: http://127.0.0.1:8080/?token=abc").map(|(p, _)| p), Some(8080));
         // 没有门票的普通行、或别的地址，都不该被误认成门票。
         assert!(web_handoff_path("dsh web: opening the default browser").is_none());
@@ -1160,31 +1522,39 @@ mod tests {
     #[test]
     fn an_installed_cli_plans_the_launcher_itself_with_its_profile() {
         let id = format!("{CLI_ID_PREFIX}C:\\Users\\u\\AppData\\Roaming\\npm\\dsh.cmd");
-        let plan = plan_launch(&id, " web ", None, MANUAL).expect("cli plan");
+        let plan = plan_launch(&id, " web ", &[], MANUAL).expect("cli plan");
         match plan {
-            LaunchPlan::InstalledCli { launcher, profile } => {
+            LaunchPlan::InstalledCli {
+                launcher,
+                profile,
+                args: planned,
+            } => {
                 assert_eq!(launcher, r"C:\Users\u\AppData\Roaming\npm\dsh.cmd");
                 assert_eq!(profile, "web", "the profile is trimmed like a checkout's");
+                assert!(planned.is_empty());
             }
             _ => panic!("expected an installed-cli plan"),
         }
+        // 参数随计划一路带到命令行：计划里没有它，`run_launch` 就只能靠再来一次全局设置。
+        let plan = plan_launch(&id, "web", &argv(&["--port", "3081"]), MANUAL).expect("cli plan");
+        match plan {
+            LaunchPlan::InstalledCli { args: planned, .. } => assert_eq!(planned, argv(&["--port", "3081"])),
+            _ => panic!("expected an installed-cli plan"),
+        }
         // 空启动器要拒绝，否则会变成"启动当前目录"那种意外。
-        assert_eq!(plan_launch("cli:", "web", None, MANUAL), Err("unknown-target"));
-        assert_eq!(plan_launch("cli:   ", "web", None, AUTO), Err("unknown-target"));
-        // 它不需要"用户确认启动器"那一步：它不是用户填的命令，而是扫描扫出来的已安装命令。
-        assert!(plan_launch(&id, "web", None, AUTO).is_ok());
+        assert_eq!(plan_launch("cli:", "web", &[], MANUAL), Err("unknown-target"));
+        assert_eq!(plan_launch("cli:   ", "web", &[], AUTO), Err("unknown-target"));
     }
 
     const OFFICIAL_ID: &str = "shell:com.deepseek.dsh";
     const CHECKOUT: &str = r"D:\Family\DeepSeekHarness\deepseek-harness";
 
     const MANUAL: LaunchTrigger = LaunchTrigger::Manual;
-    const AUTO: LaunchTrigger = LaunchTrigger::Automatic { trusted_command: false };
-    const AUTO_TRUSTED: LaunchTrigger = LaunchTrigger::Automatic { trusted_command: true };
+    const AUTO: LaunchTrigger = LaunchTrigger::Automatic;
 
     #[test]
     fn a_shell_plan_carries_the_alias_this_build_knows() {
-        let plan = plan_launch(OFFICIAL_ID, "desktop", None, MANUAL).expect("shell plan");
+        let plan = plan_launch(OFFICIAL_ID, "desktop", &[], MANUAL).expect("shell plan");
         assert_eq!(
             plan,
             LaunchPlan::Shell {
@@ -1199,10 +1569,10 @@ mod tests {
     #[test]
     fn only_an_unattended_start_keeps_the_window_out_of_sight() {
         // §5.1: the startup path starts the official shell without showing it...
-        let automatic = plan_launch(OFFICIAL_ID, "desktop", None, AUTO).expect("shell plan");
+        let automatic = plan_launch(OFFICIAL_ID, "desktop", &[], AUTO).expect("shell plan");
         assert!(matches!(automatic, LaunchPlan::Shell { hide_window: true, .. }));
         // ...while a button the user just pressed shows them what they asked for.
-        let manual = plan_launch(OFFICIAL_ID, "desktop", None, MANUAL).expect("shell plan");
+        let manual = plan_launch(OFFICIAL_ID, "desktop", &[], MANUAL).expect("shell plan");
         assert!(matches!(manual, LaunchPlan::Shell { hide_window: false, .. }));
     }
 
@@ -1210,64 +1580,63 @@ mod tests {
     fn an_unknown_shell_id_is_refused_instead_of_launched() {
         // The alias string is a shell launch request, so anything outside this
         // build's table must not reach the shell.
-        assert_eq!(plan_launch("shell:Notepad", "desktop", None, MANUAL), Err("unknown-target"));
-        assert_eq!(plan_launch("shell:", "desktop", None, MANUAL), Err("unknown-target"));
+        assert_eq!(plan_launch("shell:Notepad", "desktop", &[], MANUAL), Err("unknown-target"));
+        assert_eq!(plan_launch("shell:", "desktop", &[], MANUAL), Err("unknown-target"));
         assert_eq!(
-            plan_launch("shell:Microsoft.Windows.Explorer", "desktop", None, AUTO),
+            plan_launch("shell:Microsoft.Windows.Explorer", "desktop", &[], AUTO),
             Err("unknown-target")
         );
     }
 
     #[test]
     fn an_empty_subject_is_refused() {
-        assert_eq!(plan_launch("   ", "desktop", None, MANUAL), Err("unknown-target"));
-        assert_eq!(plan_launch("", "desktop", None, AUTO), Err("unknown-target"));
+        assert_eq!(plan_launch("   ", "desktop", &[], MANUAL), Err("unknown-target"));
+        assert_eq!(plan_launch("", "desktop", &[], AUTO), Err("unknown-target"));
     }
 
     #[test]
     fn a_shell_ignores_the_profile_setting_which_belongs_to_a_checkout_only() {
         // §4.7: a shell uses its own data, so a leftover profile value must not
         // change — or block — its launch.
-        let plan = plan_launch(OFFICIAL_ID, "not a profile at all", None, MANUAL)
+        let plan = plan_launch(OFFICIAL_ID, "not a profile at all", &[], MANUAL)
             .expect("shell plan");
         assert!(matches!(plan, LaunchPlan::Shell { .. }));
     }
 
     #[test]
-    fn a_checkout_plan_is_its_root_path_with_its_profile() {
-        let plan =
-            plan_launch(CHECKOUT, " desktop ", Some("node.exe"), MANUAL).expect("checkout plan");
+    fn a_checkout_plan_is_its_root_path_with_its_profile_and_args() {
+        let plan = plan_launch(CHECKOUT, " desktop ", &argv(&["--port", "3081"]), MANUAL)
+            .expect("checkout plan");
         assert_eq!(
             plan,
             LaunchPlan::Checkout {
                 root_path: CHECKOUT.into(),
                 profile: "desktop".into(),
-                command: Some("node.exe".into()),
+                args: argv(&["--port", "3081"]),
             }
         );
+        // 没有参数时是空表，不是 `None`：空表就是"什么都不加"，与"没设置"没有区别。
+        let bare = plan_launch(CHECKOUT, "desktop", &[], MANUAL).expect("checkout plan");
+        assert!(matches!(bare, LaunchPlan::Checkout { args, .. } if args.is_empty()));
     }
 
     #[test]
-    fn an_untrusted_launcher_needs_consent_only_on_the_automatic_path() {
-        // Manual: the user just asked for it, so the configured launcher is used.
-        assert!(plan_launch(CHECKOUT, "desktop", Some(r"D:\tools\mine.exe"), MANUAL).is_ok());
-        // Automatic: refused until the user explicitly agreed.
-        assert_eq!(
-            plan_launch(CHECKOUT, "desktop", Some(r"D:\tools\mine.exe"), AUTO),
-            Err("command-not-confirmed")
-        );
-        // Agreed → allowed, still as one executable path.
-        assert!(plan_launch(CHECKOUT, "desktop", Some(r"D:\tools\mine.exe"), AUTO_TRUSTED).is_ok());
-        // The launchers the managed chain picks itself never need consent.
-        assert!(plan_launch(CHECKOUT, "desktop", Some("node.exe"), AUTO).is_ok());
-        assert!(plan_launch(CHECKOUT, "desktop", None, AUTO).is_ok());
-    }
-
-    #[test]
-    fn a_shell_is_never_gated_by_the_launcher_consent_rule() {
-        // A shell has no configured launcher at all, so the consent question does
-        // not apply to it; only checkouts can carry a `command`.
-        assert!(plan_launch(OFFICIAL_ID, "desktop", None, AUTO).is_ok());
+    fn args_change_nothing_about_who_runs_on_either_trigger() {
+        // 这一条钉的正是本次改动的**能力边界**：手动与自动两条路都只跑本 build 自己选的启动器，
+        // 用户能加的只有后面的词。所以「启动参数」在两条路上完全一致，而"任意程序"这件事
+        // 在两条路上都做不到（它没有入口了：`LaunchPlan` 里没有任何"程序路径"字段）。
+        let manual = plan_launch(CHECKOUT, "desktop", &argv(&["--port", "3081"]), MANUAL).expect("manual");
+        let automatic = plan_launch(CHECKOUT, "desktop", &argv(&["--port", "3081"]), AUTO).expect("auto");
+        assert_eq!(manual, automatic);
+        // 计划里唯一与"跑什么"有关的字段是主体 id 与档案；参数只在其后。
+        match &manual {
+            LaunchPlan::Checkout { root_path, profile, args } => {
+                assert_eq!(root_path, CHECKOUT);
+                assert_eq!(profile, "desktop");
+                assert_eq!(args, &argv(&["--port", "3081"]));
+            }
+            _ => panic!("expected a checkout plan"),
+        }
     }
 
         #[test]
@@ -1293,7 +1662,7 @@ mod tests {
         // settings store holds for this client.
         println!(
             "plan: {:?}",
-            plan_launch("shell:com.deepseek.dsh", "desktop", None, LaunchTrigger::Manual)
+            plan_launch("shell:com.deepseek.dsh", "desktop", &[], LaunchTrigger::Manual)
         );
         // Then the whole action the button performs, on the shell that is already
         // running: it starts nothing, and the alias request only asks the shell to
@@ -1303,7 +1672,7 @@ mod tests {
             "shell:com.deepseek.dsh",
             port,
             "desktop",
-            None,
+            &[],
             &state,
         );
         println!("ensure_ui: {ui:?}");

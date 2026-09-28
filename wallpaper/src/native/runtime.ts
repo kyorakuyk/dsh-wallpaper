@@ -1,5 +1,6 @@
 import type { BackendMode, ChatMessage, ScopedChatEvent } from '../domain/types.ts'
 import type { HarnessStatus } from '../connect/harness.ts'
+import { parseLaunchArgs } from '../connect/launchArgs.ts'
 
 export interface NativeSendOptions {
   conversationId?: string
@@ -22,7 +23,35 @@ export interface NativeSendOptions {
 
 export interface TranslucentTbStatus { installed: boolean; running: boolean; source?: string }
 export interface LockScreenDiagnostics { supported: boolean; packageIdentity: boolean; takeoverAvailable: boolean; originalImageUri?: string; backupExists: boolean; backupValid: boolean; staleBackup: boolean; managedImageReady: boolean; managedImageActive: boolean; developmentBuild: boolean; warnings: string[] }
-export interface ManagedDshStatus { managed: boolean; running: boolean; pid?: number; rootPath?: string; profile?: string }
+/**
+ * 本应用启动的**一个** DSH 实例。
+ *
+ * `instanceKey` 是它的地址（主体 id + 「启动参数」），也是停止时要指名的那一个：同一个主体可以
+ * 在 3080 与 3081 上各起一个，只有键能分清"停哪一个"。
+ */
+export interface ManagedDshInstance {
+  instanceKey: string
+  subjectId: string
+  /** 它在哪个端口服务。读不到时为 undefined —— 界面写「端口未确认」，不写 0。 */
+  port?: number
+  pid: number
+  /** 只有本进程启动的实例知道这两项；落盘记录（壁纸重启过）里没有。 */
+  rootPath?: string
+  profile?: string
+  /** 启动它时用的「启动参数」。 */
+  args: string[]
+}
+/**
+ * 本应用启动的全部实例，外加两个给启动监督用的汇总字段。
+ *
+ * `instances` 是权威答案；`managed` / `running` 留着，因为启动监督问的是另一个问题
+ * ——"我这次启动的那个孩子还在不在"。传了 `subjectId` 时它们只看那个主体的实例。
+ */
+export interface ManagedDshStatus {
+  instances: ManagedDshInstance[]
+  managed: boolean
+  running: boolean
+}
 /**
  * 凭据管理器愿意交代的全部内容：有没有 Key，以及脱敏形态（`sk-••••••••abcd`）。
  *
@@ -51,13 +80,16 @@ export interface DesktopWorkspaceStatus {
 }
 /**
  * Outcome of the one automatic DSH start this process is allowed to attempt.
- * `outcome` is a closed, non-sensitive code; `external` means port 3080 was
- * already owned by someone else's DSH and was deliberately left alone.
+ * `outcome` is a closed, non-sensitive code; `external` means the instance's port
+ * was already owned by someone else's DSH and was deliberately left alone.
+ *
+ * `command-not-confirmed` 已经不在这张表里了：它存在的前提（用户填一个自定义启动命令、自动
+ * 启动要不要执行它）随那个设置一起消失。现在自动启动与手动启动跑的是同一个启动器。
  */
 export interface ManagedDshAutostart {
   outcome: 'started' | 'started-unconfirmed' | 'already-attempted' | 'already-running' | 'root-path-missing'
     | 'root-path-invalid' | 'launcher-missing' | 'profile-invalid' | 'port-occupied-external'
-    | 'command-not-confirmed' | 'unknown-target' | 'spawn-failed'
+    | 'launch-args-invalid' | 'unknown-target' | 'spawn-failed'
   pid?: number
   external: boolean
 }
@@ -106,6 +138,15 @@ export interface HarnessEndpointScope {
   port?: number | null
   subjectId?: string
   extraPorts?: readonly number[]
+  /**
+   * 「启动参数」的原文。
+   *
+   * 原生用它读出这个主体被要求在哪个端口上服务（`--port 3081`），于是**探针**与「打开界面」
+   * 盯着同一个端口。少了它，并行实例的第二个会永远显示成离线 —— 桥明明在隔壁一个端口上应答。
+   * 这里传原文而不是解析后的端口，是因为分词与"怎么读 `--port`"的规则只有一份（`launchArgs.ts`），
+   * 原生只做它自己那一份形状检查。
+   */
+  args?: string
 }
 
 /** What native made of that scope, for logging and for the settings card. */
@@ -127,7 +168,7 @@ export interface HarnessEndpointScopeResult {
 export interface HarnessLaunchOutcome {
   outcome: 'started' | 'started-unconfirmed' | 'already-running' | 'unknown-target'
     | 'root-path-invalid' | 'launcher-missing' | 'profile-invalid'
-    | 'port-occupied-external' | 'command-not-confirmed' | 'spawn-failed'
+    | 'port-occupied-external' | 'launch-args-invalid' | 'spawn-failed'
   kind: 'embedded-shell' | 'checkout'
   /** Present only when this application started and owns a child (a checkout). */
   pid?: number
@@ -328,8 +369,10 @@ export interface NativeRuntime {
    * 契约与原生一致，而且调用方必须遵守：找不到 TUI 时返回 `opened: false` 与一句 `message`
    * 说明**怎么办** —— 那句话要显示出来，**不得**静默改成打开浏览器（那等于替用户换了一条
    * 他没选的路，而这正是这次改动要根除的失败模式）。
+   *
+   * 「启动参数」照常带上：它加的是启动器后面的话，而这条路的启动器就是 TUI 自己。
    */
-  openSubjectTui(): Promise<{ opened: boolean; reason?: string; message?: string; launcher?: string }>
+  openSubjectTui(args?: string[]): Promise<{ opened: boolean; reason?: string; message?: string; launcher?: string }>
   requestDeepSeekLogin(): Promise<void>
   nativeBootstrapGeneration(): Promise<number>
   releaseNativeBootstrap(generation: number): Promise<boolean>
@@ -441,23 +484,26 @@ export interface NativeRuntime {
    * Start the chosen execution subject. The class decides the mechanism — a shell
    * alias, or the managed checkout chain — so the caller passes an id and reads a
    * closed outcome code back.
+   *
+   * `args` is 「启动参数」, already tokenized: native appends it to whichever launcher this
+   * build picked, so the runnable identity stays ours. It is honoured identically by this
+   * path and the unattended one.
    */
   launchHarnessTarget(options: {
     targetId: string
     profile?: string
-    command?: string
+    args?: string[]
   }): Promise<HarnessLaunchOutcome>
   /**
    * The unattended counterpart, at most once per wallpaper process (native state
-   * is the single-flight authority, exactly as for `autostartManagedDsh`). The
-   * differences are real: only this path may keep a window out of sight, and only
-   * this path needs explicit consent for a custom launcher.
+   * is the single-flight authority, exactly as for `autostartManagedDsh`). The one
+   * difference that remains is real: only this path may keep a shell's window out of
+   * sight. 「启动参数」跟着一起走 —— 自动启动与手动启动跑的是同一个启动器。
    */
   autostartHarnessTarget(options: {
     targetId?: string
     profile: string
-    command?: string
-    trustedCommand?: boolean
+    args?: string[]
   }): Promise<ManagedDshAutostart>
   /**
    * Make the chosen subject's interface available and foreground, whatever state it
@@ -469,9 +515,9 @@ export interface NativeRuntime {
     targetId?: string
     port: number
     profile?: string
-    command?: string
+    args?: string[]
   }): Promise<HarnessUiOutcome>
-  launchDsh(rootPath: string, profile: string, command?: string): Promise<number>
+  launchDsh(rootPath: string, profile: string, args?: string[]): Promise<number>
   /**
    * One automatic start attempt per process, with the outcome remembered even
    * when it fails so a bad configuration cannot become a retry loop.
@@ -479,18 +525,24 @@ export interface NativeRuntime {
   autostartManagedDsh(options: {
     rootPath?: string
     profile: string
-    command?: string
-    trustedCommand?: boolean
+    args?: string[]
   }): Promise<ManagedDshAutostart>
   managedDshAutostartStatus(): Promise<ManagedDshAutostart | null>
   /**
-   * 本应用是否启动着某个 DSH。
+   * 本应用启动着哪些 DSH。
    *
-   * 传 `subjectId` 是因为"是不是我启动的"记在**每个主体一格**的落盘记录里（左轮弹仓）：
-   * 只问"有没有在跑"会把别人启动的实例也算进来，而按钮该按归属亮，不按存活亮。
+   * 传 `subjectId` 只影响 `managed` / `running` 两个汇总字段（"我这次启动的孩子还在不在"）；
+   * `instances` 永远是全部，而且**官壳永远不在里面** —— 它不是本应用的实例，停它会当场关掉
+   * 用户自己的客户端、并弹一条"宿主意外退出"的报错框。停止清单与这个列表是同一处，所以
+   * 界面显示什么就能停什么。
    */
   managedDshStatus(subjectId?: string): Promise<ManagedDshStatus>
-  stopManagedDsh(subjectId?: string): Promise<void>
+  /**
+   * 停止本应用启动的 DSH：`instanceKey` 指名一个实例，不给就停**全部**。
+   *
+   * 一个实现、一个动作：「实例下拉里某一行的 ×」与「全部停止」走的是同一条命令，只是参数不同。
+   */
+  stopManagedDsh(instanceKey?: string): Promise<void>
 }
 
 async function tauriAvailable(): Promise<boolean> {
@@ -565,10 +617,10 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<{ opened: string; memoryFile: string; memoryExists: boolean }>('open_project_memory')
   },
-  async openSubjectTui() {
+  async openSubjectTui(args?: string[]) {
     if (!await tauriAvailable()) throw new Error('仅桌面版支持打开 TUI')
     const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<{ opened: boolean; reason?: string; message?: string; launcher?: string }>('open_subject_tui')
+    return invoke<{ opened: boolean; reason?: string; message?: string; launcher?: string }>('open_subject_tui', { args })
   },  async requestDeepSeekLogin() {
     if (!await tauriAvailable()) return
     const { invoke } = await import('@tauri-apps/api/core')
@@ -773,6 +825,8 @@ export const nativeRuntime: NativeRuntime = {
       port: scope.port ?? null,
       subjectId: scope.subjectId ?? null,
       extraPorts: scope.extraPorts ? [...scope.extraPorts] : [],
+      // 已分好词的 argv：原生只做形状检查，不再分一次词（两次解释就是注入）。
+      args: parseLaunchArgs(scope.args),
     })
   },
   /**
@@ -867,7 +921,7 @@ export const nativeRuntime: NativeRuntime = {
     return invoke<HarnessLaunchOutcome>('launch_harness_target', {
       targetId: options.targetId,
       profile: options.profile,
-      command: options.command,
+      args: options.args,
     })
   },
   async autostartHarnessTarget(options) {
@@ -880,8 +934,7 @@ export const nativeRuntime: NativeRuntime = {
     return invoke<ManagedDshAutostart>('autostart_harness_target', {
       targetId: options.targetId,
       profile: options.profile,
-      command: options.command,
-      trustedCommand: options.trustedCommand,
+      args: options.args,
     })
   },
   async ensureHarnessUi(options) {
@@ -893,12 +946,12 @@ export const nativeRuntime: NativeRuntime = {
       targetId: options.targetId,
       port: options.port,
       profile: options.profile,
-      command: options.command,
+      args: options.args,
     })
   },
-  async launchDsh(rootPath, profile, command) {
+  async launchDsh(rootPath, profile, args) {
     const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<number>('launch_dsh', { rootPath, profile, command })
+    return invoke<number>('launch_dsh', { rootPath, profile, args })
   },
   /**
    * Ask the native side to start the configured DSH once per process.
@@ -918,8 +971,7 @@ export const nativeRuntime: NativeRuntime = {
     return invoke<ManagedDshAutostart>('autostart_managed_dsh', {
       rootPath: options.rootPath,
       profile: options.profile,
-      command: options.command,
-      trustedCommand: options.trustedCommand,
+      args: options.args,
     })
   },
   async managedDshAutostartStatus() {
@@ -931,8 +983,8 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<ManagedDshStatus>('managed_dsh_status', { subjectId })
   },
-  async stopManagedDsh(subjectId?: string) {
+  async stopManagedDsh(instanceKey?: string) {
     const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('stop_managed_dsh', { subjectId })
+    await invoke('stop_managed_dsh', { instanceKey })
   },
 }

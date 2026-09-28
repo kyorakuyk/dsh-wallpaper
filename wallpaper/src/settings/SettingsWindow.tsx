@@ -18,6 +18,7 @@ import {
   type HarnessClientKind,
 } from '../connect/endpoints.ts'
 import { launchOutcomeNotice, reachNeedsBrowser, subjectChoicePrompt } from '../connect/harnessSubjects.ts'
+import { parseLaunchArgs } from '../connect/launchArgs.ts'
 import { SettingsPanel, backendModeLabel, type SettingsPanelHarnessStatus } from './SettingsPanel.tsx'
 import { autostartRefusalNotice } from './autostartCopy.ts'
 import { createAutostartQueue, type AutostartQueue } from './autostartQueue.ts'
@@ -93,7 +94,14 @@ export function SettingsWindow() {
    * can say how old it is: a cached list must not look current.
    */
   const [catalogVerifiedAt, setCatalogVerifiedAt] = useState<number>()
-  const [managedDsh, setManagedDsh] = useState<ManagedDshStatus>({ managed: false, running: false })
+  const [managedDsh, setManagedDsh] = useState<ManagedDshStatus>({ instances: [], managed: false, running: false })
+  /**
+   * 实例下拉里的停止/刷新是否在飞。
+   *
+   * 与 `managedDsh` 分开，因为按钮的可用性要跟**动作**走而不是跟状态走：停止一个实例要起
+   * taskkill 并等它结束，那几百毫秒里再点一次不该发出第二条命令。
+   */
+  const [managedDshBusy, setManagedDshBusy] = useState(false)
   const [lockScreenDiagnostics, setLockScreenDiagnostics] = useState<LockScreenDiagnostics>()
   const [desktopDisplays, setDesktopDisplays] = useState<DesktopDisplayInfo[]>([])
   const [lockScreenBusy, setLockScreenBusy] = useState(false)
@@ -373,7 +381,9 @@ export function SettingsWindow() {
     const current = settingsRef.current.dshLaunch
     const subjectId = current.subjectId ?? current.rootPath
     // The subject's own ports, in its own order — never "whatever the scan found
-    // answering", which would reach a client the user did not choose.
+    // answering", which would reach a client the user did not choose. 「启动参数」里的
+    // `--port` **属于这个主体**（我们就是这样启动它的），所以它排在最前面：并行实例靠它让
+    // 浏览器走到 3081，而不是默认的 3080。
     const ports = subjectEndpointPorts(endpointScopeOf(current)) ?? []
     // The user's pin wins; otherwise native decides from the subject itself, which
     // prefers a port that is actually listening. Passing the subject's first port
@@ -390,7 +400,7 @@ export function SettingsWindow() {
         targetId: subjectId,
         port,
         profile: current.profile,
-        command: current.command,
+        args: parseLaunchArgs(current.args),
       })
       // A start that failed is the actionable half: it names what to fix.
       if (ensured.started && ensured.outcome === 'not-running') {
@@ -410,7 +420,11 @@ export function SettingsWindow() {
           setNotice('没有可打开的界面：主体没有在本机监听任何端口。')
           return
         }
+        // 门票是**按端口**存的（`known_web_handoff(port)`），所以并行实例的第二个也拿得到它
+        // 自己那一张：浏览器不会停在"需要重新认证"那一页上。
         await nativeRuntime.openClientInBrowser(live)
+        // 刚才可能启动了一个新实例，刷新右上角那份清单，免得它还停在上一秒的样子。
+        refreshManagedDsh()
         setNotice(`已在默认浏览器中打开 127.0.0.1:${live}。`)
         return
       }
@@ -422,6 +436,28 @@ export function SettingsWindow() {
       setNotice(`打开客户端界面失败：${String(error)}`)
     } finally {
       if (mountedRef.current) setReachBusy(false)
+    }
+  }
+
+  /**
+   * 停掉本应用启动的实例：点名一个（下拉里某一行的 ×），或者不给名字就全部（「全部停止」）。
+   *
+   * 一个动作、一个实现：`stop_managed_dsh` 只多了一个可选参数。这里刻意**不做**"先乐观地把
+   * 那一行藏起来"：停止成不成功由原生回答，界面只做它说的那一件事 —— 否则一次失败会留下
+   * "已经停掉了"的假象，而那个假象比一行红字更坏。
+   */
+  const stopManagedInstance = async (instanceKey?: string) => {
+    setManagedDshBusy(true)
+    try {
+      await nativeRuntime.stopManagedDsh(instanceKey)
+      setNotice(instanceKey === undefined ? '已停止本应用启动的全部 DSH。' : '已停止该 DSH 实例。')
+    } catch (error) {
+      setNotice(String(error))
+    } finally {
+      if (mountedRef.current) setManagedDshBusy(false)
+      // 成功失败都刷一次：成功了那一行该消失，失败了清单也该说出**现在**的真相（也许它本来就
+      // 已经退了，或已经被别的程序接管）。
+      refreshManagedDsh()
     }
   }
 
@@ -917,8 +953,41 @@ export function SettingsWindow() {
       onScanDsh={() => { void scanDsh(true) }}
       dshScanBusy={dshScanBusy}
       managedDsh={managedDsh}
+      managedDshBusy={managedDshBusy}
       onRefreshManagedDsh={refreshManagedDsh}
-      onOpenTui={() => void nativeRuntime.openSubjectTui().then((result) => {
+      onStopManagedInstance={(instanceKey) => { void stopManagedInstance(instanceKey) }}
+      onStopAllManagedDsh={() => { void stopManagedInstance() }}
+      onSelectSubjectAlias={(alias) => {
+        // 别名按主体 id 存：用户可能在两棵树之间来回切，名字必须跟着树走。空串表示"用目录名"，
+        // 所以它**删掉**那个键，而不是存一个空值 —— 让"没起别名"只有一种表示。
+        const subjectId = settingsRef.current.dshLaunch.subjectId
+        if (!subjectId) return
+        const aliases = { ...(settingsRef.current.dshLaunch.aliases ?? {}) }
+        const name = alias.trim()
+        if (name) aliases[subjectId] = name
+        else delete aliases[subjectId]
+        change({
+          ...settingsRef.current,
+          dshLaunch: {
+            ...settingsRef.current.dshLaunch,
+            ...(Object.keys(aliases).length > 0 ? { aliases } : { aliases: undefined }),
+          },
+        })
+      }}
+      onSelectLaunchArgs={(value) => {
+        const args = value.trim() ? value : undefined
+        change({
+          ...settingsRef.current,
+          dshLaunch: {
+            ...settingsRef.current.dshLaunch,
+            args,
+            // 换参数就清掉显式端口 pin：那条 pin 是"上一次启动选的那个端口"，参数已经把它推翻了。
+            // 留着它，「打开界面」会去敲上一代端口（与"换主体就清 pin"是同一条理由）。
+            endpointPort: undefined,
+          },
+        })
+      }}
+      onOpenTui={() => void nativeRuntime.openSubjectTui(parseLaunchArgs(settingsRef.current.dshLaunch.args)).then((result) => {
         // 契约：没装 TUI 时原生返回 `opened: false` 与一句"怎么办"。**把那句显示出来**，
         // 绝不静默改成打开浏览器 —— 那等于替用户换了一条他没选的路。
         if (!result.opened) {
@@ -931,7 +1000,6 @@ export function SettingsWindow() {
         ...settingsRef.current,
         dshLaunch: { ...settingsRef.current.dshLaunch, window: value },
       })}
-      onStopManagedDsh={() => void nativeRuntime.stopManagedDsh(settingsRef.current.dshLaunch.subjectId).then(() => { setNotice('已停止本应用启动的 DSH。'); refreshManagedDsh() }).catch((error) => setNotice(String(error)))}
       onChange={change}
       onRefreshTranslucentTb={refreshTranslucentTb}
       onLaunchTranslucentTb={() => void nativeRuntime.launchTranslucentTb().then(refreshTranslucentTb).catch((error) => setNotice(String(error)))}

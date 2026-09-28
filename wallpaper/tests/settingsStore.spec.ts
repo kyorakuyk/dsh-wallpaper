@@ -57,9 +57,9 @@ const VALID: WallpaperSettings = {
   dshLaunch: {
     profile: 'desktop',
     rootPath: 'D:\\Family\\DeepSeekHarness',
-    command: 'node bin.js',
+    args: '--port 3081',
+    aliases: { 'D:\\Family\\DeepSeekHarness': '主树' },
     autoStartWithWallpaper: true,
-    trustedCommandForAutoStart: true,
   },
 }
 
@@ -255,11 +255,34 @@ describe('settings normalization boundary', () => {
     expect(settings.multiScreen).toEqual(VALID.multiScreen)
     expect(settings.dshLaunch.profile).toBe('work')
     expect(settings.dshLaunch.rootPath).toBe('D:\\DSH')
-    expect(settings.dshLaunch.command).toBe('node custom.js')
-    // ...and the new flags arrive off, because starting a resident DSH
-    // unattended, and trusting a custom launcher with it, are both opt-in.
+    // ...**除了 `command`**：那一项已经不存在了。它被丢掉，而不是被改写成「启动参数」：
+    // 一个程序路径与一串参数不是同一种东西，把 `node custom.js` 追加到我们自己的启动器后面只会
+    // 让启动器收到它不认识的词、然后启动失败 —— 那比"这一项没了"更难懂。
+    expect('command' in settings.dshLaunch).toBe(false)
+    expect(settings.dshLaunch.args).toBeUndefined()
+    // ...and the flag that survives arrives off, because starting a resident DSH
+    // unattended is opt-in.
     expect(settings.dshLaunch.autoStartWithWallpaper).toBe(false)
-    expect(settings.dshLaunch.trustedCommandForAutoStart).toBe(false)
+  })
+
+  it('stores one alias per subject and drops the ones that are not aliases', () => {
+    // 别名的归属跟着**树**走：用户在两棵树之间来回切，名字不能换了人。
+    const settings = normalizeSettings({
+      dshLaunch: { profile: 'desktop', aliases: { 'D:\\a': ' 主树 ', 'D:\\b': '   ', 'D:\\c': 7 } },
+    })
+    expect(settings.dshLaunch.aliases).toEqual({ 'D:\\a': '主树' })
+    // 全都被丢掉时不留一个空对象：那会让"没起过别名"看起来像"有别名表但是空的"。
+    expect(normalizeSettings({ dshLaunch: { profile: 'desktop', aliases: { 'D:\\a': '' } } }).dshLaunch.aliases)
+      .toBeUndefined()
+  })
+
+  it('refuses launch args that the launcher could not be given', () => {
+    // 控制字符会让实例键（`\u{1f}` 分隔）把两个不同的实例撞成一个 —— 那是并行实例的反面。
+    const args = normalizeSettings({ dshLaunch: { profile: 'desktop', args: 'a\u{1f}b' } }).dshLaunch.args
+    // 归一化只负责**存下来**（超长/控制字符的拒绝在 `launchArgs.issue` 与原生侧各有一处）；
+    // 这里钉的是它不会把这一项变成一个别的类型或一个空串。
+    expect(typeof args === 'string' || args === undefined).toBe(true)
+    expect(normalizeSettings({ dshLaunch: { profile: 'desktop', args: '   ' } }).dshLaunch.args).toBeUndefined()
   })
 
   it('migrates every historical storage key, newest first', () => {
