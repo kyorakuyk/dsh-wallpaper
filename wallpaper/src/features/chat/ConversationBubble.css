@@ -355,6 +355,15 @@
   box-shadow: 0 0 9px rgba(232, 176, 72, .7);
   animation: dsh-chat-status-breathing 1.9s ease-in-out infinite;
 }
+/*
+ * 红灯：**试过、没成**。与黄灯同一条呼吸曲线（用户要的正是"呼吸灯改成红色"），但颜色是告警性的
+ * ——它表示"我刚才替你连过了，没连上"，所以点滑槽＝立刻再试一次（拉起进程 + 握手申请）。
+ */
+.dsh-chat__status-dot[data-ready='failed'] {
+  background: #ef5f6b;
+  box-shadow: 0 0 9px rgba(239, 95, 107, .7);
+  animation: dsh-chat-status-breathing 1.9s ease-in-out infinite;
+}
 @keyframes dsh-chat-status-breathing {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: .42; transform: scale(.7); }

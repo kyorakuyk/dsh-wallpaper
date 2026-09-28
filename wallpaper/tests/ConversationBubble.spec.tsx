@@ -212,7 +212,10 @@ describe('ConversationBubble', () => {
       {...callbacks}
     />)
     expect(connecting).toContain('data-ready="suspect"')
-    expect(connecting).toContain('DSH Bridge 正在装载')
+    // 黄灯一律说"连接中"（用户定的规则）：它在呼吸就说明"还没定"，此时再写别的状态说明
+    // （"已连接""正在装载"）都是把不确定性说成了结论。给用户看到的只有一句话：还在连。
+    expect(connecting).toContain('连接中')
+    expect(connecting).not.toContain('已连接')
 
     const gone = renderToStaticMarkup(<ConversationBubble
       backend="deepseek-web"
@@ -227,6 +230,24 @@ describe('ConversationBubble', () => {
     />)
     expect(gone).toContain('data-ready="false"')
     expect(gone).not.toContain('data-ready="suspect"')
+
+    // 红灯：**试过、没成**。与黄灯（还没定）必须分开：黄灯下用户只需等，红灯下点滑槽就要立刻
+    // 再试一次（拉起对应 harness 进程 + 发握手申请），所以它不能长得跟黄灯一样。
+    const failed = renderToStaticMarkup(<ConversationBubble
+      backend="deepseek-web"
+      activity="idle"
+      modelLabel="deepseek-chat"
+      messages={[]}
+      streamingText=""
+      historyExpanded={false}
+      harnessAvailability="offline"
+      harnessReady={false}
+      harnessFailed
+      {...callbacks}
+    />)
+    expect(failed).toContain('data-ready="failed"')
+    expect(failed).not.toContain('data-ready="suspect"')
+    expect(failed).toContain('连接失败')
   })
 
   it('keeps the switch usable while a start is still in flight', () => {

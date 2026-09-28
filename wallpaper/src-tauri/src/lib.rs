@@ -2845,6 +2845,24 @@ fn locked<T>(value: &Mutex<T>) -> Option<std::sync::MutexGuard<'_, T>> {
     value.lock().ok()
 }
 
+/// 主体范围的稳定标识：钉住的端点 + "哪个主体、允许哪些端口"。
+///
+/// 探测器靠它回答一个问题：**这一轮探的还是同一个对象吗？**
+///
+/// 缺了它，`connected_once` 会跨主体保留。实测症状正是如此：在 CLI（3080）上连过一次之后切到
+/// 官壳，官壳那边没有人在听，可"曾经连上过"这条记忆还在、又拿不到"属主已死"的证据 ⇒ 只把灯
+/// 变成呼吸态、`available` 仍是 BridgeReady ⇒ 界面一直写着"DSH Bridge 已连接"，而一发消息
+/// 就被告知会话没有建立。换了主体，"连接"这个词说的就是另一个对象了。
+#[cfg(not(feature = "lite"))]
+fn harness_scope_key() -> String {
+    let state = harness_endpoint_state();
+    let pinned = locked(&state.pinned).and_then(|guard| *guard);
+    match locked(&state.subject).and_then(|guard| guard.clone()) {
+        Some(subject) => format!("{pinned:?}|{}|{:?}", subject.id, subject.ports),
+        None => format!("{pinned:?}|"),
+    }
+}
+
 /// The ports the wallpaper may probe, in order — never widened by what answers.
 ///
 /// The order carries the "connected ⇒ sticky" rule as well: the endpoint already
@@ -3686,6 +3704,39 @@ mod harness_status_tests {
     }
 
     #[test]
+    fn a_new_subject_cannot_inherit_the_previous_connection() {
+        // 实测的边界情况：在 CLI（3080）上连过一次之后切到官壳（那边没有人在听），旧实现把
+        // `connected_once` 留着 ⇒ 只把灯变成呼吸态、`available` 仍是 BridgeReady ⇒ 界面一直写着
+        // "DSH Bridge 已连接"，而一发消息就被告知会话尚未建立。
+        let mut monitor = HarnessMonitorState::default();
+        monitor = advance_harness_monitor(monitor, HarnessAvailability::BridgeReady, None, 0).0;
+        let (connected, _) =
+            advance_harness_monitor(monitor, HarnessAvailability::BridgeReady, None, 0);
+        assert_eq!(connected.available, HarnessAvailability::BridgeReady);
+
+        // 带着"曾经连上过"的记忆时，新主体没人应答只够让它**可疑**：灯呼吸、标签照旧。
+        // （`publish` 在这里为真是对的：呼吸态本身就是要发布给界面的状态；错的是 `available`
+        // 还停在 BridgeReady —— 于是"呼吸着"和"已连接"同时出现在屏幕上。）
+        let (suspended, publish) =
+            advance_harness_monitor(connected, HarnessAvailability::Offline, Some(true), 1_000);
+        assert!(suspended.probing, "这是呼吸态");
+        assert!(publish);
+        assert_eq!(suspended.available, HarnessAvailability::BridgeReady);
+
+        // 忘掉上一条连接之后（monitor 循环在主体变化时做的正是这件事），新主体的结论就是结论：
+        // 灯熄灭、标签跟着说离线。默认态本来就是 Offline，所以这里不发布也算对 —— 关键是它**没有**
+        // 继承上一条连接。
+        let (fresh, _) = advance_harness_monitor(
+            HarnessMonitorState::default(),
+            HarnessAvailability::Offline,
+            Some(true),
+            1_000,
+        );
+        assert_eq!(fresh.available, HarnessAvailability::Offline);
+        assert!(!fresh.probing);
+    }
+
+    #[test]
     fn a_bridge_that_was_never_connected_reports_what_it_sees() {
         // The diagnostic states have to reach the UI: with nothing connected there is
         // no session to protect, so the observed state is published as it comes.
@@ -4259,7 +4310,29 @@ fn start_harness_monitor(app: tauri::AppHandle) {
         let exits = Arc::new(tokio::sync::Notify::new());
         let started = std::time::Instant::now();
         let mut last_reason: Option<String> = None;
+        // 这一轮探的是哪个主体。变了就把上一条连接的历史作废（见 `harness_scope_key`）。
+        let mut scope = harness_scope_key();
+        // 换了主体必须**发布一次**：界面上那条状态属于上一个对象，不发布就会一直停在它上面。
+        let mut force_publish = false;
         loop {
+            let current_scope = harness_scope_key();
+            if current_scope != scope {
+                log::info!(
+                    "harness monitor: endpoint scope changed ({scope} -> {current_scope}); forgetting the previous connection"
+                );
+                scope = current_scope;
+                // 忘了"曾经连上过"、忘了属主、忘了理由：它们说的都是**上一个**主体。
+                // 并以"正在连"的状态发布（`probing: true`）：换了主体之后，在答案回来之前，
+                // 唯一诚实的话就是"连接中" —— 既不是上一个主体的"已连接"，也不是新主体的"离线"。
+                monitor = HarnessMonitorState {
+                    probing: true,
+                    ..HarnessMonitorState::default()
+                };
+                owner_pid = None;
+                watched = None;
+                last_reason = None;
+                force_publish = true;
+            }
             let (port, status) = probe_current_endpoint().await;
             if let Ok(mut cache) = harness_status_cache().write() {
                 *cache = status.clone();
@@ -4315,7 +4388,8 @@ fn start_harness_monitor(app: tauri::AppHandle) {
                 }
                 _ => reason.clone(),
             };
-            if publish || reason_for_state != last_reason {
+            if publish || force_publish || reason_for_state != last_reason {
+                force_publish = false;
                 log::info!(
                     "harness availability: {:?} (probing {}, owner {:?} alive {:?}, reason {:?})",
                     monitor.available,

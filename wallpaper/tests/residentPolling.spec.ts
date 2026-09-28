@@ -77,6 +77,11 @@ describe('native exit lifecycle', () => {
     expect(stopHelper).toContain('CREATE_NO_WINDOW')
     expect(stopHelper).toContain('.status()')
     expect(stopHelper).not.toContain('.output()')
+    // 换了主体，"连接"这个词说的就是另一个对象：探测器必须把上一条连接的历史作废，否则界面会
+    // 一直写着"已连接"（实测症状：呼吸灯 + bridge 已连接，而一发消息就说会话尚未建立）。
+    const monitorLoop = lib.slice(lib.indexOf('fn start_harness_monitor'))
+    expect(monitorLoop).toContain('harness_scope_key()')
+    expect(monitorLoop).toContain('monitor = HarnessMonitorState::default()')
     // Every step is inside a `Once`, because ExitRequested can precede Exit.
     expect(shutdown).toContain('SHUTDOWN.call_once')
     // The tray "hide" item is an action dispatch, not an exit.

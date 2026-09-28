@@ -593,9 +593,24 @@ export function App({ surface = 'combined' }: AppProps) {
   const [selectedPreset, setSelectedPreset] = useState<string>()
   const [harnessControls, setHarnessControls] = useState<{ permission: { current: string; options: string[] }; commands: Array<{ name: string; description: string; input?: { hint: string } }> }>()
   const [harnessStarting, setHarnessStarting] = useState(false)
+  /**
+   * 握手**失败**过（不是"还没连"）。
+   *
+   * 与黄灯（连接中）必须分开：黄灯是"还没定"，红灯是"试过了、没成"。用户要的动作也不同——
+   * 红灯时点滑槽＝立刻拉起对应 harness 进程并发一次握手申请，而黄灯时只需要等。
+   */
+  const [harnessFailed, setHarnessFailed] = useState(false)
   const [nativeHandoffGeneration, setNativeHandoffGeneration] = useState<number>()
   const harnessLaunchPendingRef = useRef(false)
   const harnessLaunchStartedAtRef = useRef<number>()
+  /**
+   * 上面那个失败分支要用的两样东西，用 ref 拿最新值。
+   *
+   * 那个 effect 只在 `[harnessStarting, runtime.harness]` 变化时重建，直接闭包捕获 `changeBackend`
+   * 会拿到**过期的**那一份（它每次渲染都重建）。失败复位滑槽是一次性动作，必须用当下这一份。
+   */
+  const changeBackendRef = useRef<((backend: 'deepseek-web' | 'deepseek-api' | 'harness', options?: { keepTranscript?: boolean; automatic?: boolean }) => void) | undefined>(undefined)
+  const nonHarnessBackendRef = useRef<'deepseek-web' | 'deepseek-api'>('deepseek-web')
   /**
    * 壁纸自己把滑槽复位过（主体退出），因此它有权在主体回来后自己拨回去。
    *
@@ -1163,6 +1178,7 @@ export function App({ surface = 'combined' }: AppProps) {
     if (runtime.harness === 'bridge-ready') {
       harnessLaunchPendingRef.current = false
       harnessLaunchStartedAtRef.current = undefined
+      setHarnessFailed(false)
       if (harnessStarting) setHarnessStarting(false)
       return
     }
@@ -1183,6 +1199,10 @@ export function App({ surface = 'combined' }: AppProps) {
         harnessLaunchPendingRef.current = false
         harnessLaunchStartedAtRef.current = undefined
         setHarnessStarting(false)
+        // 握手失败：灯转红（"试过、没成"），滑槽拨回左边。旧的那条连接**不动** —— 连接层是
+        // make-before-break，没有成功的新会话就不会拆旧的；它只是不再冒充"已连接"。
+        setHarnessFailed(true)
+        changeBackendRef.current?.(nonHarnessBackendRef.current)
         patchRuntime({ error: outcome.message })
       } catch (error) {
         if (!disposed) patchRuntime({ error: String(error) })
@@ -1706,7 +1726,13 @@ export function App({ surface = 'combined' }: AppProps) {
     && runtime.phase !== 'booting'
     && runtime.phase !== 'locked'
     && (settings.interactionLayout === 'taskbar-docked' || workspace !== 'front')
-    ? <ConversationBubble
+    ? (() => {
+      // 失败复位要用的两样东西取"当下这一份"（见上面 ref 的说明）。这里赋值而不是在 effect 里：
+      // 切换后端与主体都发生在用户动作之后，任何一次渲染都比上一次更新。
+      changeBackendRef.current = changeBackend as typeof changeBackendRef.current
+      const fallback = (settings.defaultBackend === 'harness' ? 'deepseek-web' : settings.defaultBackend) as 'deepseek-web' | 'deepseek-api'
+      nonHarnessBackendRef.current = fallback
+      return <ConversationBubble
       backend={runtime.backend}
       activity={runtime.activity}
       modelLabel={modelLabel}
@@ -1729,8 +1755,12 @@ export function App({ surface = 'combined' }: AppProps) {
       apiPricingConfigured={settings.deepseekApi.priceInputPerMillion !== undefined && settings.deepseekApi.priceOutputPerMillion !== undefined}
       harnessAvailability={runtime.harness}
       harnessStarting={harnessStarting}
+      harnessFailed={harnessFailed}
       onStartHarness={async () => {
         if (harnessLaunchPendingRef.current) return
+        // 红灯时点滑槽＝**动手再试一次**：拉起对应 harness 进程（这一步本身就是"握手申请"的前半，
+        // 后半由切到 harness 后适配器连接时发出）。所以先清掉失败标记，灯回到"连接中"。
+        setHarnessFailed(false)
         setHarnessStarting(true)
         harnessLaunchPendingRef.current = true
         harnessLaunchStartedAtRef.current = Date.now()
@@ -1881,6 +1911,7 @@ export function App({ surface = 'combined' }: AppProps) {
         void nativeRuntime.leaveInnerWorkspace().catch((error) => patchRuntime({ error: `离开里桌面失败：${String(error)}` }))
       }}
     />
+    })()
     : null
 
   const conversationDisplay = desktopDisplays.find((display) => display.id === conversationDisplayId) ?? desktopDisplays[0]

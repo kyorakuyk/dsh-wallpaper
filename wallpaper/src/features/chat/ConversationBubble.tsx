@@ -80,6 +80,11 @@ export interface ConversationBubbleProps {
    * 用户要的中间态：先挂起 + 提速探测，别一次瞬发就复位滑槽。
    */
   harnessSuspect?: boolean
+  /**
+   * 红灯：握手**试过、没成**（与黄灯的"还没定"是两件事，用户要的动作也不同 —— 这时点滑槽应当
+   * 立刻拉起对应 harness 进程并发一次握手申请）。
+   */
+  harnessFailed?: boolean
   /** 选择器被禁用时，选项里显示的原因。三种"不能切换"的成因不同，文案由调用方决定。 */
   modelSwitchDisabledReason?: string
   onSelectModel?: (model: string) => void
@@ -155,7 +160,13 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const turnUsage = turnUsageSummary(props.usage, props.backend, Boolean(props.apiPricingConfigured))
   const harnessAvailability = props.harnessAvailability ?? 'offline'
   const harnessReady = harnessAvailability === 'bridge-ready'
-  const harnessLabel = props.harnessStarting ? 'DSH 正在启动' : harnessStateLabel(harnessAvailability)
+  const harnessLabel = props.harnessFailed
+    ? '连接失败'
+    : props.harnessStarting
+      ? 'DSH 正在启动'
+      // 黄灯（正在连/装载/失联待判）一律由 `harnessStateLabel` 说"连接中"：那句"已连接"属于上一条
+      // 连接，写在呼吸灯旁边就是自相矛盾（实测过：灯在呼吸，文案却说已连接，一发消息就说没有会话）。
+      : harnessStateLabel({ availability: harnessAvailability, probing: props.harnessSuspect === true })
   const showHistory = props.historyExpanded
   const today = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(new Date())
   const historyView = useMemo(() => historyWindow(props.messages.length, historyLimit), [props.messages.length, historyLimit])
@@ -309,7 +320,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
         <span className={`dsh-chat__status dsh-chat__status--harness dsh-chat__status--${harnessAvailability}`} title={harnessLabel}>
           {/* 黄灯优先于"熄灭"：中间态包含"还没连上但在连"，那时 `harnessReady` 是 false，
               但它和"后端已经不在了"必须看起来不一样（前者呼吸的黄灯，后者熄灭）。 */}
-          <span className="dsh-chat__status-dot" data-ready={props.harnessSuspect ? 'suspect' : props.harnessReady === false ? 'false' : 'true'} />{harnessLabel}
+          <span className="dsh-chat__status-dot" data-ready={props.harnessFailed ? 'failed' : props.harnessSuspect ? 'suspect' : props.harnessReady === false ? 'false' : 'true'} />{harnessLabel}
         </span>
         <button
           type="button"

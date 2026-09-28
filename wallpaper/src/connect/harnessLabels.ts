@@ -25,10 +25,17 @@ export const HARNESS_STATE_DETAILS: Record<HarnessAvailability, string> = {
 }
 
 /** Short label for the status dot in the bubble and the settings sidebar. */
-export function harnessStateLabel(availability: HarnessAvailability): string {
+export function harnessStateLabel(
+  state: HarnessAvailability | { availability: HarnessAvailability; probing?: boolean },
+): string {
+  const availability = typeof state === 'string' ? state : state.availability
+  const probing = typeof state === 'string' ? false : state.probing === true
+  // 黄灯只有一种含义：**还没定**。所以凡是黄灯（正在连、正在装载、就绪过的桥接暂时失联还没判死）
+  // 一律说"连接中"，绝不在呼吸着的同时写着"已连接" —— 那句话属于上一条连接，用户读到的却是
+  // "能用了"，于是发消息才发现会话根本没建立。这是实测过的症状，不是假想。
+  if (probing || availability === 'bridge-loading') return '连接中'
   switch (availability) {
     case 'bridge-ready': return 'DSH Bridge 已连接'
-    case 'bridge-loading': return 'DSH Bridge 正在装载'
     case 'bridge-auth-unavailable': return 'DSH Bridge 令牌不可用'
     case 'bridge-incompatible': return 'DSH Bridge 版本不兼容'
     case 'web-only': return 'DSH 在线，缺少 Bridge'
