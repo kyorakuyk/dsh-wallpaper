@@ -136,6 +136,27 @@ pub(crate) fn normalize_launch_args(args: Option<Vec<String>>) -> Result<Vec<Str
 /// login is slow, and a false "failed" would be worse than a slow "started".
 const SHELL_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const SHELL_START_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+/// How often the hide is re-applied while a just-started shell is up but not yet settled.
+///
+/// Shorter than [`SHELL_START_POLL`] because this loop is a *race* with the client's own
+/// `show()`: whatever it puts on screen stays until the next attempt, so this interval is
+/// literally how long the user could see a frame the wallpaper meant to keep out of
+/// sight. Measured on this machine, one attempt costs ~10 ms, so the loop is cheap.
+const SHELL_HIDE_POLL: std::time::Duration = std::time::Duration::from_millis(80);
+/// How long after the client starts answering the fast hide poll keeps running.
+///
+/// The race is real but bounded: an Electron client creates its window before it shows
+/// it, and this machine's shell shows it once the host behind it reports ready — seconds,
+/// not minutes. Past this window the slow poll takes over, so a client that never paints
+/// costs nothing and a client that paints very late is still hidden, just later.
+const SHELL_HIDE_POLL_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long a shell's windows must stay off screen before a background start is done.
+///
+/// Not a guess about boot time: the client's own `show()` is measured to win against an
+/// external hide (540 ms after the request, on this machine), so "hidden once" is not an
+/// answer — "hidden and nothing brought it back" is. Two seconds of quiet after the last
+/// attempt is what separates the two.
+const SHELL_HIDE_SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
 /// How long a started shell is given to *paint*, which happens after it starts
 /// listening. Same order of magnitude as the start timeout, for the same reason.
 const UI_WINDOW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
@@ -708,33 +729,62 @@ pub(crate) fn installed_cli_command(
 }
 
 /// Who is asking for the start, which is what decides the one rule that still differs.
+///
+/// 「显示还是不显示那个窗口」由**谁在问**决定，而不是由"是不是用户按的"决定：用户按下的
+/// 两处控制想要的东西本来就不一样 —— 滑槽要的是"把这个主体供起来"（界面在壁纸这边），
+/// 「打开」要的是"把它的窗口给我看"。所以这里三个变体，两条隐藏、一条显示。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LaunchTrigger {
-    /// A control the user just pressed. A window is shown — they asked for the
-    /// thing on screen.
-    Manual,
-    /// The wallpaper's own unattended start, which may keep a shell's window out
-    /// of sight (§5.1).
+    /// The island's launch slider: the user asked for the subject to *serve*, not for
+    /// its window (§5.3 — 点滑槽与开机静默启动做的是同一件事).
+    ///
+    /// 这条路上窗口必须留在屏幕外：用户要的是"切到 harness 用壁纸聊天"，一个自己弹出来的
+    /// 客户端窗口是他没要的第二个界面。要显示它有专门的那一个动作（岛上的图标、设置里的
+    /// 「打开」），两者都走 [`LaunchTrigger::Manual`]。
+    Slider,
+    /// The wallpaper's own unattended start, which keeps a shell's window out of sight
+    /// (§5.1).
     ///
     /// 它**不再**带"自定义启动命令是否已获授权"这一位：那个设置已经不在了（现在只有「启动参数」，
     /// 而参数加不了参数以外的任何东西 —— 启动器本身永远是扫描决定的、原生自己选的）。原来那一问
     /// 的前提是"无人值守时要不要执行用户随手填的一个程序"，前提消失，问题也随之消失。
     Automatic,
+    /// A control whose whole point is to put the interface on screen: 设置里的「打开」and
+    /// the island's own raise affordance. A window is shown — they asked for the thing
+    /// on screen.
+    Manual,
 }
 
 impl LaunchTrigger {
-    fn is_automatic(self) -> bool {
-        matches!(self, Self::Automatic)
+    /// Whether this trigger's start may put the window out of sight.
+    fn starts_in_background(self) -> bool {
+        match self {
+            Self::Slider | Self::Automatic => true,
+            Self::Manual => false,
+        }
     }
+}
+
+/// Whether a start at this trigger hides the subject's window — the whole decision, in
+/// one place.
+///
+/// `can_start_hidden` stays **authoritative**: a subject whose capability says it cannot
+/// be started in the background is never hidden, whatever asked for the start. That is
+/// the direction that must not be reversed — a hidden window nobody can raise is an
+/// application the user cannot reach, while a visible window is merely an annoyance.
+/// Pure, so both directions of the rule are pinned without a machine.
+pub(crate) fn keeps_window_hidden(trigger: LaunchTrigger, can_start_hidden: bool) -> bool {
+    trigger.starts_in_background() && can_start_hidden
 }
 
 /// Decide how to start `id`, or refuse with a closed code.
 ///
 /// The trigger is the one input that changes behaviour, and it changes it in one
-/// place on purpose: only an unattended start hides a shell's window (§5.1 defines
-/// that as the startup behaviour). It does **not** change what runs — the launcher
-/// is always one this build picked, for both paths, and `args` is therefore honoured
-/// identically whether the user pressed a button or the wallpaper started it.
+/// place on purpose: the two unattended-shaped starts keep a shell's window out of
+/// sight (§5.1), while the action whose point is to show the interface does not. It
+/// does **not** change what runs — the launcher is always one this build picked, for
+/// both paths, and `args` is therefore honoured identically whether the user pressed a
+/// button or the wallpaper started it.
 pub(crate) fn plan_launch(
     id: &str,
     profile: &str,
@@ -760,7 +810,7 @@ pub(crate) fn plan_launch(
             aumid: shell.aumid.to_string(),
             alias: shell.alias,
             port: shell.default_port,
-            hide_window: trigger.is_automatic() && shell.can_start_hidden,
+            hide_window: keeps_window_hidden(trigger, shell.can_start_hidden),
         });
     }
 
@@ -864,12 +914,17 @@ fn launch_shell(
         }
     }
 
+    // Which windows belong to this subject is asked **once**, before the start, from
+    // the record the last scan wrote: that path does not depend on the client being up
+    // yet, and asking it here keeps the waiting loop below about one thing.
+    let executable = recorded_shell_executable(aumid);
+
     if !spawn_alias(alias, aumid) {
         return HarnessLaunchOutcome::new("spawn-failed", HarnessTargetKind::EmbeddedShell);
     }
 
     let (confirmed, hidden) = match port {
-        Some(port) => wait_for_shell(port, hide_window),
+        Some(port) => wait_for_shell(port, hide_window, executable.as_deref()),
         None => (false, false),
     };
     log::info!(
@@ -890,26 +945,120 @@ fn launch_shell(
 /// from there into the window it owns), and hiding a window that has not been
 /// painted yet is simply retried until the deadline. Hiding never fails the
 /// launch — a visible window is the honest outcome of not being able to hide one.
-fn wait_for_shell(port: u16, hide_window: bool) -> (bool, bool) {
+/// 隐藏是**反复施加**的，不是一次性的，原因是实测：
+///
+/// * 壳自己有"把我的窗口拿到前台"的一条路（托盘、`second-instance`、启动完成后的
+///   `window.show()`），它会把我们藏起来的窗口重新显示出来 —— 实测：外部隐藏之后请求壳自己
+///   聚焦，窗口 540ms 后回到屏幕上；
+/// * 而"趁窗口还不可见时先藏起来"并不成立：属于这个可执行文件的 10 个顶层窗口里有 9 个本来
+///   就是 `IsWindowVisible == false`（电子客户端建窗口时就是这个样子），对它们施加隐藏是无操作，
+///   什么也锁不住。
+///
+/// 所以这里做的是"只要它露头就再藏一次"，直到**连续 [`SHELL_HIDE_SETTLE`] 屏幕上都没有它的
+/// 窗口**为止 —— 那个静默期才是"这次启动结束了"的判据，壳晚一点才显示的那一帧因此也会被盖掉。
+/// 代价是一帧：壳自己显示出来的那一帧最多被看到一个 [`SHELL_HIDE_POLL`]。阻止一个进程显示自己
+/// 的窗口，在进程外没有别的办法（不碰透明/分层那一类会让 Chromium 渲染出问题的招）。
+fn wait_for_shell(port: u16, hide_window: bool, executable: Option<&str>) -> (bool, bool) {
     let deadline = std::time::Instant::now() + SHELL_START_TIMEOUT;
-    let mut confirmed = false;
-    let mut hidden = false;
+    // When the client started answering. It is the moment after which its window is
+    // expected, which is what makes the fast poll below worth paying for.
+    let mut confirmed_at: Option<std::time::Instant> = None;
+    // When the family was last seen on screen (and therefore last put out of sight
+    // again). The settle period is measured from here, so a late `show()` from the
+    // client restarts it instead of being missed.
+    let mut hidden_since: Option<std::time::Instant> = None;
     while std::time::Instant::now() < deadline {
-        if !confirmed {
-            confirmed = crate::client_window::endpoint_is_listening(port);
+        if confirmed_at.is_none() && crate::client_window::endpoint_is_listening(port) {
+            confirmed_at = Some(std::time::Instant::now());
         }
-        if hide_window && !hidden {
-            hidden = crate::client_window::hide_client_window(port).hidden;
+        let confirmed = confirmed_at.is_some();
+        if hide_window && hide_started_shell(port, confirmed, executable) {
+            // Something of that executable was on screen and is now out of sight: the
+            // first paint, or the client asking for its own window again.
+            hidden_since = Some(std::time::Instant::now());
         }
-        if confirmed && (!hide_window || hidden) {
+        let settled = hide_settled(hidden_since, std::time::Instant::now());
+        if confirmed && (!hide_window || settled) {
             break;
         }
-        std::thread::sleep(SHELL_START_POLL);
+        // The fast poll is a race with the client's first paint, and the race has a
+        // bounded useful life: once the client has been up for a while without painting,
+        // the slow poll takes over and the hide still happens — later, not never.
+        let racing = hidden_since.is_some()
+            || confirmed_at.is_some_and(|at| at.elapsed() < SHELL_HIDE_POLL_WINDOW);
+        std::thread::sleep(if hide_window && confirmed && !settled && racing {
+            SHELL_HIDE_POLL
+        } else {
+            SHELL_START_POLL
+        });
     }
+    let hidden = hidden_since.is_some();
     if hide_window && !hidden {
-        log::warn!("harness shell window was never hideable: port={port} confirmed={confirmed}");
+        log::warn!(
+            "harness shell window was never hideable: port={port} listening={}",
+            confirmed_at.is_some()
+        );
     }
-    (confirmed, hidden)
+    (confirmed_at.is_some(), hidden)
+}
+
+/// Whether the hide has been *holding*: something was put out of sight, and nothing of
+/// that executable has been on screen since.
+///
+/// 这是"这次启动的隐藏做完了"的判据，所以它单独成了一个纯函数。判据必须是这样而不是"藏成功过
+/// 一次"：壳自己那条显示窗口的路实测 540ms 就能把窗口拿回来，所以"曾经藏住"不构成答案，
+/// 只有"藏住之后没人再把它显示出来"才是。`None` 表示一次都没藏到过（窗口还没画出来，或它自己
+/// 就是以隐藏状态启动的），那时无论过了多久都不算完成。
+fn hide_settled(hidden_since: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    hidden_since.is_some_and(|since| now.saturating_duration_since(since) >= SHELL_HIDE_SETTLE)
+}
+
+/// The executable whose windows belong to a shell, as the last scan recorded it.
+///
+/// Read from the stored subject list rather than carried through the launch plan, for
+/// the same reason the launcher re-resolves a subject from its id instead of trusting a
+/// stored path: the path is a *report* about an install, while the plan is a decision
+/// about what to run. `None` means the record has none (no scan yet, or a record
+/// written before the field existed) — the caller then falls back to the client that is
+/// actually running, and says so rather than guessing.
+fn recorded_shell_executable(aumid: &str) -> Option<String> {
+    let catalog = crate::harness_catalog::load_catalog()?;
+    crate::harness_targets::recorded_shell_executable(&catalog.targets, aumid)
+}
+
+/// Put the windows of the shell that was just started out of sight, and say whether
+/// anything was on screen.
+///
+/// The answer is "did I just hide something", not "is the job finished": the caller
+/// applies this repeatedly (see [`wait_for_shell`]), and a `true` is exactly the news
+/// that the client had something on screen — the first paint, or its own `show()`.
+///
+/// 身份用**可执行文件**，不用端口：按端口找到的是监听那个套接字的进程，而窗口属于同一个
+/// 可执行文件的另一个进程（电子客户端的运行时在子进程里）。按路径找一次就覆盖整个进程家族，
+/// 而且不只一个窗口 —— 实测这台机器上那个可执行文件有 10 个顶层窗口。
+///
+/// The path sources are tried in the order that needs the least guessing:
+///
+/// 1. the path the scan recorded for the subject the user chose — the executable their
+///    own Start Menu entry starts;
+/// 2. the executable of the process answering on `port`, once it answers — the client
+///    that is actually running, which is the answer that stays right when the record
+///    has no path (this machine's does not, until a re-scan) or when the client was
+///    reinstalled somewhere else since that scan;
+/// 3. [`crate::client_window::hide_client_window`] — the port-shaped lookup that was the
+///    only route before, kept last so that a machine where the executable cannot be read
+///    at all behaves as it did then.
+fn hide_started_shell(port: u16, confirmed: bool, recorded: Option<&str>) -> bool {
+    let live = confirmed
+        .then(|| crate::client_window::endpoint_executable(port))
+        .flatten();
+    for candidate in [recorded.map(str::to_string), live].into_iter().flatten() {
+        if crate::client_window::hide_executable_windows(&candidate).hidden {
+            log::info!("harness shell window hidden by executable: executable={candidate}");
+            return true;
+        }
+    }
+    crate::client_window::hide_client_window(port).hidden
 }
 
 /// What 「拉起 UI」 found, and what it had to do about it.
@@ -1036,6 +1185,12 @@ pub(crate) fn ensure_ui(
         .trim()
         .strip_prefix(SHELL_ID_PREFIX)
         .and_then(known_shell);
+    // 显示这一半与隐藏那一半认出的是同一个东西：这个主体的可执行文件。设置里的「打开」与岛上
+    // 那个图标都走这条命令，所以它们要能把壁纸在后台启动时藏起来的窗口找回来 —— 按端口那条路
+    // 找不到它（实测：监听进程不是窗口的属主）。
+    let executable = shell
+        .as_ref()
+        .and_then(|shell| recorded_shell_executable(shell.aumid));
     // (S6.1, measured) A single-instance shell is asked to focus its *own* window
     // first, and only then does this application try to bring the window forward.
     //
@@ -1047,7 +1202,7 @@ pub(crate) fn ensure_ui(
     // was going to work was even made.
     let raise = match &shell {
         Some(shell) if shell.single_instance => {
-            if let Some(raised) = ask_shell_to_focus(shell, port) {
+            if let Some(raised) = ask_shell_to_focus(shell, port, executable.as_deref()) {
                 log::info!(
                     "harness shell focused its own window: aumid={} outcome={}",
                     shell.aumid,
@@ -1057,7 +1212,7 @@ pub(crate) fn ensure_ui(
             } else {
                 // Its focus path is not installed yet (it is still booting) or it owns
                 // no window after all: fall back to resolving the window ourselves.
-                let resolved = reveal(port, kind);
+                let resolved = reveal(port, kind, executable.as_deref());
                 // The client is up by now, so the request can land where it could not
                 // before — but only ask once, and only when there is a window to focus.
                 if resolved.outcome != "no-window" {
@@ -1072,7 +1227,7 @@ pub(crate) fn ensure_ui(
         }
         // A client without the lock has no such request: launching it again opens a
         // second window, so this application's own window work is the only route (§6.1).
-        _ => reveal(port, kind),
+        _ => reveal(port, kind, executable.as_deref()),
     };
     // One line for the whole action, because "I pressed it and nothing happened" is
     // otherwise indistinguishable from "the press never reached here" — the raise
@@ -1104,13 +1259,14 @@ pub(crate) fn ensure_ui(
 fn ask_shell_to_focus(
     shell: &crate::harness_targets::ShellApp,
     port: u16,
+    executable: Option<&str>,
 ) -> Option<crate::client_window::RaiseOutcome> {
     if !spawn_alias(&shell.alias, shell.aumid) {
         return None;
     }
     let deadline = std::time::Instant::now() + SHELL_FOCUS_TIMEOUT;
     loop {
-        let raise = crate::client_window::raise_client_window(port);
+        let raise = raise_shell_window(port, executable);
         if raise.outcome != "no-window" {
             // `raise-refused` lands here too, and it is a success for this route: the
             // window exists and is being focused by the client itself, which is the
@@ -1134,7 +1290,11 @@ fn ask_shell_to_focus(
 /// It is bounded by the class: only a shell is expected to own a window, so a
 /// checkout reports the answer immediately instead of waiting for a window that
 /// does not exist, and the caller can open a browser without a pointless delay.
-fn reveal(port: u16, kind: HarnessTargetKind) -> crate::client_window::RaiseOutcome {
+fn reveal(
+    port: u16,
+    kind: HarnessTargetKind,
+    executable: Option<&str>,
+) -> crate::client_window::RaiseOutcome {
     // 只有官壳拥有自己的窗口；源码目录与已安装 CLI 的界面是**浏览器**。
     //
     // 原来这里对它们也调一次 `raise_client_window`，而那个函数的做法是"找占用该端口的进程，再找
@@ -1142,6 +1302,9 @@ fn reveal(port: u16, kind: HarnessTargetKind) -> crate::client_window::RaiseOutc
     // 祖先走到**启动它的终端或编辑器**。实测过：用户选了浏览器，被拉到前台的是别人的窗口。
     // 所以这里直接如实回答"没有窗口"，让调用方走用户选的那条路（浏览器），而不是拿一个碰巧
     // 存在的窗口当作主体的界面。等待窗口的宽限只留给官壳，那也是它唯一有意义的地方。
+    //
+    // 非壳主体的 `executable` 一定是 `None`（只有壳的目标带这个路径），所以这条分类既决定了
+    // 要不要等窗口，也决定了去哪里找窗口 —— 两件事本来就该由同一个分类回答。
     if kind != HarnessTargetKind::EmbeddedShell {
         return crate::client_window::RaiseOutcome {
             outcome: "no-window",
@@ -1150,13 +1313,31 @@ fn reveal(port: u16, kind: HarnessTargetKind) -> crate::client_window::RaiseOutc
     }
     let deadline = std::time::Instant::now() + UI_WINDOW_TIMEOUT;
     loop {
-        let raise = crate::client_window::raise_client_window(port);
+        let raise = raise_shell_window(port, executable);
         if raise.outcome == "no-window" && std::time::Instant::now() < deadline {
             std::thread::sleep(SHELL_START_POLL);
             continue;
         }
         return raise;
     }
+}
+
+/// Bring a shell's window forward, by its executable when this machine knows it.
+///
+/// The path route is what actually finds the window of the client this wallpaper
+/// started in the background: the listener is not the window's owner (measured), and
+/// the window is invisible — two things the path-shaped search handles and the
+/// port-shaped one only approximates. `raise_client_window(port)` stays as the answer
+/// for a machine whose record carries no path at all, so "no scan yet" degrades to the
+/// behaviour this build had before rather than to "no window".
+fn raise_shell_window(port: u16, executable: Option<&str>) -> crate::client_window::RaiseOutcome {
+    if let Some(executable) = executable {
+        let shown = crate::client_window::show_executable_windows(executable);
+        if shown.outcome != "no-window" {
+            return shown;
+        }
+    }
+    crate::client_window::raise_client_window(port)
 }
 
 /// Wait for an endpoint to start answering, bounded.
@@ -1551,6 +1732,7 @@ mod tests {
 
     const MANUAL: LaunchTrigger = LaunchTrigger::Manual;
     const AUTO: LaunchTrigger = LaunchTrigger::Automatic;
+    const SLIDER: LaunchTrigger = LaunchTrigger::Slider;
 
     #[test]
     fn a_shell_plan_carries_the_alias_this_build_knows() {
@@ -1567,13 +1749,94 @@ mod tests {
     }
 
     #[test]
-    fn only_an_unattended_start_keeps_the_window_out_of_sight() {
+    fn both_background_starts_keep_the_window_out_of_sight_and_the_open_action_does_not() {
         // §5.1: the startup path starts the official shell without showing it...
         let automatic = plan_launch(OFFICIAL_ID, "desktop", &[], AUTO).expect("shell plan");
         assert!(matches!(automatic, LaunchPlan::Shell { hide_window: true, .. }));
-        // ...while a button the user just pressed shows them what they asked for.
+        // ...and the island's slider asks for the same thing: the subject is brought up
+        // to serve, its interface is the wallpaper's own chat surface.
+        let slider = plan_launch(OFFICIAL_ID, "desktop", &[], SLIDER).expect("shell plan");
+        assert!(matches!(slider, LaunchPlan::Shell { hide_window: true, .. }));
+        // ...while 「打开」 shows the thing the user asked to see.
         let manual = plan_launch(OFFICIAL_ID, "desktop", &[], MANUAL).expect("shell plan");
         assert!(matches!(manual, LaunchPlan::Shell { hide_window: false, .. }));
+        // 三者跑的东西完全相同：这次改的只有"窗口显示不显示"，不是"跑什么"。
+        assert_eq!(plan_launch(OFFICIAL_ID, "desktop", &[], AUTO), plan_launch(OFFICIAL_ID, "desktop", &[], SLIDER));
+    }
+
+    /// 「能不能后台启动」是主体自己说了算的，触发者说了不算。
+    ///
+    /// 方向不能反：藏起来的窗口如果没人能再显示，用户面对的是一个够不着的程序；而多一个可见的
+    /// 窗口只是碍眼。表里唯一的官壳恰好是"可以"，所以这条用纯函数把两个方向都钉住。
+    #[test]
+    fn a_subject_that_cannot_start_hidden_is_never_hidden() {
+        assert!(keeps_window_hidden(AUTO, true));
+        assert!(keeps_window_hidden(SLIDER, true));
+        assert!(!keeps_window_hidden(MANUAL, true));
+        // 能力说不行 ⇒ 无论谁在问，都不藏。
+        assert!(!keeps_window_hidden(AUTO, false));
+        assert!(!keeps_window_hidden(SLIDER, false));
+        assert!(!keeps_window_hidden(MANUAL, false));
+    }
+
+    /// "藏住了"= 藏成功过 **且** 之后没人再把它显示出来。
+    ///
+    /// 三个方向都钉在这里：一次没藏到过（窗口还没画出来）不算完成；刚藏完还在静默期里不算完成；
+    /// 静默期过了才算。壳自己那条 show 路实测 540ms 就能把窗口拿回来，所以第二档不是形式主义：
+    /// 它正是"别把壳刚显示出来的窗口当成已经藏好了"。
+    #[test]
+    fn hiding_is_only_settled_once_nothing_brought_the_window_back() {
+        let now = std::time::Instant::now();
+        // 从没藏到过：不算完成，等多久都不算。
+        assert!(!hide_settled(None, now));
+        // 刚藏完（0ms、1s、静默期前一瞬间）：还在静默期里。
+        assert!(!hide_settled(Some(now), now));
+        assert!(!hide_settled(Some(now - std::time::Duration::from_secs(1)), now));
+        assert!(!hide_settled(
+            Some(now - (SHELL_HIDE_SETTLE - std::time::Duration::from_millis(1))),
+            now
+        ));
+        // 静默期满：这次隐藏成立。
+        assert!(hide_settled(Some(now - SHELL_HIDE_SETTLE), now));
+        assert!(hide_settled(Some(now - SHELL_HIDE_SETTLE * 3), now));
+        // 快速轮询只服务于"第一次绘制"这场竞速，且它自己也有寿命：静默期比它短，
+        // 否则一个始终不露头的客户端会让高频率的枚举一直跑下去。
+        assert!(SHELL_HIDE_SETTLE < SHELL_HIDE_POLL_WINDOW);
+        assert!(SHELL_HIDE_POLL < SHELL_START_POLL);
+    }
+
+    /// 藏起来的那个窗口，要由**这个主体自己那条记录**告诉我们是哪个可执行文件的。
+    ///
+    /// 记录里没有（老记录、没扫过）就是 `None`：那时调用方去问正在应答的那台客户端，而不是拿一个
+    /// 猜出来的路径去藏别人的窗口。
+    #[test]
+    fn the_window_executable_is_selected_from_the_recorded_subject() {
+        use crate::harness_targets::recorded_shell_executable;
+        let scan = crate::harness_targets::build_scan_for_tests(&[crate::harness_targets::ScannedShortcut {
+            aumid: "com.deepseek.dsh".into(),
+            directory: r"C:\Users\u\Start Menu".into(),
+            target: Some(r"D:\Family\dsh-official\DeepSeek Harness.exe".into()),
+        }]);
+        let targets = &scan.targets;
+        // AUMID 的大小写不参与判定：它来自快捷方式属性，与我们表里的拼法未必逐字相同。
+        assert_eq!(
+            recorded_shell_executable(targets, "com.deepseek.dsh").as_deref(),
+            Some(r"D:\Family\dsh-official\DeepSeek Harness.exe")
+        );
+        assert_eq!(
+            recorded_shell_executable(targets, "COM.DeepSeek.DSH").as_deref(),
+            Some(r"D:\Family\dsh-official\DeepSeek Harness.exe")
+        );
+        // 别的 AUMID、空 AUMID：记录里没有它，答案是"没有路径"。
+        assert_eq!(recorded_shell_executable(targets, "ai.deepseek.dsh.desktop"), None);
+        assert_eq!(recorded_shell_executable(targets, "   "), None);
+        // 路径读不到时也是 `None`，而不是空字符串 —— 空串会让"按路径找窗口"去找一个空路径。
+        let unread = crate::harness_targets::build_scan_for_tests(&[crate::harness_targets::ScannedShortcut {
+            aumid: "com.deepseek.dsh".into(),
+            directory: r"C:\Users\u\Start Menu".into(),
+            target: None,
+        }]);
+        assert_eq!(recorded_shell_executable(&unread.targets, "com.deepseek.dsh"), None);
     }
 
     #[test]

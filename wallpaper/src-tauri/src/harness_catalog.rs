@@ -143,10 +143,39 @@ mod tests {
         assert!(load_from(&wrong_version).is_none());
     }
 
+    /// The path the launcher hides a shell's window by must survive the round trip.
+    ///
+    /// This is the link the whole "start it in the background" behaviour hangs on: the
+    /// scan reads the path in the settings window's process, while the hiding happens in
+    /// whatever process starts the subject, and the file is the only thing between them.
+    /// A field that serialised nowhere would make the feature silently inert, which is
+    /// exactly the failure mode this test exists to prevent.
+    #[test]
+    fn the_window_executable_survives_the_round_trip() {
+        let exe = r"D:\Family\dsh-official\DeepSeek Harness.exe";
+        let scan = crate::harness_targets::build_scan_for_tests(&[ScannedShortcut {
+            aumid: "com.deepseek.dsh".into(),
+            directory: r"C:\Start Menu".into(),
+            target: Some(exe.into()),
+        }]);
+        let catalog = record(&scan, 1_700_000_000_000);
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("catalog.json");
+        save_to(&path, &catalog).expect("saved");
+
+        let loaded = load_from(&path).expect("loaded");
+        assert_eq!(loaded.targets[0].executable.as_deref(), Some(exe));
+        assert_eq!(
+            crate::harness_targets::recorded_shell_executable(&loaded.targets, "com.deepseek.dsh")
+                .as_deref(),
+            Some(exe)
+        );
+    }
+
     /// 版本号是后加的字段，而缓存文件是**上一个版本写下的**：那份文件里没有 `version`。
     ///
     /// 它必须照旧读得回来（那几条主体只是没有版本），否则一次升级就会让用户手里已验证过的
-    /// 列表消失，逼他重新扫描 —— 缓存的全部意义就是不必如此。
+    /// 列表消失，逼他重新扫描 —— 缓存的全部意义就是不必如此。`executable` 是同一个道理。
     #[test]
     fn a_record_written_before_the_version_field_still_loads() {
         let directory = tempfile::tempdir().expect("temp dir");
@@ -160,6 +189,13 @@ mod tests {
         let loaded = load_from(&path).expect("an older record is still a record");
         assert_eq!(loaded.targets.len(), 1);
         assert_eq!(loaded.targets[0].version, None);
+        // 那份文件里也没有窗口路径：它读得回来，但"没有路径"必须如实是"没有"，
+        // 否则启动那条路会拿一个空路径去找窗口。
+        assert_eq!(loaded.targets[0].executable, None);
+        assert_eq!(
+            crate::harness_targets::recorded_shell_executable(&loaded.targets, "com.deepseek.dsh"),
+            None
+        );
         assert_eq!(loaded.targets[0].label, "官方桌面客户端");
     }
 }

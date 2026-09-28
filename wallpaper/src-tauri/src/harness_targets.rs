@@ -170,6 +170,21 @@ pub struct HarnessTarget {
     /// `scan_dsh_paths` reports it, or the shortcut directory a shell was
     /// registered from.
     pub source: String,
+    /// The executable a shell's own windows belong to, as the shortcut that
+    /// registers it declares.
+    ///
+    /// This is what makes "start it, then put its window out of sight" possible at
+    /// all: a client's window cannot be reached through the process that holds its
+    /// socket (measured — the listener and the window's owner are two processes of
+    /// this same file), while a path names the whole family at once.
+    ///
+    /// It is a *report about the install*, never part of the subject's identity: the
+    /// id stays location-independent, so reinstalling the client elsewhere changes
+    /// this field and nothing else. `None` means the scan could not read it, and a
+    /// caller then has no path to match rather than a guessed one — the same rule
+    /// `version` follows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable: Option<String>,
     pub identity: TargetIdentity,
     pub launch: LaunchRecipe,
     pub capabilities: TargetCapabilities,
@@ -243,6 +258,44 @@ const SHELL_APPS: &[ShellAppSpec] = &[
 /// Prefix of every shell target id. One definition, because the launcher parses
 /// this namespace back out of a stored id and the two spellings must not drift.
 pub(crate) const SHELL_ID_PREFIX: &str = "shell:";
+
+/// The executable whose windows belong to one known shell, as the last scan measured
+/// it.
+///
+/// Selected by **AUMID** rather than by the caller's stored id: the AUMID is what the
+/// scan matched a shortcut on, while the id is the renderer's key for the same subject
+/// (and the two spellings would have to be kept in step by hand). Only a shell is
+/// asked at all — a checkout's and a CLI's interface is the browser, so they carry no
+/// executable and this answers `None` for them by construction.
+///
+/// `None` means the recorded list has no path for this subject: an empty record, a
+/// subject that is not in it, or one written before the field existed. The caller must
+/// treat it as "no path to match" — the launcher then resolves the same question from
+/// the client that is actually running, or falls back to the port-shaped lookup.
+///
+/// Pure: what it decides is which record answers for which AUMID, and that is testable
+/// without a scan of this machine.
+pub(crate) fn recorded_shell_executable(
+    targets: &[HarnessTarget],
+    aumid: &str,
+) -> Option<String> {
+    let wanted = aumid.trim();
+    if wanted.is_empty() {
+        return None;
+    }
+    targets
+        .iter()
+        .filter(|target| target.kind == HarnessTargetKind::EmbeddedShell)
+        .find(|target| {
+            target
+                .identity
+                .aumid
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(wanted))
+        })
+        .and_then(|target| target.executable.clone())
+        .filter(|path| !path.trim().is_empty())
+}
 
 /// The alias the Windows shell resolves through the current registration.
 fn apps_folder_alias(aumid: &str) -> String {
@@ -382,6 +435,9 @@ fn shell_target(spec: &ShellAppSpec, shortcut: &ScannedShortcut) -> HarnessTarge
             .target
             .as_deref()
             .and_then(|target| file_version(Path::new(target))),
+        // 同一个属性读出来的另一半：版本回答"这是哪一版"，路径回答"它的窗口是哪几个"。
+        // 一次属性读取供两个用途，而不是为了这个功能再扫一遍开始菜单。
+        executable: shortcut.target.clone(),
         source: shortcut.directory.clone(),
         identity: TargetIdentity {
             aumid: Some(spec.aumid.into()),
@@ -422,6 +478,9 @@ fn checkout_target(root_path: &str, source: &str) -> HarnessTarget {
         client: HarnessClientKind::OfficialWeb,
         label,
         version: checkout_version(Path::new(root_path)),
+        // 源码树没有自己的窗口（界面是浏览器），所以这里没有"要藏/要显示的那几个窗口"这件
+        // 事：留 `None` 就是让隐藏与显示在这一类上成为空操作。
+        executable: None,
         source: source.to_string(),
         identity: TargetIdentity {
             aumid: None,
@@ -466,6 +525,9 @@ fn installed_cli_target(launcher: &Path) -> HarnessTarget {
         // 自报家门式的短标签：它已经说了自己是 CLI，界面上不必再冠一次类别词。
         label: "DSH CLI".to_string(),
         version: installed_cli_version(launcher),
+        // 已安装 CLI 的界面是浏览器，它自己没有窗口（`owns_window: false`）：与源码树同理，
+        // `None` 让隐藏/显示在它身上无从发生，而不是拿启动器的路径去碰运气。
+        executable: None,
         // The settings row shows where a subject came from; for this class that is
         // the launcher itself, which is also its identity.
         source: path,
@@ -1068,6 +1130,59 @@ mod tests {
         );
         assert_eq!(scan.targets.len(), 1);
         assert_eq!(scan.targets[0].source, r"C:\Start Menu");
+    }
+
+    /// 三类主体里只有壳带着"它自己的窗口是哪个可执行文件的"这条路径。
+    ///
+    /// 这条路径本身就是"隐藏与显示要不要做事"的判据：源码树与已安装 CLI 的界面是浏览器
+    /// （`owns_window: false`），给它们一个路径只会让那两个动作去找一个不属于主体的窗口。
+    /// 路径来自快捷方式属性，与版本同一次读取 —— 所以它也是"安装在哪"的报告，不是身份的一部分。
+    #[test]
+    fn only_a_shell_carries_the_executable_its_windows_belong_to() {
+        let exe = r"D:\Family\dsh-official\DeepSeek Harness.exe";
+        let scan = build_scan(&[shortcut_starting(OFFICIAL, r"C:\Start Menu", exe)], &[]);
+        let shell = &scan.targets[0];
+        assert_eq!(shell.kind, HarnessTargetKind::EmbeddedShell);
+        assert_eq!(shell.executable.as_deref(), Some(exe));
+        // 身份仍然是位置无关的那一个：路径不进 id、不进 identity。
+        assert_eq!(shell.id, "shell:com.deepseek.dsh");
+        assert_eq!(shell.identity.aumid.as_deref(), Some(OFFICIAL));
+
+        let tree = build_scan(&[], &[checkout(r"D:\tree\deepseek-harness", "磁盘扫描")]);
+        assert_eq!(tree.targets[0].kind, HarnessTargetKind::Checkout);
+        assert_eq!(tree.targets[0].executable, None);
+        assert_eq!(
+            installed_cli_target(Path::new(r"C:\Users\someone\AppData\Roaming\npm\dsh.cmd")).executable,
+            None
+        );
+    }
+
+    /// 选择"这个壳的窗口属于哪个可执行文件"时，只认壳这一类。
+    ///
+    /// 判据是 AUMID 而不是调用方手里的 id：AUMID 才是扫描用来匹配快捷方式的东西，而 id 是渲染层
+    /// 的键 —— 两份拼法各写一遍，迟早会漂移。
+    #[test]
+    fn the_window_executable_is_answered_by_the_record_that_matches_the_aumid() {
+        let exe = r"D:\Family\dsh-official\DeepSeek Harness.exe";
+        let scan = build_scan(
+            &[shortcut_starting(OFFICIAL, r"C:\Start Menu", exe)],
+            &[checkout(r"D:\tree\deepseek-harness", "磁盘扫描")],
+        );
+        assert_eq!(
+            recorded_shell_executable(&scan.targets, OFFICIAL).as_deref(),
+            Some(exe)
+        );
+        assert_eq!(
+            recorded_shell_executable(&scan.targets, "COM.DEEPSEEK.DSH").as_deref(),
+            Some(exe)
+        );
+        // 检出那一行的 id 就是它的路径：按它去问"窗口路径"必须得不到答案。
+        assert_eq!(recorded_shell_executable(&scan.targets, r"D:\tree\deepseek-harness"), None);
+        assert_eq!(recorded_shell_executable(&scan.targets, UNSUPPORTED_AUMID), None);
+        assert_eq!(recorded_shell_executable(&scan.targets, ""), None);
+        // 读到的是空路径（属性缺失但被写成空串）时也当作"没有路径"。
+        let empty = build_scan(&[shortcut_starting(OFFICIAL, r"C:\Start Menu", "  ")], &[]);
+        assert_eq!(recorded_shell_executable(&empty.targets, OFFICIAL), None);
     }
 
     #[test]

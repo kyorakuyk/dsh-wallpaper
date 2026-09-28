@@ -240,6 +240,13 @@ export interface HarnessTarget {
    * 这一条被检查过。
    */
   version?: string
+  /**
+   * 自带检出的壳，它的窗口属于哪个可执行文件 —— 扫描从注册它的那个快捷方式读到。
+   *
+   * 只在原生侧使用（后台启动后藏窗口、显式动作里把窗口找回来），渲染层不拿它做判断。缺失就是
+   * "这次扫描没读到"：原生那时改问正在应答的那台客户端的可执行文件，而不是猜一条路径。
+   */
+  executable?: string
   /** Where the scan found it: a checkout's scan origin, or a shell's shortcut directory. */
   source: string
   identity: {

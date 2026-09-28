@@ -469,7 +469,7 @@ pub fn hide_client_window(port: u16) -> HideOutcome {
         // this returns: the caller asked whether the window is now hidden, and a
         // window that was already hidden is not reachable here at all, because
         // `window_for_endpoint` only ever returns visible windows.
-        unsafe { ShowWindow(window, SW_HIDE) };
+        unsafe { let _ = ShowWindow(window, SW_HIDE); }
         HideOutcome::hidden_ok()
     }
     #[cfg(not(windows))]
@@ -477,6 +477,134 @@ pub fn hide_client_window(port: u16) -> HideOutcome {
         let _ = port;
         HideOutcome::no_window()
     }
+}
+
+/// Put every window of one executable's process family out of sight.
+///
+/// The executable-path counterpart of [`hide_client_window`], and the identity the
+/// launch path uses. Measured on this machine, the official shell's listener and the
+/// process that owns its window are two processes of *one* file (pid 41320 listening,
+/// pid 47972 owning the window, its parent — an Electron client keeps its runtime in a
+/// child). Naming the file rather than the process is what makes one call cover the
+/// whole family: the port-shaped lookup reaches the same window through a bounded
+/// ancestor walk and can only answer with one window per call.
+///
+/// `no-window` means no window of that executable is on screen — either it is not
+/// running, or it is already out of sight (which is a state the wallpaper itself
+/// creates). Neither is reported as "hidden", because that would be a claim about a
+/// window nobody saw.
+pub fn hide_executable_windows(executable: &str) -> HideOutcome {
+    #[cfg(windows)]
+    {
+        let windows = windows_of_executable(executable, true);
+        if windows.is_empty() {
+            return HideOutcome::no_window();
+        }
+        for window in windows {
+            let _ = unsafe { ShowWindow(window, SW_HIDE) };
+        }
+        HideOutcome::hidden_ok()
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = executable;
+        HideOutcome::no_window()
+    }
+}
+
+/// Bring every window of one executable's process family forward.
+///
+/// The showing half of the same identity, and the deliberate mirror of
+/// [`raise_client_window`]: a window the wallpaper hid is *invisible*, not minimised,
+/// so this is what brings back the client that was started in the background (§6.1).
+/// An on-screen window is always the right answer; only when the executable has none
+/// does the search accept an invisible window that still looks like the client's own
+/// (title and size), which is exactly the state the wallpaper created.
+///
+/// The outcome codes are the ones the renderer already words: `raised` when Windows
+/// accepted the foreground change, `raise-refused` when it did not (normal for a
+/// desktop wallpaper — the windows are shown and restored either way), and
+/// `no-window` when the executable owns no window to show.
+pub fn show_executable_windows(executable: &str) -> RaiseOutcome {
+    #[cfg(windows)]
+    {
+        let mut windows = windows_of_executable(executable, true);
+        if windows.is_empty() {
+            windows = windows_of_executable(executable, false);
+        }
+        if windows.is_empty() {
+            return RaiseOutcome::no_window();
+        }
+        let mut foreground = false;
+        for window in windows {
+            unsafe {
+                // The same order as `raise_client_window`, for the same two reasons:
+                // `SW_SHOW` first because the visible-and-hidden pair is ours to
+                // decide in both directions, `SW_RESTORE` then because a minimised
+                // window would otherwise be "brought forward" without being visible.
+                let _ = ShowWindow(window, SW_SHOW);
+                let _ = ShowWindow(window, SW_RESTORE);
+                foreground |= SetForegroundWindow(window).as_bool();
+            }
+        }
+        if foreground {
+            RaiseOutcome::raised()
+        } else {
+            RaiseOutcome { outcome: "raise-refused", raised: false }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = executable;
+        RaiseOutcome::no_window()
+    }
+}
+
+/// Whether two paths name the same executable file.
+///
+/// Windows paths are case-insensitive, and the same file is spelled several ways
+/// depending on who was asked: `QueryFullProcessImageNameW` returns a `\\?\`-prefixed
+/// path for some processes (this machine's scan records exactly that spelling for a
+/// checkout root), while a shortcut's target comes back plain. Folding the namespace
+/// prefix, the separator spelling and the case is what makes "the same executable"
+/// mean the same thing on both sides of the comparison.
+///
+/// Pure, and therefore testable without a running client: everything it decides is a
+/// string question, and both ways of getting it wrong are bad — matching too loosely
+/// hides a program the user did not choose, matching too strictly hides nothing and
+/// leaves the window on screen.
+pub(crate) fn same_executable_path(left: &str, right: &str) -> bool {
+    let left = normalized_executable_path(left);
+    let right = normalized_executable_path(right);
+    // An empty side is never a match — not even against another empty one. "The path
+    // could not be read" must answer "no window of that executable", never "this
+    // window is it": the loose answer hides a program the user did not choose.
+    !left.is_empty() && left == right
+}
+
+/// The comparable form of an executable path: no verbatim prefix, one separator
+/// spelling, no trailing separator, lower case.
+fn normalized_executable_path(path: &str) -> String {
+    let trimmed = path.trim();
+    // `\\?\` (and the `\??\` spelling of the same namespace) is not part of the file
+    // name, so the same file reached with and without it must compare equal.
+    // `\\?\UNC\server\share` is the verbatim spelling of `\\server\share`, so the UNC
+    // form is rebuilt rather than left as a directory literally called `UNC`.
+    let mut value = match trimmed
+        .strip_prefix(r"\\?\")
+        .or_else(|| trimmed.strip_prefix(r"\??\"))
+    {
+        Some(rest) if rest.get(..4).is_some_and(|head| head.eq_ignore_ascii_case("UNC\\")) => {
+            format!(r"\\{}", &rest[4..])
+        }
+        Some(rest) => rest.to_string(),
+        None => trimmed.to_string(),
+    };
+    value = value.replace('/', "\\");
+    while value.ends_with('\\') {
+        value.pop();
+    }
+    value.to_ascii_lowercase()
 }
 
 /// The visible top-level window belonging to the client behind `port`.
@@ -563,31 +691,58 @@ fn ancestor_chain(pid: u32, max_depth: usize) -> Vec<u32> {
 }
 /// The executable's file name, lower-cased so the comparison is case-insensitive
 /// and so the same product installed under two directories still matches.
+///
+/// The *file name* is the right answer for walking ancestors (the same client's
+/// processes share it), and the wrong answer for identifying a client: a second
+/// install elsewhere has the same name, which is why matching windows by executable
+/// uses the full path from [`process_image_path`] instead.
 #[cfg(windows)]
 fn process_name(pid: u32) -> Option<String> {
+    let path = process_image_path(pid)?;
+    Some(
+        std::path::Path::new(&path)
+            .file_name()
+            .map(|name| name.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_else(|| path.to_ascii_lowercase()),
+    )
+}
+
+/// The full path of the executable a process is running, or `None` when it cannot be
+/// read.
+///
+/// `None` means "unreadable" — the process is gone, or this process may not query it —
+/// and never "does not match". The distinction is the whole safety direction here:
+/// a window whose owner cannot be named must not be treated as a window of the
+/// target executable.
+#[cfg(windows)]
+fn process_image_path(pid: u32) -> Option<String> {
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
-        let mut buffer = [0u16; 260];
-        let mut size = buffer.len() as u32;
-        let result = QueryFullProcessImageNameW(
-            handle,
-            PROCESS_NAME_FORMAT(0),
-            windows::core::PWSTR(buffer.as_mut_ptr()),
-            &mut size,
-        );
+        // `QueryFullProcessImageNameW` reports a buffer that is too small instead of
+        // truncating, so a long install path is asked for again with more room rather
+        // than being reported as unreadable.
+        let mut path = None;
+        for capacity in [512usize, 4096, 32_768] {
+            let mut buffer = vec![0u16; capacity];
+            let mut size = capacity as u32;
+            let queried = QueryFullProcessImageNameW(
+                handle,
+                PROCESS_NAME_FORMAT(0),
+                windows::core::PWSTR(buffer.as_mut_ptr()),
+                &mut size,
+            )
+            .is_ok();
+            if queried {
+                path = Some(String::from_utf16_lossy(&buffer[..size as usize]));
+                break;
+            }
+        }
         let _ = windows::Win32::Foundation::CloseHandle(handle);
-        result.ok()?;
-        let path = String::from_utf16_lossy(&buffer[..size as usize]);
-        Some(
-            std::path::Path::new(&path)
-                .file_name()
-                .map(|name| name.to_string_lossy().to_ascii_lowercase())
-                .unwrap_or_else(|| path.to_ascii_lowercase()),
-        )
+        path
     }
 }
 
@@ -630,6 +785,86 @@ fn first_window(pid: u32, require_visible: bool) -> Option<HWND> {
         let _ = EnumWindows(Some(find_top_level), LPARAM(&mut search as *mut _ as isize));
     }
     search.found
+}
+
+/// One enumeration of the top-level windows whose owner runs `executable`.
+#[cfg(windows)]
+struct ExecutableWindowSearch<'a> {
+    executable: &'a str,
+    /// Whether only a window that is on screen counts.
+    ///
+    /// The same two answers [`TopLevelSearch`] needs, for the same two callers: hiding
+    /// must only ever claim a window nobody can see any more, while showing must also
+    /// find the window this wallpaper hid — which is invisible, and to a window
+    /// search that only accepts visible ones does not exist at all.
+    require_visible: bool,
+    /// Every match, not the first: a client's process family can own more than one
+    /// window, and leaving the second one on screen is exactly the failure this
+    /// helper exists to remove.
+    found: Vec<HWND>,
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn collect_executable_windows(hwnd: HWND, param: LPARAM) -> BOOL {
+    let search = unsafe { &mut *(param.0 as *mut ExecutableWindowSearch) };
+    let mut owner = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
+    if owner == 0 {
+        return BOOL(1);
+    }
+    // Asked per window rather than cached per process: the family is a handful of
+    // windows, and naming the owner is the *only* thing that decides whether this
+    // window belongs to the target — guessing it from a pid would put the whole
+    // split-process problem back.
+    let Some(executable) = process_image_path(owner) else {
+        return BOOL(1);
+    };
+    if !same_executable_path(&executable, search.executable) {
+        return BOOL(1);
+    }
+    let on_screen = unsafe { IsWindowVisible(hwnd) }.as_bool();
+    if on_screen || (!search.require_visible && window_is_a_client_window(hwnd)) {
+        search.found.push(hwnd);
+    }
+    // Keep walking: unlike `find_top_level`, one match does not answer the question.
+    BOOL(1)
+}
+
+/// Every top-level window whose owning process runs `executable`.
+///
+/// `require_visible` separates "on screen right now" from "also the client's own
+/// window that is currently out of sight" — see [`ExecutableWindowSearch`].
+#[cfg(windows)]
+fn windows_of_executable(executable: &str, require_visible: bool) -> Vec<HWND> {
+    let mut search = ExecutableWindowSearch {
+        executable,
+        require_visible,
+        found: Vec::new(),
+    };
+    unsafe {
+        let _ = EnumWindows(
+            Some(collect_executable_windows),
+            LPARAM(&mut search as *mut _ as isize),
+        );
+    }
+    search.found
+}
+
+/// The executable of the client answering on `port`, if the kernel can be asked.
+///
+/// Used where a path is needed for a subject the last scan recorded none for: the
+/// process holding the socket is the client that is running *now*, which is the
+/// answer that stays right after a reinstall moves the install directory.
+pub fn endpoint_executable(port: u16) -> Option<String> {
+    #[cfg(windows)]
+    {
+        listener_pid(port).and_then(process_image_path)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = port;
+        None
+    }
 }
 
 /// Whether anything is listening on the port at all, without resolving a window.
@@ -698,6 +933,69 @@ pub fn open_loopback_url(port: u16, path: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{wait_for_process_exit, RaiseOutcome};
+
+    /// 窗口与可执行文件之间靠**路径**认亲，所以这条比较是整个隐藏/显示的一半。
+    ///
+    /// 两侧的拼法来自两个不同的地方、也由两个不同的 API 给出：进程镜像路径
+    /// （`QueryFullProcessImageNameW`）与快捷方式的目标。写松了会把用户没选的那个程序藏起来，
+    /// 写紧了就一个窗口也找不到 —— 而"找不到"正是这次要修的故障。
+    #[test]
+    fn the_same_executable_is_recognised_through_the_spellings_windows_uses() {
+        use super::same_executable_path;
+        const PLAIN: &str = r"D:\Family\dsh-official\DeepSeek Harness.exe";
+        // 大小写：Windows 路径不比大小写，用户从快捷方式读到的那一份未必与内核给的一致。
+        assert!(same_executable_path(PLAIN, r"d:\family\dsh-official\deepseek harness.EXE"));
+        // 逐字前缀 `\\?\`：同一台机器上，进程镜像是带前缀的那种，快捷方式是不带的那种。
+        assert!(same_executable_path(PLAIN, r"\\?\D:\Family\dsh-official\DeepSeek Harness.exe"));
+        assert!(same_executable_path(
+            r"\\?\D:\Family\dsh-official\DeepSeek Harness.exe",
+            PLAIN
+        ));
+        // `\??\` 是同一个命名空间的另一种拼法。
+        assert!(same_executable_path(PLAIN, r"\??\D:\Family\dsh-official\DeepSeek Harness.exe"));
+        // 正斜杠与多余的分隔符：同一条路径的合法写法。
+        assert!(same_executable_path(PLAIN, "D:/Family/dsh-official/DeepSeek Harness.exe/"));
+        // UNC 的逐字拼法与普通拼法是同一个共享路径。
+        assert!(same_executable_path(
+            r"\\server\share\app.exe",
+            r"\\?\UNC\server\share\app.exe"
+        ));
+        // 首尾空白来自属性读取，不该参与比较。
+        assert!(same_executable_path(PLAIN, &format!("  {PLAIN}  ")));
+    }
+
+    #[test]
+    fn different_executables_are_never_the_same_one() {
+        use super::same_executable_path;
+        // 同名不等于同一个程序：另一个目录里的安装是另一个文件，藏错就是把用户的窗口弄丢。
+        assert!(!same_executable_path(
+            r"D:\Family\dsh-official\DeepSeek Harness.exe",
+            r"C:\DSH desktop\DeepSeek Harness.exe"
+        ));
+        // 前缀相同但不是同一层路径。
+        assert!(!same_executable_path(
+            r"D:\Family\dsh-official\DeepSeek Harness.exe",
+            r"D:\Family\dsh-official\DeepSeek Harness.exe.old"
+        ));
+        // 空的一侧永远不是匹配：读不到路径时，答案是"找不到窗口"，不是"就是它"。
+        assert!(!same_executable_path("", r"D:\a.exe"));
+        assert!(!same_executable_path(r"D:\a.exe", "   "));
+        assert!(!same_executable_path("", ""));
+    }
+
+    /// 一个**不存在的**可执行文件既没有窗口也不该被当成匹配。
+    ///
+    /// 这条走的是真实枚举：这台机器上确实枚举了所有顶层窗口，然后按路径逐个否掉。
+    /// 它同时钉住"没有任何进程匹配时返回空表"这个分支，而那正是"非主体（CLI/检出）
+    /// 一律不受影响"所依赖的性质 —— 它们的进程不在这个路径上。
+    #[test]
+    fn an_executable_that_is_not_running_has_no_windows() {
+        const ABSENT: &str = r"C:\nonexistent\dsh-wallpaper-window-probe.exe";
+        #[cfg(windows)]
+        assert!(super::windows_of_executable(ABSENT, false).is_empty());
+        assert_eq!(super::hide_executable_windows(ABSENT).outcome, "no-window");
+        assert_eq!(super::show_executable_windows(ABSENT).outcome, "no-window");
+    }
 
     /// An exit has to be an *event*, and this measures that it is.
     ///

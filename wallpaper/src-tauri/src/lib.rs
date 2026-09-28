@@ -402,6 +402,11 @@ fn harness_target_catalog(
 /// and gets a closed outcome code back instead of branching on client shape
 /// itself. Checkouts still start through `spawn_managed_dsh`, which is what keeps
 /// ownership tracking and the port-occupancy rule in one place.
+///
+/// 渲染层只有一处调它：岛上的「启动」滑槽。那处要的是"把这个主体供起来"（界面在壁纸这边），
+/// 不是"把它的窗口给我看"，所以触发者是 `LaunchTrigger::Slider` —— 与开机自启一样把壳的窗口
+/// 留在屏幕外。要显示窗口的那两个动作（设置里的「打开」、岛上的图标）走的是
+/// `ensure_harness_ui`，它们不带隐藏。
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
 async fn launch_harness_target(
@@ -417,7 +422,7 @@ async fn launch_harness_target(
         &target_id,
         profile.as_deref().unwrap_or_default(),
         &args,
-        harness_launch::LaunchTrigger::Manual,
+        harness_launch::LaunchTrigger::Slider,
     )
     .map_err(str::to_string)?;
     // Starting a shell waits for the client to answer (up to the launch timeout),
