@@ -4676,9 +4676,14 @@ fn run_with_edition(lite: bool) {
             native_bootstrap::report_tauri_ready();
             // "这个孩子是不是我启动的"要跨壁纸重启成立，就得把记录落在本地数据目录里 ——
             // 这个路径只有 Tauri 算得准（打包应用会被重定向），不能靠环境变量硬拼。
-            match app.path().app_local_data_dir() {
-                Ok(dir) => harness_launch::set_records_path(dir.join("managed-dsh.json")),
-                Err(error) => log::warn!("managed-child record path unavailable: {error}"),
+            // `harness_launch` 是 `#[cfg(not(feature = "lite"))]` 的模块，所以这里必须同样受门控：
+            // Lite 目标里它根本不存在（CI 抓到的就是这个 E0433 —— 我本地只跑默认特性，看不见）。
+            #[cfg(not(feature = "lite"))]
+            {
+                match app.path().app_local_data_dir() {
+                    Ok(dir) => harness_launch::set_records_path(dir.join("managed-dsh.json")),
+                    Err(error) => log::warn!("managed-child record path unavailable: {error}"),
+                }
             }
             if let Err(error) = windows_integration::start_wallpaper_host(app.handle().clone()) {
                 log::error!("WorkerW wallpaper host failed: {error}");
