@@ -160,7 +160,9 @@ describe('端口从设置一路流到「打开界面」', () => {
     expect(targets).toContain('declared_port: Option<u16>')
   })
 
-  it('is cleared of the explicit pin when the args change, so the browser cannot chase a dead port', async () => {
+  // 冻结（与「启动参数」一起）：它钉的是"改参数就清掉显式端口 pin"那个 handler 的**源码**，
+  // 而那个 handler 现在整块被注释掉了（输入控件也不在界面上）。
+  it.skip('is cleared of the explicit pin when the args change, so the browser cannot chase a dead port', async () => {
     // 与"换主体就清 pin"是同一条理由：那条 pin 是上一次启动选的那个端口，参数已经把它推翻了。
     const window = await source('src/settings/SettingsWindow.tsx')
     const handler = window.slice(window.indexOf('onSelectLaunchArgs={(value) =>'), window.indexOf('onOpenTui='))
@@ -180,7 +182,9 @@ describe('别名与实例行', () => {
     // 用户点名的形状：`源码目录 · 别名 · 版本`。别名**顶替**上级目录那一段，而不是加在它后面。
     expect(subjectOptionLabel(tree, [tree, other], { [tree.id]: '主树' }))
       .toBe('源码目录 · 主树 · 0.1.0-rc.5')
-    // 没有别名时与今天逐字一样（同名两份靠上级目录区分）。
+    // 没有别名时与今天逐字一样（同名两份靠上级目录区分）。**这一条现在是界面上真正会走的形态**：
+    // 「运行方式」的下拉不再传别名表（冻结），于是 `源码目录 · DeepSeekHarness.old · 0.1.0-rc.5`
+    // 就是用户看到的那一行。
     expect(subjectOptionLabel(tree, [tree, other])).toBe('源码目录 · DeepSeekHarness · 0.1.0-rc.5')
     expect(subjectOptionLabel(other, [tree, other])).toBe('源码目录 · DeepSeekHarness.old · 0.1.0-rc.5')
     // 只有一棵时，别名与目录名都不该把仓库名挤掉 —— 别名顶的是"区分"那一段，不是名字本身。
@@ -208,7 +212,9 @@ describe('别名与实例行', () => {
     expect(instanceLabel('D:\\gone\\my-tree', 3081, [])).toBe('my-tree · 3081')
   })
 
-  it('keeps one alias per subject, and drops a cleared one instead of storing an empty string', async () => {
+  // 冻结（与「起别名」一起）：前半段仍然是纯逻辑（别名表照常存储与读取 ✓），后半段钉的是
+  // SettingsWindow 里"清空就删键"那段代码的源码 —— 而那段 handler 现在整块被注释掉了。
+  it.skip('keeps one alias per subject, and drops a cleared one instead of storing an empty string', async () => {
     const settings = normalizeSettings({
       dshLaunch: { profile: 'desktop', aliases: { 'D:\\a': '主树', 'D:\\b': '旧树' } },
     })
@@ -219,8 +225,46 @@ describe('别名与实例行', () => {
   })
 })
 
+/**
+ * 冻结后的形状：这个功能的**入口**全都不在了，而原生侧一行都没动。
+ *
+ * 这一组是"复活时该从哪里开始"的清单：它钉住的是"现在没有参数流出去"，所以哪天有人把某条
+ * `args:` 打开而忘了另一条，这里会立刻失败，而不是等到用户发现只有自动启动带参数。
+ * 它替换了 `it.skip` 掉的那几条 UI 断言 —— 那些钉的是被冻结的控件，钉不住了，但"参数不再
+ * 上路"这件事仍然可以钉。
+ */
+describe('启动参数冻结之后：没有参数流出去', () => {
+  const LAUNCH_CALL_NAMES = ['ensureHarnessUi', 'autostartHarnessTarget', 'launchHarnessTarget'] as const
+
+  it('comments out the args property at every launch call site', async () => {
+    const app = await source('src/App.tsx')
+    for (const call of LAUNCH_CALL_NAMES) {
+      const from = app.indexOf(`nativeRuntime.${call}({`)
+      expect(from, call).toBeGreaterThanOrEqual(0)
+      const callText = app.slice(from, app.indexOf('})', from))
+      expect(callText, `${call} 仍然带着参数上路`).not.toMatch(/^\s*args:/m)
+      // 而且留了话：取消注释就能复活，不必去 git 历史里找那一行。
+      expect(callText, `${call} 缺少 FREEZE 说明`).toContain('FREEZE')
+      expect(callText, `${call} 缺少可恢复的那一行`).toMatch(/^\s*\/\/ args: parseLaunchArgs/m)
+    }
+  })
+
+  it('comments out the args property in the settings window too', async () => {
+    const window = await source('src/settings/SettingsWindow.tsx')
+    // 两条路：手动「打开界面」（ensureHarnessUi）与「拉起 TUI」（openSubjectTui）。
+    expect(window).not.toMatch(/^\s*args: parseLaunchArgs/m)
+    expect(window).toContain('// args: parseLaunchArgs(current.args),')
+    // TUI 那一条原来是直接传实参的（`openSubjectTui(parseLaunchArgs(…))`），所以它的恢复形态是
+    // "把那个实参加回来"，而且现在是无参调用。
+    expect(window).toContain('nativeRuntime.openSubjectTui()')
+    expect(window).not.toContain('openSubjectTui(parseLaunchArgs')
+  })
+})
+
 describe('实例下拉与「全部停止」的接线', () => {
-  it('renders the dropdown in the card header, with 全部停止 beside it', async () => {
+  // 冻结（与实例下拉一起）：它钉的是标题右上角那个控件的**存在**（Card 的 action、每一行的 ×、
+  // 「全部停止」），而那个控件现在整块被注释掉了 —— 底部「停止本应用启动的 DSH」那一行恢复了。
+  it.skip('renders the dropdown in the card header, with 全部停止 beside it', async () => {
     const panel = await source('src/settings/SettingsPanel.tsx')
     // 用户画红框的位置就是卡片标题右上角，所以控件是 Card 的 action，不是又一行 Field。
     expect(panel).toContain('action={<RunningInstances')
@@ -233,7 +277,9 @@ describe('实例下拉与「全部停止」的接线', () => {
     expect(panel).toContain('instanceLabel(instance.subjectId, instance.port, targets, aliases)')
   })
 
-  it('consolidated the two stop controls into one action', async () => {
+  // 冻结（与实例下拉一起）：它钉的正是"底部那个按钮**不在了**"（`not.toContain('onStopManagedDsh')`
+  // 等三条断言），而冻结的一部分工作就是把它**恢复**回来 —— 那三条断言与被冻结的界面互相矛盾。
+  it.skip('consolidated the two stop controls into one action', async () => {
     const panel = await source('src/settings/SettingsPanel.tsx')
     // 底部那个按钮已经不在了：它与「全部停止」是同一个动作，两个控件做同一件事用户就得猜区别。
     // （注释里还会提到那个旧按钮的名字，所以这里钉的是**控件**：那行 JSX 与那个 prop 都没了。）

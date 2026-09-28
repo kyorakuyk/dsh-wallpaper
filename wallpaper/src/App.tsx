@@ -9,7 +9,15 @@ import { personaIdFor, resolveModelTier } from './domain/modelTier.ts'
 import { isHarnessReady } from './connect/harness.ts'
 import { monitorHarnessEndpoint } from './connect/harnessEndpoint.ts'
 import { endpointScopeOf, subjectEndpointPorts } from './connect/endpoints.ts'
-import { parseLaunchArgs } from './connect/launchArgs.ts'
+// ---------------------------------------------------------------------------
+// FREEZE（临时冻结，不是删除）：「启动参数」把分词结果交给启动链，所以这一行随那个功能一起冻住。
+// 为什么关：本 build 有意回到该功能之前的行为 —— 三个启动入口都不再携带任何参数（见下面三处
+// FREEZE 注释）。参数为空时原生侧的行为与加这个功能之前逐字相同，所以只关调用处、不动原生。
+// 怎么恢复：取消注释这一行与那三处 `args:`，再取消 SettingsPanel / SettingsWindow 里同名的
+// 冻结块（「启动参数」行、实例下拉、每实例停止）。`connect/launchArgs.ts` 本身一行都没动，
+// 它仍然在 `runtime.ts` 里为端点镜子供词（探针与「打开界面」盯同一个端口），分词测试也照常跑。
+// ---------------------------------------------------------------------------
+// import { parseLaunchArgs } from './connect/launchArgs.ts'
 import { HARNESS_STATE_DETAILS } from './connect/harnessLabels.ts'
 import { isEmbeddedShellSubject, isInstalledCliSubject, reachNeedsBrowser } from './connect/harnessSubjects.ts'
 import {
@@ -260,6 +268,11 @@ export function dshAutostartNotice(result: ManagedDshAutostart): string | null {
       return '已开启「随壁纸启动 DSH」，但未找到 Node.js 或 pnpm。请在设置中心确认这两个程序已安装，并能在命令提示符里直接运行。'
     case 'profile-invalid':
       return '已开启「随壁纸启动 DSH」，但配置的 profile 名称无效（只能包含字母、数字、连字符或下划线）。请在设置中心修正。'
+    // FREEZE 留档（临时冻结，不是删除）：这一条是「启动参数」的失败码。参数冻结之后它到不了这里
+    // —— 没有参数就没有"参数无效"这回事 —— 但**必须留着**：那条码仍然在原生侧的结果枚举里
+    // (`ManagedDshAutostart`)，删掉这条 case 会让它落进下面那句泛泛的"进程启动失败"，而一句更
+    // 具体的、说得出该改哪里的提示比一句泛泛的话更值钱（dshAutostart.spec.ts 也钉着它）。
+    // 恢复办法：什么都不用做 —— 它在功能复活的同一天自动重新可达。
     case 'launch-args-invalid':
       return '已开启「随壁纸启动 DSH」，但「启动参数」无效。请在设置中心修正后重试。'
     default:
@@ -916,7 +929,10 @@ export function App({ surface = 'combined' }: AppProps) {
           targetId: subjectId,
           port,
           profile: launch.profile,
-          args: parseLaunchArgs(launch.args),
+          // FREEZE（临时冻结，不是删除）：「启动参数」不在这条路上传。恢复办法：取消注释下面
+          // 这一行，并恢复本文件顶部的 `parseLaunchArgs` import。原生侧 `args` 是可选参数，
+          // 不传等价于空参数列表 —— 也就是这个功能之前的行为。
+          // args: parseLaunchArgs(launch.args),
         })
         if (reachNeedsBrowser(ensured.outcome)) {
           const live = port > 0
@@ -1244,10 +1260,11 @@ export function App({ surface = 'combined' }: AppProps) {
     let disposed = false
     const check = async () => {
       try {
-        // 带上主体：`managed` / `running` 是"**我这次启动的那个孩子**还在不在"的答案。并行实例
-        // 之后，不带主体就变成"本应用启动的任意实例还在不在"—— 于是另一个主体的实例会让这条
-        // 判定一直说"还在"，而这次启动其实已经退了（一次静默的假阴性，比一条假警报更坏）。
-        const managed = await nativeRuntime.managedDshStatus(settingsRef.current.dshLaunch.subjectId ?? settingsRef.current.dshLaunch.rootPath)
+        // FREEZE（临时冻结，不是删除）：这里原来把**主体**也传进去（`managedDshStatus(subjectId
+        // ?? rootPath)`），因为并行实例之后"我这次启动的那个孩子还在不在"要按主体问。回到不带
+        // 主体：单实例世界里两者答案相同，而这一版就该是那个世界的形状。恢复办法：把那个实参加
+        // 回去（一行）。参数仍然在 `runtime.ts` 的签名里，`instances` / 每实例停止也照旧。
+        const managed = await nativeRuntime.managedDshStatus()
         if (disposed || !harnessLaunchPendingRef.current) return
         const outcome = harnessLaunchOutcome(
           { availability: runtime.harness, reasonCode: runtime.harnessReasonCode },
@@ -1304,7 +1321,9 @@ export function App({ surface = 'combined' }: AppProps) {
         const result = await nativeRuntime.autostartHarnessTarget({
           targetId: subjectId,
           profile: settings.dshLaunch.profile,
-          args: parseLaunchArgs(settings.dshLaunch.args),
+          // FREEZE（临时冻结，不是删除）：随壁纸自动启动这条路上也不带任何参数 —— 它和手动
+          // 「启动」跑的是同一个启动器，所以两条路一起冻结。恢复办法：取消注释这一行。
+          // args: parseLaunchArgs(settings.dshLaunch.args),
         })
         if (disposed) return
         if (result.outcome === 'started' || result.outcome === 'started-unconfirmed') {
@@ -1863,7 +1882,9 @@ export function App({ surface = 'combined' }: AppProps) {
           await nativeRuntime.launchHarnessTarget({
             targetId: subjectId,
             profile: settings.dshLaunch.profile,
-            args: parseLaunchArgs(settings.dshLaunch.args),
+            // FREEZE（临时冻结，不是删除）：手动「启动」这条路同样不带参数。恢复办法：取消
+            // 注释这一行。原生侧 `args?` 是可选参数，缺省就是空参数列表。
+            // args: parseLaunchArgs(settings.dshLaunch.args),
           })
         } catch (error) {
           harnessLaunchPendingRef.current = false

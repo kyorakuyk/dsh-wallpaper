@@ -52,9 +52,18 @@
    裸 <span> 会继承这一层的默认字号（比旁边的说明大出一截），所以静态值必须带这个类。 */
 .settings-static{display:inline-flex;align-items:center;min-height:34px;min-width:220px;padding:0 10px;border:1px solid rgba(139,196,235,.16);border-radius:9px;background:rgba(4,13,25,.48);color:#9fbdd4;font-size:11px}
 
-/* 「当前已启动实例」：卡片标题右上角的下拉 + 全部停止。
+/* ---------------------------------------------------------------------------
+   FREEZE（临时冻结，不是删除）：「当前已启动实例」下拉与它的 header 布局。
+
+   为什么关：那个下拉（标题右上角的控件）冻住了，`<Card>` 也不再有 `action`，所以 header 不需要
+   两列布局 —— 留着 `display:flex` 只会让 `__heading` 变成收缩的 flex 项，说明文字被挤窄，
+   与这个功能之前的卡片长得不一样（这条规则本来就是随那个下拉一起加进来的）。
+   怎么恢复：取消这一整块的注释，并恢复 `SettingsPanel.tsx` 里 `<Card>` 的 `action` 与
+   `RunningInstances` 组件。
+
+   「当前已启动实例」：卡片标题右上角的下拉 + 全部停止。
    header 现在是一个两列容器（标题文案 / 右上角控件），所以原来那条 `.settings-card header p`
-   的边距规则仍然按文案那一列生效 —— 把它包进 __heading 才不会让说明文字被压缩。 */
+   的边距规则仍然按文案那一列生效 —— 把它包进 __heading 才不会让说明文字被压缩。
 .settings-card>header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}
 .settings-card__heading{min-width:0}
 .settings-card__action{flex:0 0 auto;display:flex;align-items:center;gap:8px}
@@ -68,3 +77,4 @@
 .settings-instances__stop:hover:not(:disabled){background:rgba(224,92,92,.22) !important;color:#fff}
 .settings-instances__stop:disabled{opacity:.4;cursor:default}
 .settings-instances__footer{display:flex;justify-content:flex-end;padding:5px 4px 3px;border-top:1px solid rgba(158,205,239,.09);margin-top:3px}
+   --------------------------------------------------------------------------- */
