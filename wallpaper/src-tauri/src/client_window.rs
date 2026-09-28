@@ -1046,6 +1046,54 @@ pub(crate) fn window_is_visible(handle: WindowHandle) -> bool {
     }
 }
 
+/// 一个被盯着的句柄此刻处于哪一种状态 —— 紧盯着它的那台循环要的就是这三选一。
+///
+/// 为什么不是"可见/不可见"两选一：那台循环问这个问题的目的是**决定要不要把窗口按下去**，而
+/// "不可见"里混着两种完全不同的处境 —— "还是我们那个窗口，只是还没显示"（继续盯）与"它已经不是
+/// 我们能碰的东西了"（必须放手，让别人重新认一个）。把后者当成前者，就是在一个我们永远不该动的
+/// 句柄上每秒空转一千次。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WatchWindowState {
+    /// 在屏幕上，而且仍然是可以藏的那一类：这就是要按下去的那一刻。
+    Visible,
+    /// 属于那个进程、没有属主、类名也不是弹出物，只是还没显示：继续盯。
+    Hidden,
+    /// 句柄回收了、换了属主、改了类名，或者进程已经不是它：**不再是我们能碰的窗口**。
+    Lost,
+}
+
+/// 盯着一个句柄时问的那个问题：它此刻是哪一态。
+///
+/// 三次只读、跨进程的系统调用（`GetWindowThreadProcessId` + `GetWindow(GW_OWNER)` +
+/// `GetClassNameW`），每次都在微秒量级 —— 这是 1 毫秒 tick 之所以可能的第二半。**从不枚举**：
+/// 整机有 538 个顶层窗口，枚举一次约 30 毫秒，放进这条路就等于把帧拉长三十倍。
+pub(crate) fn watch_window_state(handle: WindowHandle) -> WatchWindowState {
+    #[cfg(windows)]
+    {
+        let hwnd = handle.hwnd();
+        let mut owner = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
+        // 句柄回收：同一个数值可能已经属于别人刚建出来的窗口。这条判定必须先过。
+        if owner == 0 || owner != handle.pid {
+            return WatchWindowState::Lost;
+        }
+        // 属主与类名：菜单、对话框、输入法，以及"说不清是什么"的窗口（空类名）一律放手。
+        if window_is_owned(hwnd) || is_popup_or_helper_class(&class_name(hwnd)) {
+            return WatchWindowState::Lost;
+        }
+        if unsafe { IsWindowVisible(hwnd) }.as_bool() {
+            WatchWindowState::Visible
+        } else {
+            WatchWindowState::Hidden
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = handle;
+        WatchWindowState::Lost
+    }
+}
+
 /// 这个端口后面那个客户端此刻有没有窗口在屏幕上。
 ///
 /// 只有"记录里没有可执行文件路径"的降级路径会用到它：那时按端口那条路一次只能回答一个窗口，
@@ -1338,6 +1386,40 @@ mod tests {
         assert!(!super::hide_window(super::WindowHandle { raw: 1, pid: 2 }));
         assert!(!super::window_is_visible(super::WindowHandle { raw: 1, pid: 2 }));
         assert_eq!(super::show_executable_windows(ABSENT).outcome, "no-window");
+    }
+
+    /// 盯着的句柄每一毫秒问的那一态：三选一，而且"放手"那一条必须先判。
+    ///
+    /// 这里能钉住的只有"放手"这一侧 —— 造一个真的、可藏的、已经建好但还没显示的窗口不是单元
+    /// 测试该做的事（真机那条 `this_machine_measures_the_hide_race` 用离屏窗口量它）。而这一侧
+    /// 恰好是最危险的一侧：判错就是把一个我们永远不该碰的句柄留住。
+    #[test]
+    fn a_handle_that_is_not_ours_is_lost_rather_than_something_to_watch() {
+        use super::{watch_window_state, WatchWindowState, WindowHandle};
+        // 句柄值不是任何窗口：pid 那一条就否掉了。
+        assert_eq!(
+            watch_window_state(WindowHandle { raw: 1, pid: 2 }),
+            WatchWindowState::Lost
+        );
+        // 句柄值是本进程的一个真实窗口，但记下来的 pid 不是它的属主 —— 这正是**句柄回收**的
+        // 形状：1 毫秒前记下的数值，现在归别人了。记着一个裸句柄就等于赌它不会被接手。
+        #[cfg(windows)]
+        {
+            use windows::Win32::UI::WindowsAndMessaging::{GetDesktopWindow, GetWindowThreadProcessId};
+            let desktop = unsafe { GetDesktopWindow() };
+            let mut owner = 0u32;
+            unsafe { GetWindowThreadProcessId(desktop, Some(&mut owner)) };
+            assert_ne!(owner, 0);
+            #[cfg(windows)]
+            let handle = super::WindowHandle::from(desktop, owner.wrapping_add(1));
+            assert_eq!(watch_window_state(handle), WatchWindowState::Lost);
+            // pid 相符时，桌面窗口被判成 `Visible` —— 这是对的，不是漏判。它永远不会被盯上：
+            // 发现路径只在这个家族自己的窗口里按**可执行文件路径**挑，桌面不属于那个家族。这道闸
+            // 管的是"弹出物与辅助窗口"，它不假装能判断"这是不是一个界面窗口"；把桌面当成反例
+            // 要求它说 `Lost`，等于把一条谁都用不上的规则塞进这条每毫秒都要跑的路径。
+            let desktop_handle = super::WindowHandle::from(desktop, owner);
+            assert_eq!(watch_window_state(desktop_handle), WatchWindowState::Visible);
+        }
     }
 
     /// 菜单与壳的辅助窗口**永远**不在可隐藏之列 —— 这条规则修的是一个真实故障。

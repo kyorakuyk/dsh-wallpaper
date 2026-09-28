@@ -1470,7 +1470,12 @@ fn wait_for_shell(
                 within_race_window: race_started_at
                     .map_or(false, |at| now.duration_since(at) < SHELL_HIDE_RACE_WINDOW),
             });
-            if sweep_at.map_or(true, |at| now.duration_since(at) >= sweep_interval) {
+            // 正在盯一个已知句柄、而且还没藏到过：**这一档不枚举**。枚举一次约 30ms，而且它阻塞
+            // 这个线程 —— 壳的 show() 只要落在那一瞬，可见帧就等于一次枚举（实测 31ms 正是这么来的）。
+            // 句柄就是检测器；只有"还没认出句柄"和"已经藏住"（那时枚举只负责看它有没有再回来）才枚举。
+            if (hidden_at.is_some() || watched.is_none())
+                && sweep_at.map_or(true, |at| now.duration_since(at) >= sweep_interval)
+            {
                 sweep_at = Some(now);
                 sweeps += 1;
                 // 第一次藏住之后只看不藏（规则 1 + 2）。
@@ -1528,7 +1533,19 @@ fn wait_for_shell(
             match (hidden_at, watched) {
                 // 还没藏到过：盯着那个已经建好的句柄，壳的 show() 一落地就按下去。
                 (None, Some(handle)) => {
-                    if crate::client_window::window_is_visible(handle) {
+                    // 先问"这个句柄还是不是我们能碰的东西"：句柄值会被回收，1 毫秒前记下的数值现在
+                    // 可能属于别人刚建出来的窗口。丢失就放手、让下一次枚举重新认一个 —— 只凭
+                    // `window_is_visible` 去按，等于赌那个数值没被接手。
+                    if matches!(
+                        crate::client_window::watch_window_state(handle),
+                        crate::client_window::WatchWindowState::Lost
+                    ) {
+                        watched = None;
+                        timeline.mark(
+                            "watched-window-lost",
+                            "the watched handle is no longer a hideable interface window",
+                        );
+                    } else if crate::client_window::window_is_visible(handle) {
                         visible_at = visible_at.or(Some(std::time::Instant::now()));
                         if crate::client_window::hide_window(handle) {
                             hidden_windows += 1;
