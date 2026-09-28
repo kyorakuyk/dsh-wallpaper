@@ -16,7 +16,8 @@ use crate::native_bootstrap;
 use crate::lock_screen_backup::{
     discard_backup_after_failed_takeover, discard_stale_backup, ensure_backup_for_takeover,
     has_stale_backup, inspect_backup, managed_image_is_active, managed_image_path,
-    managed_image_path_from_file, next_managed_image_file, remove_backup_after_verified_restore,
+    file_content_hash, managed_image_file_for_content, managed_image_path_from_file,
+    remove_backup_after_verified_restore,
     restore_snapshot_path, same_local_file_uri, LockScreenBackupLease, LockScreenBackupManifest,
     LockScreenBackupState, LEGACY_MANAGED_IMAGE_FILE,
 };
@@ -2855,7 +2856,10 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| "系统时间无效，已取消锁屏接管。".to_string())?
             .as_millis() as u64;
-        let managed_image_file = next_managed_image_file(captured_at, "png")?;
+        // 名字由**内容**决定（同一张素材永远同一个文件名）：Windows 把每个不同的文件名都记成
+        // "最近使用的图像"里的一条，按次生成名字会让同一张图占掉多个栏位（用户实测三个）。
+        let content_hash = file_content_hash(&bundled_sleep_image)?;
+        let managed_image_file = managed_image_file_for_content(&content_hash, "png")?;
         let managed_path = managed_image_path_from_file(&config_dir, &managed_image_file)?;
         copy_sleep_image_without_overwrite(&bundled_sleep_image, &managed_path)?;
         let lease = match ensure_backup_for_takeover(
@@ -4076,15 +4080,29 @@ fn managed_image_path_for_state(
     }
 }
 
-/// Copies a bundled lock-screen image without overwriting any existing file.
-/// The generated name is a one-time personalization input, so replacement
-/// would both violate Windows' filename rule and make a concurrent/corrupt
-/// ownership state harder to reason about.
+/// Copies a bundled lock-screen image to its content-addressed destination.
+///
+/// The destination **must** already hold identical bytes when it exists: the name is derived from
+/// the content, so a same-named file with different bytes can only mean a corrupted or hostile
+/// asset directory.  That case fails closed instead of overwriting, and the identical case is a
+/// reuse (the common one — every later takeover of the same art lands on the same file, which is
+/// what keeps Windows' "recent images" list at one entry per distinct image).
 #[cfg(windows)]
 fn copy_sleep_image_without_overwrite(
     source: &std::path::Path,
     destination: &std::path::Path,
 ) -> Result<(), String> {
+    if destination.exists() {
+        let existing = crate::lock_screen_backup::file_content_hash(destination)?;
+        let wanted = crate::lock_screen_backup::file_content_hash(source)?;
+        if existing == wanted {
+            return Ok(());
+        }
+        return Err(format!(
+            "锁屏托管图片的既有副本内容与素材不一致，已拒绝覆盖：{}",
+            destination.display()
+        ));
+    }
     use std::io::{Read, Write};
 
     let parent = destination
