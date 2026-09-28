@@ -28,8 +28,9 @@ use windows::Win32::NetworkManagement::IpHelper::{
 use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowRect, GetWindowTextLengthW, GetWindowThreadProcessId, IsWindowVisible,
-    SetForegroundWindow, ShowWindow, SW_HIDE, SW_RESTORE, SW_SHOW,
+    EnumWindows, GetClassNameW, GetWindow, GetWindowRect, GetWindowTextLengthW,
+    GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow, ShowWindow, GW_OWNER, SW_HIDE,
+    SW_RESTORE, SW_SHOW,
 };
 #[cfg(windows)]
 use windows::core::BOOL;
@@ -479,39 +480,6 @@ pub fn hide_client_window(port: u16) -> HideOutcome {
     }
 }
 
-/// Put every window of one executable's process family out of sight.
-///
-/// The executable-path counterpart of [`hide_client_window`], and the identity the
-/// launch path uses. Measured on this machine, the official shell's listener and the
-/// process that owns its window are two processes of *one* file (pid 41320 listening,
-/// pid 47972 owning the window, its parent — an Electron client keeps its runtime in a
-/// child). Naming the file rather than the process is what makes one call cover the
-/// whole family: the port-shaped lookup reaches the same window through a bounded
-/// ancestor walk and can only answer with one window per call.
-///
-/// `no-window` means no window of that executable is on screen — either it is not
-/// running, or it is already out of sight (which is a state the wallpaper itself
-/// creates). Neither is reported as "hidden", because that would be a claim about a
-/// window nobody saw.
-pub fn hide_executable_windows(executable: &str) -> HideOutcome {
-    #[cfg(windows)]
-    {
-        let windows = windows_of_executable(executable, true);
-        if windows.is_empty() {
-            return HideOutcome::no_window();
-        }
-        for window in windows {
-            let _ = unsafe { ShowWindow(window, SW_HIDE) };
-        }
-        HideOutcome::hidden_ok()
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = executable;
-        HideOutcome::no_window()
-    }
-}
-
 /// Bring every window of one executable's process family forward.
 ///
 /// The showing half of the same identity, and the deliberate mirror of
@@ -521,6 +489,11 @@ pub fn hide_executable_windows(executable: &str) -> HideOutcome {
 /// does the search accept an invisible window that still looks like the client's own
 /// (title and size), which is exactly the state the wallpaper created.
 ///
+/// 显示的**只**是界面窗口：菜单、对话框、提示、输入法、托盘宿主窗口都不在这里被"显示"，
+/// 与隐藏那一侧同一条规则（[`is_popup_or_helper_class`]）。显示一个已经可见的窗口本来就是
+/// 空操作，所以真正的区别在"什么时候显示"：一个弹出来的菜单不该因为我们调用了一次「打开」
+/// 而被当成客户端窗口拿到前台。
+///
 /// The outcome codes are the ones the renderer already words: `raised` when Windows
 /// accepted the foreground change, `raise-refused` when it did not (normal for a
 /// desktop wallpaper — the windows are shown and restored either way), and
@@ -528,23 +501,32 @@ pub fn hide_executable_windows(executable: &str) -> HideOutcome {
 pub fn show_executable_windows(executable: &str) -> RaiseOutcome {
     #[cfg(windows)]
     {
-        let mut windows = windows_of_executable(executable, true);
-        if windows.is_empty() {
-            windows = windows_of_executable(executable, false);
+        let windows = family_windows(executable);
+        let mut targets: Vec<WindowHandle> = windows
+            .iter()
+            .filter(|window| window.visible && window.is_interface_shaped())
+            .map(|window| window.handle)
+            .collect();
+        if targets.is_empty() {
+            targets = windows
+                .iter()
+                .filter(|window| window.is_unshown_client_window())
+                .map(|window| window.handle)
+                .collect();
         }
-        if windows.is_empty() {
+        if targets.is_empty() {
             return RaiseOutcome::no_window();
         }
         let mut foreground = false;
-        for window in windows {
+        for window in targets {
             unsafe {
                 // The same order as `raise_client_window`, for the same two reasons:
                 // `SW_SHOW` first because the visible-and-hidden pair is ours to
                 // decide in both directions, `SW_RESTORE` then because a minimised
                 // window would otherwise be "brought forward" without being visible.
-                let _ = ShowWindow(window, SW_SHOW);
-                let _ = ShowWindow(window, SW_RESTORE);
-                foreground |= SetForegroundWindow(window).as_bool();
+                let _ = ShowWindow(window.hwnd(), SW_SHOW);
+                let _ = ShowWindow(window.hwnd(), SW_RESTORE);
+                foreground |= SetForegroundWindow(window.hwnd()).as_bool();
             }
         }
         if foreground {
@@ -584,7 +566,11 @@ pub(crate) fn same_executable_path(left: &str, right: &str) -> bool {
 
 /// The comparable form of an executable path: no verbatim prefix, one separator
 /// spelling, no trailing separator, lower case.
-fn normalized_executable_path(path: &str) -> String {
+///
+/// 公开给 crate 内的另一个用途：把"用户要的是这个壳的窗口"这件事记下来时，要记成一个**可比较**
+/// 的形式，而不是用户当时给的那一份拼法（同一个文件在快捷方式、进程镜像与命令行里可以有三种
+/// 拼法，见 [`same_executable_path`]）。
+pub(crate) fn normalized_executable_path(path: &str) -> String {
     let trimmed = path.trim();
     // `\\?\` (and the `\??\` spelling of the same namespace) is not part of the file
     // name, so the same file reached with and without it must compare equal.
@@ -748,30 +734,10 @@ fn process_image_path(pid: u32) -> Option<String> {
 
 #[cfg(windows)]
 fn parent_pid(pid: u32) -> Option<u32> {
-    use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
-    };
-    unsafe {
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
-        let mut entry = PROCESSENTRY32W {
-            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
-            ..Default::default()
-        };
-        let mut result = None;
-        if Process32FirstW(snapshot, &mut entry).is_ok() {
-            loop {
-                if entry.th32ProcessID == pid {
-                    result = Some(entry.th32ParentProcessID);
-                    break;
-                }
-                if Process32NextW(snapshot, &mut entry).is_err() {
-                    break;
-                }
-            }
-        }
-        let _ = windows::Win32::Foundation::CloseHandle(snapshot);
-        result
-    }
+    process_snapshot()
+        .into_iter()
+        .find(|(candidate, _, _)| *candidate == pid)
+        .map(|(_, parent, _)| parent)
 }
 
 #[cfg(windows)]
@@ -787,67 +753,440 @@ fn first_window(pid: u32, require_visible: bool) -> Option<HWND> {
     search.found
 }
 
-/// One enumeration of the top-level windows whose owner runs `executable`.
-#[cfg(windows)]
-struct ExecutableWindowSearch<'a> {
-    executable: &'a str,
-    /// Whether only a window that is on screen counts.
+/// 弹出菜单的窗口类名。
+///
+/// Win32 给每一个 `TrackPopupMenu` 出来的菜单用这一个类名 —— 托盘图标右键菜单、窗口右键菜单、
+/// 组合框下拉都在其中。它是**真正的那条线索**：这一类窗口属于弹出它的那个可执行文件，所以
+/// "把这个家族所有可见窗口都藏起来"必然把用户刚点开的菜单一起吃掉。
+pub(crate) const MENU_CLASS: &str = "#32768";
+
+/// 这个类名是不是"弹出物 / 框架自己的辅助窗口"。
+///
+/// 三类，各有来历：
+///
+/// * **菜单与对话框**（`#32768`、`#32770`）与**工具提示**（`tooltips_class32`）——它们出现的
+///   全部意义就是让人看见。用户点托盘图标弹出菜单、壳弹出更新对话框，都不是"客户端自己跑出来
+///   的窗口"，藏它们是把用户正在读的东西拿走。
+/// * **电子壳的宿主窗口**（`Electron_NotifyIconHostWindow`、`Electron_SystemPreferencesHostWindow`
+///   —— 按前缀匹配 `electron_*hostwindow`，将来多一个同类也不用改这里）：托盘图标、系统偏好这类
+///   面的宿主。它们本来就不可见（藏它们是无操作），但把它们写进"允许隐藏"的名单没有任何好处，
+///   而万一藏掉了托盘图标，用户就失去了把窗口找回来的一条路。
+/// * **输入法**（`MSCTFIME UI`、`IME`）：属于**用户正在打字**的那条链。
+///
+/// 读不到类名（空串）也回答"是"：一个我们说不清是什么的窗口，少藏一个永远比多藏一个好。
+pub(crate) fn is_popup_or_helper_class(class: &str) -> bool {
+    let class = class.trim().to_ascii_lowercase();
+    if class.is_empty() {
+        return true;
+    }
+    if class == MENU_CLASS.to_ascii_lowercase().as_str()
+        || class == "#32770"
+        || class == "tooltips_class32"
+    {
+        return true;
+    }
+    if class == "msctfime ui" || class == "ime" {
+        return true;
+    }
+    class.starts_with("electron_") && class.ends_with("hostwindow")
+}
+
+/// 一个顶层窗口能不能被隐藏 —— 规则本身，与机器无关。
+///
+/// 两条，缺一不可：
+///
+/// * **它得在屏幕上**。藏一个已经不可见的窗口是空操作，而"提前藏好"在 Windows 上没有任何
+///   latch 效果（实测：外部隐藏挡不住壳自己的下一次 `show()`），所以只藏看得见的。
+/// * **它不能是别人的**。有属主的窗口是菜单、对话框、提示、输入法 —— 它们的存在就是为了让人
+///   看见，而且下面那条类名规则是第二道闸（有些壳会给对话框一个无属主的顶层窗口）。
+pub(crate) fn is_hideable_top_level(visible: bool, owned: bool, class: &str) -> bool {
+    visible && !owned && !is_popup_or_helper_class(class)
+}
+
+/// 一个顶层窗口的句柄，连同它属主的进程 id。
+///
+/// 两个一起记，是因为句柄会被回收：1 毫秒前记下的句柄，用之前必须再确认一遍"它还是那个进程的
+/// 窗口"（见 [`hide_window`]）。记下一个裸句柄而不记 pid，就等于赌它不会被别人接手。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WindowHandle {
+    raw: isize,
+    pid: u32,
+}
+
+impl WindowHandle {
+    /// 这个句柄当时属于哪个进程。
+    pub(crate) fn pid(self) -> u32 {
+        self.pid
+    }
+
+    #[cfg(windows)]
+    fn hwnd(self) -> HWND {
+        HWND(self.raw as *mut core::ffi::c_void)
+    }
+
+    /// 一个顶层窗口的句柄，连同当时问出来的属主进程。
     ///
-    /// The same two answers [`TopLevelSearch`] needs, for the same two callers: hiding
-    /// must only ever claim a window nobody can see any more, while showing must also
-    /// find the window this wallpaper hid — which is invisible, and to a window
-    /// search that only accepts visible ones does not exist at all.
-    require_visible: bool,
-    /// Every match, not the first: a client's process family can own more than one
-    /// window, and leaving the second one on screen is exactly the failure this
-    /// helper exists to remove.
-    found: Vec<HWND>,
+    /// 公开给 crate：真机测量那一条测试自己造一个离屏窗口来量"发现延迟"，它需要用**与产品代码
+    /// 相同**的方式构造句柄 —— 否则量到的就不是产品那条路。
+    #[cfg(windows)]
+    pub(crate) fn from(hwnd: HWND, pid: u32) -> Self {
+        Self { raw: hwnd.0 as isize, pid }
+    }
+}
+
+/// 一次枚举里看到的关于一个顶层窗口的全部事实。
+///
+/// 每一条都便宜到可以在毫秒级轮询里反复取；而**唯一贵的那一步** —— "这个窗口的属主跑的是哪个
+/// 可执行文件"（`OpenProcess` + 查询）—— 被推到"便宜的事实过滤之后"才做。这是让 1 毫秒级的
+/// 检查成为可能的那一半。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WindowFacts {
+    pub handle: WindowHandle,
+    pub visible: bool,
+    /// 有属主（`GW_OWNER` 非空）：菜单、对话框、提示、输入法这类窗口。
+    pub owned: bool,
+    pub class: String,
+    pub has_title: bool,
+    pub has_size: bool,
+}
+
+impl WindowFacts {
+    /// 此刻能不能藏（[`is_hideable_top_level`] 的实例版）。
+    pub(crate) fn is_hideable(&self) -> bool {
+        is_hideable_top_level(self.visible, self.owned, &self.class)
+    }
+
+    /// 用户刚点开的弹出菜单。
+    ///
+    /// 这条事实只有一个用途：**证明有人正在跟这个壳打交道**。循环自己不会弹菜单，所以看见它
+    /// 就是看见了人手 —— 而那次人手的下一步多半就是"把我的窗口还给我"。
+    pub(crate) fn is_menu(&self) -> bool {
+        self.visible && self.class.trim().eq_ignore_ascii_case(MENU_CLASS)
+    }
+
+    /// 形状像"这个程序的界面"，无论此刻可见不可见：无属主，且不是弹出物/辅助窗口。
+    pub(crate) fn is_interface_shaped(&self) -> bool {
+        !self.owned && !is_popup_or_helper_class(&self.class)
+    }
+
+    /// 壳自己 `show()` 会显示的那一个：**已经建好、还没显示**的界面窗口。
+    ///
+    /// 这是整个竞速里最有价值的一条事实。主窗口在壳启动的早期就用 `show: false` 建好了
+    /// （`app.asar!/lib/main.js:10600`、`:11520-11521`），而 `show()` 要等宿主运行时报告就绪
+    /// （`:11569-11576`）—— 中间是好几秒。在那几秒里先认出这个句柄，之后的每一次检查都只是
+    /// 一次 `IsWindowVisible`（约 1 微秒），而不是一次全量枚举。
+    pub(crate) fn is_unshown_client_window(&self) -> bool {
+        !self.visible && self.is_interface_shaped() && self.has_title && self.has_size
+    }
+
+    /// 退一步的同一个问题：类名是 Chromium 的浏览器窗口，但标题/矩形还没准备好。
+    ///
+    /// 保留这一档是因为"标题与矩形在第一次显示之前就绪"这件事**没有实测过**（只实测过
+    /// 已显示的窗口有标题与矩形）。认错一个隐藏的壳窗口只会让 tick 空转，而认不出它会让竞速
+    /// 退回全量枚举 —— 两种误判的代价不对称，所以这里多给一条路。
+    pub(crate) fn is_unshown_browser_window(&self) -> bool {
+        !self.visible && self.is_interface_shaped() && is_browser_window_class(&self.class)
+    }
+
+    /// 还没显示、但看起来就是"壳会显示的那一个"。
+    pub(crate) fn is_unshown_interface_window(&self) -> bool {
+        self.is_unshown_client_window() || self.is_unshown_browser_window()
+    }
+}
+
+/// Chromium 给它的浏览器窗口用的类名 —— 电子壳的主窗口就是这个类。
+fn is_browser_window_class(class: &str) -> bool {
+    class.trim().eq_ignore_ascii_case("Chrome_WidgetWin_1")
+}
+
+/// 一个顶层窗口的类名，读不到就是空串（空串在规则里等于"不是界面"）。
+#[cfg(windows)]
+fn class_name(hwnd: HWND) -> String {
+    let mut buffer = [0u16; 256];
+    let length = unsafe { GetClassNameW(hwnd, &mut buffer) };
+    if length <= 0 {
+        return String::new();
+    }
+    String::from_utf16_lossy(&buffer[..length as usize])
+}
+
+/// 一个顶层窗口有没有属主。
+///
+/// `GetWindow(hwnd, GW_OWNER)` 在没有属主时返回空句柄（而不是报错），所以两条都算"没有属主"：
+/// 这是安全方向 —— 有属主的窗口我们一律不动，而没有属主的窗口还要过类名那道闸。
+#[cfg(windows)]
+fn window_is_owned(hwnd: HWND) -> bool {
+    unsafe { GetWindow(hwnd, GW_OWNER) }
+        .map(|owner| !owner.0.is_null())
+        .unwrap_or(false)
+}
+
+/// 一次枚举取到的全部事实，装在一个可变的接收器里交给回调。
+#[cfg(windows)]
+struct FamilyWindowSearch {
+    /// 属于目标可执行文件家族的进程。
+    ///
+    /// 用一次 Toolhelp 快照 + 文件名初筛得到，再用完整路径逐个确认（见
+    /// [`family_process_ids`]）。判定仍然是路径，这里只是把"每个窗口都问一次属主是谁"
+    /// 换成"每个家族进程问一次"。
+    pids: Vec<u32>,
+    found: Vec<WindowFacts>,
 }
 
 #[cfg(windows)]
-unsafe extern "system" fn collect_executable_windows(hwnd: HWND, param: LPARAM) -> BOOL {
-    let search = unsafe { &mut *(param.0 as *mut ExecutableWindowSearch) };
+unsafe extern "system" fn collect_family_windows(hwnd: HWND, param: LPARAM) -> BOOL {
+    let search = unsafe { &mut *(param.0 as *mut FamilyWindowSearch) };
     let mut owner = 0u32;
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
-    if owner == 0 {
+    if owner == 0 || !search.pids.contains(&owner) {
         return BOOL(1);
     }
-    // Asked per window rather than cached per process: the family is a handful of
-    // windows, and naming the owner is the *only* thing that decides whether this
-    // window belongs to the target — guessing it from a pid would put the whole
-    // split-process problem back.
-    let Some(executable) = process_image_path(owner) else {
-        return BOOL(1);
-    };
-    if !same_executable_path(&executable, search.executable) {
-        return BOOL(1);
-    }
-    let on_screen = unsafe { IsWindowVisible(hwnd) }.as_bool();
-    if on_screen || (!search.require_visible && window_is_a_client_window(hwnd)) {
-        search.found.push(hwnd);
-    }
-    // Keep walking: unlike `find_top_level`, one match does not answer the question.
+    // 便宜的事实：可见性、属主、类名、标题、矩形。没有一个是 `OpenProcess`。
+    let visible = unsafe { IsWindowVisible(hwnd) }.as_bool();
+    let owned = window_is_owned(hwnd);
+    let class = class_name(hwnd);
+    let has_title = unsafe { GetWindowTextLengthW(hwnd) } > 0;
+    let mut rect = RECT::default();
+    let has_size = unsafe { GetWindowRect(hwnd, &mut rect) }.is_ok()
+        && rect.right > rect.left
+        && rect.bottom > rect.top;
+    search.found.push(WindowFacts {
+        handle: WindowHandle::from(hwnd, owner),
+        visible,
+        owned,
+        class,
+        has_title,
+        has_size,
+    });
+    // 继续走：一个家族可能有不止一个窗口，而"第二个还留在屏幕上"正是要消灭的失败。
     BOOL(1)
 }
 
-/// Every top-level window whose owning process runs `executable`.
+/// 一个可执行文件的进程家族此刻拥有的**全部**顶层窗口及其形状。
 ///
-/// `require_visible` separates "on screen right now" from "also the client's own
-/// window that is currently out of sight" — see [`ExecutableWindowSearch`].
+/// 每个窗口都重新确认属主仍是这个家族：枚举本身不保证自洽（枚举期间进程可以退出），而隐藏一个
+/// 别人的窗口是不可逆的坏事（它的主人不知道它去哪了）。
 #[cfg(windows)]
-fn windows_of_executable(executable: &str, require_visible: bool) -> Vec<HWND> {
-    let mut search = ExecutableWindowSearch {
-        executable,
-        require_visible,
-        found: Vec::new(),
-    };
+pub(crate) fn family_windows(executable: &str) -> Vec<WindowFacts> {
+    let pids = family_process_ids(executable);
+    if pids.is_empty() {
+        return Vec::new();
+    }
+    let mut search = FamilyWindowSearch { pids, found: Vec::new() };
     unsafe {
         let _ = EnumWindows(
-            Some(collect_executable_windows),
+            Some(collect_family_windows),
             LPARAM(&mut search as *mut _ as isize),
         );
     }
     search.found
+}
+
+#[cfg(not(windows))]
+pub(crate) fn family_windows(_executable: &str) -> Vec<WindowFacts> {
+    Vec::new()
+}
+
+/// 藏一个句柄，**先重新确认它仍然是那个进程的界面窗口**。
+///
+/// 四问，任一不成立就不动它：pid 还是不是它（句柄回收）、还在不在屏幕上、有没有属主、
+/// 类名是不是弹出物。这不是形式主义：句柄回收之后，同一个数值可能属于别人刚建出来的窗口，
+/// 而"藏错窗口"对一个桌面应用来说是最坏的一类错误。
+///
+/// 「把一整个家族的隐藏窗口都藏掉」**没有**一个独立函数出口，这不是漏了：隐藏那一半现在只有
+/// 一处调用者 —— 后台启动的隐藏循环，而那一处需要的是**同一遍枚举**里的另外两件事（"用户刚
+/// 点过托盘菜单"与"哪个窗口已经建好但还没显示"）。再开一个只藏窗口的入口就得再枚举一遍窗口，
+/// 而枚举是这条路上唯一贵的那一步（一张进程快照 + 一次 `EnumWindows`）。所以那个循环自己遍历
+/// 一遍枚举结果，对每一个候选调用这个函数 —— 判定则永远是 [`is_hideable_top_level`]：
+/// **在屏幕上、没有属主、类名不是弹出物**。菜单那条规则修的是一个真实故障：把"这个家族所有
+/// 可见窗口"一股脑藏掉，会把用户右键托盘时刚弹出来的菜单一起吃掉（`#32768` 是同一个可执行
+/// 文件的一个顶层窗口），用户描述为"点一下托盘客户端就崩了"。
+pub(crate) fn hide_window(handle: WindowHandle) -> bool {
+    #[cfg(windows)]
+    {
+        let hwnd = handle.hwnd();
+        let mut owner = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
+        if owner == 0 || owner != handle.pid {
+            return false;
+        }
+        if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+            return false;
+        }
+        if window_is_owned(hwnd) || is_popup_or_helper_class(&class_name(hwnd)) {
+            return false;
+        }
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
+        true
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = handle;
+        false
+    }
+}
+
+/// 这个句柄此刻是不是一个在屏幕上的窗口，而且仍然是那个进程的。
+///
+/// 竞速期每一毫秒问一次的就是它：两次只读系统调用，不枚举、不 `OpenProcess`。
+pub(crate) fn window_is_visible(handle: WindowHandle) -> bool {
+    #[cfg(windows)]
+    {
+        let hwnd = handle.hwnd();
+        let mut owner = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
+        owner != 0 && owner == handle.pid && unsafe { IsWindowVisible(hwnd) }.as_bool()
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = handle;
+        false
+    }
+}
+
+/// 这个端口后面那个客户端此刻有没有窗口在屏幕上。
+///
+/// 只有"记录里没有可执行文件路径"的降级路径会用到它：那时按端口那条路一次只能回答一个窗口，
+/// 但"屏幕上有没有它"这个问题它答得了。
+pub(crate) fn endpoint_window_on_screen(port: u16) -> bool {
+    #[cfg(windows)]
+    {
+        window_for_endpoint(port).is_some_and(|hwnd| unsafe { IsWindowVisible(hwnd) }.as_bool())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = port;
+        false
+    }
+}
+
+/// 把系统计时器分辨率抬到 1 毫秒，并在离开作用域时还回去。
+///
+/// 为什么需要它：`std::thread::sleep(1ms)` 在默认分辨率（15.6 毫秒）下可能睡十几毫秒，
+/// 而那正好是"一帧能被看见多久"这件事的量级 —— 抬分辨率之前，1 毫秒的 tick 是个空头承诺。
+/// 从 Windows 10 2004 起它只影响本进程，且这个守卫只在竞速期间存在、出作用域就还，所以它不会
+/// 变成那种"某个程序把全系统计时器钉在 1 毫秒"的坏邻居。
+pub(crate) struct TimerResolution {
+    #[cfg(windows)]
+    raised: bool,
+}
+
+#[cfg(windows)]
+#[link(name = "winmm")]
+extern "system" {
+    fn timeBeginPeriod(period: u32) -> u32;
+    fn timeEndPeriod(period: u32) -> u32;
+}
+
+impl TimerResolution {
+    pub(crate) fn new() -> Self {
+        #[cfg(windows)]
+        {
+            // 返回 0 表示成功；失败也只是让 Sleep 的粒度粗一点，没有别的后果。
+            Self { raised: unsafe { timeBeginPeriod(1) } == 0 }
+        }
+        #[cfg(not(windows))]
+        {
+            Self {}
+        }
+    }
+}
+
+impl Drop for TimerResolution {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            if self.raised {
+                unsafe { timeEndPeriod(1) };
+            }
+        }
+    }
+}
+
+/// 这个可执行文件此刻有哪些进程在跑。
+///
+/// 两步，方向是"先便宜后贵"：一次 Toolhelp 快照给出**文件名**（每一条进程记录里就有，不需要
+/// `OpenProcess`），再用完整路径确认。判定仍然是路径 —— 同名不等于同一个程序，另一份安装是
+/// 另一个文件，而那正是"藏错窗口"最常见的成因。
+#[cfg(windows)]
+pub(crate) fn family_process_ids(executable: &str) -> Vec<u32> {
+    let Some(name) = std::path::Path::new(executable)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_ascii_lowercase())
+    else {
+        return Vec::new();
+    };
+    if name.is_empty() {
+        return Vec::new();
+    }
+    let mut ids = Vec::new();
+    for (pid, _parent, exe_name) in process_snapshot() {
+        if exe_name != name {
+            continue;
+        }
+        if process_image_path(pid).is_some_and(|path| same_executable_path(&path, executable)) {
+            ids.push(pid);
+        }
+    }
+    ids
+}
+
+#[cfg(not(windows))]
+pub(crate) fn family_process_ids(_executable: &str) -> Vec<u32> {
+    Vec::new()
+}
+
+/// 这个可执行文件的家族里**任意一个**进程，用来回答"它出现了没有"。
+///
+/// 回答的是时间而不是身份：哪一个进程不重要（家族是同一个文件），重要的是最早那一刻。调用方
+/// 只拿它记一条时间线，不拿它做任何判定。
+pub(crate) fn first_process_of_executable(executable: &str) -> Option<u32> {
+    family_process_ids(executable).into_iter().min()
+}
+
+/// 一张进程表的快照：`(pid, 父 pid, 可执行文件名)`。
+///
+/// 一次 Toolhelp 遍历同时给出父进程（祖先进程遍历要用）与文件名（家族初筛要用），所以这张表
+/// 只写一遍。两者都不需要 `OpenProcess`。
+#[cfg(windows)]
+fn process_snapshot() -> Vec<(u32, u32, String)> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+
+    let mut entries = Vec::new();
+    unsafe {
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return entries;
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                entries.push((
+                    entry.th32ProcessID,
+                    entry.th32ParentProcessID,
+                    process_entry_name(&entry.szExeFile),
+                ));
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = windows::Win32::Foundation::CloseHandle(snapshot);
+    }
+    entries
+}
+
+/// `PROCESSENTRY32W::szExeFile` 是一个定长宽字符数组，到第一个 0 为止，小写化以便比较。
+#[cfg(windows)]
+fn process_entry_name(field: &[u16]) -> String {
+    let end = field.iter().position(|value| *value == 0).unwrap_or(field.len());
+    String::from_utf16_lossy(&field[..end]).trim().to_ascii_lowercase()
 }
 
 /// The executable of the client answering on `port`, if the kernel can be asked.
@@ -992,9 +1331,86 @@ mod tests {
     fn an_executable_that_is_not_running_has_no_windows() {
         const ABSENT: &str = r"C:\nonexistent\dsh-wallpaper-window-probe.exe";
         #[cfg(windows)]
-        assert!(super::windows_of_executable(ABSENT, false).is_empty());
-        assert_eq!(super::hide_executable_windows(ABSENT).outcome, "no-window");
+        assert!(super::family_windows(ABSENT).is_empty());
+        assert!(super::family_process_ids(ABSENT).is_empty());
+        assert!(super::first_process_of_executable(ABSENT).is_none());
+        // 一个不存在的句柄（或别人的句柄）永远不许被当成"可以藏的窗口"。
+        assert!(!super::hide_window(super::WindowHandle { raw: 1, pid: 2 }));
+        assert!(!super::window_is_visible(super::WindowHandle { raw: 1, pid: 2 }));
         assert_eq!(super::show_executable_windows(ABSENT).outcome, "no-window");
+    }
+
+    /// 菜单与壳的辅助窗口**永远**不在可隐藏之列 —— 这条规则修的是一个真实故障。
+    ///
+    /// 用户右键托盘图标，菜单一闪就没了，他描述为"客户端崩了"。原因就是那条"把这个家族所有
+    /// 可见窗口都藏起来"的规则：Win32 的弹出菜单是**同一个可执行文件的一个顶层窗口**
+    /// （类名 `#32768`），于是壁纸把用户刚点开的菜单一起藏了。鼠标划到菜单上时会同时命中
+    /// `Electron_NotifyIconHostWindow`、`MSCTFIME UI`、`IME` 这几个同类。
+    #[test]
+    fn a_menu_or_a_helper_window_is_never_something_to_hide() {
+        use super::{is_hideable_top_level, is_popup_or_helper_class};
+        // 这台机器上真实枚举到的那几个类名。
+        for class in [
+            "#32768",
+            "#32770",
+            "Electron_NotifyIconHostWindow",
+            "Electron_SystemPreferencesHostWindow",
+            "MSCTFIME UI",
+            "IME",
+            "tooltips_class32",
+        ] {
+            assert!(is_popup_or_helper_class(class), "{class} must not be hideable");
+            assert!(!is_hideable_top_level(true, false, class), "{class} must not be hideable");
+        }
+        // 类名的大小写来自 API，不保证与我们写的字面量一致。
+        assert!(is_popup_or_helper_class("electron_notifyiconhostwindow"));
+        assert!(is_popup_or_helper_class("  #32768  "));
+        // 主窗口的类名照常可藏。
+        assert!(is_hideable_top_level(true, false, "Chrome_WidgetWin_1"));
+        // 读不到类名 ⇒ 不藏：说不清是什么的窗口，少藏一个永远比多藏一个好。
+        assert!(is_popup_or_helper_class(""));
+        assert!(!is_hideable_top_level(true, false, ""));
+        // 有属主的一律不藏（菜单、对话框、提示、输入法大多数落在这里）。
+        assert!(!is_hideable_top_level(true, true, "Chrome_WidgetWin_1"));
+        // 不在屏幕上的一律不藏：对不可见窗口施加隐藏是空操作，提前藏也没有 latch 效果。
+        assert!(!is_hideable_top_level(false, false, "Chrome_WidgetWin_1"));
+    }
+
+    /// "壳会显示的那一个窗口"要认得出来，而且两档之间的取舍不能反。
+    #[test]
+    fn the_window_the_shell_has_not_shown_yet_is_recognised_by_shape() {
+        use super::{is_browser_window_class, WindowFacts, WindowHandle};
+        let shape = |visible: bool, owned: bool, class: &str, has_title: bool, has_size: bool| WindowFacts {
+            handle: WindowHandle { raw: 1, pid: 2 },
+            visible,
+            owned,
+            class: class.to_string(),
+            has_title,
+            has_size,
+        };
+        // 第一档：无属主、不是弹出物、有标题与矩形、还没显示 —— 这就是壳建好但没显示的主窗口。
+        let unshown = shape(false, false, "Chrome_WidgetWin_1", true, true);
+        assert!(unshown.is_unshown_client_window());
+        assert!(unshown.is_unshown_interface_window());
+        // 已经显示 ⇒ 不是"还没显示的窗口"（那时该走隐藏/显示那两条路，而不是 tick）。
+        assert!(!shape(true, false, "Chrome_WidgetWin_1", true, true).is_unshown_client_window());
+        // 第二档：标题或矩形还没就绪，但类名是 Chromium 的浏览器窗口。
+        let bare = shape(false, false, "Chrome_WidgetWin_1", false, false);
+        assert!(!bare.is_unshown_client_window());
+        assert!(bare.is_unshown_browser_window());
+        assert!(bare.is_unshown_interface_window());
+        // 弹出物与有属主的窗口两档都不认：它们不是"壳会显示的界面"。
+        let menu = shape(false, false, "#32768", true, true);
+        assert!(!menu.is_unshown_interface_window());
+        let owned = shape(false, true, "Chrome_WidgetWin_1", true, true);
+        assert!(!owned.is_unshown_interface_window());
+        // 别的类名不再是第二档（避免把某个隐藏的框架窗口当成主窗口）。
+        assert!(!is_browser_window_class("Chrome_MessageWindow"));
+        assert!(!shape(false, false, "Chrome_MessageWindow", false, false).is_unshown_interface_window());
+        // 菜单这条事实只认可见的菜单：隐藏的菜单窗口不是"有人在点托盘"。
+        assert!(shape(true, true, "#32768", true, true).is_menu());
+        assert!(!shape(false, true, "#32768", true, true).is_menu());
+        assert!(!shape(true, true, "Chrome_WidgetWin_1", true, true).is_menu());
     }
 
     /// An exit has to be an *event*, and this measures that it is.

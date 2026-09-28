@@ -136,26 +136,56 @@ pub(crate) fn normalize_launch_args(args: Option<Vec<String>>) -> Result<Vec<Str
 /// login is slow, and a false "failed" would be worse than a slow "started".
 const SHELL_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const SHELL_START_POLL: std::time::Duration = std::time::Duration::from_millis(250);
-/// How often the hide is re-applied while a just-started shell is up but not yet settled.
+/// How often the tight tick runs while a show is imminent.
 ///
-/// Shorter than [`SHELL_START_POLL`] because this loop is a *race* with the client's own
-/// `show()`: whatever it puts on screen stays until the next attempt, so this interval is
-/// literally how long the user could see a frame the wallpaper meant to keep out of
-/// sight. Measured on this machine, one attempt costs ~10 ms, so the loop is cheap.
-const SHELL_HIDE_POLL: std::time::Duration = std::time::Duration::from_millis(80);
-/// How long after the client starts answering the fast hide poll keeps running.
+/// 这一档就是"一帧能被看见多久"的上界：每次醒来只做一次 `IsWindowVisible`（真机实测这台机器上
+/// 是亚微秒级），所以它可以密到 1 毫秒而不花什么 CPU。1 毫秒也是 `Sleep` 的粒度下限，为此竞速
+/// 期间会把系统计时器分辨率抬到 1 毫秒再还回去（`client_window::TimerResolution`）；实测发现
+/// 延迟中位 1.5 毫秒。
+const SHELL_HIDE_TICK: std::time::Duration = std::time::Duration::from_millis(1);
+/// 全量枚举最密的那一档：枚举**就是**检测器的时候用（还没认出"壳会显示的那个窗口"）。
 ///
-/// The race is real but bounded: an Electron client creates its window before it shows
-/// it, and this machine's shell shows it once the host behind it reports ready — seconds,
-/// not minutes. Past this window the slow poll takes over, so a client that never paints
-/// costs nothing and a client that paints very late is still hidden, just later.
-const SHELL_HIDE_POLL_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+/// 枚举是这条路上唯一贵的一步：真机实测这台机器有 538 个顶层窗口，一次家族枚举约 30 毫秒
+/// （其中 Toolhelp 进程快照约 8 毫秒），而 tick 的一次检查是亚微秒。所以只有"没有比它更快的
+/// 检测器"时才用这一档，并且有 [`SHELL_HIDE_RACE_WINDOW`] 兜底。
+const SHELL_HIDE_SWEEP_RACE: std::time::Duration = std::time::Duration::from_millis(50);
+/// 有 tick 盯着那个窗口时的枚举间隔：枚举这时只负责"顺带看看"（托盘菜单、家族里别的窗口）。
+const SHELL_HIDE_SWEEP_GUARD: std::time::Duration = std::time::Duration::from_millis(150);
+/// 还没到"显示随时可能发生"之前，全量枚举的间隔。
+///
+/// 这段时间里循环的活是**找到**那个"已经建好、还没显示"的窗口（拿到句柄以后，竞速期就只剩一次
+/// `IsWindowVisible`），所以它不必密：壳在自己的 `show()` 之前还有一整套宿主启动要走。
+const SHELL_HIDE_SWEEP_BOOT: std::time::Duration = std::time::Duration::from_millis(250);
+/// 密集枚举档最多持续多久（从"显示随时可能发生"起算）。
+///
+/// 壳显示窗口的时刻就在宿主就绪之后不久（`ready` 与 `show()` 是同一段代码里的相邻两步），所以
+/// 密集档只需要覆盖那几秒。超过它还没有任何一次成功，说明这台机器上"还没显示的那个窗口"认不
+/// 出来（例如壳换成了不是电子的实现）—— 那时枚举退到守护档：仍然会藏，只是不再以整机 CPU 为
+/// 代价去抢那一帧。
+const SHELL_HIDE_RACE_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+/// Bridge 的时钟每多久问一次：宿主是不是已经就绪。
+///
+/// 单飞且有界：一次 `GET /api/wallpaper/v1/status` 在这台机器上实测中位 0.8 毫秒（见
+/// `docs/evidence/...` 里那次测量），所以 5 毫秒一档的代价约为这块时间里六分之一颗核；它只在
+/// "宿主还没就绪"这个阶段跑，Bridge 一报告就绪就停，不到放弃时刻也停。
+const SHELL_HOST_POLL: std::time::Duration = std::time::Duration::from_millis(5);
+/// Bridge 始终不报告就绪时，这台时钟最多走多久。
+const SHELL_HOST_POLL_GIVE_UP: std::time::Duration = std::time::Duration::from_secs(15);
+/// 家族进程第一次出现是每多久探一次（一次 Toolhelp 快照 + 路径确认，约 1 毫秒）。
+const SHELL_FAMILY_PROBE: std::time::Duration = std::time::Duration::from_millis(100);
+/// 一次后台启动的隐藏**至多**持续多久 —— 这一场竞速的绝对上限。
+///
+/// 它不是"要藏多久"：正常的启动在第一次藏住之后 [`SHELL_HIDE_SETTLE`] 就结束了。取 45 秒是因为
+/// 用户报告"开机第一次启动远不止十几秒"，而热态实测约 6 秒 —— 3 倍于最坏报告，够覆盖一次冷启动，
+/// 又不会让一场竞速无限延长。它**不**延长任何一次对抗：第一次藏住之后再现的窗口一律归用户
+/// （见 [`wait_for_shell`] 的规则 2）。
+const SHELL_HIDE_EPISODE: std::time::Duration = std::time::Duration::from_secs(45);
 /// How long a shell's windows must stay off screen before a background start is done.
 ///
 /// Not a guess about boot time: the client's own `show()` is measured to win against an
 /// external hide (540 ms after the request, on this machine), so "hidden once" is not an
-/// answer — "hidden and nothing brought it back" is. Two seconds of quiet after the last
-/// attempt is what separates the two.
+/// answer — "hidden and nothing brought it back" is. Two seconds of quiet after the
+/// first hide is what separates the two.
 const SHELL_HIDE_SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
 /// How long a started shell is given to *paint*, which happens after it starts
 /// listening. Same order of magnitude as the start timeout, for the same reason.
@@ -833,6 +863,7 @@ pub(crate) fn plan_launch(
 pub(crate) fn run_launch(
     plan: &LaunchPlan,
     managed: &crate::ManagedDshState,
+    trigger: LaunchTrigger,
 ) -> HarnessLaunchOutcome {
     match plan {
         LaunchPlan::Shell {
@@ -840,7 +871,7 @@ pub(crate) fn run_launch(
             alias,
             port,
             hide_window,
-        } => launch_shell(aumid, alias, *port, *hide_window),
+        } => launch_shell(aumid, alias, *port, *hide_window, trigger),
         LaunchPlan::InstalledCli {
             launcher,
             profile,
@@ -903,6 +934,7 @@ fn launch_shell(
     alias: &str,
     port: Option<u16>,
     hide_window: bool,
+    trigger: LaunchTrigger,
 ) -> HarnessLaunchOutcome {
     // A client that already answers belongs to the user. Report it and leave it
     // alone: starting a second one is at best wasteful and, for a shell without a
@@ -919,16 +951,28 @@ fn launch_shell(
     // yet, and asking it here keeps the waiting loop below about one thing.
     let executable = recorded_shell_executable(aumid);
 
+    // 新的一次后台启动有自己的诉求：上一次"用户要它出现"的落款到此为止。**只有后台启动会清它**
+    // —— 而它也不在这里被设上（设它的是揭示路径与托盘菜单，见 [`RevealIntent`]）。
+    if hide_window {
+        clear_user_wants_shell();
+    }
+
+    // 时刻从这里算起：这一行下面第一件事就是向 Windows shell 提出启动请求。
+    let timeline = LaunchTimeline::start(trigger);
     if !spawn_alias(alias, aumid) {
         return HarnessLaunchOutcome::new("spawn-failed", HarnessTargetKind::EmbeddedShell);
     }
 
-    let (confirmed, hidden) = match port {
-        Some(port) => wait_for_shell(port, hide_window, executable.as_deref()),
-        None => (false, false),
+    let (confirmed, hidden, visible_frame) = match port {
+        Some(port) => wait_for_shell(port, hide_window, executable.as_deref(), timeline),
+        None => {
+            log::warn!("harness shell has no port to wait for: aumid={aumid}");
+            (false, false, None)
+        }
     };
     log::info!(
-        "harness shell launched: aumid={aumid} confirmed={confirmed} hidden={hidden}"
+        "harness shell launched: aumid={aumid} trigger={trigger:?} confirmed={confirmed} hidden={hidden} visible_frame_ms={}",
+        visible_frame.map_or_else(|| "none".to_string(), |ms| ms.to_string())
     );
     HarnessLaunchOutcome {
         outcome: if confirmed { "started" } else { "started-unconfirmed" }.into(),
@@ -938,77 +982,646 @@ fn launch_shell(
     }
 }
 
+/// 一次后台启动的时间线。
+///
+/// 存在的理由是一个必须用测量回答的问题：**Bridge 在壳显示窗口之前还是之后挂载**。壁纸日志的
+/// 时间戳只到秒（`%LOCALAPPDATA%\com.dsh.wallpaper\logs\dsh-wallpaper.log` 里是
+/// `[2026-09-28][19:42:48]`），所以时间必须由这里自己带上：每一行都写 `+Nms`，相对"壁纸提出
+/// 启动请求"那一刻。一次启动十几行，便宜，而且答案会随着壳每一次更新重新变得值得核对，所以它
+/// 不是临时代码 —— 它是这台竞速唯一的仪表盘。
+struct LaunchTimeline {
+    /// 壁纸向 Windows shell 提出启动请求的那一刻。
+    requested_at: std::time::Instant,
+    /// 已经报过的里程碑：同一个里程碑只报一次，因为它回答的是"第一次"。
+    reported: std::collections::BTreeSet<&'static str>,
+}
+
+impl LaunchTimeline {
+    fn start(trigger: LaunchTrigger) -> Self {
+        let requested_at = std::time::Instant::now();
+        let timeline = Self {
+            requested_at,
+            reported: std::collections::BTreeSet::new(),
+        };
+        log::info!("[launch-timing] requested +0ms trigger={trigger:?}");
+        timeline
+    }
+
+    fn mark(&mut self, label: &'static str, detail: impl std::fmt::Display) {
+        if !self.reported.insert(label) {
+            return;
+        }
+        log::info!(
+            "[launch-timing] {label} +{}ms {detail}",
+            self.requested_at.elapsed().as_millis()
+        );
+    }
+}
+
+/// 「用户已经要了这个窗口」：这一场后台启动的隐藏从此不再插手。
+///
+/// 为什么需要一个显式状态：壳自己那条显示窗口的路（托盘、`second-instance`、启动完成后的
+/// `show()`）实测 540ms 就能把窗口拿回来，而重藏是毫秒级的 —— 继续重藏就变成"壁纸把用户按死
+/// 在屏幕上"，比闪一帧坏得多。用户在设置里按「打开」、在岛上按桌面会话图标，落的就是这一款。
+///
+/// 三个写入者，**没有一个是这个循环自己的动作**：
+/// 1. [`note_user_wants_shell`] —— 揭示路径（`ensure_ui`）在动手之前落款；
+/// 2. [`RevealIntent::observe_human_interaction`] —— 循环**看见**壳的托盘菜单（`#32768`）出现在
+///    屏幕上。那只能是人点出来的：循环自己既不弹菜单，也不显示任何窗口；
+/// 3. [`clear_user_wants_shell`] —— 下一次**后台**启动把它清掉（新的那次启动有自己的诉求）。
+///
+/// 循环只读它（[`RevealIntent::wants`]），而且每一次藏之前都读。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RevealIntent {
+    wanted: Option<String>,
+}
+
+impl RevealIntent {
+    /// 用户要的是不是这个可执行文件的窗口。
+    pub(crate) fn wants(&self, executable: &str) -> bool {
+        let wanted = crate::client_window::normalized_executable_path(executable);
+        !wanted.is_empty() && self.wanted.as_deref() == Some(wanted.as_str())
+    }
+
+    /// 落款：用户明确要这个窗口出现。
+    pub(crate) fn note_user_request(&mut self, executable: &str) {
+        let wanted = crate::client_window::normalized_executable_path(executable);
+        if !wanted.is_empty() {
+            self.wanted = Some(wanted);
+        }
+    }
+
+    /// 看见人手：壳的托盘菜单出现了。
+    ///
+    /// 与 [`Self::note_user_request`] 是同一款，分开写是因为**来路**不同：一个是明确的命令，
+    /// 一个是观察到的人手。将来若要收紧口径，先收紧哪一个应当是清楚的选择，而不是一处含糊的
+    /// 合并。
+    pub(crate) fn observe_human_interaction(&mut self, executable: &str) {
+        self.note_user_request(executable);
+    }
+
+    /// 忘掉它（下一次后台启动）。
+    pub(crate) fn clear(&mut self) {
+        self.wanted = None;
+    }
+}
+
+static REVEAL_INTENT: std::sync::OnceLock<std::sync::Mutex<RevealIntent>> =
+    std::sync::OnceLock::new();
+
+fn reveal_intent() -> &'static std::sync::Mutex<RevealIntent> {
+    REVEAL_INTENT.get_or_init(|| std::sync::Mutex::new(RevealIntent::default()))
+}
+
+/// 落款：用户要这个窗口出现（设置里的「打开」、岛上的桌面会话图标）。
+pub(crate) fn note_user_wants_shell(executable: &str) {
+    if let Ok(mut intent) = reveal_intent().lock() {
+        if !intent.wants(executable) {
+            log::info!("harness shell window is wanted: executable={executable}");
+        }
+        intent.note_user_request(executable);
+    }
+}
+
+/// 下一次后台启动：这一款到此为止。
+pub(crate) fn clear_user_wants_shell() {
+    if let Ok(mut intent) = reveal_intent().lock() {
+        intent.clear();
+    }
+}
+
+/// 用户要过这个窗口吗（循环每一次藏之前都问）。
+fn user_wants_shell(executable: &str) -> bool {
+    reveal_intent()
+        .lock()
+        .map(|intent| intent.wants(executable))
+        .unwrap_or(false)
+}
+
+/// 循环看见人手：壳的托盘菜单在屏幕上。
+fn note_human_interaction(executable: &str) {
+    if let Ok(mut intent) = reveal_intent().lock() {
+        if !intent.wants(executable) {
+            log::info!("harness shell asked for by hand: a menu of {executable} is on screen");
+        }
+        intent.observe_human_interaction(executable);
+    }
+}
+
+/// Bridge 的公开状态路由。
+///
+/// 与 `lib.rs` 里那个探针用的是同一条地址，两者都必须与 `bridge/src/protocol.ts` 的
+/// `API_PREFIX` 一致 —— 这条注释就是那份"两处必须一致"的提醒。
+const HARNESS_STATUS_PATH: &str = "/api/wallpaper/v1/status";
+/// 状态响应最多读这么多字节。它是几百字节的文档，这个上限只是"绝不无界读"。
+const MAX_STATUS_BYTES: usize = 8 * 1024;
+
+/// 问一次 Bridge 的公开状态路由：**宿主已经就绪了吗**。
+///
+/// 这是启动竞速里最好的一台外部时钟，理由是时序：壳的窗口只在宿主子进程发出 `ready` 之后才显示
+/// （`app.asar!/lib/main.js:11569-11576`，而 `ready` 由 `dsh-desktop-host` 在应用装配完成之后
+/// 发出），而 Bridge 就是那个 profile 里的一个插件 —— 它的 `state: "bridge-ready"` 因此**晚于**
+/// 宿主内部就绪、**早于** `show()`。"端口开始应答"更早也更糊（webserver 先监听、插件后装配），
+/// 所以两个信号都留着：谁先到用谁。
+///
+/// 这个路由是**公开**的（`bridge/src/index.ts` 里由 `['webServer']` 作用域挂载、不带令牌），所以
+/// 这里不需要读令牌：一次最小 GET、只认一个字段、失败即"还没就绪"。超时就是轮询间隔 —— 一次
+/// 问话最多让循环晚一个间隔醒来。
+fn host_reported_ready(port: u16) -> bool {
+    loopback_get(port, HARNESS_STATUS_PATH, SHELL_HOST_POLL)
+        .as_deref()
+        .is_some_and(harness_status_reported_ready)
+}
+
+/// 对回环端口发一次最小 GET，返回响应文本（头 + 体，最多 [`MAX_STATUS_BYTES`]）。
+///
+/// 手写 HTTP 而不是拿一个 HTTP 客户端，有两个理由：这条路在 lite 版里也要能编译（那里没有
+/// reqwest），而这里要的只是"一次 GET、看一个字段、绝不拖住循环"。两个超时都由调用方给的预算
+/// 决定，所以最坏情况也只是这一次问话白问 —— 下一次间隔会再来一次。
+fn loopback_get(port: u16, path: &str, timeout: std::time::Duration) -> Option<String> {
+    use std::io::{Read, Write};
+
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = std::net::TcpStream::connect_timeout(&address, timeout).ok()?;
+    stream.set_read_timeout(Some(timeout)).ok()?;
+    stream.set_write_timeout(Some(timeout)).ok()?;
+    let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut response = Vec::with_capacity(MAX_STATUS_BYTES);
+    let mut chunk = [0u8; 512];
+    while response.len() < MAX_STATUS_BYTES {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => response.extend_from_slice(&chunk[..read]),
+            // 超时或对端提前关闭：手上这一段通常已经够了，交给解析去判断。
+            Err(_) => break,
+        }
+    }
+    Some(String::from_utf8_lossy(&response).into_owned())
+}
+
+/// 这份响应说"宿主已经就绪"了吗。
+///
+/// 纯函数，所以线格式可以被测试钉住 —— 而它值得被钉住：这条响应在这台机器上是
+/// `Transfer-Encoding: chunked`（实测），整段并不是合法 JSON，只看 `{` 到 `}` 之间那一段才是
+/// Bridge 自己写的那份文档。
+fn harness_status_reported_ready(text: &str) -> bool {
+    let Some(status_line) = text.lines().next() else {
+        return false;
+    };
+    // 状态行必须是 200：别的状态码意味着这个端口上答话的不是我们要找的那个 Bridge。
+    if !status_line.starts_with("HTTP/") || !status_line.contains(" 200") {
+        return false;
+    }
+    let Some(headers_end) = text.find("\r\n\r\n") else {
+        return false;
+    };
+    let body = &text[headers_end + 4..];
+    let (Some(start), Some(end)) = (body.find('{'), body.rfind('}')) else {
+        return false;
+    };
+    if end <= start {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(&body[start..=end])
+        .ok()
+        .and_then(|document| {
+            document
+                .get("state")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .is_some_and(|state| state == "bridge-ready")
+}
+
+/// 一次全量枚举的结果。
+struct FamilySweep {
+    /// 家族此刻有多少个顶层窗口（0 表示进程还没起来）。
+    windows: usize,
+    /// 这些窗口里此刻在屏幕上的有几个。**含弹出物**：这个问题问的是"有没有人想让它可见"，
+    /// 而不是"能不能藏"。
+    on_screen: usize,
+    /// 这一次藏掉了几个。
+    hidden: usize,
+    /// 屏幕上有没有壳的弹出菜单（= 有人正在跟它打交道）。
+    menu_visible: bool,
+    /// 那个"已经建好、还没显示"的界面窗口，连同它的类名（记日志用）。
+    unshown: Option<(crate::client_window::WindowHandle, String)>,
+}
+
+/// 全量枚举一次：藏掉家族此刻在屏幕上的界面窗口（`hide` 为假时只看不藏），并顺便认两件只有枚举
+/// 能认出来的事 —— 用户刚点过的托盘菜单，以及那个"已经建好、还没显示"的窗口。
+///
+/// 身份用**可执行文件**，不用端口：按端口找到的是监听那个套接字的进程，而窗口属于同一个可执行
+/// 文件的另一个进程（电子客户端的运行时在子进程里）。按路径找一次就覆盖整个进程家族，而且不只
+/// 一个窗口 —— 实测这台机器上那个可执行文件有 10 个顶层窗口。
+///
+/// 藏的动作**逐个重新判定**（`client_window::hide_window`），不拿枚举时看到的状态直接用：枚举
+/// 与隐藏之间隔着几次系统调用，中间窗口可能已经换了主人。
+fn sweep_family(port: u16, executable: Option<&str>, hide: bool) -> FamilySweep {
+    let Some(executable) = executable else {
+        // 记录里没有可执行文件路径（老记录、或还没扫过）⇒ 退回按端口那条路。它一次只能回答一个
+        // 窗口，也没有"哪个窗口还没显示"这种事实可认。这是降级，不是错误：按端口那条路一直是
+        // 这套动作修复之前的行为。
+        let hidden = if hide && crate::client_window::hide_client_window(port).hidden {
+            1
+        } else {
+            0
+        };
+        return FamilySweep {
+            windows: 0,
+            on_screen: usize::from(crate::client_window::endpoint_window_on_screen(port)),
+            hidden,
+            menu_visible: false,
+            unshown: None,
+        };
+    };
+    let windows = crate::client_window::family_windows(executable);
+    let mut sweep = FamilySweep {
+        windows: windows.len(),
+        on_screen: windows.iter().filter(|window| window.visible).count(),
+        hidden: 0,
+        menu_visible: windows.iter().any(|window| window.is_menu()),
+        unshown: None,
+    };
+    for window in windows.iter().filter(|window| window.is_unshown_interface_window()) {
+        sweep.unshown = Some((window.handle, window.class.clone()));
+        break;
+    }
+    if hide {
+        for window in windows.iter().filter(|window| window.is_hideable()) {
+            if crate::client_window::hide_window(window.handle) {
+                sweep.hidden += 1;
+            }
+        }
+    }
+    sweep
+}
+
+/// 循环在等什么，以及下一次醒来之前该睡多久。
+///
+/// 抽成纯函数是因为它就是"一帧能被看见多久"的上界：tick 越密，帧越短。三个档位对应三种处境，
+/// 各自的代价都算得出来 —— 一次 tick 是一次 `IsWindowVisible`（约 1 微秒），一次时钟是一次回环
+/// GET（这台机器上实测中位 0.8 毫秒），一次全量枚举是一张进程快照 + 一次窗口枚举。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HidePoll {
+    /// 显示随时可能发生：宿主已就绪、或已认出那个还没显示的窗口、或已经藏过一次。
+    pub show_imminent: bool,
+    /// 这一场竞速还没过期。
+    pub within_episode: bool,
+    /// Bridge 的时钟还在走（还在等宿主就绪，且没到放弃时刻）。
+    pub clock_active: bool,
+}
+
+pub(crate) fn hide_poll_interval(state: HidePoll) -> std::time::Duration {
+    if state.show_imminent && state.within_episode {
+        SHELL_HIDE_TICK
+    } else if state.clock_active {
+        SHELL_HOST_POLL
+    } else {
+        SHELL_START_POLL
+    }
+}
+
+/// 全量枚举该多密 —— 三种处境，三档，理由只有一个：**枚举是这条路上最贵的一步**。
+///
+/// 真机实测（`this_machine_measures_the_hide_race`）：这台机器有 538 个顶层窗口，一次家族枚举
+/// 约 30 毫秒，其中 Toolhelp 进程快照约 8 毫秒；而 tick 的一次检查是亚微秒。所以密集档只留给
+/// "没有比枚举更快的检测器"这一种处境，而且还有 [`SHELL_HIDE_RACE_WINDOW`] 兜底。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SweepPoll {
+    /// 显示随时可能发生（宿主就绪、端口应答、或已经藏过一次）。
+    pub show_imminent: bool,
+    /// 枚举**就是**检测器：还没认出"壳会显示的那个窗口"。
+    pub sweep_is_the_detector: bool,
+    /// 密集档还没过期。
+    pub within_race_window: bool,
+}
+
+pub(crate) fn hide_sweep_interval(state: SweepPoll) -> std::time::Duration {
+    if state.sweep_is_the_detector && state.within_race_window {
+        SHELL_HIDE_SWEEP_RACE
+    } else if state.show_imminent {
+        SHELL_HIDE_SWEEP_GUARD
+    } else {
+        SHELL_HIDE_SWEEP_BOOT
+    }
+}
+
+/// 这场循环还要不要继续 —— 两条钟各回答一个问题。
+///
+/// * `SHELL_START_TIMEOUT`（30 秒）回答"启动被确认了吗"：到点还没人应答就该如实报告
+///   `started-unconfirmed`，而不是把"起不来"这件事再拖 15 秒。
+/// * `SHELL_HIDE_EPISODE`（45 秒）回答"隐藏最多做多久"：它只在**端口已经应答**之后才延长，
+///   因为那时才确实有一个客户端正在启动、确实有一个窗口可能冒出来。
+pub(crate) fn hide_episode_continues(
+    hide_window: bool,
+    confirmed: bool,
+    start_horizon_passed: bool,
+    episode_horizon_passed: bool,
+) -> bool {
+    if episode_horizon_passed {
+        return false;
+    }
+    if !start_horizon_passed {
+        return true;
+    }
+    hide_window && confirmed
+}
+
+/// 从"第一次看到它在屏幕上"到"藏住"之间过了多久 —— 也就是这一次竞速剩下的那一帧。
+///
+/// 它是**上界**：看见它的那一刻本身有一个 tick（或一次枚举）的延迟，所以真实帧只会更短。
+fn visible_frame_ms(
+    visible_at: Option<std::time::Instant>,
+    hidden_at: Option<std::time::Instant>,
+) -> Option<u128> {
+    Some(hidden_at?.saturating_duration_since(visible_at?).as_millis())
+}
+
 /// Wait for a freshly started shell to answer, hiding its window on the way.
 ///
-/// One deadline covers both waits: the window can only be resolved once the
-/// client is listening (that is how the port is turned back into a process, and
-/// from there into the window it owns), and hiding a window that has not been
-/// painted yet is simply retried until the deadline. Hiding never fails the
-/// launch — a visible window is the honest outcome of not being able to hide one.
-/// 隐藏是**反复施加**的，不是一次性的，原因是实测：
+/// 这一场竞速的规则（用户报告之后重写，2026-09-29）：
 ///
-/// * 壳自己有"把我的窗口拿到前台"的一条路（托盘、`second-instance`、启动完成后的
-///   `window.show()`），它会把我们藏起来的窗口重新显示出来 —— 实测：外部隐藏之后请求壳自己
-///   聚焦，窗口 540ms 后回到屏幕上；
-/// * 而"趁窗口还不可见时先藏起来"并不成立：属于这个可执行文件的 10 个顶层窗口里有 9 个本来
-///   就是 `IsWindowVisible == false`（电子客户端建窗口时就是这个样子），对它们施加隐藏是无操作，
-///   什么也锁不住。
+/// 1. **一次启动只有一场隐藏，而且它有绝对上限。** 这一场在"第一次藏住 + 家族连续
+///    [`SHELL_HIDE_SETTLE`] 不在屏幕上"或 [`SHELL_HIDE_EPISODE`] 到点时结束；之后这次启动不再
+///    藏任何窗口。上限取得宽（45 秒）是因为冷启动"远不止十几秒"，而**防止对抗**靠的是规则 2，
+///    不是这个上限。
+/// 2. **第一次藏住之后窗口再出现，这一场立刻结束。** 那是"有人要它"的证据（壳自己的托盘、
+///    `second-instance`、用户点了它），用户的显示赢：一次启动最多一次对抗。这条规则替代了老做法
+///    ——老做法是"只要它露头就再藏一次，直到连续 2 秒不在屏幕上"，而用户每次把窗口拿出来都会
+///    重置那 2 秒，于是隐藏越藏越久，用户看到的是"窗口刚出来就被按回去，而且是十几秒"。
+/// 3. 用户明确要过的窗口（设置里的「打开」、岛上的桌面会话图标、壳自己的托盘菜单）**连这一次
+///    对抗都不会发生**：落款在先，循环每一次藏之前都读它（见 [`RevealIntent`]）。
+/// 4. 隐藏永远不让启动失败：藏不到就是"窗口还在屏幕上"，如实报告。
 ///
-/// 所以这里做的是"只要它露头就再藏一次"，直到**连续 [`SHELL_HIDE_SETTLE`] 屏幕上都没有它的
-/// 窗口**为止 —— 那个静默期才是"这次启动结束了"的判据，壳晚一点才显示的那一帧因此也会被盖掉。
-/// 代价是一帧：壳自己显示出来的那一帧最多被看到一个 [`SHELL_HIDE_POLL`]。阻止一个进程显示自己
-/// 的窗口，在进程外没有别的办法（不碰透明/分层那一类会让 Chromium 渲染出问题的招）。
-fn wait_for_shell(port: u16, hide_window: bool, executable: Option<&str>) -> (bool, bool) {
-    let deadline = std::time::Instant::now() + SHELL_START_TIMEOUT;
+/// 时长只剩下两处：壳自己显示出来的那一帧最多被看一个 [`SHELL_HIDE_TICK`]（1 毫秒，前提是那个
+/// "还没显示"的窗口已经认出来），以及在竞速退化成按端口枚举时最多一个
+/// [`SHELL_HIDE_SWEEP_RACE`]。零帧做不到：外部没有"别显示"的开关，能做的只是比对手快 ——
+/// 真正的零帧只能靠一个盖在它上面的不透明面，那是另一件事，本项目不做（见
+/// `docs/evidence/dsh-shell-background-launch-timing.md`）。
+fn wait_for_shell(
+    port: u16,
+    hide_window: bool,
+    executable: Option<&str>,
+    mut timeline: LaunchTimeline,
+) -> (bool, bool, Option<u128>) {
+    let started_at = std::time::Instant::now();
+    let start_horizon = started_at + SHELL_START_TIMEOUT;
+    let episode_horizon = started_at + SHELL_HIDE_EPISODE;
+    let clock_horizon = started_at + SHELL_HOST_POLL_GIVE_UP;
+    // 家族的可执行文件：记录里那条路径（如果有），否则等端口应答后问正在服务的那台客户端。
+    let mut family: Option<String> = executable.map(str::to_string);
     // When the client started answering. It is the moment after which its window is
     // expected, which is what makes the fast poll below worth paying for.
     let mut confirmed_at: Option<std::time::Instant> = None;
-    // When the family was last seen on screen (and therefore last put out of sight
-    // again). The settle period is measured from here, so a late `show()` from the
-    // client restarts it instead of being missed.
-    let mut hidden_since: Option<std::time::Instant> = None;
-    while std::time::Instant::now() < deadline {
-        if confirmed_at.is_none() && crate::client_window::endpoint_is_listening(port) {
-            confirmed_at = Some(std::time::Instant::now());
-        }
-        let confirmed = confirmed_at.is_some();
-        if hide_window && hide_started_shell(port, confirmed, executable) {
-            // Something of that executable was on screen and is now out of sight: the
-            // first paint, or the client asking for its own window again.
-            hidden_since = Some(std::time::Instant::now());
-        }
-        let settled = hide_settled(hidden_since, std::time::Instant::now());
-        if confirmed && (!hide_window || settled) {
+    // 宿主就绪（Bridge 自己报的）。这是"显示即将发生"最贴近的那台时钟。
+    let mut bridge_ready_at: Option<std::time::Instant> = None;
+    // 已经建好、还没显示的界面窗口：壳自己的 show() 会显示的那一个。
+    let mut watched: Option<crate::client_window::WindowHandle> = None;
+    // 第一次真正藏住是什么时候。它有值之后，这一场就只等结算或等用户要回去（规则 2）。
+    let mut hidden_at: Option<std::time::Instant> = None;
+    // 第一次看到家族在屏幕上（壳自己把它显示出来的那一刻，我们这一侧看到的）。
+    let mut visible_at: Option<std::time::Instant> = None;
+    let mut visible_frame: Option<u128> = None;
+    let mut family_probe_at: Option<std::time::Instant> = None;
+    let mut sweep_at: Option<std::time::Instant> = None;
+    // 第一个"显示随时可能发生"的信号：密集枚举档的起算点。
+    let mut race_started_at: Option<std::time::Instant> = None;
+    // 最近一次枚举里"屏幕上有没有这个家族的东西"。规则 2 用它回答"它是不是又回来了"。
+    let mut on_screen = false;
+    let mut sweeps = 0u32;
+    let mut hidden_windows = 0u32;
+    // 抬到 1 毫秒只在这一场里需要（[`SHELL_HIDE_TICK`] 的兑现条件），出作用域就还回去 ——
+    // 它最多活 [`SHELL_HIDE_EPISODE`]，而且只出现在一次后台启动里。
+    let _resolution = hide_window.then(crate::client_window::TimerResolution::new);
+
+    loop {
+        let now = std::time::Instant::now();
+        if !hide_episode_continues(
+            hide_window,
+            confirmed_at.is_some(),
+            now >= start_horizon,
+            now >= episode_horizon,
+        ) {
             break;
         }
-        // The fast poll is a race with the client's first paint, and the race has a
-        // bounded useful life: once the client has been up for a while without painting,
-        // the slow poll takes over and the hide still happens — later, not never.
-        let racing = hidden_since.is_some()
-            || confirmed_at.is_some_and(|at| at.elapsed() < SHELL_HIDE_POLL_WINDOW);
-        std::thread::sleep(if hide_window && confirmed && !settled && racing {
-            SHELL_HIDE_POLL
-        } else {
-            SHELL_START_POLL
-        });
+
+        // 端口应答：既是"启动被确认"的判据，也是家族路径最后的来源。
+        if confirmed_at.is_none() && crate::client_window::endpoint_is_listening(port) {
+            confirmed_at = Some(now);
+            timeline.mark("port-answered", format!("port={port}"));
+            if family.is_none() {
+                family = crate::client_window::endpoint_executable(port);
+                if let Some(path) = &family {
+                    timeline.mark("family-executable", format!("executable={path}"));
+                }
+            }
+        }
+        // 这一档（手动触发）要的是"窗口给我看"，所以它只等端口应答：没有窗口要藏，
+        // 也就没有竞速。
+        if !hide_window && confirmed_at.is_some() {
+            return (true, false, None);
+        }
+
+        // 规则 3：用户已经要它了 —— 这一场到此为止，而且连一次对抗都不发生。
+        if hide_window && family.as_deref().is_some_and(user_wants_shell) {
+            timeline.mark(
+                "user-wants",
+                "the user asked for this window: no hide, the episode is over",
+            );
+            return (confirmed_at.is_some(), false, visible_frame);
+        }
+
+        if hide_window {
+            // Bridge 的时钟：宿主就绪 = 显示即将发生。**只在第一次藏住之前走**，之后不再轮询
+            // —— 已经不藏了，再问也没有用。
+            let clock_active = hidden_at.is_none() && bridge_ready_at.is_none() && now < clock_horizon;
+            if clock_active && host_reported_ready(port) {
+                bridge_ready_at = Some(std::time::Instant::now());
+                timeline.mark(
+                    "bridge-ready",
+                    format!("port={port} poll={}ms", SHELL_HOST_POLL.as_millis()),
+                );
+            }
+            // 家族进程第一次出现。回答的是时间而不是身份，所以哪一个进程不重要。
+            if hidden_at.is_none() && family_probe_at.map_or(true, |at| now.duration_since(at) >= SHELL_FAMILY_PROBE) {
+                family_probe_at = Some(now);
+                if let Some(path) = family.as_deref() {
+                    if let Some(pid) = crate::client_window::first_process_of_executable(path) {
+                        timeline.mark(
+                            "family-process",
+                            format!("pid={pid} probe={}ms", SHELL_FAMILY_PROBE.as_millis()),
+                        );
+                    }
+                }
+            }
+
+            let show_imminent =
+                hidden_at.is_some() || bridge_ready_at.is_some() || confirmed_at.is_some() || watched.is_some();
+            // 密集枚举的起点：第一个"显示随时可能发生"的信号。它只用来给密集档设一个寿命。
+            if show_imminent && race_started_at.is_none() {
+                race_started_at = Some(std::time::Instant::now());
+            }
+            let sweep_interval = hide_sweep_interval(SweepPoll {
+                show_imminent,
+                // 已经认出那个窗口（或已经藏到过）⇒ 1 毫秒的 tick 才是检测器，枚举不必再抢。
+                sweep_is_the_detector: watched.is_none() && hidden_at.is_none(),
+                within_race_window: race_started_at
+                    .map_or(false, |at| now.duration_since(at) < SHELL_HIDE_RACE_WINDOW),
+            });
+            if sweep_at.map_or(true, |at| now.duration_since(at) >= sweep_interval) {
+                sweep_at = Some(now);
+                sweeps += 1;
+                // 第一次藏住之后只看不藏（规则 1 + 2）。
+                let sweep = sweep_family(port, family.as_deref(), hidden_at.is_none());
+                on_screen = sweep.on_screen > 0;
+                if sweep.windows > 0 {
+                    timeline.mark(
+                        "family-windows",
+                        format!("count={} on_screen={}", sweep.windows, sweep.on_screen),
+                    );
+                }
+                if sweep.menu_visible {
+                    if let Some(path) = family.as_deref() {
+                        note_human_interaction(path);
+                    }
+                    timeline.mark(
+                        "tray-menu",
+                        "a menu of the shell is on screen: the user is asking for it",
+                    );
+                }
+                if sweep.hidden > 0 {
+                    hidden_windows += sweep.hidden as u32;
+                    visible_at = visible_at.or(Some(now));
+                    hidden_at = Some(std::time::Instant::now());
+                    visible_frame = visible_frame_ms(visible_at, hidden_at).or(visible_frame);
+                    log::info!(
+                        "harness shell window hidden: windows={} source=sweep sweep={}ms",
+                        sweep.hidden,
+                        sweep_interval.as_millis()
+                    );
+                    timeline.mark(
+                        "hide-landed",
+                        format!("windows={} sweeps={sweeps} via=sweep", sweep.hidden),
+                    );
+                    timeline.mark(
+                        "visible-frame",
+                        format!(
+                            "{}ms (upper bound: one sweep = {}ms)",
+                            visible_frame.unwrap_or(0),
+                            sweep_interval.as_millis()
+                        ),
+                    );
+                }
+                if watched.is_none() {
+                    if let Some((handle, class)) = sweep.unshown.as_ref() {
+                        watched = Some(*handle);
+                        timeline.mark(
+                            "window-exists-hidden",
+                            format!("pid={} class={class}", handle.pid()),
+                        );
+                    }
+                }
+            }
+
+            match (hidden_at, watched) {
+                // 还没藏到过：盯着那个已经建好的句柄，壳的 show() 一落地就按下去。
+                (None, Some(handle)) => {
+                    if crate::client_window::window_is_visible(handle) {
+                        visible_at = visible_at.or(Some(std::time::Instant::now()));
+                        if crate::client_window::hide_window(handle) {
+                            hidden_windows += 1;
+                            hidden_at = Some(std::time::Instant::now());
+                            visible_frame = visible_frame_ms(visible_at, hidden_at).or(visible_frame);
+                            log::info!(
+                                "harness shell window hidden: windows=1 source=tick tick={}ms",
+                                SHELL_HIDE_TICK.as_millis()
+                            );
+                            timeline.mark(
+                                "hide-landed",
+                                format!("windows=1 sweeps={sweeps} via=tick"),
+                            );
+                            timeline.mark(
+                                "visible-frame",
+                                format!(
+                                    "{}ms (== one tick = {}ms)",
+                                    visible_frame.unwrap_or(0),
+                                    SHELL_HIDE_TICK.as_millis()
+                                ),
+                            );
+                        } else {
+                            // 这个句柄不再是"可以藏的那个界面窗口"（换了属主、有了属主、或类名是
+                            // 弹出物）。丢掉它，让下一次枚举重新认一个 —— 否则会在一个我们永远
+                            // 不该碰的窗口上每秒空转一千次。
+                            watched = None;
+                            timeline.mark(
+                                "watched-window-refused",
+                                "the watched handle is no longer a hideable interface window",
+                            );
+                        }
+                    }
+                }
+                // 已经藏到过：只等结算，或者等它再出现（那就归用户，规则 2）。
+                (Some(hidden_since), _) => {
+                    if hide_settled(Some(hidden_since), now) {
+                        timeline.mark(
+                            "settled",
+                            format!("hidden_for={}ms", now.duration_since(hidden_since).as_millis()),
+                        );
+                        return (confirmed_at.is_some(), true, visible_frame);
+                    }
+                    let reappeared = watched.is_some_and(crate::client_window::window_is_visible) || on_screen;
+                    if reappeared {
+                        timeline.mark(
+                            "reappeared",
+                            "the window came back after the first hide: the user's show wins",
+                        );
+                        return (confirmed_at.is_some(), false, visible_frame);
+                    }
+                }
+                (None, None) => {}
+            }
+        }
+
+        let clock_active = hide_window && hidden_at.is_none() && bridge_ready_at.is_none() && now < clock_horizon;
+        std::thread::sleep(hide_poll_interval(HidePoll {
+            show_imminent: hide_window
+                && (hidden_at.is_some()
+                    || bridge_ready_at.is_some()
+                    || confirmed_at.is_some()
+                    || watched.is_some()),
+            within_episode: hide_window && now < episode_horizon,
+            clock_active,
+        }));
     }
-    let hidden = hidden_since.is_some();
+
+    let hidden = hidden_at.is_some();
     if hide_window && !hidden {
         log::warn!(
-            "harness shell window was never hideable: port={port} listening={}",
-            confirmed_at.is_some()
+            "harness shell window was never hideable: port={port} listening={} family={:?}",
+            confirmed_at.is_some(),
+            family
         );
     }
-    (confirmed_at.is_some(), hidden)
+    timeline.mark(
+        "episode-over",
+        format!("hidden={hidden} sweeps={sweeps} hidden_windows={hidden_windows}"),
+    );
+    (confirmed_at.is_some(), hidden, visible_frame)
 }
 
 /// Whether the hide has been *holding*: something was put out of sight, and nothing of
 /// that executable has been on screen since.
 ///
-/// 这是"这次启动的隐藏做完了"的判据，所以它单独成了一个纯函数。判据必须是这样而不是"藏成功过
-/// 一次"：壳自己那条显示窗口的路实测 540ms 就能把窗口拿回来，所以"曾经藏住"不构成答案，
-/// 只有"藏住之后没人再把它显示出来"才是。`None` 表示一次都没藏到过（窗口还没画出来，或它自己
-/// 就是以隐藏状态启动的），那时无论过了多久都不算完成。
+/// 这是"这次隐藏做完了"的判据，所以它单独成了一个纯函数。判据必须是这样而不是"藏成功过一次"：
+/// 壳自己那条显示窗口的路实测 540ms 就能把窗口拿回来，所以"曾经藏住"不构成答案，只有"藏住之后
+/// 没人再把它显示出来"才是。`None` 表示一次都没藏到过（窗口还没画出来，或它自己就是以隐藏状态
+/// 启动的），那时无论过了多久都不算完成。
+///
+/// 静默期**只测一次**（第一次藏住之后），因为这一场竞速只有一次对抗：再现的窗口一律归用户，见
+/// [`wait_for_shell`] 的规则 2 —— 老做法是每次再现都重新计时，于是用户每次把窗口拿出来都让循环
+/// 多活一会儿，那正是用户报告的那个故障。
 fn hide_settled(hidden_since: Option<std::time::Instant>, now: std::time::Instant) -> bool {
     hidden_since.is_some_and(|since| now.saturating_duration_since(since) >= SHELL_HIDE_SETTLE)
 }
@@ -1024,41 +1637,6 @@ fn hide_settled(hidden_since: Option<std::time::Instant>, now: std::time::Instan
 fn recorded_shell_executable(aumid: &str) -> Option<String> {
     let catalog = crate::harness_catalog::load_catalog()?;
     crate::harness_targets::recorded_shell_executable(&catalog.targets, aumid)
-}
-
-/// Put the windows of the shell that was just started out of sight, and say whether
-/// anything was on screen.
-///
-/// The answer is "did I just hide something", not "is the job finished": the caller
-/// applies this repeatedly (see [`wait_for_shell`]), and a `true` is exactly the news
-/// that the client had something on screen — the first paint, or its own `show()`.
-///
-/// 身份用**可执行文件**，不用端口：按端口找到的是监听那个套接字的进程，而窗口属于同一个
-/// 可执行文件的另一个进程（电子客户端的运行时在子进程里）。按路径找一次就覆盖整个进程家族，
-/// 而且不只一个窗口 —— 实测这台机器上那个可执行文件有 10 个顶层窗口。
-///
-/// The path sources are tried in the order that needs the least guessing:
-///
-/// 1. the path the scan recorded for the subject the user chose — the executable their
-///    own Start Menu entry starts;
-/// 2. the executable of the process answering on `port`, once it answers — the client
-///    that is actually running, which is the answer that stays right when the record
-///    has no path (this machine's does not, until a re-scan) or when the client was
-///    reinstalled somewhere else since that scan;
-/// 3. [`crate::client_window::hide_client_window`] — the port-shaped lookup that was the
-///    only route before, kept last so that a machine where the executable cannot be read
-///    at all behaves as it did then.
-fn hide_started_shell(port: u16, confirmed: bool, recorded: Option<&str>) -> bool {
-    let live = confirmed
-        .then(|| crate::client_window::endpoint_executable(port))
-        .flatten();
-    for candidate in [recorded.map(str::to_string), live].into_iter().flatten() {
-        if crate::client_window::hide_executable_windows(&candidate).hidden {
-            log::info!("harness shell window hidden by executable: executable={candidate}");
-            return true;
-        }
-    }
-    crate::client_window::hide_client_window(port).hidden
 }
 
 /// What 「拉起 UI」 found, and what it had to do about it.
@@ -1137,6 +1715,23 @@ pub(crate) fn ensure_ui(
 ) -> HarnessUiOutcome {
     let kind = subject_kind(subject_id);
     let port = ui_port(subject_id, port);
+    let shell = subject_id
+        .trim()
+        .strip_prefix(SHELL_ID_PREFIX)
+        .and_then(known_shell);
+    // 显示这一半与隐藏那一半认出的是同一个东西：这个主体的可执行文件。设置里的「打开」与岛上
+    // 那个图标都走这条命令，所以它们要能把壁纸在后台启动时藏起来的窗口找回来 —— 按端口那条路
+    // 找不到它（实测：监听进程不是窗口的属主）。
+    let executable = shell
+        .as_ref()
+        .and_then(|shell| recorded_shell_executable(shell.aumid));
+    // 「用户要这个窗口」这件事必须在**动手之前**落款，而且要在启动之前 —— 这次调用很可能是在
+    // 后台启动正把窗口按着的时候来的（开机自启刚起来、用户按了「打开」）。那场隐藏是毫秒级的，
+    // 晚一步就是一次多余的对抗；落款之后它在毫秒内停产，此后这一场也不会再藏（见
+    // [`wait_for_shell`] 的规则 3）。
+    if let Some(path) = executable.as_deref() {
+        note_user_wants_shell(path);
+    }
     // An empty id means "no subject chosen yet": still a legitimate request to
     // reach whatever answers on that endpoint, just nothing to start.
     let plan = if subject_id.trim().is_empty() {
@@ -1159,7 +1754,7 @@ pub(crate) fn ensure_ui(
     let mut start_outcome = None;
     if !crate::client_window::endpoint_is_listening(port) {
         if let Some(plan) = &plan {
-            let launch = run_launch(plan, managed);
+            let launch = run_launch(plan, managed, LaunchTrigger::Manual);
             started = true;
             start_outcome = Some(launch.outcome.clone());
             // The start's own wait applies to shells; a checkout comes up on its own
@@ -1181,16 +1776,6 @@ pub(crate) fn ensure_ui(
         };
     }
 
-    let shell = subject_id
-        .trim()
-        .strip_prefix(SHELL_ID_PREFIX)
-        .and_then(known_shell);
-    // 显示这一半与隐藏那一半认出的是同一个东西：这个主体的可执行文件。设置里的「打开」与岛上
-    // 那个图标都走这条命令，所以它们要能把壁纸在后台启动时藏起来的窗口找回来 —— 按端口那条路
-    // 找不到它（实测：监听进程不是窗口的属主）。
-    let executable = shell
-        .as_ref()
-        .and_then(|shell| recorded_shell_executable(shell.aumid));
     // (S6.1, measured) A single-instance shell is asked to focus its *own* window
     // first, and only then does this application try to bring the window forward.
     //
@@ -1784,6 +2369,10 @@ mod tests {
     /// 三个方向都钉在这里：一次没藏到过（窗口还没画出来）不算完成；刚藏完还在静默期里不算完成；
     /// 静默期过了才算。壳自己那条 show 路实测 540ms 就能把窗口拿回来，所以第二档不是形式主义：
     /// 它正是"别把壳刚显示出来的窗口当成已经藏好了"。
+    ///
+    /// 静默期**只测一次**：这一场竞速只有一次对抗，再现的窗口一律归用户（见 [`wait_for_shell`]
+    /// 的规则 2）。老做法每次再现都重新计时，于是用户每次把窗口拿出来都让循环多活一会儿 ——
+    /// 那正是用户报告"窗口刚出来就被按回去，而且是十几秒"的成因。
     #[test]
     fn hiding_is_only_settled_once_nothing_brought_the_window_back() {
         let now = std::time::Instant::now();
@@ -1799,10 +2388,187 @@ mod tests {
         // 静默期满：这次隐藏成立。
         assert!(hide_settled(Some(now - SHELL_HIDE_SETTLE), now));
         assert!(hide_settled(Some(now - SHELL_HIDE_SETTLE * 3), now));
-        // 快速轮询只服务于"第一次绘制"这场竞速，且它自己也有寿命：静默期比它短，
-        // 否则一个始终不露头的客户端会让高频率的枚举一直跑下去。
-        assert!(SHELL_HIDE_SETTLE < SHELL_HIDE_POLL_WINDOW);
-        assert!(SHELL_HIDE_POLL < SHELL_START_POLL);
+        // 静默期比这一场的上限短：否则"结算"永远不会先于"到点"发生。
+        assert!(SHELL_HIDE_SETTLE < SHELL_HIDE_EPISODE);
+    }
+
+    /// 三档轮询各自的处境，以及它们之间的顺序 —— 这些常数就是"一帧能被看见多久"。
+    ///
+    /// 顺序不是凑出来的：tick 最密（一次 `IsWindowVisible`），时钟次之（一次回环 GET，实测中位
+    /// 0.8 毫秒），枚举最贵（一张进程快照 + 一次 `EnumWindows`），而"什么都没有"的那一档可以慢
+    /// 到 250 毫秒。写反任何一对，要么白烧 CPU，要么把帧拉长。
+    #[test]
+    fn the_poll_cadence_is_ordered_by_what_each_wake_up_costs() {
+        let racing = HidePoll {
+            show_imminent: true,
+            within_episode: true,
+            clock_active: true,
+        };
+        assert_eq!(hide_poll_interval(racing), SHELL_HIDE_TICK);
+        // 时钟走着的阶段（宿主还没就绪）：单飞地问 /status，密到个位数毫秒。
+        let clocking = HidePoll {
+            show_imminent: false,
+            within_episode: true,
+            clock_active: true,
+        };
+        assert_eq!(hide_poll_interval(clocking), SHELL_HOST_POLL);
+        // 既没有"显示即将发生"也没有时钟：慢档，250 毫秒。
+        let idle = HidePoll {
+            show_imminent: false,
+            within_episode: true,
+            clock_active: false,
+        };
+        assert_eq!(hide_poll_interval(idle), SHELL_START_POLL);
+        // 竞速过期（这一场到点了）：即使显示信号还挂着，也退回慢档 —— 上限就是上限。
+        let expired = HidePoll {
+            show_imminent: true,
+            within_episode: false,
+            clock_active: true,
+        };
+        assert_eq!(hide_poll_interval(expired), SHELL_HOST_POLL);
+        // 数字上的顺序：tick < 时钟 ≤ 枚举 ≤ 慢档，而且 tick 是个位数毫秒（用户要求的那一档）。
+        assert!(SHELL_HIDE_TICK < SHELL_HOST_POLL);
+        assert!(SHELL_HOST_POLL < SHELL_START_POLL);
+        assert!(SHELL_HIDE_SWEEP_RACE < SHELL_HIDE_SWEEP_GUARD);
+        assert!(SHELL_HIDE_SWEEP_GUARD < SHELL_HIDE_SWEEP_BOOT);
+        assert!(SHELL_HIDE_SWEEP_BOOT <= SHELL_START_POLL);
+        assert!(SHELL_HIDE_TICK.as_millis() < 10);
+        assert!(SHELL_HOST_POLL.as_millis() < 10);
+        // 密集枚举的寿命短于这一场本身，也短于"启动被确认"那条钟：它只覆盖"宿主就绪到显示"
+        // 那几秒。
+        assert!(SHELL_HIDE_RACE_WINDOW < SHELL_HIDE_EPISODE);
+        assert!(SHELL_HIDE_RACE_WINDOW < SHELL_START_TIMEOUT);
+        // 枚举三档：枚举是检测器时最密（有寿命），有 tick 盯着时守护档，什么都没有时最稀。
+        assert_eq!(
+            hide_sweep_interval(SweepPoll {
+                show_imminent: true,
+                sweep_is_the_detector: true,
+                within_race_window: true
+            }),
+            SHELL_HIDE_SWEEP_RACE
+        );
+        assert_eq!(
+            hide_sweep_interval(SweepPoll {
+                show_imminent: true,
+                sweep_is_the_detector: true,
+                within_race_window: false
+            }),
+            SHELL_HIDE_SWEEP_GUARD
+        );
+        assert_eq!(
+            hide_sweep_interval(SweepPoll {
+                show_imminent: true,
+                sweep_is_the_detector: false,
+                within_race_window: true
+            }),
+            SHELL_HIDE_SWEEP_GUARD
+        );
+        assert_eq!(
+            hide_sweep_interval(SweepPoll {
+                show_imminent: false,
+                sweep_is_the_detector: false,
+                within_race_window: false
+            }),
+            SHELL_HIDE_SWEEP_BOOT
+        );
+    }
+
+    /// 这一场什么时候结束 —— 两条钟，各自服务一个问题。
+    #[test]
+    fn the_episode_ends_at_the_first_of_two_horizons() {
+        // 还没到任何一条钟：继续。
+        assert!(hide_episode_continues(true, false, false, false));
+        assert!(hide_episode_continues(true, true, false, false));
+        // 启动确认那条钟到了、而端口应答过：隐藏还能继续（上限是另一条钟）。
+        assert!(hide_episode_continues(true, true, true, false));
+        // 启动那条钟到了、而端口**没**应答过：不再等 —— "起不来"这件事该如实报告了，
+        // 不该再拖 15 秒。
+        assert!(!hide_episode_continues(true, false, true, false));
+        // 手动触发（不藏窗口）到点就结束。
+        assert!(!hide_episode_continues(false, true, true, false));
+        // 上限到点：无论别的条件如何都结束。
+        assert!(!hide_episode_continues(true, true, false, true));
+        assert!(!hide_episode_continues(true, true, true, true));
+        // 上限比启动确认那条钟长 —— 否则"冷启动远不止十几秒"就永远盖不到。
+        assert!(SHELL_START_TIMEOUT < SHELL_HIDE_EPISODE);
+        // 那一台时钟自己也有界。
+        assert!(SHELL_HOST_POLL_GIVE_UP < SHELL_HIDE_EPISODE);
+    }
+
+    /// 可见帧 = 从"看见它在屏幕上"到"藏住"。
+    ///
+    /// 它是**上界**：看见的那一刻本身有一次轮询的延迟，所以真实帧只会更短。缺任何一头都不算数
+    /// —— 没看见过就说不出帧有多长，没藏住就没有帧的终点。
+    #[test]
+    fn the_visible_frame_is_measured_between_seeing_it_and_hiding_it() {
+        let seen = std::time::Instant::now();
+        let hidden = seen + std::time::Duration::from_millis(3);
+        assert_eq!(visible_frame_ms(Some(seen), Some(hidden)), Some(3));
+        assert_eq!(
+            visible_frame_ms(Some(seen), Some(seen + std::time::Duration::from_millis(1))),
+            Some(1)
+        );
+        // 一头缺了就没有数字可说，绝不猜一个。
+        assert_eq!(visible_frame_ms(None, Some(hidden)), None);
+        assert_eq!(visible_frame_ms(Some(seen), None), None);
+        assert_eq!(visible_frame_ms(None, None), None);
+    }
+
+    /// 「用户要这个窗口」这一款：谁来落、谁来清、以及循环只读它。
+    ///
+    /// 循环自己**不会**落这一款（它只有 `wants` 这个读法），落款的两条路都是人的意图：揭示路径
+    /// 的命令，和"看见托盘菜单"这一个人手的证据。清的只有一条路：下一次后台启动。
+    #[test]
+    fn the_user_intent_is_set_by_people_and_cleared_by_the_next_background_launch() {
+        const EXE: &str = r"D:\Family\dsh-official\DeepSeek Harness.exe";
+        let mut intent = RevealIntent::default();
+        // 谁都没要过：不拦。
+        assert!(!intent.wants(EXE));
+        // 揭示路径落款。
+        intent.note_user_request(EXE);
+        assert!(intent.wants(EXE));
+        // 拼法不同但同一个文件：款照样认（快捷方式、进程镜像、命令行的三种拼法）。
+        assert!(intent.wants(r"\\?\D:\Family\dsh-official\DeepSeek Harness.exe"));
+        assert!(intent.wants(r"d:/family/DSH-OFFICIAL/DeepSeek Harness.exe"));
+        // 别的程序不认：这一款只对落款的那个壳有效。
+        assert!(!intent.wants(r"C:\other\DeepSeek Harness.exe"));
+        assert!(!intent.wants(""));
+        // 下一次后台启动清掉它 —— 新的那次启动有自己的诉求。
+        intent.clear();
+        assert!(!intent.wants(EXE));
+        // 看见人手（托盘菜单）落的是同一款，来路不同而已。
+        intent.observe_human_interaction(EXE);
+        assert!(intent.wants(EXE));
+        // 空路径不落款：一个空字符串会让"任何人都匹配"成为可能。
+        let mut empty = RevealIntent::default();
+        empty.note_user_request("   ");
+        assert!(!empty.wants(EXE));
+        assert!(!empty.wants("   "));
+    }
+
+    /// 全世界的线格式：Bridge 的 `/status` 在这台机器上实测就是这一段（`Transfer-Encoding: chunked`）。
+    ///
+    /// 只认一个字段，而且**必须**是 `bridge-ready`：`bridge-loading` 是"还在装配"，把它当成
+    /// 就绪等于把竞速的时钟拨早了 —— 那时壳的窗口还早着呢。
+    #[test]
+    fn the_host_is_only_ready_when_the_bridge_says_bridge_ready() {
+        // 实测原文（去掉令牌与无关头，`128` 是分块长度）。
+        const READY: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json; charset=utf-8\r\ncache-control: no-store\r\nVary: Accept-Encoding\r\nDate: Mon, 28 Sep 2026 19:51:36 GMT\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n128\r\n{\"bridgeVersion\":\"0.1.3\",\"bridgeBuild\":\"dev\",\"protocolVersion\":1,\"dsh\":\"online\",\"authoredAgainst\":\"^0.1.0-rc.5 || ^0.2.0-rc.1\",\"state\":\"bridge-ready\",\"reasonCode\":\"ready\",\"capabilities\":[\"status\",\"control\",\"sessions\",\"history\",\"sse\",\"cancel\",\"approval-handoff\",\"resume\"],\"authentication\":\"ready\"}\r\n0\r\n\r\n";
+        assert!(harness_status_reported_ready(READY));
+        // 还在装配：不是就绪。壳的窗口要等的是 `ready`，不是"路由挂上了"。
+        let loading = READY.replace("bridge-ready", "bridge-loading");
+        assert!(!harness_status_reported_ready(&loading));
+        // 令牌还没就绪：也不是。
+        assert!(!harness_status_reported_ready(
+            &READY.replace("bridge-ready", "bridge-auth-unavailable")
+        ));
+        // 别的状态码、别的服务、空响应、截断的响应：全都不是"宿主已就绪"。
+        assert!(!harness_status_reported_ready(""));
+        assert!(!harness_status_reported_ready("HTTP/1.1 404 Not Found\r\n\r\n"));
+        assert!(!harness_status_reported_ready(&READY.replace("200 OK", "500 Internal Server Error")));
+        assert!(!harness_status_reported_ready("HTTP/1.1 200 OK\r\n\r\n<htm"));
+        // 端口上答话的是别的 HTTP 服务：它答 200，但没有那个字段。
+        assert!(!harness_status_reported_ready("HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok"));
     }
 
     /// 藏起来的那个窗口，要由**这个主体自己那条记录**告诉我们是哪个可执行文件的。
@@ -1900,6 +2666,237 @@ mod tests {
             }
             _ => panic!("expected a checkout plan"),
         }
+    }
+
+    /// 真机测量：这一场竞速里我们这一侧的两个数字 —— 发现延迟与按下延迟。
+    ///
+    /// 窗口由**本测试自己**创建：离屏坐标（`-4000,-4000`）、`WS_EX_TOOLWINDOW`（所以屏幕上、
+    /// 任务栏和 Alt+Tab 里都没有它），而且显示与隐藏都由它**自己的线程**执行并各自打时间戳 ——
+    /// 这样量到的是纯粹的"发现延迟"，没有跨线程 `ShowWindow` 的排队效应掺进来。认窗口的方式与
+    /// 产品代码完全相同（`family_windows(本测试程序自己的路径)`），拍板隐藏用的也是产品那个
+    /// `hide_window`。
+    ///
+    /// 打印三个数：一次全量枚举要多久、tick 认出"它被显示出来了"要多久、以及藏掉它要多久。
+    /// 第一个数决定竞速前那段"找到那个还没显示的窗口"能不能便宜地反复做；第二个数是可见帧里
+    /// 我们这一侧的那一半。
+    ///
+    /// `cargo test --lib -- --ignored --nocapture this_machine_measures_the_hide_race`
+    #[test]
+    #[ignore = "creates its own off-screen window to time the hide tick"]
+    fn this_machine_measures_the_hide_race() {
+        #[cfg(windows)]
+        {
+            use std::sync::mpsc;
+            use std::time::{Duration, Instant};
+            use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+            use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+            use windows::Win32::UI::WindowsAndMessaging::{
+                CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, PeekMessageW,
+                RegisterClassW, ShowWindow, TranslateMessage, MSG, PM_REMOVE, SW_HIDE, SW_SHOW,
+                WNDCLASSW, WS_EX_TOOLWINDOW, WS_OVERLAPPEDWINDOW,
+            };
+
+            /// 让窗口那条线程做时间敏感的那两件事，并各自把时刻带回来。
+            enum Command {
+                Show(mpsc::Sender<Instant>),
+                Hide,
+                Quit,
+            }
+
+            unsafe extern "system" fn wnd_proc(
+                hwnd: HWND,
+                message: u32,
+                wparam: WPARAM,
+                lparam: LPARAM,
+            ) -> LRESULT {
+                unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+            }
+
+            fn report(label: &str, mut samples: Vec<Duration>) {
+                samples.sort();
+                let count = samples.len();
+                println!(
+                    "{label}: n={count} min={:?} median={:?} max={:?}",
+                    samples[0],
+                    samples[count / 2],
+                    samples[count - 1]
+                );
+            }
+
+            let (ready_tx, ready_rx) = mpsc::channel::<crate::client_window::WindowHandle>();
+            let (command_tx, command_rx) = mpsc::channel::<Command>();
+            let class_name: Vec<u16> = "dsh-wallpaper-hide-race-probe\0".encode_utf16().collect();
+            let title: Vec<u16> = "DSH wallpaper hide race probe\0".encode_utf16().collect();
+            let title_for_thread = title.clone();
+            let class_for_thread = class_name.clone();
+            std::thread::spawn(move || {
+                let instance = HINSTANCE(unsafe { GetModuleHandleW(None) }.expect("module").0);
+                let class = WNDCLASSW {
+                    lpfnWndProc: Some(wnd_proc),
+                    hInstance: instance,
+                    lpszClassName: windows::core::PCWSTR(class_for_thread.as_ptr()),
+                    ..Default::default()
+                };
+                assert_ne!(unsafe { RegisterClassW(&class) }, 0, "注册窗口类");
+                let hwnd = unsafe {
+                    CreateWindowExW(
+                        WS_EX_TOOLWINDOW,
+                        windows::core::PCWSTR(class_for_thread.as_ptr()),
+                        windows::core::PCWSTR(title_for_thread.as_ptr()),
+                        WS_OVERLAPPEDWINDOW,
+                        // 离屏：可见位是真的（`IsWindowVisible` 会回答"是"），但屏幕上什么都看不到。
+                        -4000,
+                        -4000,
+                        320,
+                        200,
+                        None,
+                        None,
+                        Some(instance),
+                        None,
+                    )
+                }
+                .expect("探针窗口");
+                let _ = ready_tx.send(crate::client_window::WindowHandle::from(hwnd, std::process::id()));
+                loop {
+                    // 泵消息：一个不泵消息的窗口线程会让跨线程的显示/隐藏变成异步排队，那正是
+                    // 这次测量要避开的。
+                    let mut message = MSG::default();
+                    while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+                        unsafe {
+                            let _ = TranslateMessage(&message);
+                            DispatchMessageW(&message);
+                        }
+                    }
+                    match command_rx.recv_timeout(Duration::from_millis(2)) {
+                        Ok(Command::Show(ack)) => {
+                            let at = Instant::now();
+                            unsafe {
+                                let _ = ShowWindow(hwnd, SW_SHOW);
+                            }
+                            let _ = ack.send(at);
+                        }
+                        Ok(Command::Hide) => unsafe {
+                            let _ = ShowWindow(hwnd, SW_HIDE);
+                        },
+                        Ok(Command::Quit) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    }
+                }
+                unsafe {
+                    let _ = DestroyWindow(hwnd);
+                }
+            });
+            let handle = ready_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("探针窗口就绪");
+
+            let executable = std::env::current_exe()
+                .expect("测试程序自己的路径")
+                .to_string_lossy()
+                .into_owned();
+            // 这台机器上有多少个顶层窗口，以及光枚举一遍要多久：家族枚举的成本主要是它。
+            {
+                use windows::Win32::Foundation::LPARAM as WindowLparam;
+                use windows::Win32::UI::WindowsAndMessaging::EnumWindows;
+                use windows::core::BOOL;
+                static COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                unsafe extern "system" fn count(_: HWND, _: WindowLparam) -> BOOL {
+                    COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    BOOL(1)
+                }
+                let mut enumerations = Vec::new();
+                for _ in 0..10 {
+                    COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+                    let at = Instant::now();
+                    unsafe {
+                        let _ = EnumWindows(Some(count), LPARAM(0));
+                    }
+                    enumerations.push(at.elapsed());
+                }
+                println!(
+                    "all top-level windows: n={}，raw EnumWindows median={:?}",
+                    COUNT.load(std::sync::atomic::Ordering::Relaxed),
+                    {
+                        enumerations.sort();
+                        enumerations[enumerations.len() / 2]
+                    }
+                );
+            }
+            // 这个循环每 1 毫秒做的那一件事：两次只读系统调用。它的代价决定 tick 能不能这么密。
+            let mut checks = Vec::new();
+            for _ in 0..200 {
+                let at = Instant::now();
+                let _ = crate::client_window::window_is_visible(handle);
+                checks.push(at.elapsed());
+            }
+            report("tick check (一次 IsWindowVisible)", checks);
+            // 家族枚举的成本在哪一半：进程快照，还是窗口枚举。
+            let mut pid_scans = Vec::new();
+            for _ in 0..10 {
+                let at = Instant::now();
+                let pids = crate::client_window::family_process_ids(&executable);
+                pid_scans.push(at.elapsed());
+                assert!(!pids.is_empty(), "本进程必须在这张表里");
+            }
+            report("family pid scan (Toolhelp + 路径确认)", pid_scans);
+            let mut sweeps = Vec::new();
+            for _ in 0..10 {
+                let at = Instant::now();
+                let windows = crate::client_window::family_windows(&executable);
+                sweeps.push(at.elapsed());
+                assert!(
+                    windows.iter().any(|window| window.handle == handle),
+                    "枚举必须认出本进程的这个窗口"
+                );
+            }
+            report("family sweep (一次全量枚举)", sweeps);
+
+            // 竞速：让它自己显示，看 tick 多久认出、`hide_window` 多久按下去。计时器分辨率抬到
+            // 1 毫秒，与产品循环里那一段完全一样（否则 1 毫秒的 tick 在默认 15.6 毫秒的分辨率下
+            // 根本兑现不了）。
+            let _resolution = crate::client_window::TimerResolution::new();
+            let mut reactions = Vec::new();
+            let mut hides = Vec::new();
+            for _ in 0..8 {
+                command_tx.send(Command::Hide).expect("隐藏探针");
+                std::thread::sleep(Duration::from_millis(30));
+                assert!(
+                    !crate::client_window::window_is_visible(handle),
+                    "前置条件：它现在是隐藏的"
+                );
+                let (ack_tx, ack_rx) = mpsc::channel();
+                command_tx.send(Command::Show(ack_tx)).expect("显示探针");
+                let noticed = {
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    let mut at = None;
+                    while at.is_none() && Instant::now() < deadline {
+                        if crate::client_window::window_is_visible(handle) {
+                            at = Some(Instant::now());
+                        } else {
+                            std::thread::sleep(SHELL_HIDE_TICK);
+                        }
+                    }
+                    at.expect("tick 必须认出在屏幕上的窗口")
+                };
+                let shown_at = ack_rx.recv_timeout(Duration::from_secs(1)).expect("显示时刻");
+                reactions.push(noticed.saturating_duration_since(shown_at));
+                let at = Instant::now();
+                assert!(
+                    crate::client_window::hide_window(handle),
+                    "hide_window 必须接受这个界面窗口"
+                );
+                hides.push(at.elapsed());
+                assert!(
+                    !crate::client_window::window_is_visible(handle),
+                    "藏完必须不可见"
+                );
+            }
+            let _ = command_tx.send(Command::Quit);
+            report("tick notice (发现延迟)", reactions);
+            report("hide (按下延迟)", hides);
+        }
+        #[cfg(not(windows))]
+        println!("这一个测量只在 Windows 上有意义");
     }
 
         #[test]

@@ -430,7 +430,7 @@ async fn launch_harness_target(
     // inside the blocking task, where acquiring it cannot block the UI.
     tauri::async_runtime::spawn_blocking(move || {
         let managed = app.state::<ManagedDshState>();
-        harness_launch::run_launch(&plan, managed.inner())
+        harness_launch::run_launch(&plan, managed.inner(), harness_launch::LaunchTrigger::Slider)
     })
     .await
     .map_err(|error| format!("启动 Harness 执行主体未完成：{error}"))
@@ -642,7 +642,7 @@ async fn autostart_harness_target(
     let worker = app.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         let managed = worker.state::<ManagedDshState>();
-        harness_launch::run_launch(&plan, managed.inner())
+        harness_launch::run_launch(&plan, managed.inner(), harness_launch::LaunchTrigger::Automatic)
     })
     .await
     .map_err(|error| format!("启动 Harness 执行主体未完成：{error}"))?;
