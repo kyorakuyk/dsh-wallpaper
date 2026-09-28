@@ -1542,6 +1542,15 @@ fn wait_for_shell(
                         if show_watch.is_some() {
                             timeline.mark("show-hook-installed", format!("pid={}", handle.pid()));
                         }
+                        // 挪到屏幕之外：位置与可见性是**两个独立属性** —— 壳随后随便 show()，那块
+                        // 地方都不在任何显示器的像素里，所以这里没有赛跑（隐藏会被它的 show 撤销，
+                        // 盖一层要抢在它前面铺好，只有挪走一直有效）。展示路径会先挪回再显示。
+                        if crate::client_window::move_offscreen(*handle) {
+                            timeline.mark(
+                                "moved-offscreen",
+                                "the window is outside every display until we bring it back",
+                            );
+                        }
                         // FREEZE（按用户 2026-09-30 的指示冻结这一方向，不是删除）：这里原来会铺一层
                         // "先截屏、再盖上去"的冻结画面，让壳出生在它底下。实测两次都仍然可见 —— 第一次
                         // 是被上面那条守卫自己挡掉了，第二次守卫收窄之后依旧没能阻止，用户判断这个方向

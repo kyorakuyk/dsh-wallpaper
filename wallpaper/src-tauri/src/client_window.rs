@@ -48,7 +48,8 @@ use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVE
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, EVENT_OBJECT_SHOW,
     WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
-    GetWindowLongW, GWL_EXSTYLE,
+    GetSystemMetrics, GetWindowLongW, IsIconic, IsZoomed, SetWindowPos, SM_CXVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, GWL_EXSTYLE,
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, RegisterClassExW,
     SetWindowLongPtrW, WindowFromPoint, CREATESTRUCTW, GWLP_USERDATA, SW_SHOWNA,
     WM_ERASEBKGND, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WNDCLASSEXW, WS_EX_NOACTIVATE,
@@ -523,6 +524,8 @@ pub fn hide_client_window(port: u16) -> HideOutcome {
 pub fn show_executable_windows(executable: &str) -> RaiseOutcome {
     #[cfg(windows)]
     {
+        // 先把它挪回原处：后台启动时我们把它挪到了屏幕之外，直接显示的话用户会看不到它。
+        restore_from_offscreen(executable);
         let windows = family_windows(executable);
         let mut targets: Vec<WindowHandle> = windows
             .iter()
@@ -1709,6 +1712,103 @@ impl Drop for ShowEventWatch {
             unsafe { UnhookWinEvent(self.hook) };
         }
     }
+}
+
+
+/// 被挪到屏幕之外的窗口记在这里：可执行文件路径 + 原处矩形。
+///
+/// 为什么这条路比"隐藏"和"盖一层"都强：**位置与可见性是两个独立属性**。隐藏会被壳随后的
+/// `ShowWindow` 撤销（实测 513ms 就回来了），盖一层要在它显示之前铺好、还得靠 z 序压住它；
+/// 而挪走之后壳随便怎么 `show()`，那块地方都不在任何显示器的像素里 —— 没有赛跑。
+///
+/// 代价是必须记得原处：展示路径要**先挪回再显示**，否则壳保存的窗口位置会一路漂移。
+#[cfg(windows)]
+static MOVED_OFFSCREEN: std::sync::OnceLock<std::sync::Mutex<Option<(String, RECT)>>> =
+    std::sync::OnceLock::new();
+
+/// `-32000` 是 Windows 用来标记"最小化"的特殊坐标，撞上它等于给窗口换了个状态；所以不用它，
+/// 用"虚拟屏幕右边界之外"这种普通坐标。
+#[cfg(windows)]
+fn offscreen_spot() -> (i32, i32) {
+    let left = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
+    let span = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) }.max(1);
+    let top = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
+    (left + span + 64, top.max(0))
+}
+
+/// 把 `target` 挪到屏幕之外，并记下原处。返回是否真的挪了。
+///
+/// 只对**普通状态**的窗口动手：最大化或最小化的窗口要挪就得先改状态，那本身就是一次可见的变化 ——
+/// 那种情况直接放弃，由调用方退回隐藏。
+///
+/// 另外**读不到它的可执行文件路径就不挪**：那条路径是展示路径把窗口挪回去的唯一凭据，记不下它
+/// 就等于把一个窗口永久丢在屏幕之外。
+#[cfg(windows)]
+pub(crate) fn move_offscreen(handle: WindowHandle) -> bool {
+    if unsafe { IsZoomed(handle.hwnd()) }.as_bool() || unsafe { IsIconic(handle.hwnd()) }.as_bool() {
+        return false;
+    }
+    let Some(executable) = process_image_path(handle.pid()) else {
+        return false;
+    };
+    let mut rect = RECT::default();
+    if unsafe { GetWindowRect(handle.hwnd(), &mut rect) }.is_err() {
+        return false;
+    }
+    let (x, y) = offscreen_spot();
+    let moved = unsafe {
+        SetWindowPos(
+            handle.hwnd(),
+            None,
+            x,
+            y,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSIZE,
+        )
+    };
+    if moved.is_err() {
+        return false;
+    }
+    let slot = MOVED_OFFSCREEN.get_or_init(|| std::sync::Mutex::new(None));
+    if let Ok(mut guard) = slot.lock() {
+        // 同一家族只记第一次：第二次挪动记下的"原处"已经是屏幕之外了。
+        if guard.is_none() {
+            *guard = Some((executable, rect));
+        }
+    }
+    true
+}
+
+/// 展示之前把窗口挪回原处。返回是否真的挪回去了。
+///
+/// 只认**同一个可执行文件**的记录：换主体的那次启动不该被上一次的坐标影响。
+#[cfg(windows)]
+pub(crate) fn restore_from_offscreen(executable: &str) -> bool {
+    let Some(slot) = MOVED_OFFSCREEN.get() else { return false };
+    let Ok(mut guard) = slot.lock() else { return false };
+    let Some((recorded, rect)) = guard.clone() else { return false };
+    if !same_executable_path(&recorded, executable) {
+        return false;
+    }
+    let restored = family_windows(executable).iter().any(|window| {
+        unsafe {
+            SetWindowPos(
+                window.handle.hwnd(),
+                None,
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+                SWP_NOACTIVATE | SWP_NOZORDER,
+            )
+        }
+        .is_ok()
+    });
+    if restored {
+        *guard = None;
+    }
+    restored
 }
 
 #[cfg(test)]
