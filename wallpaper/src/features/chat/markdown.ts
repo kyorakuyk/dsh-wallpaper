@@ -193,7 +193,15 @@ export function parseMarkdown(source: string): MarkdownBlock[] {
       const items: MarkdownListItem[] = [{ text: item[2] ?? '', depth: depthOf(item[1] ?? '') }]
       for (index += 1; index < lines.length; index += 1) {
         const next = lines[index] ?? ''
-        if (next.trim() === '') break
+        if (next.trim() === '') {
+          // **列表里的空行不该结束这个列表**：模型很常在条目之间空一行（"松散列表"），而那些
+          // 空行后往往正是缩进的子项。实测症状：截图里嵌套项整段不见或全部平铺 —— 列表在第一个
+          // 空行处被截断，剩下的子项另外成了一个新的（于是层级被归一化回顶层）。
+          const following = (lines[index + 1] ?? '')
+          const continues = UNORDERED.test(following) || ORDERED.test(following)
+          if (continues) continue
+          break
+        }
         const nextItem = next.match(UNORDERED) ?? next.match(ORDERED)
         if (nextItem) {
           // 列表内部的类型可以变（`-` 下挂 `1.` 子列表），这里按顶层那一行的类型渲染，够用且不猜。

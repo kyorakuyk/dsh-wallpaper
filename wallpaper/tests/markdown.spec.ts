@@ -43,6 +43,22 @@ describe('conversation markdown', () => {
     ])
   })
 
+  it('keeps a list together across a blank line, so nested items stay nested', () => {
+    // 模型常写"松散列表"（条目之间空一行）。空行后面的缩进子项必须仍属于同一个列表 —— 否则列表
+    // 在空行处被截断，子项另成一个列表、层级被归一化回顶层，用户看到的就是"嵌套没生效"。
+    expect(parseMarkdown('- 父\n\n  - 子\n- 另一个')).toEqual([
+      {
+        kind: 'list',
+        ordered: false,
+        items: [
+          { text: '父', depth: 0 },
+          { text: '子', depth: 1 },
+          { text: '另一个', depth: 0 },
+        ],
+      },
+    ])
+  })
+
   it('reads a strict table, and leaves everything else alone', () => {
     expect(parseMarkdown('| 名称 | 值 |\n| :--- | ---: |\n| a | 1 |\n| b | 2 |')).toEqual([
       {
