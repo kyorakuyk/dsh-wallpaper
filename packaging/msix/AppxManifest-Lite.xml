@@ -3,7 +3,7 @@
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
-  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows/10/5"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
   xmlns:virtualization="http://schemas.microsoft.com/appx/manifest/virtualization/windows10"
   IgnorableNamespaces="uap uap5 uap10 rescap virtualization">
@@ -30,9 +30,13 @@
   <Applications>
     <Application Id="WallpaperLite" Executable="dsh-wallpaper-lite.exe" uap10:RuntimeBehavior="packagedClassicApp" uap10:TrustLevel="mediumIL">
       <uap:VisualElements DisplayName="DSH Wallpaper Lite" Description="Lightweight lock-screen and desktop wallpaper" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png" BackgroundColor="transparent" />
-      <uap5:Extension Category="windows.startupTask" Executable="dsh-wallpaper-lite.exe" EntryPoint="Windows.FullTrustApplication">
-        <uap5:StartupTask TaskId="DshWallpaperStartup" Enabled="false" DisplayName="DSH Wallpaper Lite" />
-      </uap5:Extension>
+      <!-- 与正式版同样的层级要求：uap5:StartupTask 必须在 Extensions 里，
+           否则 Windows 不注册任务，GetAsync 只会回参数错误。 -->
+      <Extensions>
+        <uap5:Extension Category="windows.startupTask" Executable="dsh-wallpaper-lite.exe" EntryPoint="Windows.FullTrustApplication">
+          <uap5:StartupTask TaskId="DshWallpaperStartup" Enabled="false" DisplayName="DSH Wallpaper Lite" />
+        </uap5:Extension>
+      </Extensions>
     </Application>
   </Applications>
 </Package>

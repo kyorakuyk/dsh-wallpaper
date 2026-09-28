@@ -3,7 +3,7 @@
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
-  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows/10/5"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
   xmlns:virtualization="http://schemas.microsoft.com/appx/manifest/virtualization/windows10"
   IgnorableNamespaces="uap uap5 uap10 rescap virtualization">
@@ -33,9 +33,17 @@
   <Applications>
     <Application Id="Wallpaper" Executable="dsh-wallpaper.exe" uap10:RuntimeBehavior="packagedClassicApp" uap10:TrustLevel="mediumIL">
       <uap:VisualElements DisplayName="DSH Wallpaper" Description="Interactive desktop wallpaper" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png" BackgroundColor="transparent" />
-      <uap5:Extension Category="windows.startupTask" Executable="dsh-wallpaper.exe" EntryPoint="Windows.FullTrustApplication">
-        <uap5:StartupTask TaskId="DshWallpaperStartup" Enabled="false" DisplayName="DSH Wallpaper" />
-      </uap5:Extension>
+      <!-- `<Extensions>` 这一层不是可选的花括号：uap5:StartupTask 的官方层级是
+           Package → Applications → Application → Extensions → uap5:Extension → uap5:StartupTask。
+           少这一层时包照样装得上，但 Windows 从不注册这个启动任务，于是
+           StartupTask::GetAsync("DshWallpaperStartup") 一直回 参数错误。 (0x80070057)，
+           AppModel 里也永远没有对应的 SystemAppData 键——本机另外 13 个声明
+           windows.startupTask 的包无一例外都有这一层，只有我们是没有的。 -->
+      <Extensions>
+        <uap5:Extension Category="windows.startupTask" Executable="dsh-wallpaper.exe" EntryPoint="Windows.FullTrustApplication">
+          <uap5:StartupTask TaskId="DshWallpaperStartup" Enabled="false" DisplayName="DSH Wallpaper" />
+        </uap5:Extension>
+      </Extensions>
     </Application>
   </Applications>
 </Package>

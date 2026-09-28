@@ -3721,7 +3721,13 @@ pub(crate) fn autostart_status() -> Result<AutostartStatus, String> {
                             AutostartStatus {
                                 enabled: false,
                                 source: "startup-task".into(),
-                                reason: Some(run_entry_refusal(&check)),
+                                // Now that the task registers on this machine this
+                                // branch is reachable, and it must name the task
+                                // rather than the fallback: the Run entry is not
+                                // what decides whether logon starts the app.
+                                reason: Some(
+                                    "Windows 启动任务处于关闭状态，登录时不会启动本应用。".into(),
+                                ),
                             }
                         }
                     }
@@ -4365,6 +4371,80 @@ mod tests {
         );
     }
 
+    /// The span from an opening tag to its closing tag, so a test can assert
+    /// nesting instead of a substring that a misplaced element satisfies too.
+    fn span<'a>(source: &'a str, open: &str, close: &str) -> &'a str {
+        let from = source
+            .find(open)
+            .unwrap_or_else(|| panic!("{open} is missing"));
+        let to = source[from..]
+            .find(close)
+            .unwrap_or_else(|| panic!("{close} never closes {open}"));
+        &source[from..from + to + close.len()]
+    }
+
+    fn edition_manifest() -> &'static str {
+        if cfg!(feature = "lite") {
+            include_str!("../../../packaging/msix/AppxManifest-Lite.xml")
+        } else {
+            include_str!("../../../packaging/msix/AppxManifest.xml")
+        }
+    }
+
+    #[test]
+    fn the_manifest_declares_only_namespaces_windows_knows() {
+        // An unknown namespace is not a packaging error — `IgnorableNamespaces`
+        // exists precisely so Windows can skip what it does not know. That is how
+        // `windows.startupTask` sat in every release while registering nothing:
+        // the URI said `…/uap/windows/10/5` instead of `…/uap/windows10/5`, so the
+        // extension was ignored, `GetAsync` answered 参数错误。 (0x80070057) and no
+        // AppModel SystemAppData key was ever created. `makeappx` was happy.
+        let manifest = edition_manifest();
+        let known = [
+            "http://schemas.microsoft.com/appx/manifest/foundation/windows10",
+            "http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities",
+            "http://schemas.microsoft.com/appx/manifest/uap/windows10",
+            "http://schemas.microsoft.com/appx/manifest/uap/windows10/5",
+            "http://schemas.microsoft.com/appx/manifest/uap/windows10/10",
+            "http://schemas.microsoft.com/appx/manifest/virtualization/windows10",
+        ];
+        let mut declared = 0;
+        for (index, _) in manifest.match_indices("xmlns:") {
+            let rest = &manifest[index..];
+            let Some(open) = rest.find('"') else { continue };
+            let Some(close) = rest[open + 1..].find('"') else {
+                continue;
+            };
+            let uri = &rest[open + 1..open + 1 + close];
+            declared += 1;
+            assert!(
+                known.contains(&uri),
+                "{uri} is not a manifest namespace Windows knows"
+            );
+        }
+        assert!(declared >= 5, "manifest declared only {declared} namespaces");
+    }
+
+    #[test]
+    fn the_startup_task_sits_where_the_schema_puts_it() {
+        // Package → Applications → Application → Extensions → uap5:Extension →
+        // uap5:StartupTask. Without the `Extensions` container the package still
+        // installs and Windows never registers the task: `GetAsync` answered
+        // 参数错误。 (0x80070057) for every build up to 0.2.0.180, and the AppModel
+        // SystemAppData key was never created. Thirteen other packages on this
+        // machine declare windows.startupTask, and all thirteen have the
+        // container — a substring check cannot tell the two shapes apart.
+        let manifest = edition_manifest();
+        let application = span(manifest, "<Application ", "</Application>");
+        let extensions = span(application, "<Extensions>", "</Extensions>");
+        let extension = span(
+            extensions,
+            r#"<uap5:Extension Category="windows.startupTask""#,
+            "</uap5:Extension>",
+        );
+        assert!(extension.contains(r#"<uap5:StartupTask TaskId="DshWallpaperStartup""#));
+    }
+
     #[test]
     fn the_run_key_is_declared_unvirtualized_by_the_manifest_this_edition_ships() {
         // MSIX redirects a packaged app's HKCU writes into a private per-user
@@ -4372,11 +4452,7 @@ mod tests {
         // that means an in-process delete leaves a tombstone which hides the
         // real value from the app while Windows keeps launching it at logon —
         // 「当前用户启动项里没有 DSH Wallpaper」 for a value sitting right there.
-        let manifest = if cfg!(feature = "lite") {
-            include_str!("../../../packaging/msix/AppxManifest-Lite.xml")
-        } else {
-            include_str!("../../../packaging/msix/AppxManifest.xml")
-        };
+        let manifest = edition_manifest();
         let excluded = format!(
             "<virtualization:ExcludedKey>HKEY_CURRENT_USER\\{RUN_KEY_SUBKEY}</virtualization:ExcludedKey>"
         );
