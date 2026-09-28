@@ -1247,6 +1247,13 @@ export function App({ surface = 'combined' }: AppProps) {
     }
   }, [harnessStarting])
 
+  // 桥就绪后必须清掉失败标记：它记录的是**上一次尝试**，不是当前连接。实测症状是绿灯配"连接失败"——
+  // 那次尝试失败后标记粘住，而下面那个 effect 的清除分支有"握手中"前置条件，此后再也不会执行，
+  // 于是常驻监视器后来把桥连上了，界面上仍写着失败。
+  useEffect(() => {
+    if (runtime.harness === 'bridge-ready') setHarnessFailed(false)
+  }, [runtime.harness])
+
   useEffect(() => {
     if (!nativeRuntime.isNative || !harnessLaunchPendingRef.current) return
     if (runtime.harness === 'bridge-ready') {

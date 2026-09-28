@@ -24,6 +24,22 @@ export const HARNESS_STATE_DETAILS: Record<HarnessAvailability, string> = {
   'bridge-ready': '',
 }
 
+/**
+ * 失败标记该不该显示。
+ *
+ * `harnessFailed` 只在**启动握手失败**时置真，而清除它的那条 effect 开头就有前置条件（"握手中"），
+ * 而失败时那个标记已经被清掉了 —— 于是这条清除路径此后再也不执行。实测症状：上一次尝试失败后标记
+ * 粘住，等桥由常驻监视器自己连上来时没人清它，界面上就是**绿灯配"连接失败"**。
+ *
+ * 已就绪时一律不显示失败：灯的绿是当下的事实，失败标记只是对上一次尝试的记录。
+ */
+export function harnessFailureVisible(
+  failed: boolean | undefined,
+  availability: HarnessAvailability,
+): boolean {
+  return failed === true && availability !== 'bridge-ready'
+}
+
 /** Short label for the status dot in the bubble and the settings sidebar. */
 export function harnessStateLabel(
   state: HarnessAvailability | { availability: HarnessAvailability; probing?: boolean },

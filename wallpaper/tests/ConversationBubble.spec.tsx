@@ -278,6 +278,26 @@ describe('ConversationBubble', () => {
     expect(failed).toContain('连接失败')
   })
 
+  it('never says 连接失败 while the Bridge is ready', () => {
+    // 实测症状：上一次启动尝试失败后标记粘住，常驻监视器后来把桥连上了，界面上就成了
+    // "绿灯 + 连接失败"。绿的事实来自当下，失败标记只是对上一次尝试的记录，不能盖过它。
+    const html = renderToStaticMarkup(<ConversationBubble
+      backend="deepseek-web"
+      activity="idle"
+      modelLabel="deepseek-chat"
+      messages={[]}
+      streamingText=""
+      historyExpanded={false}
+      harnessAvailability="bridge-ready"
+      harnessReady
+      harnessFailed
+      {...callbacks}
+    />)
+    expect(html).not.toContain('连接失败')
+    expect(html).toContain('DSH Bridge 已连接')
+    expect(html).not.toContain('data-ready="failed"')
+  })
+
   it('keeps the switch usable while a start is still in flight', () => {
     // A start can take the whole 45-second readiness window. Dimming the only switch
     // on the island for that long is what made it look stuck: no way back, no way to

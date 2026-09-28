@@ -3,7 +3,7 @@ import type { Activity, BackendMode, ChatMessage, RuntimeState, TokenUsage } fro
 import { Button, Glass, Icon } from '../../ui/primitives/index.ts'
 import { composerPlaceholder, formatCost, isBusyActivity, sessionCostSummary, turnUsageSummary } from './conversationViewModel.ts'
 import { growHistoryWindow, historyWindow, HISTORY_RENDER_WINDOW } from './streamRender.ts'
-import { harnessStateLabel } from '../../connect/harnessLabels.ts'
+import { harnessStateLabel, harnessFailureVisible } from '../../connect/harnessLabels.ts'
 import { MarkdownBody } from './MarkdownBody.tsx'
 // 调试量尺（画内容边缘引导线）：本程序**不给入口**，默认不挂载。
 // 需要时把下面两行注释打开 —— 见 src/features/chat/LayoutProbe.tsx 的说明。
@@ -169,7 +169,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const turnUsage = turnUsageSummary(props.usage, props.backend, Boolean(props.apiPricingConfigured))
   const harnessAvailability = props.harnessAvailability ?? 'offline'
   const harnessReady = harnessAvailability === 'bridge-ready'
-  const harnessLabel = props.harnessFailed
+  const harnessLabel = harnessFailureVisible(props.harnessFailed, harnessAvailability)
     ? '连接失败'
     : props.harnessStarting
       ? 'DSH 正在启动'
@@ -339,7 +339,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
         <span className={`dsh-chat__status dsh-chat__status--harness dsh-chat__status--${harnessAvailability}`} title={harnessLabel}>
           {/* 黄灯优先于"熄灭"：中间态包含"还没连上但在连"，那时 `harnessReady` 是 false，
               但它和"后端已经不在了"必须看起来不一样（前者呼吸的黄灯，后者熄灭）。 */}
-          <span className="dsh-chat__status-dot" data-ready={props.harnessFailed ? 'failed' : props.harnessSuspect ? 'suspect' : props.harnessReady === false ? 'false' : 'true'} />{harnessLabel}
+          <span className="dsh-chat__status-dot" data-ready={harnessFailureVisible(props.harnessFailed, harnessAvailability) ? 'failed' : props.harnessSuspect ? 'suspect' : props.harnessReady === false ? 'false' : 'true'} />{harnessLabel}
         </span>
         <button
           type="button"
