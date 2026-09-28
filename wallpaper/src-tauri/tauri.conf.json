@@ -22,7 +22,7 @@
     "targets": ["nsis"],
     "category": "Entertainment",
     "shortDescription": "DeepSeek interactive desktop wallpaper",
-    "icon": [],
+    "icon": ["icons/icon.png", "icons/icon.ico"],
     "resources": ["../public/personas/wake-frames/variant-anima/sleep.png"],
     "windows": { "nsis": { "installMode": "currentUser" } }
   }

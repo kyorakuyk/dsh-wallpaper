@@ -569,7 +569,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
       <div className="settings-titlebar__drag" aria-hidden="true" onMouseDown={(event) => {
         if (event.button === 0) void invoke('start_settings_drag')
       }} />
-      <div className="settings-brand"><span className="settings-brand__mark">DSH</span><div><strong>Wallpaper</strong><small>个性化控制中心</small></div></div>
+      <div className="settings-brand"><img className="settings-brand__mark" src="/brand/persona-mark.png" alt="" draggable={false} /><div><strong>Wallpaper</strong><small>个性化控制中心</small></div></div>
       <button className="settings-window-close" aria-label="关闭设置" onClick={onClose}>×</button>
     </header>
 
