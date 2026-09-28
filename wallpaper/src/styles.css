@@ -197,6 +197,54 @@
   z-index: 3;
 }
 
+/* ===== 苏醒收尾：帷幕与立绘 =====
+   动画播完后先压黑（帧内的 .wake-curtain），桌面在帷幕**下面**挂载，帷幕淡出就等于"桌面背景
+   淡入"；立绘再晚一拍，从一团模糊的虚影里收束成角色本身。这一幕只由 .wake-enter 驱动，跳动画
+   或关动画时不会加上它，也就不会多出这一段。 */
+.wake-curtain {
+  position: absolute;
+  inset: 0;
+  z-index: 150;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  animation-name: wake-curtain-in;
+  animation-timing-function: ease-in;
+  animation-fill-mode: both;
+}
+
+.wake-curtain-out {
+  position: absolute;
+  inset: 0;
+  z-index: 150;
+  background: #000;
+  pointer-events: none;
+  animation-name: wake-curtain-out;
+  animation-timing-function: ease-out;
+  animation-fill-mode: both;
+}
+
+@keyframes wake-curtain-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes wake-curtain-out { from { opacity: 1; } to { opacity: 0; } }
+
+/* 立绘：0% 是一团放大、模糊、偏亮的虚影，随后收束为角色本身（blur 与 opacity 同时收）。 */
+.wake-enter .portrait-slot {
+  animation: portrait-from-ghost 1100ms cubic-bezier(.22, .61, .36, 1) 700ms both;
+}
+
+@keyframes portrait-from-ghost {
+  0% { opacity: 0; filter: blur(26px) brightness(1.3) saturate(1.1); transform: scale(1.05); }
+  45% { opacity: .8; filter: blur(13px) brightness(1.14) saturate(1.05); transform: scale(1.03); }
+  100% { opacity: 1; filter: blur(0); brightness(1); transform: scale(1); }
+}
+
+/* 系统要求减少动态时不留这一幕：帷幕瞬间走完，立绘直接出现。 */
+@media (prefers-reduced-motion: reduce) {
+  .wake-curtain,
+  .wake-curtain-out { animation-duration: 1ms !important; }
+  .wake-enter .portrait-slot { animation-duration: 1ms !important; animation-delay: 0ms !important; }
+}
+
 /* ===== 苏醒场景 ===== */
 .scene-wake {
   background: linear-gradient(180deg, #0b1026 0%, #1c2a52 45%, #2a3d6b 100%);

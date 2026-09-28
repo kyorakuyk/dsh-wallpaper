@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { SleepScene } from '../scenes/SleepScene.tsx'
-import { WakeScene } from '../scenes/WakeScene.tsx'
+import { WAKE_CURTAIN_OUT_MS, WAKE_ENTER_MS, WakeScene } from '../scenes/WakeScene.tsx'
 import { reportNativeBootstrapReady } from '../native/bootstrapHandoff.ts'
 import { liteRuntime } from './runtime.ts'
 import { LiteIdleScene } from './LiteIdleScene.tsx'
@@ -27,6 +27,8 @@ export function LiteApp() {
   const [customBackground, setCustomBackground] = useState<string>()
   const [customPortrait, setCustomPortrait] = useState<string>()
   const [nativeHandoffGeneration, setNativeHandoffGeneration] = useState<number>()
+  /** 苏醒收尾这一幕是否还在演；时间到就摘掉，不留成常驻状态。 */
+  const [wakeEnter, setWakeEnter] = useState(false)
   const settingsRef = useRef(settings)
   const settingsLoadRef = useRef<Promise<LiteSettings>>()
   const phaseRef = useRef(phase)
@@ -42,6 +44,12 @@ export function LiteApp() {
     })
     return () => { disposed = true }
   }, [])
+
+  useEffect(() => {
+    if (!wakeEnter) return
+    const timer = window.setTimeout(() => setWakeEnter(false), WAKE_ENTER_MS)
+    return () => window.clearTimeout(timer)
+  }, [wakeEnter])
 
   useEffect(() => {
     const loading = settingsLoadRef.current ?? (settingsLoadRef.current = loadLiteSettings())
@@ -140,6 +148,9 @@ export function LiteApp() {
   const persona = useMemo(() => litePersona(settings.portrait, portraitUrl), [settings.portrait, portraitUrl])
 
   const wakeDone = () => {
+    // 与完整版同一套收尾：动画的最后一帧压黑，桌面在帷幕下面挂载，帷幕淡出即背景淡入，
+    // 立绘随后从虚影里浮出。跳动画时不加这一幕。
+    if (settingsRef.current.animationsEnabled && !settingsRef.current.skipWakeAnimation) setWakeEnter(true)
     setPhase('idle')
     if ('__TAURI_INTERNALS__' in window) void liteRuntime.dispatch('wake-done')
   }
@@ -201,5 +212,5 @@ export function LiteApp() {
     scene = <LiteIdleScene persona={persona} backgroundUrl={backgroundUrl} />
   }
 
-  return <div className={`wallpaper-root lite-wallpaper-root lite-phase-${phase}`} data-edition="lite">{scene}</div>
+  return <div className={`wallpaper-root lite-wallpaper-root lite-phase-${phase}${wakeEnter ? ' wake-enter' : ''}`} data-edition="lite">{scene}{wakeEnter && <div className="wake-curtain-out" style={{ animationDuration: `${WAKE_CURTAIN_OUT_MS}ms` }} />}</div>
 }

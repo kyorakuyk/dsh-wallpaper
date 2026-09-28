@@ -14,8 +14,8 @@ const fullRuntimeAssets = [
   'personas/deepsea-bg/deepsea-study.png',
   'personas/wake-frames/variant-anima/sleep.png',
   'personas/wake-frames/variant-anima/frame-2-eyes.png',
-  'personas/wake-frames/variant-anima/frame-3-situp.png',
-  'personas/wake-frames/variant-anima/frame-4-yawn.png',
+  'personas/wake-frames/variant-anima/frame-3-yawn.webp',
+  'personas/wake-frames/variant-anima/frame-4-awake.webp',
 ]
 
 const liteRuntimeAssets = [
@@ -28,8 +28,8 @@ const liteRuntimeAssets = [
   'personas/deepsea-bg/deepsea-study.png',
   'personas/wake-frames/variant-anima/sleep.png',
   'personas/wake-frames/variant-anima/frame-2-eyes.png',
-  'personas/wake-frames/variant-anima/frame-3-situp.png',
-  'personas/wake-frames/variant-anima/frame-4-yawn.png',
+  'personas/wake-frames/variant-anima/frame-3-yawn.webp',
+  'personas/wake-frames/variant-anima/frame-4-awake.webp',
 ]
 
 function runtimeAssetsOnly(outDir: string, assets: string[]) {

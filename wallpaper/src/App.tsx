@@ -25,7 +25,7 @@ import { IdleScene } from './scenes/IdleScene.tsx'
 import { MultiScreenIdleScene } from './scenes/MultiScreenIdleScene.tsx'
 import { MultiScreenWakeScene } from './scenes/MultiScreenWakeScene.tsx'
 import { SleepScene } from './scenes/SleepScene.tsx'
-import { WakeScene } from './scenes/WakeScene.tsx'
+import { WAKE_CURTAIN_OUT_MS, WAKE_ENTER_MS, WakeScene } from './scenes/WakeScene.tsx'
 import { INITIAL_RUNTIME_STATE, reduceRuntime } from './scenes/stateMachine.ts'
 import { BACKGROUND_OPTIONS, DEFAULT_DAY_BOUNDARY_HOUR, applyBubbleOverrides, assetUrl, assistantDay, loadSettings, normalizeReceivedSettings, resumeConversationId, saveConversationPointer, saveSettings, type WallpaperSettings } from './settings/store.ts'
 import { nativeRuntime, type DesktopDisplayInfo, type ManagedDshAutostart, type NativeSendOptions } from './native/runtime.ts'
@@ -1727,6 +1727,19 @@ export function App({ surface = 'combined' }: AppProps) {
     baseDispatch({ type: 'RECOVER' })
     if (appCoreClient.native) void appCoreClient.selectBackend(backend).catch((error) => patchRuntime({ error: String(error) }))
   }
+  /**
+   * 苏醒收尾这一幕是否还在演。
+   *
+   * 只在".wake-enter"存在期间挂帷幕、给立绘加虚影动画；时间到就摘掉，免得它变成常驻状态，
+   * 让"从聊天窗回到桌面"也重演一遍入场。时长由 WakeScene 的三个常量决定，两边共用一个节奏。
+   */
+  const [wakeEnter, setWakeEnter] = useState(false)
+  useEffect(() => {
+    if (!wakeEnter) return
+    const timer = window.setTimeout(() => setWakeEnter(false), WAKE_ENTER_MS)
+    return () => window.clearTimeout(timer)
+  }, [wakeEnter])
+
   const scene = useMemo(() => {
     if (runtime.phase === 'booting' || runtime.phase === 'locked') return <SleepScene persona={persona} mode="system" />
     if (runtime.phase === 'waking') {
@@ -1737,7 +1750,12 @@ export function App({ surface = 'combined' }: AppProps) {
         enabled: settings.animationsEnabled && !settings.skipWakeAnimation,
         speed: settings.animationSpeed,
         onFirstWakeFrame: (generation: number) => reportNativeBootstrapReady(generation, nativeRuntime, { verifySceneImages: false }),
-        onWakeDone: () => { baseDispatch({ type: 'WAKE_DONE' }); dispatchCore('wake-done') },
+        onWakeDone: () => {
+          // 苏醒帧的最后一帧已经把画面压黑（WakeScene 的帷幕），这里接手的是"仍然全黑"：
+          // 桌面在帷幕下面挂载，帷幕淡出即桌面背景淡入，立绘随后从虚影里浮出。
+          if (settings.animationsEnabled && !settings.skipWakeAnimation) setWakeEnter(true)
+          baseDispatch({ type: 'WAKE_DONE' }); dispatchCore('wake-done')
+        },
       }
       return multiScreenActive
         ? <MultiScreenWakeScene displays={desktopDisplays} {...wakeProps} />
@@ -1976,8 +1994,9 @@ export function App({ surface = 'combined' }: AppProps) {
     </div>
     : conversationBubble
 
-  return <div className={`wallpaper-root surface-${surface} effort-${runtime.reasoningEffort ?? 'normal'} workspace-${workspace}`} data-workspace={workspace}>
+  return <div className={`wallpaper-root surface-${surface} effort-${runtime.reasoningEffort ?? 'normal'} workspace-${workspace}${wakeEnter ? ' wake-enter' : ''}`} data-workspace={workspace}>
     {scene}
+    {wakeEnter && <div className="wake-curtain-out" style={{ animationDuration: `${WAKE_CURTAIN_OUT_MS}ms` }} />}
     <>
       <WidgetHost workspace={workspace} widgets={[]} />
       {conversationSurface}

@@ -23,8 +23,8 @@ $requiredFiles = @(
   'index.html',
   'personas\wake-frames\variant-anima\sleep.png',
   'personas\wake-frames\variant-anima\frame-2-eyes.png',
-  'personas\wake-frames\variant-anima\frame-3-situp.png',
-  'personas\wake-frames\variant-anima\frame-4-yawn.png'
+  'personas\wake-frames\variant-anima\frame-3-yawn.webp',
+  'personas\wake-frames\variant-anima\frame-4-awake.webp'
 )
 foreach ($relativePath in $requiredFiles) {
   $path = Join-Path $distRoot $relativePath
