@@ -1506,6 +1506,15 @@ fn wait_for_shell(
                     visible_at = visible_at.or(Some(now));
                     hidden_at = Some(std::time::Instant::now());
                     visible_frame = visible_frame_ms(visible_at, hidden_at).or(visible_frame);
+                    // 位置挪回去：屏幕外那个位置只在"它第一次显示"的那一瞬间有用，此刻窗口已经隐藏，
+                    // 所以这次位移谁也看不见；而此后无论谁把它叫出来（壳自己的托盘、我们的展示路径、AUMID
+                    // 激活）都会在正确的位置。只靠"展示路径挪回"是不够的 —— 实测用户正是从托盘把它叫回来，
+                    // 那条路是壳的代码，我们拦不到。
+                    if let Some(executable) = family.as_deref() {
+                        if crate::client_window::restore_from_offscreen(executable) {
+                            timeline.mark("position-restored", "the window is back where it belongs");
+                        }
+                    }
                     // 窗口已经不在屏上了：那层冻结画面留着只会挡住用户。
                     if cover.take().is_some() {
                         timeline.mark("cover-removed", "the window is off screen: the frozen frame is no longer needed");
@@ -1584,6 +1593,15 @@ fn wait_for_shell(
                             hidden_windows += 1;
                             hidden_at = Some(std::time::Instant::now());
                             visible_frame = visible_frame_ms(visible_at, hidden_at).or(visible_frame);
+                            // 位置挪回去：屏幕外那个位置只在"它第一次显示"的那一瞬间有用，此刻窗口已经隐藏，
+                            // 所以这次位移谁也看不见；而此后无论谁把它叫出来（壳自己的托盘、我们的展示路径、AUMID
+                            // 激活）都会在正确的位置。只靠"展示路径挪回"是不够的 —— 实测用户正是从托盘把它叫回来，
+                            // 那条路是壳的代码，我们拦不到。
+                            if let Some(executable) = family.as_deref() {
+                                if crate::client_window::restore_from_offscreen(executable) {
+                                    timeline.mark("position-restored", "the window is back where it belongs");
+                                }
+                            }
                             // 窗口已经不在屏上了：那层冻结画面留着只会挡住用户。
                             if cover.take().is_some() {
                                 timeline.mark("cover-removed", "the window is off screen: the frozen frame is no longer needed");
@@ -1654,6 +1672,15 @@ fn wait_for_shell(
                         hidden_at = Some(std::time::Instant::now());
                         visible_frame = visible_frame_ms(visible_at, hidden_at).or(visible_frame);
                         hidden_windows += 1;
+                        // 位置挪回去：屏幕外那个位置只在"它第一次显示"的那一瞬间有用，此刻窗口已经隐藏，
+                        // 所以这次位移谁也看不见；而此后无论谁把它叫出来（壳自己的托盘、我们的展示路径、AUMID
+                        // 激活）都会在正确的位置。只靠"展示路径挪回"是不够的 —— 实测用户正是从托盘把它叫回来，
+                        // 那条路是壳的代码，我们拦不到。
+                        if let Some(executable) = family.as_deref() {
+                            if crate::client_window::restore_from_offscreen(executable) {
+                                timeline.mark("position-restored", "the window is back where it belongs");
+                            }
+                        }
                         log::info!("harness shell window hidden: windows=1 source=show-event");
                         timeline.mark("hide-landed", format!("windows=1 sweeps={sweeps} via=show-event"));
                         timeline.mark(
