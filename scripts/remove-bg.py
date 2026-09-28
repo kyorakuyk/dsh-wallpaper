@@ -1,25 +1,22 @@
-"""白底立绘抠图 v2：背景基准色采样 + 收紧阈值 + 肤色保护 + 窄过渡带
+"""准备四张官方立绘的运行时资源。
 
-v1 问题修复：
-- 背景基准：纯白(255) → 四角均值（实际背景是暖灰，如 248.8,246.5,247.3）
-- 阈值：28 → TOL（按到背景基准距离），避免误删浅色裙子/高光
-- 过渡带：[28,70] → [TOL, TOL+10]，不再把皮肤高光半透明化
-- 肤色保护：暖色像素（R 明显 > G > B）强制保留，防止皮肤被抠
+已有透明通道的 PNG 会原样复制；仍使用白底图片时，才运行背景移除。
 """
-import sys
+import shutil
 from pathlib import Path
 from collections import deque
 import numpy as np
 from PIL import Image, ImageFilter
 
-SRC_DIR = Path(r"C:\DeepSeekHarness\plugins\dsh-wallpaper\assets\personas")
-OUT_DIR = Path(r"C:\DeepSeekHarness\plugins\dsh-wallpaper\wallpaper\public\personas")
+ROOT_DIR = Path(__file__).resolve().parent.parent
+SRC_DIR = ROOT_DIR / "assets" / "personas"
+OUT_DIR = ROOT_DIR / "wallpaper" / "public" / "personas"
 
 TASKS = {
-    "蓝色幼年.jpg": "portrait-blue-child.png",
-    "蓝色成年.jpg": "portrait-blue-adult.png",
-    "黑红幼年.jpg": "portrait-black-child.png",
-    "黑红成年.jpg": "portrait-black-adult.png",
+    "蓝幼.png": "portrait-blue-child.png",
+    "蓝熟.png": "portrait-blue-adult.png",
+    "黑红幼.png": "portrait-black-child.png",
+    "黑红熟.png": "portrait-black-adult.png",
 }
 
 # 到背景基准的距离阈值：背景本身约 0-12，人物浅色约 20+
@@ -113,6 +110,20 @@ def remove_white_background(src: Path, dst: Path) -> None:
     print(f"    被删像素中肤色占比: {skin_deleted/max(deleted,1)*100:.2f}%")
 
 
+def prepare_portrait(src: Path, dst: Path) -> None:
+    with Image.open(src) as image:
+        has_transparency = (
+            "A" in image.getbands()
+            and image.getchannel("A").getextrema()[0] < 255
+        )
+    if has_transparency:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        print(f"OK: {src.name} -> {dst.name} (保留原透明通道)")
+        return
+    remove_white_background(src, dst)
+
+
 if __name__ == "__main__":
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for src_name, dst_name in TASKS.items():
@@ -120,5 +131,5 @@ if __name__ == "__main__":
         if not src.exists():
             print(f"SKIP: {src_name} 不存在")
             continue
-        remove_white_background(src, OUT_DIR / dst_name)
+        prepare_portrait(src, OUT_DIR / dst_name)
     print("完成")

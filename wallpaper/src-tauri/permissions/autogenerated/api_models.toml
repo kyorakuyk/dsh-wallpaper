@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-api-models"
+description = "Enables the api_models command without any pre-configured scope."
+commands.allow = ["api_models"]
+
+[[permission]]
+identifier = "deny-api-models"
+description = "Denies the api_models command without any pre-configured scope."
+commands.deny = ["api_models"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-leave-inner-workspace"
+description = "Enables the leave_inner_workspace command without any pre-configured scope."
+commands.allow = ["leave_inner_workspace"]
+
+[[permission]]
+identifier = "deny-leave-inner-workspace"
+description = "Denies the leave_inner_workspace command without any pre-configured scope."
+commands.deny = ["leave_inner_workspace"]
