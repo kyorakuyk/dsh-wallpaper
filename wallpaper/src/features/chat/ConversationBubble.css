@@ -80,9 +80,10 @@
 .dsh-chat__history-wrap {
   position: relative;
   z-index: -1;
-  width: calc(100% - clamp(12px, 4vw, 58px));
-  margin: 0 auto -1px;
-  padding: 0;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0 0 -1px;
+  padding: 0 var(--dsh-chat-gutter);
   overflow: hidden;
   border: 0;
   border-radius: 0;
@@ -118,8 +119,8 @@
   gap: 10px;
   width: 100%;
   max-height: calc(100vh - 236px);
-  /* 左右不再各留 6px：轨道与输入岛的**边线对齐**（用户要求"相切"）。两条边对不齐时，长回答的
-     左边缘与输入框的左边缘差几个像素，看起来像两块没对齐的面板，而不是同一个界面。 */
+  /* 左右内缩由 .dsh-chat__history-wrap 的 `--dsh-chat-gutter` 统一给：轨道、输入框、顶栏、底栏
+     因此共用同一条边线（用户要求"相切"）。这里只剩上下。 */
   padding: 10px 0 20px;
   overflow: auto;
   overscroll-behavior: contain;
@@ -328,7 +329,13 @@
   backdrop-filter: blur(34px) saturate(132%);
   transition: transform var(--dsh-duration-normal) var(--dsh-ease-standard), box-shadow var(--dsh-duration-normal) ease;
 }
+/* 轨道（history）、输入框（composer）、顶栏与底栏共用**同一条**左右内缩。
+   以前它们各写一个数字，于是必然漂移：轨道靠 history-wrap 的宽度 clamp 缩进 29px，输入框自己
+   缩进 21px，长回答的左边缘与输入文字的左边缘差 7px —— 看起来像两块没对齐的面板，而不是同一个
+   界面。现在只有这一个数，改它四处一起走。 */
+.dsh-chat { --dsh-chat-gutter: 18px; }
 .dsh-chat[data-persistent='true'] {
+  --dsh-chat-gutter: 22px;
   width: min(810px, calc(100vw - 60px));
 }
 
@@ -387,11 +394,11 @@
   pointer-events: none;
 }
 
-.dsh-chat__topbar { display: flex; min-height: 42px; align-items: center; gap: 9px; padding: 3px 12px 0 18px; border-bottom: 0; }
-.dsh-chat[data-persistent='true'] .dsh-chat__topbar { min-height: 48px; padding: 7px 22px 0; }
-.dsh-chat[data-persistent='true'] .dsh-chat__composer { min-height: 112px; padding: 8px 22px 15px; }
+.dsh-chat__topbar { display: flex; min-height: 42px; align-items: center; gap: 9px; padding: 3px var(--dsh-chat-gutter) 0; border-bottom: 0; }
+.dsh-chat[data-persistent='true'] .dsh-chat__topbar { min-height: 48px; padding: 7px var(--dsh-chat-gutter) 0; }
+.dsh-chat[data-persistent='true'] .dsh-chat__composer { min-height: 112px; padding: 8px var(--dsh-chat-gutter) 15px; }
 .dsh-chat[data-persistent='true'] .dsh-chat__textarea { min-height: 88px; font-size: 15px; }
-.dsh-chat[data-persistent='true'] .dsh-chat__footer { padding: 0 22px 13px; }
+.dsh-chat[data-persistent='true'] .dsh-chat__footer { padding: 0 var(--dsh-chat-gutter) 13px; }
 .dsh-chat[data-persistent='true'] .dsh-chat__backend-detail { display: none; }
 .dsh-chat[data-persistent='true'] .dsh-chat__status {
   padding: 0;
@@ -421,13 +428,11 @@
 .dsh-chat__mode-switch.is-harness .dsh-chat__mode-switch-knob { transform: translateX(14px); }
 .dsh-chat__mode-switch-label { font-size: 9px; font-weight: 750; letter-spacing: .06em; }
 .dsh-chat[data-persistent='true'] .dsh-chat__composer {
-  margin: 0 14px;
-  padding-right: 9px;
-  padding-left: 9px;
+  /* 左右内缩由 --dsh-chat-gutter 给（下面那条规则），这里只管分隔线。 */
+  margin: 0;
   border-top: 1px solid color-mix(in srgb, var(--dsh-text-strong) 8%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--dsh-text-strong) 7%, transparent);
 }
-.dsh-chat[data-persistent='true'] .dsh-chat__textarea { padding-left: 10px; }
 .dsh-chat[data-persistent='true'] .dsh-chat__send {
   border: 1px solid color-mix(in srgb, var(--dsh-accent-soft) 28%, transparent);
   background: color-mix(in srgb, var(--dsh-accent) 16%, transparent);
@@ -508,7 +513,7 @@
 .dsh-chat--busy .dsh-chat__status { color: var(--dsh-accent-soft); }
 .dsh-chat--busy .dsh-chat__status-dot { background: var(--dsh-accent-soft); animation: dsh-chat-breathe 1.8s ease-in-out infinite; }
 
-.dsh-chat__composer { display: grid; min-height: 86px; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; padding: 2px 15px 12px 20px; }
+.dsh-chat__composer { display: grid; min-height: 86px; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; padding: 2px var(--dsh-chat-gutter) 12px; }
 .dsh-chat__command-menu { position: relative; flex: 0 0 auto; }
 .dsh-chat__command-menu-button { display: inline-flex; min-height: 28px; align-items: center; gap: 5px; padding: 4px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--dsh-text-muted); font: inherit; font-size: 11px; cursor: pointer; }
 .dsh-chat__command-menu-button:hover, .dsh-chat__command-menu-button[aria-expanded='true'] { background: rgba(255,255,255,.07); color: var(--dsh-text); }
@@ -537,7 +542,7 @@
 .dsh-chat__send { width: 46px; height: 46px; min-height: 46px; padding: 0; border-radius: 50%; }
 .dsh-chat__stop { border-radius: 14px; color: var(--dsh-warning); }
 
-.dsh-chat__footer { display: flex; min-height: 32px; align-items: center; gap: 7px; padding: 0 16px 9px 19px; color: var(--dsh-text-faint); font-size: 10px; flex-wrap: wrap; }
+.dsh-chat__footer { display: flex; min-height: 32px; align-items: center; gap: 7px; padding: 0 var(--dsh-chat-gutter) 9px; color: var(--dsh-text-faint); font-size: 10px; flex-wrap: wrap; }
 .dsh-chat__footer .dsh-chat__model-picker { margin-left: auto; }
 .dsh-chat__meta { display: inline-flex; min-width: 0; align-items: center; gap: 5px; }
 .dsh-chat__model { max-width: 210px; overflow: hidden; color: var(--dsh-text-muted); text-overflow: ellipsis; white-space: nowrap; }
@@ -563,7 +568,7 @@
 .dsh-chat__model-option:hover { background: rgba(255,255,255,.07); color: var(--dsh-text); }
 .dsh-chat__model-option.is-current { color: var(--dsh-accent-soft); }
 .dsh-chat__model-option.is-current::after { content: ' ✓'; }
-.dsh-chat__usage-rail { display: flex; min-height: 20px; align-items: center; justify-content: center; gap: 9px; padding: 4px 18px 0; color: var(--dsh-text-faint); font-size: 10px; pointer-events: none; }
+.dsh-chat__usage-rail { display: flex; min-height: 20px; align-items: center; justify-content: center; gap: 9px; padding: 4px var(--dsh-chat-gutter) 0; color: var(--dsh-text-faint); font-size: 10px; pointer-events: none; }
 .dsh-chat__usage-rail .dsh-chat__turn-usage,
 .dsh-chat__usage-rail .dsh-chat__session-cost { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
 .dsh-chat__usage-rail .dsh-chat__turn-usage[data-usage-available='false'] { color: var(--dsh-text-faint); }
@@ -576,7 +581,7 @@
 .dsh-chat__history-button { margin-left: auto; min-height: 28px; padding: 4px 9px; color: var(--dsh-text-muted); font-size: 11px; }
 .dsh-chat__history-button svg { transition: transform var(--dsh-duration-normal) var(--dsh-ease-standard); }
 .dsh-chat.expanded .dsh-chat__history-button svg { transform: rotate(180deg); }
-.dsh-chat__island-toolbar { display: flex; min-height: 31px; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 18px 0; }
+.dsh-chat__island-toolbar { display: flex; min-height: 31px; align-items: center; justify-content: space-between; gap: 12px; padding: 10px var(--dsh-chat-gutter) 0; }
 .dsh-chat__island-toolbar-left { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .dsh-chat__island-toolbar .dsh-chat__mode-switch { flex: 0 0 auto; }
 .dsh-chat__island-toolbar .dsh-chat__preset { overflow: hidden; text-overflow: ellipsis; }
@@ -586,7 +591,7 @@
 .dsh-chat[data-persistent='true'] { bottom: clamp(22vh, 29vh, 34vh); width: min(760px, calc(100vw - clamp(32px, 7vw, 120px))); transition: bottom var(--dsh-duration-slow) var(--dsh-ease-expressive); }
 .dsh-chat[data-persistent='true'].expanded { bottom: var(--dsh-chat-expanded-bottom, clamp(112px, 16vh, 248px)); }
 .dsh-chat[data-persistent='true']::before { display: none; }
-.dsh-chat[data-persistent='true'] .dsh-chat__topbar { order: 2; min-height: 34px; padding: 0 14px 10px; color: var(--dsh-text-muted); flex-wrap: wrap; column-gap: 10px; row-gap: 4px; }
+.dsh-chat[data-persistent='true'] .dsh-chat__topbar { order: 2; min-height: 34px; padding: 0 var(--dsh-chat-gutter) 10px; color: var(--dsh-text-muted); flex-wrap: wrap; column-gap: 10px; row-gap: 4px; }
 .dsh-chat[data-persistent='true'] .dsh-chat__topbar .dsh-chat__usage-rail { flex: 1 1 300px; min-width: 0; justify-content: center; flex-wrap: wrap; white-space: normal; }
 .dsh-chat[data-persistent='true'] .dsh-chat__topbar .dsh-chat__topbar-spacer { flex: 1 1 12px; min-width: 8px; }
 .dsh-chat[data-persistent='true'] .dsh-chat__identity { gap: 7px; }
@@ -604,7 +609,7 @@
 .dsh-chat[data-persistent='true'].expanded .dsh-chat__card,
 .dsh-chat[data-persistent='true'].dsh-chat--busy .dsh-chat__card { transform: translateY(-3px); border-color: color-mix(in srgb, var(--dsh-text-strong) 22%, transparent); background: color-mix(in srgb, var(--dsh-glass-fill-strong) calc(var(--dsh-chat-acrylic-opacity, .74) * 76%), transparent); box-shadow: inset 0 1px 0 rgba(255,255,255,.14), 0 22px 58px rgba(0,0,0,.22), 0 0 32px color-mix(in srgb, var(--dsh-accent) 9%, transparent); backdrop-filter: blur(var(--dsh-chat-acrylic-blur, 19px)) saturate(124%); }
 .dsh-chat[data-persistent='true'].expanded .dsh-chat__card { transform: none; }
-.dsh-chat[data-persistent='true'] .dsh-chat__composer { min-height: 104px; margin: 0; padding: 12px 21px 6px; border: 0; }
+.dsh-chat[data-persistent='true'] .dsh-chat__composer { min-height: 104px; margin: 0; padding: 12px var(--dsh-chat-gutter) 6px; border: 0; }
 .dsh-chat[data-persistent='true'] .dsh-chat__island-toolbar {
   position: absolute;
   z-index: 4;
@@ -613,11 +618,11 @@
   left: 0;
   box-sizing: border-box;
   min-height: 31px;
-  padding: 0 14px 8px;
+  padding: 0 var(--dsh-chat-gutter) 8px;
   pointer-events: auto;
 }
 .dsh-chat[data-persistent='true'] .dsh-chat__textarea { min-height: 78px; padding: 8px 0; font-size: clamp(14px, 1vw, 16px); }
-.dsh-chat[data-persistent='true'] .dsh-chat__footer { min-height: 35px; padding: 0 18px 12px; opacity: .9; }
+.dsh-chat[data-persistent='true'] .dsh-chat__footer { min-height: 35px; padding: 0 var(--dsh-chat-gutter) 12px; opacity: .9; }
 /* 悬浮布局只需要把轨道抬到卡片之上（它自己的层级关系不同）；材质与几何由上面那一份定义。 */
 .dsh-chat[data-persistent='true'] .dsh-chat__history-wrap { z-index: 1; }
 .dsh-chat[data-persistent='true'] .dsh-chat__message { max-width: 92%; gap: 3px; padding: 8px 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
@@ -631,11 +636,11 @@
 @keyframes dsh-chat-shimmer { 0%, 100% { opacity: 0.25; transform: scaleX(0.35); } 50% { opacity: 0.9; transform: scaleX(1); } }
 
 @media (max-width: 700px) {
-  .conversation-shell.dsh-chat { bottom: 14px; width: calc(100vw - 24px); }
+  .conversation-shell.dsh-chat { --dsh-chat-gutter: 12px; bottom: 14px; width: calc(100vw - 24px); }
   .dsh-chat__backend-detail, .dsh-chat__separator, .dsh-chat__session-cost { display: none; }
   .dsh-chat__topbar .dsh-chat__usage-rail { display: none; }
   .dsh-chat__footer .dsh-chat__model-picker { margin-left: 0; }
-  .dsh-chat__history { max-height: 52vh; padding-inline: 15px; }
+  .dsh-chat__history { max-height: 52vh; }
   .dsh-chat__message { max-width: 92%; }
 }
 
