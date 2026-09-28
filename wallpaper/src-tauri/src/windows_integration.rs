@@ -44,6 +44,20 @@ fn emit_to_background<S: serde::Serialize + Clone>(
     );
 }
 
+/// Tell the wallpaper host about a real session or power transition, and leave a
+/// line behind.
+///
+/// These four events decide whether the desktop leaves the sleeping portrait, and
+/// the log used to say nothing about them: a wake that did not take effect could
+/// not be told apart from Windows never telling us, so the only available answer
+/// was a guess. Silence in the log now means the event never arrived; a line
+/// means it did, and the renderer owned the outcome.
+#[cfg(windows)]
+fn emit_system_session(app: &tauri::AppHandle, transition: &'static str) {
+    log::info!("系统会话事件：{transition}");
+    emit_to_background(app, "system-session", transition);
+}
+
 #[cfg(windows)]
 use windows::{
     core::{w, BOOL, HSTRING, PCWSTR, PWSTR},
@@ -1901,7 +1915,7 @@ unsafe extern "system" fn session_subclass_proc(
                     native_bootstrap::generation(),
                 );
                 dispatch_system_action(app, AppAction::Lock);
-                emit_to_background(app, "system-session", "locked");
+                emit_system_session(app, "locked");
             }
             WTS_SESSION_UNLOCK => {
                 let _ = native_bootstrap::start_wake();
@@ -1911,7 +1925,7 @@ unsafe extern "system" fn session_subclass_proc(
                     native_bootstrap::generation(),
                 );
                 dispatch_system_action(app, AppAction::Unlock { play_wake: true });
-                emit_to_background(app, "system-session", "unlocked");
+                emit_system_session(app, "unlocked");
             }
             _ => {}
         },
@@ -1924,7 +1938,7 @@ unsafe extern "system" fn session_subclass_proc(
                     native_bootstrap::generation(),
                 );
                 dispatch_system_action(app, AppAction::Lock);
-                emit_to_background(app, "system-session", "suspend");
+                emit_system_session(app, "suspend");
             }
             PBT_APMRESUMEAUTOMATIC => {
                 let _ = native_bootstrap::start_wake();
@@ -1934,7 +1948,7 @@ unsafe extern "system" fn session_subclass_proc(
                     native_bootstrap::generation(),
                 );
                 dispatch_system_action(app, AppAction::Unlock { play_wake: true });
-                emit_to_background(app, "system-session", "resume");
+                emit_system_session(app, "resume");
             }
             _ => {}
         },
