@@ -48,7 +48,9 @@ use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVE
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, EVENT_OBJECT_SHOW,
     WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
-    GetSystemMetrics, GetWindowLongW, IsIconic, IsZoomed, SetWindowPos, SM_CXVIRTUALSCREEN,
+    GetSystemMetrics, GetWindowLongW, GetWindowPlacement, SetWindowPlacement, SetWindowPos,
+    WINDOWPLACEMENT,
+    SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED, SM_CXVIRTUALSCREEN,
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, GWL_EXSTYLE,
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, RegisterClassExW,
     SetWindowLongPtrW, WindowFromPoint, CREATESTRUCTW, GWLP_USERDATA, SW_SHOWNA,
@@ -1723,7 +1725,7 @@ impl Drop for ShowEventWatch {
 ///
 /// 代价是必须记得原处：展示路径要**先挪回再显示**，否则壳保存的窗口位置会一路漂移。
 #[cfg(windows)]
-static MOVED_OFFSCREEN: std::sync::OnceLock<std::sync::Mutex<Option<(String, RECT)>>> =
+static MOVED_OFFSCREEN: std::sync::OnceLock<std::sync::Mutex<Option<(String, WINDOWPLACEMENT)>>> =
     std::sync::OnceLock::new();
 
 /// `-32000` 是 Windows 用来标记"最小化"的特殊坐标，撞上它等于给窗口换了个状态；所以不用它，
@@ -1745,14 +1747,23 @@ fn offscreen_spot() -> (i32, i32) {
 /// 就等于把一个窗口永久丢在屏幕之外。
 #[cfg(windows)]
 pub(crate) fn move_offscreen(handle: WindowHandle) -> bool {
-    if unsafe { IsZoomed(handle.hwnd()) }.as_bool() || unsafe { IsIconic(handle.hwnd()) }.as_bool() {
-        return false;
-    }
     let Some(executable) = process_image_path(handle.pid()) else {
         return false;
     };
-    let mut rect = RECT::default();
-    if unsafe { GetWindowRect(handle.hwnd(), &mut rect) }.is_err() {
+    // 放置状态（而不是裸矩形）：它同时带着 `showCmd` 与 `rcNormalPosition`，这两样缺一不可 ——
+    // 实测壳的窗口是**最大化**的，而最大化窗口的位置由显示器决定，记录/恢复裸矩形既救不了它、
+    // 也记不住"它本来是最大化的"。见本函数末尾那条拒绝。
+    let mut placement = WINDOWPLACEMENT {
+        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetWindowPlacement(handle.hwnd(), &mut placement) }.is_err() {
+        return false;
+    }
+    // 最大化或最小化的窗口不挪：那两种状态下"窗口在哪"不是由我们写的坐标决定的 —— 显示时系统会
+    // 按显示器重新摆它，挪走没有意义；而最小化本身还带着一个特殊坐标。这种情况由调用方退回隐藏。
+    if placement.showCmd == SW_SHOWMAXIMIZED.0 as u32 || placement.showCmd == SW_SHOWMINIMIZED.0 as u32
+    {
         return false;
     }
     let (x, y) = offscreen_spot();
@@ -1774,7 +1785,7 @@ pub(crate) fn move_offscreen(handle: WindowHandle) -> bool {
     if let Ok(mut guard) = slot.lock() {
         // 同一家族只记第一次：第二次挪动记下的"原处"已经是屏幕之外了。
         if guard.is_none() {
-            *guard = Some((executable, rect));
+            *guard = Some((executable, placement));
         }
     }
     true
@@ -1787,23 +1798,19 @@ pub(crate) fn move_offscreen(handle: WindowHandle) -> bool {
 pub(crate) fn restore_from_offscreen(executable: &str) -> bool {
     let Some(slot) = MOVED_OFFSCREEN.get() else { return false };
     let Ok(mut guard) = slot.lock() else { return false };
-    let Some((recorded, rect)) = guard.clone() else { return false };
+    let Some((recorded, placement)) = guard.clone() else { return false };
     if !same_executable_path(&recorded, executable) {
         return false;
     }
     let restored = family_windows(executable).iter().any(|window| {
-        unsafe {
-            SetWindowPos(
-                window.handle.hwnd(),
-                None,
-                rect.left,
-                rect.top,
-                rect.right - rect.left,
-                rect.bottom - rect.top,
-                SWP_NOACTIVATE | SWP_NOZORDER,
-            )
+        let hwnd = window.handle.hwnd();
+        let placed = unsafe { SetWindowPlacement(hwnd, &placement) }.is_ok();
+        // `SetWindowPlacement` 会带上 `showCmd`，而它有可能把窗口显示出来 —— 我们恢复的时候
+        // 调用方要么刚把它藏好、要么正准备显示，但无论哪种，这里都不该由它决定可见性。
+        if placed && unsafe { IsWindowVisible(hwnd) }.as_bool() && placement.showCmd != SW_SHOWMAXIMIZED.0 as u32 {
+            let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
         }
-        .is_ok()
+        placed
     });
     if restored {
         *guard = None;
