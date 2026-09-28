@@ -1588,6 +1588,16 @@ fn wait_for_shell(
                             "the watched handle is no longer a hideable interface window",
                         );
                     } else if crate::client_window::window_is_visible(handle) {
+                        // 它第一次可见的那一刻**在哪**：这一问决定"我们挪走的位置是不是被谁又摆回去了"。
+                        // 我们挪到屏幕之外，若此刻读回来的矩形已经是原处，那就是壳自己把它请回去的。
+                        if visible_at.is_none() {
+                            if let Some(rect) = crate::client_window::window_rect(handle) {
+                                timeline.mark(
+                                    "window-visible-at",
+                                    format!("rect=({},{})-({},{})", rect.0, rect.1, rect.2, rect.3),
+                                );
+                            }
+                        }
                         visible_at = visible_at.or(Some(std::time::Instant::now()));
                         if crate::client_window::hide_window(handle) {
                             hidden_windows += 1;
@@ -1668,6 +1678,14 @@ fn wait_for_shell(
                             seen_at.duration_since(started_at).as_millis()),
                     );
                     if hidden_by_event {
+                        if let Some(handle) = watched {
+                            if let Some(rect) = crate::client_window::window_rect(handle) {
+                                timeline.mark(
+                                    "window-visible-at",
+                                    format!("rect=({},{})-({},{}) via=show-event", rect.0, rect.1, rect.2, rect.3),
+                                );
+                            }
+                        }
                         visible_at = Some(seen_at);
                         hidden_at = Some(std::time::Instant::now());
                         visible_frame = visible_frame_ms(visible_at, hidden_at).or(visible_frame);

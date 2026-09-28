@@ -1782,6 +1782,13 @@ pub(crate) fn move_offscreen(handle: WindowHandle) -> bool {
     if moved.is_err() {
         return false;
     }
+    // 读回来一次：`SetWindowPos` 返回成功不等于窗口真的动了（这一课已经上过一次）。
+    if let Some(rect) = window_rect(handle) {
+        log::info!(
+            "launch cover: window moved off screen, now at ({},{})-({},{})",
+            rect.0, rect.1, rect.2, rect.3
+        );
+    }
     let slot = MOVED_OFFSCREEN.get_or_init(|| std::sync::Mutex::new(None));
     if let Ok(mut guard) = slot.lock() {
         // 同一家族只记第一次：第二次挪动记下的"原处"已经是屏幕之外了。
@@ -1837,6 +1844,17 @@ fn place_and_keep_hidden(hwnd: HWND, placement: &WINDOWPLACEMENT) -> bool {
         let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
     }
     true
+}
+
+
+/// 读一个句柄当前的矩形，仅用于诊断（"它第一次可见时在哪"这个问题没有别的办法回答）。
+#[cfg(windows)]
+pub(crate) fn window_rect(handle: WindowHandle) -> Option<(i32, i32, i32, i32)> {
+    let mut rect = RECT::default();
+    if unsafe { GetWindowRect(handle.hwnd(), &mut rect) }.is_err() {
+        return None;
+    }
+    Some((rect.left, rect.top, rect.right, rect.bottom))
 }
 
 #[cfg(test)]
