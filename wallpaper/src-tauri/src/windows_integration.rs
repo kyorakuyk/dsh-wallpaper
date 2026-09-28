@@ -3414,7 +3414,17 @@ pub(crate) fn set_startup_task(enabled: bool) -> Result<Option<bool>, String> {
         Ok(task) => task,
         // A package built before the StartupTask manifest extension is still
         // supported through the Run-key compatibility path.
-        Err(_) => return Ok(None),
+        //
+        // **但这条降级必须留痕**：另一位 agent 报告"注册表键从 09-22 到今始终不存在，manifest 与
+        // TaskId 一致、系统策略正常，Windows 就是从未实例化这个任务，现在自启全靠 Run 键在扛"——
+        // 而这里原本把 GetAsync 的 HRESULT 用 `Err(_)` 直接吞掉，于是"主路径为什么失效"在日志里
+        // 一个字都没有，只能靠猜。降级行为不变（仍然返回 Ok(None) 走兼容路径），只是把原因说出来。
+        Err(error) => {
+            log::warn!(
+                "启动任务不可用（GetAsync({task_id:?}) 失败：{error}）；本次改走 Run 键兼容路径"
+            );
+            return Ok(None);
+        }
     };
     if !enabled {
         task.Disable()
