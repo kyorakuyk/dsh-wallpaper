@@ -33,6 +33,11 @@ export interface MarkdownListItem {
   text: string
   depth: number
   ordered: boolean
+  /** 任务清单：`undefined` 表示不是任务项；`true`/`false` 是 `[x]` / `[ ]`。
+   *
+   * 只做**只读呈现**：这是模型说的话，不是待办应用 —— 用户点不动它，也就不会以为"点了会发生什么"。
+   */
+  checked?: boolean
 }
 
 /** 行内片段。`children` 让粗体里能套代码、代码里不能再套任何东西。 */
@@ -50,6 +55,15 @@ const ORDERED = /^(\s*)\d+[.)]\s+(.*)$/
 const RULE = /^\s{0,3}([-*_])\s*(?:\1\s*){2,}$/
 const QUOTE = /^\s{0,3}>\s?(.*)$/
 const TABLE_ROW = /^\s*\|(.+)\|\s*$/
+/** 任务清单标记：`[x]` / `[ ]`（大小写都认）。 */
+const TASK = /^\[( |x|X)\]\s+(.*)$/
+
+/** 从条目文字里取出任务标记；不是任务项就原样返回。 */
+function taskOf(text: string): { text: string; checked: boolean } | undefined {
+  const match = text.match(TASK)
+  if (!match) return undefined
+  return { text: match[2] ?? '', checked: (match[1] ?? ' ').toLowerCase() === 'x' }
+}
 
 /** 缩进层级：两个空格算一层，制表符算一层。Markdown 允许四空格，两空格是模型最常用的写法。 */
 function depthOf(indent: string): number {
@@ -195,7 +209,13 @@ export function parseMarkdown(source: string): MarkdownBlock[] {
     if (item) {
       flushParagraph()
       const ordered = !UNORDERED.test(line)
-      const items: MarkdownListItem[] = [{ text: item[2] ?? '', depth: depthOf(item[1] ?? ''), ordered }]
+      const firstTask = taskOf(item[2] ?? '')
+      const items: MarkdownListItem[] = [{
+        text: firstTask?.text ?? item[2] ?? '',
+        depth: depthOf(item[1] ?? ''),
+        ordered,
+        ...(firstTask ? { checked: firstTask.checked } : {}),
+      }]
       for (index += 1; index < lines.length; index += 1) {
         const next = lines[index] ?? ''
         if (next.trim() === '') {
@@ -211,10 +231,12 @@ export function parseMarkdown(source: string): MarkdownBlock[] {
         if (nextItem) {
           // 每一项记**它自己那一行**的标记：原文实测（官壳宿主上的真实消息）同一棵树里混着
           // `1.` 与 `-`，按整块一个类型渲染会把"1. 有序第二层"变成圆点，分类就没了。
+          const parsed = taskOf(nextItem[2] ?? '')
           items.push({
-            text: nextItem[2] ?? '',
+            text: parsed?.text ?? nextItem[2] ?? '',
             depth: depthOf(nextItem[1] ?? ''),
             ordered: !UNORDERED.test(next),
+            ...(parsed ? { checked: parsed.checked } : {}),
           })
           continue
         }

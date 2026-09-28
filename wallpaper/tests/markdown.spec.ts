@@ -85,6 +85,22 @@ describe('conversation markdown', () => {
     ])
   })
 
+  it('reads task items as a state, keeping the rest of the list intact', () => {
+    // 原文里就有 `- [x]` / `- [ ]`。做成**只读**方框：这是模型说的话，不是待办应用，点不动，
+    // 也就不会让用户以为"点了会发生什么"。
+    expect(parseMarkdown('- [x] 已完成\n- [ ] 未完成\n- 普通项')).toEqual([
+      {
+        kind: 'list',
+        ordered: false,
+        items: [
+          { text: '已完成', depth: 0, ordered: false, checked: true },
+          { text: '未完成', depth: 0, ordered: false, checked: false },
+          { text: '普通项', depth: 0, ordered: false },
+        ],
+      },
+    ])
+  })
+
   it('reads a strict table, and leaves everything else alone', () => {
     expect(parseMarkdown('| 名称 | 值 |\n| :--- | ---: |\n| a | 1 |\n| b | 2 |')).toEqual([
       {

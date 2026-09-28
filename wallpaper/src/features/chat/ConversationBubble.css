@@ -118,7 +118,9 @@
   gap: 10px;
   width: 100%;
   max-height: calc(100vh - 236px);
-  padding: 10px 6px 20px;
+  /* 左右不再各留 6px：轨道与输入岛的**边线对齐**（用户要求"相切"）。两条边对不齐时，长回答的
+     左边缘与输入框的左边缘差几个像素，看起来像两块没对齐的面板，而不是同一个界面。 */
+  padding: 10px 0 20px;
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
@@ -232,6 +234,9 @@
 }
 .dsh-chat__list { margin: 9px 0 0; padding-left: 20px; }
 .dsh-chat__list li { margin-top: 3px; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* 任务项：没有圆点/编号，靠一个只读方框说话（模型写的待办，不是能点的清单）。 */
+.dsh-chat__list li.dsh-chat__task { list-style: none; margin-left: -18px; }
+.dsh-chat__task > input[type='checkbox'] { margin: 0 6px 0 0; vertical-align: -1px; accent-color: var(--dsh-accent, #4cb9ff); }
 /* 嵌套列表：向内再缩进一档（父项的行内内容已经缩进过，这里只补子列表自己的缩进）。 */
 .dsh-chat__list .dsh-chat__list { margin-top: 3px; padding-left: 18px; }
 /* 表格：外层滚动、内层真表格。表格自己保证列对齐 —— 这正是"靠空格对齐"做不到的那件事。 */

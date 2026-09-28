@@ -45,7 +45,12 @@ function listTree(items: readonly MarkdownListItem[], ordered: boolean): ReactNo
       let end = index + 1
       while (end < normalised.length && normalised[end]!.depth > depth) end += 1
       const children = normalised.slice(index + 1, end)
-      nodes.push(<li key={index}>
+      nodes.push(<li key={index} className={item.checked === undefined ? undefined : 'dsh-chat__task'}>
+        {item.checked === undefined
+          ? null
+          // 只读方框：这是模型说的话，不是待办应用。用 disabled 的 checkbox 而不是画一个方块，
+          // 是为了让读屏软件也知道它是"已勾选/未勾选"，同时它真的点不动。
+          : <input type="checkbox" disabled checked={item.checked} tabIndex={-1} />}
         {Inline({ tokens: parseInline(item.text) })}
         {/* 子列表**从 0 层重新开始**：每一层各自归一化过，所以这里必须再传 0。
             原来传的是 depth + 1，于是子项（归一化后是 0）在第一项就 break，嵌套内容整段消失 ——
