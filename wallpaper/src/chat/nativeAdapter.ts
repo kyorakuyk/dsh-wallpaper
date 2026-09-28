@@ -124,13 +124,12 @@ export class NativeChatAdapter extends EventChatAdapter {
       return
     }
     this.harnessConnectionId = connectionId
-    // 连到**当前主体**的端点上去。不传这个端口，原生会退回"这条会话当初钉下的端口"，而那是上一个
-    // 主体的端点 —— 切换主体后就变成"灯照着新主体、会话留在旧端点"。
+    // 预设随新会话一起交出去。恢复一条已有会话时原生**不带**它：预设属于那条会话，不该被改写。
     this.sessionId = await nativeRuntime.connectHarness(
       this.sessionId,
       connectionId,
       this.nativeOptions.model,
-      this.nativeOptions.endpointPort,
+      this.nativeOptions.preset,
     )
   }
 

@@ -356,23 +356,26 @@ export function updateApiAdapterOptions(
 }
 
 /**
- * Harness 适配器的选项：模型 + **这一主体自己的端点**。
+ * 壁纸新建 Harness 会话时默认装载的 agent 预设。
  *
- * 端点必须由渲染端给出。原生 `harness_connect` 在没有端点参数时退回"这条会话当初钉下的端口"，
- * 而那个端口属于**上一个**主体（`set_harness_port` 的注释写明这是刻意的：改下拉不该把一条已开的
- * 会话连带改向）。于是切换主体后新建的会话仍然连在旧端点上 —— 探测范围已经换成新主体（灯因此
- * 变绿），会话却留在旧端点，用户看到的就是"已连接，一发消息却说会话尚未建立"。
+ * 用户要求："工作区的预设先默认为'极简模式'试试，应该能省不少上下文"。宿主那边的 id 实测是
+ * `minimal`（预设表：`standard` 默认 / `minimal` / `ptc` / `cordis`）。
+ */
+export const DEFAULT_HARNESS_PRESET = 'minimal'
+
+/**
+ * Harness 适配器的选项：模型 + 预设。
  *
- * 两种情况下不给端口，交给原生按钉住的端口处理：主体有多个候选端口（无从判断该用哪个），
- * 或压根没选主体。
+ * **端点不在这里**：`connect_harness` 命令自己按主体范围解析端口（源码注释原话"resolved here
+ * rather than trusted from the caller"——渲染端不许指定任意端口，监视器读同一个值，于是状态与
+ * 会话不会指着两个不同的客户端）。曾经在这里算过一个 `endpointPort` 交出去，命令根本不看它：
+ * 一个死参数，已删。
  */
 export function harnessAdapterOptionsFromSettings(
-  settings: Pick<WallpaperSettings, 'dshLaunch'>,
+  settings: Pick<WallpaperSettings, 'harnessPreset'>,
   model: string | undefined,
 ): NativeSendOptions {
-  const ports = subjectEndpointPorts(endpointScopeOf(settings.dshLaunch)) ?? []
-  const endpointPort = settings.dshLaunch.endpointPort ?? (ports.length === 1 ? ports[0] : undefined)
-  return { model, endpointPort }
+  return { model, preset: settings.harnessPreset ?? DEFAULT_HARNESS_PRESET }
 }
 
 type ConversationPointerAdapter = ChatAdapter & {

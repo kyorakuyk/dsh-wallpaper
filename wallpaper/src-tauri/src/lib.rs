@@ -2666,6 +2666,7 @@ async fn connect_harness(
     resume_session_id: Option<String>,
     connection_id: String,
     model: Option<String>,
+    preset: Option<String>,
 ) -> Result<String, String> {
     require_background(&caller)?;
     // The session follows the endpoint selected in settings, resolved here rather
@@ -2673,7 +2674,7 @@ async fn connect_harness(
     // and the monitor reads the same value, so status and sessions cannot
     // disagree about which client is in use.
     let endpoint_port = Some(harness_endpoint_port());
-    chat::harness_connect(app, state, resume_session_id, connection_id, model, endpoint_port).await
+    chat::harness_connect(app, state, resume_session_id, connection_id, model, endpoint_port, preset).await
 }
 
 #[tauri::command]

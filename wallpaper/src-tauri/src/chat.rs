@@ -1597,6 +1597,15 @@ struct HarnessSessionRequest<'a> {
     resume_session_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<&'a str>,
+    /// 这次会话用哪个 agent 预设（桥的 `/sessions` 读 `agentPreset`，缺省是宿主默认值）。
+    ///
+    /// 壁纸默认给 `minimal`（用户的原话："工作区的预设先默认为'极简模式'试试，应该能省不少
+    /// 上下文"）。一个预设决定会话装载多少指令与工具，而对壁纸这种"每轮都要重建上下文"的
+    /// 常驻场景，默认那套（standard）装的东西明显更多。
+    ///
+    /// **只在新建会话时有效**：恢复一条已有会话时，预设跟着那条会话走，不该被这次请求改写。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_preset: Option<&'a str>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -2742,6 +2751,7 @@ pub async fn harness_connect(
     connection_id: String,
     model: Option<String>,
     endpoint_port: Option<u16>,
+    preset: Option<String>,
 ) -> Result<String, String> {
     let connection_id = connection_id.trim().to_string();
     if connection_id.is_empty() || connection_id.len() > 200 {
@@ -2778,6 +2788,21 @@ pub async fn harness_connect(
     {
         return Err("Harness 模型标识无效".into());
     }
+    // 预设 id 由宿主定义（实测表：`standard` / `minimal` / `ptc` / `cordis`），这里只做形状检查：
+    // 字母数字与 `-` `_`、长度有限、空串当没给。宿主不认识的值它自己会回 400 —— 这一层不猜它的目录。
+    let preset = preset
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    if preset.as_ref().is_some_and(|value| {
+        value.len() > 64
+            || !value
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+    }) {
+        return Err("Harness 预设标识无效".into());
+    }
     let create_session = |resume_session_id: Option<&str>| {
         auth(
             client.post(harness_url(port, "/sessions")),
@@ -2786,6 +2811,12 @@ pub async fn harness_connect(
         .json(&HarnessSessionRequest {
             resume_session_id,
             model: model.as_deref(),
+            // 恢复一条会话时不带预设：预设属于那条会话，别用这次请求去改它。
+            agent_preset: if resume_session_id.is_some() {
+                None
+            } else {
+                preset.as_deref()
+            },
         })
         .send()
     };

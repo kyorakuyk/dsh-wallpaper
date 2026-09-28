@@ -8,12 +8,12 @@ export interface NativeSendOptions {
   baseUrl?: string
   model?: string
   /**
-   * Harness 专用：这次连接**要连哪个端点**（端口）。
+   * Harness 专用：新建会话时装载哪个 agent 预设（`minimal` / `standard` / …）。
    *
-   * 不给就会退回原生"这条会话当初钉下的端口"，而那个端口属于上一个主体 —— 切换主体之后新建的
-   * 会话仍连在旧端点上，于是灯照着新主体、会话却在旧端点（"看着连上、一发却说没有会话"）。
+   * 壁纸默认给 `minimal`（用户要求："工作区的预设先默认为'极简模式'试试，应该能省不少上下文"）
+   * ——预设决定这条会话装载多少指令与工具，而壁纸是每轮都要重建上下文的常驻场景，装得少就是省。
    */
-  endpointPort?: number
+  preset?: string
   /** CNY per million input tokens. Omitted means pricing is not configured. */
   priceInputPerMillion?: number
   /** CNY per million output tokens. Omitted means pricing is not configured. */
@@ -318,7 +318,14 @@ export interface NativeRuntime {
   listenChat(listener: (event: ScopedChatEvent) => void): Promise<() => void>
   sendChat(mode: BackendMode, text: string, options?: NativeSendOptions): Promise<string | undefined>
   cancelChat(mode: BackendMode): Promise<void>
-  connectHarness(resumeSessionId: string | undefined, connectionId: string, model?: string, endpointPort?: number): Promise<string>
+  /**
+   * 建立 Harness 会话。
+   *
+   * **端点端口不由调用方给**：`connect_harness` 命令自己按主体范围解析（源码里的原话是
+   * "resolved here rather than trusted from the caller"——渲染端不许指定任意端口，而监视器读
+   * 同一个值，于是状态与会话不可能指着两个不同的客户端）。这里只传模型与预设。
+   */
+  connectHarness(resumeSessionId: string | undefined, connectionId: string, model?: string, preset?: string): Promise<string>
   harnessHistory(): Promise<ChatMessage[]>
   harnessPresets(): Promise<Array<{ id: string; name?: string; description?: string; trust: 'system' | 'user'; broken?: string; isDefault: boolean }>>
   setHarnessPreset(preset: string): Promise<void>
@@ -607,9 +614,9 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('cancel_chat', { mode })
   },
-  async connectHarness(resumeSessionId, connectionId, model, endpointPort) {
+  async connectHarness(resumeSessionId, connectionId, model, preset) {
     const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<string>('connect_harness', { resumeSessionId, connectionId, model, endpointPort })
+    return invoke<string>('connect_harness', { resumeSessionId, connectionId, model, preset })
   },
   async harnessHistory() {
     const { invoke } = await import('@tauri-apps/api/core')

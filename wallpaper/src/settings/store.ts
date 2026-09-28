@@ -181,6 +181,14 @@ export interface WallpaperSettings {
   deepseekApi: ApiSettings
   /** 壁纸端记住的 Harness 模型选择（用于重启后回显）。 */
   harnessModel: HarnessModelSettings
+  /**
+   * 新建 Harness 会话时装载哪个 agent 预设（`minimal` / `standard` / …）。
+   *
+   * 缺省（没写过）时由 `DEFAULT_HARNESS_PRESET` 兜底为 `minimal`（用户要求："工作区的预设先默认为
+   * '极简模式'试试，应该能省不少上下文"）。留成可选是为了不把默认值抄进每个存档点：只有一个地方
+   * 说"默认是什么"，替换时也只改那一处。
+   */
+  harnessPreset?: string
   dshLaunch: DshLaunchSettings
   /**
    * 壁纸**自己**把滑槽拨离 harness 的那一次（主体掉线时的自动复位），记的是时间戳。

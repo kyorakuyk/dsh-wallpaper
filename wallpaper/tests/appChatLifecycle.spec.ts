@@ -170,30 +170,19 @@ describe('App chat lifecycle isolation', () => {
     expect(chatAdapterLifecycleKey('deepseek-api', 7, shellScope)).not.toBe(mountedLifecycle)
   })
 
-  it('tells the native connect which endpoint this subject uses', async () => {
-    const { harnessAdapterOptionsFromSettings } = await import('../src/App.tsx')
+  it('loads the minimal preset by default, and passes a chosen one through', async () => {
+    const { DEFAULT_HARNESS_PRESET, harnessAdapterOptionsFromSettings } = await import('../src/App.tsx')
 
-    // 原生 `harness_connect` 不带端点参数时会退回"这条会话当初钉下的端口"，那是**上一个**主体的
-    // 端点（`set_harness_port` 的注释写明这是刻意的）。于是切换主体后新建的会话仍连在旧端点上：
-    // 探测范围换了（灯变绿）、会话没换，用户看到"已连接，一发消息却说会话尚未建立"。
-    // 单一候选端口的主体（已安装的 CLI 正是这种形状）⇒ 必须把端口交出去。
-    const cli = harnessAdapterOptionsFromSettings(
-      { dshLaunch: { subjectId: 'cli:C:/npm/dsh.cmd', profile: 'web' } },
-      'deepseek-chat',
-    )
-    expect(cli.endpointPort).toBe(3080)
-    expect(cli.model).toBe('deepseek-chat')
+    // 端点**不在这里**：`connect_harness` 命令自己按主体范围解析端口（"不信任调用方"），渲染端
+    // 曾经算过一个端口交出去，命令根本不看它 —— 死参数已删，所以这里也不该再出现它。
+    const fallback = harnessAdapterOptionsFromSettings({}, 'deepseek-chat')
+    expect(fallback.preset).toBe('minimal')
+    expect(DEFAULT_HARNESS_PRESET).toBe('minimal')
+    expect(fallback.model).toBe('deepseek-chat')
+    expect('endpointPort' in fallback).toBe(false)
 
-    // 用户自己钉过端口 ⇒ 以钉住的为准（"设置里是什么就是什么"）。
-    expect(
-      harnessAdapterOptionsFromSettings(
-        { dshLaunch: { subjectId: 'cli:C:/npm/dsh.cmd', endpointPort: 3200 } },
-        undefined,
-      ).endpointPort,
-    ).toBe(3200)
-
-    // 没有主体 ⇒ 不给端口：让原生按它钉住的端口处理，而不是在这里瞎猜一个。
-    expect(harnessAdapterOptionsFromSettings({ dshLaunch: {} }, undefined).endpointPort).toBeUndefined()
+    // 设置里写了就用写的那个（"设置里是什么就是什么"）。
+    expect(harnessAdapterOptionsFromSettings({ harnessPreset: 'standard' }, undefined).preset).toBe('standard')
   })
 
   it('applies daily policy only when unlocking after a local calendar rollover', async () => {
