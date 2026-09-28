@@ -9,6 +9,8 @@ mod client_window;
 pub mod desktop_repair;
 #[cfg(not(feature = "lite"))]
 mod deepseek_web;
+// 打开转写里的外部链接：白名单在这个模块里，见其头部说明。
+mod external_link;
 #[cfg(not(feature = "lite"))]
 mod deepseek_web_config;
 #[cfg(not(feature = "lite"))]
@@ -4077,6 +4079,17 @@ fn open_client_in_browser(
     client_window::open_loopback_url(port, &target)
 }
 
+/// Open a link from the transcript in the user's default browser.
+///
+/// The address is model output, so it never reaches the shell unvalidated: see
+/// `external_link::validate` for what counts as openable. This command only adds the
+/// surface check — the link lives on the wallpaper's chat surface, not in settings.
+#[tauri::command]
+fn open_external_link(caller: tauri::WebviewWindow, url: String) -> Result<(), String> {
+    require_wallpaper_surface(&caller)?;
+    external_link::open(&url).map(|_| ())
+}
+
 /// Report whether anything is listening on an endpoint, without raising it.
 ///
 /// Lets the UI tell "client not running" from "client running but has no window",
@@ -4579,6 +4592,7 @@ macro_rules! register_edition_commands {
             verify_island_click,
             raise_client_window,
             open_client_in_browser,
+            open_external_link,
             harness_endpoint_listening,
             harness_endpoint_window,
             appearance::commands::appearance_get_state,

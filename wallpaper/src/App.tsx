@@ -1958,6 +1958,12 @@ export function App({ surface = 'combined' }: AppProps) {
         }
         void nativeRuntime.leaveInnerWorkspace().catch((error) => patchRuntime({ error: `离开里桌面失败：${String(error)}` }))
       }}
+      // 打开转写里的链接：地址来自模型输出，真正的白名单在 Rust 侧（`external_link::validate`）。
+      // 失败要说出来 —— 中键点了没反应，用户只会以为是手势没生效。
+      onOpenLink={(href) => {
+        void nativeRuntime.openExternalLink(href)
+          .catch((error) => patchRuntime({ chatNotice: `打开链接失败：${String(error)}` }))
+      }}
     />
     })()
     : null

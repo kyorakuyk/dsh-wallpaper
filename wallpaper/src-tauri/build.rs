@@ -101,6 +101,7 @@ fn main() {
             "set_harness_endpoint",
             "raise_client_window",
             "open_client_in_browser",
+            "open_external_link",
             "harness_endpoint_listening",
             "harness_endpoint_window",
             "appearance_get_state",

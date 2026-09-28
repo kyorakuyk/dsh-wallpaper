@@ -101,6 +101,11 @@ export interface ConversationBubbleProps {
   onSend: (text: string) => void
   onStop: () => void
   onClose: () => void
+  /**
+   * 打开转写里的外部链接。**不传就只是显示成链接**：组件本身不认识原生层，
+   * 打开这一步由上层（`App.tsx`）接到 native 命令上。
+   */
+  onOpenLink?: (href: string) => void
 }
 
 /// What a drafting or sending action should do to the conversation history view.
@@ -292,12 +297,12 @@ export function ConversationBubble(props: ConversationBubbleProps) {
             // （实测：网页入口那条路的助手消息就没吃到 Markdown，而它确实叫 assistant —— 与其继续
             // 逐个核对上游，不如把这条规矩说死：只有用户输入是不可改写的）。
             ? <p className="dsh-chat__message-body">{message.content}</p>
-            : <MarkdownBody text={message.content} />}
+            : <MarkdownBody text={message.content} onOpenLink={props.onOpenLink} />}
           <UsageLine usage={message.usage} />
         </article>)}
         {streamText && <article className="dsh-chat__message dsh-chat__message--assistant">
           {props.speakerLabels?.assistant?.trim() && <span className="dsh-chat__message-label">{props.speakerLabels.assistant}</span>}
-          <MarkdownBody text={streamText} /><span className="dsh-chat__caret" aria-hidden="true" />
+          <MarkdownBody text={streamText} onOpenLink={props.onOpenLink} /><span className="dsh-chat__caret" aria-hidden="true" />
         </article>}
       </div>
     </div>}

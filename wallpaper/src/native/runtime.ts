@@ -407,6 +407,14 @@ export interface NativeRuntime {
    * endpoint is accepted, so this cannot open an arbitrary destination.
    */
   openClientInBrowser(port: number, path?: string): Promise<void>
+  /**
+   * Open a link from the transcript in the default browser.
+   *
+   * The address comes from model output, so the native side validates it again
+   * (`external_link::validate`): http/https only, ASCII only, no `user@` in the
+   * authority. The renderer refuses to even style anything else as a link.
+   */
+  openExternalLink(url: string): Promise<void>
   /** Whether anything is listening, without raising it. */
   harnessEndpointListening(port: number): Promise<boolean>
   desktopDisplays(): Promise<DesktopDisplayInfo[]>
@@ -795,6 +803,11 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) return
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('open_client_in_browser', { port, path })
+  },
+  async openExternalLink(url: string) {
+    // 这里**不吞错误**：打开失败要能浮到界面上（调用方负责显示），静默失败等于"点了没反应"。
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('open_external_link', { url })
   },
   async harnessEndpointListening(port: number) {
     if (!await tauriAvailable()) return false

@@ -215,6 +215,34 @@
 .dsh-chat__code + .dsh-chat__code,
 .dsh-chat__heading + .dsh-chat__message-body { margin-top: 9px; }
 
+/* 链接：markdown 本来没有下划线，所以下划线在这里专指"这是个链接"；再加一点粗，和正文分开。
+   打开的手势是中键或回车 —— 光标因此**不是**手型：左键在这里只做"不导航"，不是"打开"。 */
+.dsh-chat__link {
+  color: inherit;
+  font-weight: 650;
+  text-decoration: underline;
+  text-decoration-color: rgba(139, 196, 235, .5);
+  text-underline-offset: 2px;
+  cursor: default;
+}
+.dsh-chat__link:hover,
+.dsh-chat__link:focus-visible { text-decoration-color: currentColor; }
+.dsh-chat__link:focus-visible { outline: 2px solid rgba(139, 196, 235, .55); outline-offset: 2px; border-radius: 4px; }
+
+/* 悬停/聚焦时在文字**下方**浮出真实地址。换掉文字会让整段重排（长地址还可能把岛撑高再缩回），
+   所以这里只是多一行；它是真元素，可以选中、复制。 */
+.dsh-chat__link-url {
+  display: none;
+  margin-top: 2px;
+  color: rgba(190, 214, 234, .7);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.dsh-chat__link:hover .dsh-chat__link-url,
+.dsh-chat__link:focus-visible .dsh-chat__link-url { display: block; }
+
 /* 标题：字号从 17px 收到 13.5px。这是岛里的转写，不是文档 —— h1 按浏览器默认的 2em 会把
    一段十几行的回答撑成海报，所以每一级都自己定尺寸，级差只有 1px 左右。 */
 .dsh-chat__heading {

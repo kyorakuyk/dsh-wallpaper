@@ -8,9 +8,10 @@
  *  2. 纯函数可以被钉住行为，"库升级后渲染变了"不是我想在深夜排查的东西；
  *  3. 少即是稳：没被点名的语法保持**字面**显示，用户看到的就是他写的。
  *
- * 支持：代码围栏、有序/无序列表（含嵌套与任务清单）、表格、引用、分割线、标题；
- *      行内代码、粗体、斜体、删除线（且允许互相嵌套，例如**加粗里含 `代码`**）。
- * 不支持（刻意）：链接、图片、下划线斜体（`a_b_c` 里的下划线常常是标识符的
+ * 支持：代码围栏、有序/无序列表（含嵌套与任务清单）、表格、引用、分割线、标题，
+ *      行内代码、粗体、斜体、删除线（且允许互相嵌套，例如**加粗里含 `代码`**）、链接
+ *      （只认 http/https，见 `isExternalLink`）。
+ * 不支持（刻意）：图片、下划线斜体（`a_b_c` 里的下划线常常是标识符的
  * 一部分，认它会把 `snake_case` 撕成斜体）。
  *
  * 标题是 2026-09-28 加的：网页端抽取改成"按结构还原 markdown"之后，`<h2>` 会变成 `## …`，
@@ -51,6 +52,7 @@ export type InlineToken =
   | { kind: 'bold'; children: InlineToken[] }
   | { kind: 'italic'; children: InlineToken[] }
   | { kind: 'strike'; children: InlineToken[] }
+  | { kind: 'link'; href: string; children: InlineToken[] }
 
 const FENCE = /^\s{0,3}(?:```|~~~)\s*([\w+#.-]*)\s*$/
 const UNORDERED = /^(\s*)[-*+]\s+(.*)$/
@@ -63,6 +65,43 @@ const QUOTE = /^\s{0,3}>\s?(.*)$/
 const TABLE_ROW = /^\s*\|(.+)\|\s*$/
 /** 任务清单标记：`[x]` / `[ ]`（大小写都认）。 */
 const TASK = /^\[( |x|X)\]\s+(.*)$/
+/** 链接：`[文字](地址)`。文字里可以再有行内标记，地址里不许有空白或括号。 */
+const LINK = /^([^[]*)\[([^\]\n]+)\]\(([^()\s]+)\)/
+/** 地址长度上限，和 Rust 侧 `external_link::validate` 同一个数。 */
+const MAX_EXTERNAL_URL_LENGTH = 2048
+
+/**
+ * 什么算"可以交给系统打开的链接"。
+ *
+ * **与 Rust 侧 `external_link::validate` 同一套规矩**，两边必须一致：这里决定"渲染成链接还是
+ * 保持字面"，那里决定"能不能真的交给 shell"。规则：
+ *
+ *  - 只认 `http://` / `https://`：`javascript:`、`file:`、`ms-settings:` 这类一律不成链接；
+ *  - 只认可打印 ASCII：非 ASCII 域名要 punycode 才开，否则 `аpple.com`（西里尔 а）能骗过眼睛；
+ *  - authority 里不许出现 `user@`：那是"看着像 A 其实去 B"的经典写法；
+ *  - 不许空白/控制字符，长度封顶。
+ *
+ * 不合规时**整段保持字面**（`[文字](地址)` 原样显示）——与"没点名的语法保持字面"同一条规矩。
+ */
+export function isExternalLink(url: string): boolean {
+  if (url.length === 0 || url.length > MAX_EXTERNAL_URL_LENGTH) return false
+  if (!/^[\x21-\x7e]+$/.test(url)) return false
+  if (!/^https?:\/\//i.test(url)) return false
+  const authority = url.slice(url.indexOf('//') + 2).split(/[/?#]/)[0] ?? ''
+  if (authority.length === 0) return false
+  if (authority.includes('@')) return false
+  return true
+}
+
+/** `[文字](地址)` 的候选匹配；图片语法和不合规地址都返回 undefined（保持字面）。 */
+function linkCandidate(rest: string): RegExpMatchArray | undefined {
+  const match = rest.match(LINK)
+  if (!match) return undefined
+  // `![图](x.png)`：前缀以 `!` 结尾说明这是图片，不是链接（图片刻意不支持）。
+  if ((match[1] ?? '').endsWith('!')) return undefined
+  if (!isExternalLink(match[3] ?? '')) return undefined
+  return match
+}
 
 /** 从条目文字里取出任务标记；不是任务项就原样返回。 */
 function taskOf(text: string): { text: string; checked: boolean } | undefined {
@@ -101,7 +140,8 @@ export function parseInline(source: string): InlineToken[] {
     const bold = rest.match(/^([^*]*(?:\*(?!\*)[^*]*)*)\*\*([^*]+)\*\*/)
     const strike = rest.match(/^([^~]*)~~([^~]+)~~/)
     const italic = rest.match(/^([^*]*)\*([^*\s][^*]*?)\*/)
-    const found = [code, bold, strike, italic]
+    const link = linkCandidate(rest)
+    const found = [code, bold, strike, italic, link]
       .filter((match): match is RegExpMatchArray => Boolean(match))
       .sort((a, b) => (a[1] ?? '').length - (b[1] ?? '').length)[0]
     if (!found) {
@@ -112,6 +152,7 @@ export function parseInline(source: string): InlineToken[] {
     const body = found[2] ?? ''
     push({ kind: 'text', text: rest.slice(0, at) })
     if (found === code) push({ kind: 'code', text: body })
+    else if (found === link) push({ kind: 'link', href: found[3] ?? '', children: parseInline(body) })
     else if (found === bold) push({ kind: 'bold', children: parseInline(body) })
     else if (found === strike) push({ kind: 'strike', children: parseInline(body) })
     else push({ kind: 'italic', children: parseInline(body) })
