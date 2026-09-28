@@ -37,7 +37,6 @@ const VALID: WallpaperSettings = {
   skipWakeAnimation: true,
   lockScreenEnabled: true,
   autostart: true,
-  sleepHotkey: 'Ctrl+Alt+Q',
   sendShortcut: 'Ctrl+Enter',
   background: 'deepsea-2',
   historyStartsExpanded: true,
@@ -189,9 +188,15 @@ describe('settings normalization boundary', () => {
   })
 
   it('drops unknown keys and truncated strings instead of spreading them in', () => {
-    const settings = normalizeSettings({ ...VALID, futureField: { nested: true }, sleepHotkey: 'x'.repeat(MAX_SETTINGS_SHORT_STRING + 1) })
+    const settings = normalizeSettings({
+      ...VALID,
+      futureField: { nested: true },
+      // `profile` carries the same short-string limit the deleted sleep-hotkey
+      // field used to exercise: an over-long value falls back to the default.
+      dshLaunch: { ...VALID.dshLaunch, profile: 'x'.repeat(MAX_SETTINGS_SHORT_STRING + 1) },
+    })
     expect(settings).not.toHaveProperty('futureField')
-    expect(settings.sleepHotkey).toBe(DEFAULT_SETTINGS.sleepHotkey)
+    expect(settings.dshLaunch.profile).toBe(DEFAULT_SETTINGS.dshLaunch.profile)
   })
 
   it('never throws and always produces a usable object for garbage input', () => {
@@ -260,28 +265,31 @@ describe('settings normalization boundary', () => {
   it('migrates every historical storage key, newest first', () => {
     // One representative setting per generation, so a key dropped from the
     // migration chain shows up as a lost field rather than a passing test.
+    const generation = (profile: string): Partial<WallpaperSettings> => ({
+      dshLaunch: { ...DEFAULT_SETTINGS.dshLaunch, profile },
+    })
     const generations: Array<[string, Partial<WallpaperSettings>]> = [
-      ['dsh-wallpaper:settings', { sleepHotkey: 'Ctrl+Alt+1' }],
-      ['dsh-wallpaper:settings:v2', { sleepHotkey: 'Ctrl+Alt+2' }],
-      ['dsh-wallpaper:settings:v3', { sleepHotkey: 'Ctrl+Alt+3' }],
-      ['dsh-wallpaper:settings:v4', { sleepHotkey: 'Ctrl+Alt+4' }],
-      ['dsh-wallpaper:settings:v5', { sleepHotkey: 'Ctrl+Alt+5' }],
-      ['dsh-wallpaper:settings:v6', { sleepHotkey: 'Ctrl+Alt+6' }],
-      ['dsh-wallpaper:settings:v7', { sleepHotkey: 'Ctrl+Alt+7' }],
-      ['dsh-wallpaper:settings:v8', { sleepHotkey: 'Ctrl+Alt+8' }],
-      ['dsh-wallpaper:settings:v9', { sleepHotkey: 'Ctrl+Alt+9' }],
-      [KEY, { sleepHotkey: 'Ctrl+Alt+10' }],
+      ['dsh-wallpaper:settings', generation('gen-1')],
+      ['dsh-wallpaper:settings:v2', generation('gen-2')],
+      ['dsh-wallpaper:settings:v3', generation('gen-3')],
+      ['dsh-wallpaper:settings:v4', generation('gen-4')],
+      ['dsh-wallpaper:settings:v5', generation('gen-5')],
+      ['dsh-wallpaper:settings:v6', generation('gen-6')],
+      ['dsh-wallpaper:settings:v7', generation('gen-7')],
+      ['dsh-wallpaper:settings:v8', generation('gen-8')],
+      ['dsh-wallpaper:settings:v9', generation('gen-9')],
+      [KEY, generation('gen-10')],
     ]
     for (const [key, patch] of generations) {
       storage.clear()
       storage.set(key, JSON.stringify({ ...DEFAULT_SETTINGS, ...patch }))
-      expect(loadSettings().sleepHotkey, `key ${key}`).toBe(patch.sleepHotkey)
+      expect(loadSettings().dshLaunch.profile, `key ${key}`).toBe(patch.dshLaunch?.profile)
     }
     // When several keys are present the newest one wins.
     storage.clear()
-    storage.set('dsh-wallpaper:settings:v7', JSON.stringify({ ...DEFAULT_SETTINGS, sleepHotkey: 'Ctrl+Alt+old' }))
-    storage.set('dsh-wallpaper:settings:v9', JSON.stringify({ ...DEFAULT_SETTINGS, sleepHotkey: 'Ctrl+Alt:new' }))
-    expect(loadSettings().sleepHotkey).toBe('Ctrl+Alt:new')
+    storage.set('dsh-wallpaper:settings:v7', JSON.stringify({ ...DEFAULT_SETTINGS, ...generation('gen-old') }))
+    storage.set('dsh-wallpaper:settings:v9', JSON.stringify({ ...DEFAULT_SETTINGS, ...generation('gen-new') }))
+    expect(loadSettings().dshLaunch.profile).toBe('gen-new')
   })
 })
 

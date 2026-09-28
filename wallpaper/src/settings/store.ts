@@ -162,8 +162,6 @@ export interface WallpaperSettings {
   skipWakeAnimation: boolean
   lockScreenEnabled: boolean
   autostart: boolean
-  /** 应用内睡眠模式快捷键 */
-  sleepHotkey: string
   /** 发送消息快捷键 */
   sendShortcut: 'Enter' | 'Ctrl+Enter'
   background: BackgroundId
@@ -225,7 +223,6 @@ export const DEFAULT_SETTINGS: WallpaperSettings = {
   skipWakeAnimation: false,
   lockScreenEnabled: false,
   autostart: false,
-  sleepHotkey: 'Alt+W',
   sendShortcut: 'Enter',
   background: 'workspace',
   historyStartsExpanded: false,
@@ -360,7 +357,6 @@ export function normalizeSettings(raw: unknown): WallpaperSettings {
     skipWakeAnimation: settingsBool(value.skipWakeAnimation, DEFAULT_SETTINGS.skipWakeAnimation),
     lockScreenEnabled: settingsBool(value.lockScreenEnabled, DEFAULT_SETTINGS.lockScreenEnabled),
     autostart: settingsBool(value.autostart, DEFAULT_SETTINGS.autostart),
-    sleepHotkey: settingsText(value.sleepHotkey, DEFAULT_SETTINGS.sleepHotkey, MAX_SETTINGS_SHORT_STRING),
     sendShortcut: oneOf(value.sendShortcut, ['Enter', 'Ctrl+Enter'] as const, DEFAULT_SETTINGS.sendShortcut),
     background: oneOf(value.background, BACKGROUND_IDS, DEFAULT_SETTINGS.background) as BackgroundId,
     historyStartsExpanded: settingsBool(value.historyStartsExpanded, DEFAULT_SETTINGS.historyStartsExpanded),
