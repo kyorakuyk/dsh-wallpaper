@@ -1,0 +1,373 @@
+name: Package Full
+
+# 完整版（full）MSIX 的远端构建与下载入口。
+#
+# 与 package.yml 的分工（两者互不干扰）：
+#   - package.yml 只发 Lite 首发，并负责在标签上创建 Release；
+#   - 本工作流只构建完整版 MSIX，标签上把资产**补**进同一枚 Release；
+#   - 缓存 key 各带自己的后缀（本文件用 -full），恢复前缀不重叠；
+#   - release 资产的**文件名**两两不同（完整版是 dsh-wallpaper-lockscreen-test.msix 与
+#     dsh-wallpaper-full-<版本>-test.cer，Lite 是 dsh-wallpaper-test.cer 等），
+#     创建与上传都写成幂等，两个工作流谁先跑完都可以。
+#
+# 版本怎么来（与 docs/plans/wallpaper-update-detection-plan.md 第三节的标签约定一致）：
+#   1. 手动运行填了 package_version → 用它（必须四段数字，每段 ≤ 65535）；
+#   2. 标签 v…（约定 v0.2.0.<N>）    → 去掉前缀 v，不足四段补 0；
+#                                      不像版本号的 v* 标签直接失败 —— 宁可让这一轮变红，
+#                                      也不要把版本与标签对不上的包放进 Release；
+#   3. 手动运行且没填             → <Cargo.toml 的 major>.<minor>.<运行号>.0。
+#                                      第一次运行即 0.2.1.0，比当前在用的 0.2.0.205 高，
+#                                      下下来可以直接试装。
+#
+# 版本守门（三种来源都要过）：算出的版本会与**本仓库已发布版本**比较 —— 通过 GitHub API
+# 读取 releases，从每个 release 的标签名与资产名里取出四段版本，取其中最高的一个：
+#   - 本轮版本**低于**它 ⇒ 直接失败（这种包 Windows 会拒绝升级，装不上，却白占一次发布）；
+#   - 本轮版本不低于它，或还没有任何已发布版本 ⇒ 继续；
+#   - API 查不到（网络/权限）⇒ 同样失败，不在"不知道已发布什么"的情况下打包；
+#   - 确实要故意发一个更旧的版本时，只能手动运行并勾选 allow_version_downgrade（有日志警告）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: '四段 MSIX 包版本，例如 0.2.0.206。留空时：标签 v0.2.0.<N> 用标签，手动运行用 0.2.<运行号>.0'
+        required: false
+        type: string
+      allow_version_downgrade:
+        description: '允许本轮版本低于已发布版本（默认禁止：那种包 Windows 拒绝升级）。仅在故意回退版本时勾选'
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Build the full MSIX
+    runs-on: windows-latest
+    timeout-minutes: 45
+    outputs:
+      # 发布任务给证书改名时要用它，避免在第二个地方重新推导一次版本。
+      package_version: ${{ steps.version.outputs.package_version }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+          targets: x86_64-pc-windows-msvc
+
+      # key 与 ci.yml 的 `ci`、package.yml 的 `package` 都不同：三个工作流各存各的，
+      # 谁的成功/失败都不会把别人的依赖缓存顶掉。
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: wallpaper/src-tauri
+          key: package-full
+          cache-on-failure: true
+
+      # MSIX 辅助脚本用**另一个** target 目录（artifacts/msix-test/cargo-target），上一行的 action
+      # 不可能知道它，所以单独缓存。key 里带 run_id 是有意的：带 run_id 的 key 每次都是新条目
+      # （所以能存），restore-keys 用 lock 哈希前缀去取最近的一份（所以能暖）；只由 lock 决定 key
+      # 的写法会让失败/被取消的那一轮永久零缓存（见 docs/evidence/build-and-publish-timings.md 第三节）。
+      # 前缀里的 -full 让它与 package.yml 的同名缓存互不覆盖。
+      - name: Cache the isolated MSIX build target
+        uses: actions/cache@v4
+        with:
+          path: artifacts\msix-test\cargo-target
+          key: ${{ runner.os }}-msix-target-full-${{ hashFiles('wallpaper/src-tauri/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-msix-target-full-${{ hashFiles('wallpaper/src-tauri/Cargo.lock') }}-
+            ${{ runner.os }}-msix-target-full-
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 清单里的 Identity Version 是仓库里的固定值（0.2.0.74）；这里按上面的规则算出本轮版本，
+      # 只在临时清单里替换它，仓库文件不动 —— 与 scripts/publish-local-msix.ps1 的做法一致。
+      # 同一步里做"版本守门"：比本仓库已发布的版本更旧就直接失败（见文件头）。
+      - name: Resolve the package version and write the versioned manifest
+        id: version
+        shell: pwsh
+        env:
+          REQUESTED_VERSION: ${{ inputs.package_version }}
+          ALLOW_DOWNGRADE: ${{ inputs.allow_version_downgrade }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+
+          function Assert-PackageVersion([string]$Value) {
+            if ($Value -notmatch '^\d+\.\d+\.\d+\.\d+$') {
+              throw "包版本必须是四段数字（例如 0.2.0.206）：$Value"
+            }
+            foreach ($part in $Value.Split('.')) {
+              if ([int]$part -gt 65535) { throw "MSIX 版本每段不能超过 65535：$Value" }
+            }
+            return $Value
+          }
+
+          $requested = "$env:REQUESTED_VERSION"
+          $refName = "$env:GITHUB_REF"
+          $manifestPath = 'packaging\msix\AppxManifest.xml'
+          [xml]$manifest = Get-Content -LiteralPath $manifestPath -Raw
+          $sourceVersion = [string]$manifest.Package.Identity.Version
+          $allowDowngrade = "$env:ALLOW_DOWNGRADE" -eq 'true'
+
+          if ($requested.Trim().Length -gt 0) {
+            $version = Assert-PackageVersion $requested.Trim()
+            Write-Host "版本来源：workflow_dispatch 输入（$version）"
+          } elseif ($refName -like 'refs/tags/v*') {
+            $tag = $refName.Substring('refs/tags/'.Length)
+            $text = $tag.Substring(1)
+            if ($text -notmatch '^\d+(\.\d+){0,3}$') {
+              throw "标签 $tag 不是包版本。约定是 v<四段版本>（例如 v0.2.0.206）；请在手动运行时用 package_version 指定版本，或改用符合约定的标签。"
+            }
+            $parts = @($text.Split('.'))
+            while ($parts.Count -lt 4) { $parts += '0' }
+            $version = Assert-PackageVersion ($parts -join '.')
+            Write-Host "版本来源：标签 $tag（$version）"
+          } else {
+            $cargoToml = Get-Content -LiteralPath 'wallpaper\src-tauri\Cargo.toml' -Raw
+            if ($cargoToml -notmatch '(?m)^version\s*=\s*"(\d+)\.(\d+)') {
+              throw '无法从 wallpaper/src-tauri/Cargo.toml 读取产品版本。'
+            }
+            $major = $Matches[1]
+            $minor = $Matches[2]
+            $runNumber = "$env:GITHUB_RUN_NUMBER"
+            $version = Assert-PackageVersion "$major.$minor.$runNumber.0"
+            Write-Host "版本来源：手动运行且未填 package_version —— Cargo.toml 的 $major.$minor 加本次运行号 $runNumber（$version）"
+          }
+
+          if ([version]$version -lt [version]$sourceVersion) {
+            Write-Warning "本轮版本 $version 低于仓库清单里的 $sourceVersion；这本身合法，但请确认标签/输入没有写错。"
+          }
+
+          # 已发布版本读的是 GitHub releases：每个 release 的标签名（约定 v<四段版本>）与资产名
+          # 都扫一遍四段版本号，取最高的那个。GITHUB_API_URL 由 runner 提供（github.com 上就是
+          # https://api.github.com），GH_TOKEN 用于避开匿名限流；两者都由 runner 注入。
+          function Get-PublishedVersions {
+            $base = "$env:GITHUB_API_URL"
+            if (-not $base) { $base = 'https://api.github.com' }
+            $headers = @{
+              'User-Agent' = 'dsh-wallpaper-package-full'
+              'Accept' = 'application/vnd.github+json'
+              'X-GitHub-Api-Version' = '2022-11-28'
+            }
+            if ("$env:GH_TOKEN") { $headers['Authorization'] = "Bearer $env:GH_TOKEN" }
+            $found = @()
+            for ($page = 1; $page -le 10; $page++) {
+              $uri = "$base/repos/$env:GITHUB_REPOSITORY/releases?per_page=100&page=$page"
+              $response = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get -TimeoutSec 30
+              # Invoke-RestMethod 可能把整个 JSON 数组当成**一个**对象交回来；这里显式摊平一层，
+              # 否则下面的 $release.tag_name 会变成"所有标签名组成的数组"。
+              $releases = @()
+              foreach ($item in @($response)) {
+                if ($item -is [array]) { $releases += @($item) } elseif ($null -ne $item) { $releases += $item }
+              }
+              if ($releases.Count -eq 0) { break }
+              foreach ($release in $releases) {
+                $tagText = [string]$release.tag_name
+                $texts = @($tagText)
+                if ($release.assets) { $texts += @($release.assets | ForEach-Object { [string]$_.name }) }
+                foreach ($text in $texts) {
+                  $sourceText = if ($text -eq $tagText) { "release 标签 $text" } else { "release 资产 $text" }
+                  foreach ($match in [regex]::Matches($text, '(?:^|[^\d])v?(\d+\.\d+\.\d+\.\d+)(?![\d.])')) {
+                    $found += [pscustomobject]@{ Version = [version]$match.Groups[1].Value; Source = $sourceText }
+                  }
+                }
+              }
+              if ($releases.Count -lt 100) { break }
+            }
+            return $found
+          }
+
+          $published = $null
+          try {
+            $all = @(Get-PublishedVersions)
+            if ($all.Count -gt 0) { $published = $all | Sort-Object Version -Descending | Select-Object -First 1 }
+          } catch {
+            if (-not $allowDowngrade) {
+              throw "无法查询本仓库已发布的版本（$($_.Exception.Message)）。不在「不知道已发布什么」的情况下打包；确实要跳过这项检查时，请手动运行并勾选 allow_version_downgrade。"
+            }
+            Write-Warning "无法查询已发布版本，且已显式允许降级：$($_.Exception.Message)"
+          }
+          if ($published) {
+            Write-Host "已发布版本：$($published.Version)（$($published.Source)）"
+            if ([version]$version -lt $published.Version) {
+              if ($allowDowngrade) {
+                Write-Warning "本轮版本 $version 低于已发布版本 $($published.Version)（$($published.Source)）：已按 allow_version_downgrade 放行，安装方会被 Windows 拒绝升级。"
+              } else {
+                throw "本轮版本 $version 低于已发布版本 $($published.Version)（$($published.Source)）：Windows 会拒绝用它升级现有安装，因此不再继续构建与发布。若确实要发一个更旧的版本，请手动运行并勾选 allow_version_downgrade。"
+              }
+            }
+          } else {
+            Write-Host '本仓库还没有带四段版本号的 release；跳过"比已发布版本更旧"的检查。'
+          }
+
+          $text = [IO.File]::ReadAllText($manifestPath)
+          $oldAttribute = 'Version="' + $sourceVersion + '"'
+          $newAttribute = 'Version="' + $version + '"'
+          $count = [regex]::Matches($text, [regex]::Escape($oldAttribute)).Count
+          if ($count -ne 1) { throw "清单中预期恰好一个 Version=$sourceVersion 字段，找到 $count 个。" }
+          $target = Join-Path $env:RUNNER_TEMP "AppxManifest-full-$version.xml"
+          [IO.File]::WriteAllText($target, $text.Replace($oldAttribute, $newAttribute), [Text.UTF8Encoding]::new($false))
+          "MSIX_PACKAGE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MSIX_MANIFEST_PATH=$target" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "package_version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "临时清单：$target（Identity Version $sourceVersion -> $version）"
+
+      # 签名方式与 package.yml 完全一致：在 runner 上现生成一张自签名测试证书并使用它。
+      # 仓库里没有任何签名相关的 secret，这里也不需要 —— 证书是每轮一次性的，私钥 .pfx
+      # 下一步就会被删掉；随包发布的只有公开的 .cer。因此 .cer 必须和 .msix 一起下载，
+      # 否则用另一轮（或另一个工作流）的 .cer 装不上。
+      - name: Build the full MSIX lock-screen test package
+        shell: pwsh
+        run: |
+          $bytes = New-Object byte[] 32
+          $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+          try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+          $password = [Convert]::ToBase64String($bytes)
+          Write-Output "::add-mask::$password"
+          "MSIX_TEST_PASSWORD=$password" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+          .\scripts\build-msix-test.ps1 -Edition full -Release -CreateTestCertificate -CertificatePassword $securePassword -ManifestOverridePath $env:MSIX_MANIFEST_PATH
+
+      # 上传前先证明包里装的就是本轮算出来的版本与发布者，并且公开 .cer 就是签它的那张证书。
+      # 这一步只读产物，不重新构建；它挡住的正是"版本写错却照常上传"这类错误。
+      - name: Verify and collect the full MSIX test package
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+          $expectedVersion = "$env:MSIX_PACKAGE_VERSION"
+          $artifactRoot = Join-Path "$env:GITHUB_WORKSPACE" 'artifacts\msix-test'
+          $msix = Join-Path $artifactRoot 'dsh-wallpaper-lockscreen-test.msix'
+          if (-not (Test-Path -LiteralPath $msix -PathType Leaf)) { throw "未找到完整版 MSIX 测试包：$msix" }
+          $certificate = Join-Path $artifactRoot 'dsh-wallpaper-test.cer'
+          if (-not (Test-Path -LiteralPath $certificate -PathType Leaf)) { throw "未找到公开签名证书 CER：$certificate" }
+
+          [xml]$manifest = Get-Content -LiteralPath (Join-Path "$env:GITHUB_WORKSPACE" 'packaging\msix\AppxManifest.xml') -Raw
+          $expectedIdentity = $manifest.Package.Identity
+          $archive = [IO.Compression.ZipFile]::OpenRead($msix)
+          try {
+            $entry = $archive.GetEntry('AppxManifest.xml')
+            if (-not $entry) { throw 'MSIX 中缺少 AppxManifest.xml。' }
+            $reader = [IO.StreamReader]::new($entry.Open())
+            try { [xml]$packagedManifest = $reader.ReadToEnd() } finally { $reader.Dispose() }
+          } finally { $archive.Dispose() }
+          $identity = $packagedManifest.Package.Identity
+
+          if ($identity.Name -cne $expectedIdentity.Name) { throw "MSIX Identity Name 不符：$($identity.Name)" }
+          if ([string]$identity.Version -cne $expectedVersion) { throw "MSIX Identity Version 不符：期望 $expectedVersion，实际 $($identity.Version)" }
+          if ($identity.Publisher -cne $expectedIdentity.Publisher) { throw "MSIX Publisher 不符：$($identity.Publisher)" }
+
+          $signature = Get-AuthenticodeSignature -LiteralPath $msix
+          if (-not $signature.SignerCertificate) { throw 'MSIX 没有签名者证书；测试包必须是签名包。' }
+          if ($signature.SignerCertificate.Subject -cne ([string]$expectedIdentity.Publisher)) {
+            throw "MSIX 签名者与清单 Publisher 不一致：$($signature.SignerCertificate.Subject)"
+          }
+          $publishedCertificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($certificate)
+          try {
+            if ($publishedCertificate.Thumbprint -ne $signature.SignerCertificate.Thumbprint) {
+              throw '公开 .cer 的指纹与 MSIX 签名证书不一致；两者必须同批发布。'
+            }
+          } finally { $publishedCertificate.Dispose() }
+
+          New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test" -Force | Out-Null
+          Copy-Item -LiteralPath $msix -Destination "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test\" -Force
+          Copy-Item -LiteralPath $certificate -Destination "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test\" -Force
+          # 私钥绝不离开 runner：与 package.yml 一样，上传前删掉 .pfx。
+          Get-ChildItem -LiteralPath $artifactRoot -Filter '*.pfx' -File | Remove-Item -Force
+
+          $collected = Get-Item -LiteralPath "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test\dsh-wallpaper-lockscreen-test.msix"
+          Write-Host ("完整版 MSIX 测试包：{0} 版本 {1}，{2:N0} 字节。" -f $collected.FullName, $expectedVersion, $collected.Length)
+
+      - name: Upload the full signed MSIX test package
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-wallpaper-full-msix-test-signed
+          path: ci-artifacts/msix-test/*-lockscreen-test.msix
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload the full test publisher certificate
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-wallpaper-full-msix-test-certificate
+          path: ci-artifacts/msix-test/*.cer
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Attach the full MSIX to the tag release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download the full MSIX and its publisher certificate
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dsh-wallpaper-full-msix-test-*
+          path: release-assets
+          merge-multiple: true
+
+      # Lite 的 Release 资产里有一个同名的 dsh-wallpaper-test.cer：两个工作流各自现场生成证书，
+      # 产物名却一样。改名（并带上本轮版本）后再上传，两者就不会互相 --clobber；公开证书仍随包
+      # 发布，所以 14 天后 artifact 过期时，全新机器仍能从 Release 拿到与本轮 MSIX 配对的那一张，
+      # 顺带让资产名本身带上版本号（版本守门读 release 资产名时也能取到它）。
+      - name: Rename the certificate so it cannot collide with the Lite release asset
+        shell: bash
+        env:
+          VERSION: ${{ needs.package.outputs.package_version }}
+        run: mv release-assets/dsh-wallpaper-test.cer "release-assets/dsh-wallpaper-full-${VERSION}-test.cer"
+
+      # 幂等：package.yml 可能已经先创建了同一枚 Release（Lite 首发），也可能由本工作流创建。
+      # 只创建"不存在的那一次"，并且创建失败后只要 Release 已经存在就继续 —— 两个工作流同时
+      # 跑同一枚标签也不会互相报错；上传用 --clobber，同名的本工作流资产可重复覆盖。
+      # 仓库用 --repo 显式指定（runner 一定会提供 GITHUB_REPOSITORY），因此这一步不依赖
+      # 是否 checkout 过、也不依赖 gh 从 git remote 猜仓库。
+      - name: Create the release if absent, then upload
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，只补上传本次的完整版资产。"
+          else
+            gh release create "$TAG" --repo "$REPO" --verify-tag --generate-notes \
+              || gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1
+          fi
+          gh release upload "$TAG" --repo "$REPO" release-assets/*.msix release-assets/*.cer --clobber
