@@ -1726,8 +1726,9 @@ impl Drop for ShowEventWatch {
 ///
 /// 代价是必须记得原处：展示路径要**先挪回再显示**，否则壳保存的窗口位置会一路漂移。
 #[cfg(windows)]
-static MOVED_OFFSCREEN: std::sync::OnceLock<std::sync::Mutex<Option<(String, isize, WINDOWPLACEMENT)>>> =
-    std::sync::OnceLock::new();
+static MOVED_OFFSCREEN: std::sync::OnceLock<
+    std::sync::Mutex<Option<(String, Vec<(isize, WINDOWPLACEMENT)>)>>,
+> = std::sync::OnceLock::new();
 
 /// `-32000` 是 Windows 用来标记"最小化"的特殊坐标，撞上它等于给窗口换了个状态；所以不用它，
 /// 用"虚拟屏幕右边界之外"这种普通坐标。
@@ -1739,67 +1740,56 @@ fn offscreen_spot() -> (i32, i32) {
     (left + span + 64, top.max(0))
 }
 
-/// 把 `target` 挪到屏幕之外，并记下原处。返回是否真的挪了。
+/// 把这个家族里**所有可能弹出来的窗口**一起挪到屏幕之外，并逐个记下原处。返回挪了几个。
 ///
-/// 只对**普通状态**的窗口动手：最大化或最小化的窗口要挪就得先改状态，那本身就是一次可见的变化 ——
-/// 那种情况直接放弃，由调用方退回隐藏。
+/// 为什么是一族而不是一个：实测壳的家族里有不止一个界面窗口（`Chrome_WidgetWin_1` 是我们盯着
+/// 的那个，另有一个 `Chrome_WidgetWin_0` 就待在正常位置上）——只挪一个，用户仍会在原处看到**另一个**
+/// 窗口的轮廓闪出来，而它只能等枚举扫描去盖（几十到几百毫秒，足够看见）。这一条是用户"原位出现
+/// 窗口轮廓"的实测给出的，不是预防性设计。
 ///
-/// 另外**读不到它的可执行文件路径就不挪**：那条路径是展示路径把窗口挪回去的唯一凭据，记不下它
-/// 就等于把一个窗口永久丢在屏幕之外。
+/// 只动**未显示、无属主、不是弹出物/辅助窗口**的那些：托盘宿主（`Electron_NotifyIconHostWindow`）、
+/// 输入法、菜单这些的"位置"有它们自己的含义，挪它们会出别的问题。
 #[cfg(windows)]
-pub(crate) fn move_offscreen(handle: WindowHandle) -> bool {
-    let Some(executable) = process_image_path(handle.pid()) else {
-        return false;
-    };
-    // 放置状态（而不是裸矩形）：它同时带着 `showCmd` 与 `rcNormalPosition`，这两样缺一不可 ——
-    // 实测壳的窗口是**最大化**的，而最大化窗口的位置由显示器决定，记录/恢复裸矩形既救不了它、
-    // 也记不住"它本来是最大化的"。见本函数末尾那条拒绝。
-    let mut placement = WINDOWPLACEMENT {
-        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
-        ..Default::default()
-    };
-    if unsafe { GetWindowPlacement(handle.hwnd(), &mut placement) }.is_err() {
-        return false;
-    }
-    // 最大化或最小化的窗口不挪：那两种状态下"窗口在哪"不是由我们写的坐标决定的 —— 显示时系统会
-    // 按显示器重新摆它，挪走没有意义；而最小化本身还带着一个特殊坐标。这种情况由调用方退回隐藏。
-    if placement.showCmd == SW_SHOWMAXIMIZED.0 as u32 || placement.showCmd == SW_SHOWMINIMIZED.0 as u32
-    {
-        return false;
-    }
+pub(crate) fn move_family_offscreen(executable: &str) -> usize {
     let (x, y) = offscreen_spot();
-    let moved = unsafe {
-        SetWindowPos(
-            handle.hwnd(),
-            None,
-            x,
-            y,
-            0,
-            0,
-            SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSIZE,
-        )
-    };
-    if moved.is_err() {
-        return false;
+    let mut moved: Vec<(isize, WINDOWPLACEMENT)> = Vec::new();
+    for window in family_windows(executable) {
+        let hwnd = window.handle.hwnd();
+        if unsafe { IsWindowVisible(hwnd) }.as_bool() || window_is_owned(hwnd) {
+            continue;
+        }
+        if is_popup_or_helper_class(&class_name(hwnd)) {
+            continue;
+        }
+        let mut placement = WINDOWPLACEMENT {
+            length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+            ..Default::default()
+        };
+        if unsafe { GetWindowPlacement(hwnd, &mut placement) }.is_err() {
+            continue;
+        }
+        // 最大化/最小化的窗口不挪：那两种状态下"窗口在哪"不是我们写的坐标决定的。
+        if placement.showCmd == SW_SHOWMAXIMIZED.0 as u32 || placement.showCmd == SW_SHOWMINIMIZED.0 as u32 {
+            continue;
+        }
+        let placed = unsafe {
+            SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSIZE)
+        };
+        if placed.is_ok() {
+            moved.push((hwnd.0 as isize, placement));
+        }
     }
-    // 读回来一次：`SetWindowPos` 返回成功不等于窗口真的动了（这一课已经上过一次）。
-    if let Some(rect) = window_rect(handle) {
-        log::info!(
-            "launch cover: window moved off screen, now at ({},{})-({},{})",
-            rect.0, rect.1, rect.2, rect.3
-        );
+    if moved.is_empty() {
+        return 0;
     }
     let slot = MOVED_OFFSCREEN.get_or_init(|| std::sync::Mutex::new(None));
     if let Ok(mut guard) = slot.lock() {
         // 同一家族只记第一次：第二次挪动记下的"原处"已经是屏幕之外了。
         if guard.is_none() {
-            // **连句柄一起记**：恢复时按这个句柄走。用"家族里随便哪个窗口"去恢复是不够的 ——
-            // 实测那样会在第一个成功的调用上短路（`any()`），而家族里还有别的窗口，真正被挪走
-            // 的那个就可能永远留在屏幕外。这正是用户看到的"跑到屏幕右侧外"。
-            *guard = Some((executable, handle.raw, placement));
+            *guard = Some((executable.to_string(), moved.clone()));
         }
     }
-    true
+    moved.len()
 }
 
 /// 展示之前把窗口挪回原处。返回是否真的挪回去了。
@@ -1809,20 +1799,24 @@ pub(crate) fn move_offscreen(handle: WindowHandle) -> bool {
 pub(crate) fn restore_from_offscreen(executable: &str) -> bool {
     let Some(slot) = MOVED_OFFSCREEN.get() else { return false };
     let Ok(mut guard) = slot.lock() else { return false };
-    let Some((recorded, raw, placement)) = guard.clone() else { return false };
+    let Some((recorded, entries)) = guard.clone() else { return false };
     if !same_executable_path(&recorded, executable) {
         return false;
     }
-    // 先按记下的那个句柄恢复（句柄可能已经被回收，所以要确认它还在、而且仍是那个进程的窗口）。
+    // 逐个句柄写回（句柄可能已被回收，所以先确认它还在）。任何一个成功就算恢复过。
     let mut restored = false;
-    let recorded_handle = HWND(raw as *mut core::ffi::c_void);
-    if unsafe { IsWindow(Some(recorded_handle)) }.as_bool() {
-        restored |= place_and_keep_hidden(recorded_handle, &placement);
+    for (raw, placement) in &entries {
+        let hwnd = HWND(*raw as *mut core::ffi::c_void);
+        if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+            restored |= place_and_keep_hidden(hwnd, placement);
+        }
     }
-    // 句柄没了（窗口被重建）才退回整个家族；这里**不短路**，每个窗口都试一遍。
+    // 一个都没成（窗口全被重建）才退回整个家族：把第一份记录当作位置模板，每个窗口都试一遍。
     if !restored {
-        for window in family_windows(executable) {
-            restored |= place_and_keep_hidden(window.handle.hwnd(), &placement);
+        if let Some((_, placement)) = entries.first() {
+            for window in family_windows(executable) {
+                restored |= place_and_keep_hidden(window.handle.hwnd(), placement);
+            }
         }
     }
     if restored {

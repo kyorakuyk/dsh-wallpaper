@@ -1554,10 +1554,16 @@ fn wait_for_shell(
                         // 挪到屏幕之外：位置与可见性是**两个独立属性** —— 壳随后随便 show()，那块
                         // 地方都不在任何显示器的像素里，所以这里没有赛跑（隐藏会被它的 show 撤销，
                         // 盖一层要抢在它前面铺好，只有挪走一直有效）。展示路径会先挪回再显示。
-                        if crate::client_window::move_offscreen(*handle) {
+                        // 一族一起挪：家族里不止一个界面窗口，只挪我们盯着的那个，用户仍会在
+                        // 原处看到另一个的轮廓闪出来（实测就是这样）。
+                        let moved = family
+                            .as_deref()
+                            .map(crate::client_window::move_family_offscreen)
+                            .unwrap_or(0);
+                        if moved > 0 {
                             timeline.mark(
                                 "moved-offscreen",
-                                "the window is outside every display until we bring it back",
+                                format!("{moved} window(s) outside every display until we bring them back"),
                             );
                         }
                         // FREEZE（按用户 2026-09-30 的指示冻结这一方向，不是删除）：这里原来会铺一层
