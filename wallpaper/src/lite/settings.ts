@@ -24,7 +24,8 @@ export const DEFAULT_LITE_SETTINGS: LiteSettings = {
   playWakeOnEveryUnlock: true,
   skipWakeAnimation: false,
   // lockScreenEnabled: false,
-  desktopWallpaperFallback: false,
+  // FREEZE(1B)：随系统集成冻结（2026-09-30）。
+  // desktopWallpaperFallback: false,
   autostart: false,
 }
 
@@ -57,7 +58,8 @@ export function normalizeLiteSettings(raw: unknown): LiteSettings {
     playWakeOnEveryUnlock: value.playWakeOnEveryUnlock !== false,
     skipWakeAnimation: value.skipWakeAnimation === true,
     // lockScreenEnabled: value.lockScreenEnabled === true,
-    desktopWallpaperFallback: value.desktopWallpaperFallback === true,
+    // FREEZE(1B)：随系统集成冻结（2026-09-30）。
+    // desktopWallpaperFallback: value.desktopWallpaperFallback === true,
     autostart: value.autostart === true,
   }
 }
