@@ -29,7 +29,7 @@ export function LiteIdleScene({ persona, backgroundUrl = '' }: LiteIdleSceneProp
           ['--portrait-alpha-mask' as string]: `url("${portrait}")`,
         }}
       >
-        <img className="portrait" data-interaction-region="persona" src={portrait} alt={persona.name} draggable={false} />
+        <img className="portrait" data-interaction-region="persona" onMouseDown={(event) => event.preventDefault()} src={portrait} alt={persona.name} draggable={false} />
         <div className="portrait-environment" aria-hidden="true"><i className="portrait-glow" /><i className="portrait-rim" /><i className="portrait-fade" /></div>
       </div>
     </div>
