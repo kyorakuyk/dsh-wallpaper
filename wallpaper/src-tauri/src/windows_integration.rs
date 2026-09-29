@@ -60,6 +60,7 @@ fn emit_system_session(app: &tauri::AppHandle, transition: &'static str) {
 }
 
 #[cfg(windows)]
+use windows::Win32::System::Variant::VARIANT;
 use windows::{
     core::{w, BOOL, HSTRING, PCWSTR, PWSTR},
     ApplicationModel::{StartupTask, StartupTaskState},
@@ -115,7 +116,7 @@ use windows::{
             WS_POPUP, WS_SYSMENU, WS_THICKFRAME, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
         },
         UI::{
-            Accessibility::{CUIAutomation, IUIAutomation, UIA_ListItemControlTypeId},
+            Accessibility::{CUIAutomation, IUIAutomation, UIA_ControlTypePropertyId, UIA_ListItemControlTypeId, UIA_PaneControlTypeId, TreeScope_Descendants},
             Controls::MARGINS,
             HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI},
             Input::KeyboardAndMouse::{GetAsyncKeyState, SetFocus, VK_LBUTTON},
@@ -2588,6 +2589,65 @@ fn double_click_became_someone_elses(
 /// Explorer, to distinguish desktop icons from empty desktop space. This is a
 /// supported cross-process accessibility boundary and never consumes input.
 #[cfg(windows)]
+/// 矩形是否包含某点。抽成纯函数，便于测试。
+fn rect_contains_point(rect: (i32, i32, i32, i32), x: i32, y: i32) -> bool {
+    x >= rect.0 && x < rect.2 && y >= rect.1 && y < rect.3
+}
+
+/// 光标是否落在某个**桌面图标**的范围内。
+///
+/// 为什么不用命中测试：实测（2026-09-30）光标下最上层的 UIA 元素可能是盖在桌面上的覆盖层
+/// （例如 `NVIDIA GeForce Overlay` 的 Document，它挂在"桌面 1"这个 Pane 下、覆盖整个桌面、而且
+/// 点击穿透），于是命中测试看不到图标，判据把图标位置当成"空白桌面" —— 双击图标既打开了东西、
+/// 又翻了桌面层。枚举图标矩形做包含判断则完全不受覆盖层影响。
+///
+/// 图标是桌面 Pane 下的 ListItem，所以从命中元素沿父链找到那个 Pane，再枚举它下面的 ListItem。
+#[cfg(windows)]
+fn cursor_is_over_a_desktop_icon(automation: &IUIAutomation) -> bool {
+    let mut point = POINT::default();
+    unsafe {
+        if GetCursorPos(&mut point).is_err() {
+            return false;
+        }
+        let Ok(element) = automation.ElementFromPoint(point) else {
+            return false;
+        };
+        let walker = automation.ControlViewWalker().ok();
+        // 沿父链找桌面 Pane：命中的可能是覆盖层，但桌面 Pane 一定在它的祖先里。
+        let mut current = Some(element);
+        let mut container = None;
+        for _ in 0..10 {
+            let Some(element) = current else { break };
+            if element.CurrentControlType().ok() == Some(UIA_PaneControlTypeId) {
+                container = Some(element);
+                break;
+            }
+            current = walker
+                .as_ref()
+                .and_then(|tree| tree.GetParentElement(&element).ok());
+        }
+        let Some(container) = container else { return false };
+        let Ok(condition) = automation.CreatePropertyCondition(
+            UIA_ControlTypePropertyId,
+            &VARIANT::from(UIA_ListItemControlTypeId.0),
+        ) else {
+            return false;
+        };
+        let Ok(items) = container.FindAll(TreeScope_Descendants, &condition) else {
+            return false;
+        };
+        let Ok(count) = items.Length() else { return false };
+        for index in 0..count {
+            let Ok(item) = items.GetElement(index) else { continue };
+            let Ok(rect) = item.CurrentBoundingRectangle() else { continue };
+            if rect_contains_point((rect.left, rect.top, rect.right, rect.bottom), point.x, point.y) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
 /// 光标下那个 UIA 元素长什么样 —— 只用于日志。这条判据已经两次失灵（把图标当空白、把桌面容器当
 /// 内容），所以宁可每次判定都把现场写下来，也不要在下一次故障时靠猜。
 #[cfg(windows)]
@@ -2810,18 +2870,20 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                     background.is_some_and(|background| cursor_is_on_desktop_surface(background));
                 let hits_interaction =
                     background.is_some_and(|background| cursor_hits_interaction_region(background));
-                let blank = cursor_is_over_desktop_blank(&automation);
+                let over_icon = cursor_is_over_a_desktop_icon(&automation);
+                // 图标矩形命中是硬判据：覆盖层再盖上也不会误判为空白。
+                let blank = !over_icon && cursor_is_over_desktop_blank(&automation);
                 let blank_saw = describe_point_for_blank(&automation);
                 let can_toggle = should_toggle_desktop_workspace(on_surface, hits_interaction, blank);
                 if !can_toggle {
                     // 三条判据分开记：这个功能两侧都栽过（图标处被当成空白、空白处被兜底挡掉），
                     // 只有分开写，下一次失灵才不必靠猜。
                     log::info!(
-                        "workspace toggle declined: on_surface={on_surface} hits_interaction={hits_interaction} blank={blank} uia={blank_saw}"
+                        "workspace toggle declined: on_surface={on_surface} hits_interaction={hits_interaction} blank={blank} over_icon={over_icon} uia={blank_saw}"
                     );
                 }
                 if can_toggle {
-                    log::info!("workspace toggle accepted: uia={blank_saw}");
+                    log::info!("workspace toggle accepted: over_icon={over_icon} uia={blank_saw}");
                     log_workspace_toggle_decision(false, true);
                     let now = std::time::Instant::now();
                     let foreground_now = unsafe {
@@ -4831,6 +4893,18 @@ fn a_double_click_that_activated_something_else_never_toggles_the_workspace() {
     assert!(!double_click_became_someone_elses(Some(101), Some(101), false));
     // 首次点击没记到前台：不因此阻止（宁可保留原行为，也不要让功能静默失效）。
     assert!(!double_click_became_someone_elses(None, Some(202), false));
+}
+
+#[test]
+fn an_icon_rectangle_owns_its_own_area_and_nothing_else() {
+    // 图标矩形 (100,100)-(180,180)：内部（含左上角）算命中，右/下边界与外部不算。
+    let icon = (100, 100, 180, 180);
+    assert!(rect_contains_point(icon, 100, 100));
+    assert!(rect_contains_point(icon, 179, 179));
+    assert!(!rect_contains_point(icon, 180, 180));
+    assert!(!rect_contains_point(icon, 99, 120));
+    assert!(!rect_contains_point(icon, 120, 99));
+    assert!(!rect_contains_point(icon, 500, 500));
 }
 
 #[test]
