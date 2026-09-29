@@ -1,3 +1,4 @@
+import { summarizeBridgeInstall } from '../connect/bridgeInstall.ts'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
@@ -507,6 +508,33 @@ export function SettingsWindow() {
       setNotice(`读取开机自启状态失败：${String(error)}`)
     }
   }
+
+  /**
+   * 把某个主体的桥对齐到我们钉住的那一版。
+   *
+   * 版本相符时这条命令在 CLI 那边是**空操作**（同一个包同一个版本再 add 一次），所以它同时
+   * 覆盖两个触发点：换主体时、以及设置窗口每次打开时（用户批准的就是"每次启动检查一次"）。
+   * 结果只经 summarizeBridgeInstall 说一句：需要用户确认版本豁免的那种情况，决定权在他手里。
+   */
+  const ensureBridgeFor = async (subjectId: string) => {
+    const profile = settingsRef.current.dshLaunch.profile ?? 'web'
+    try {
+      const outcomes = await nativeRuntime.ensureProfileBridge(subjectId, profile)
+      const summary = summarizeBridgeInstall(outcomes)
+      if (summary) setNotice(summary.text)
+    } catch (error) {
+      setNotice(`装桥失败：${String(error)}`)
+    }
+  }
+
+  // 只在**主体真的换了**（或首次挂载）时动手，而不是每次渲染。
+  const bridgedSubjectRef = useRef<string>()
+  useEffect(() => {
+    const subjectId = settings.dshLaunch.subjectId
+    if (!subjectId || bridgedSubjectRef.current === subjectId) return
+    bridgedSubjectRef.current = subjectId
+    void ensureBridgeFor(subjectId)
+  }, [settings.dshLaunch.subjectId])
 
   /**
    * One runner per probe. The controller decides *when* a runner may start;
