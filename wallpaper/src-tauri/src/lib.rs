@@ -19,7 +19,8 @@ mod harness_targets;
 mod harness_launch;
 #[cfg(not(feature = "lite"))]
 mod harness_catalog;
-mod desktop_fallback;
+// FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30 决定，见 docs/plans/release-scope-cleanup-plan.md）。恢复办法：取消注释。
+// mod desktop_fallback;
 // 悬浮球是「折叠态胶囊」的新家，而胶囊只属于完整版；它的创建/监控也只挂在完整版
 // 的 setup 块里。像上面 api_persistence / chat 那样按 edition 收窄，否则整个模块
 // 在 Lite 构建里全部不可达，会给 Lite 门禁凭空加一串 dead_code 警告。
@@ -349,6 +350,50 @@ async fn scan_dsh_paths(
     .map_err(|error| format!("扫描 DSH 未完成：{error}"))
 }
 
+/// 确保某个主体的档案里有我们钉住的那一版桥。
+///
+/// 界面在"选中主体"时调用它（"每次启动"那条在 harness_launch 里、由原生自己做）。
+/// 版本相符时它只读一下档案里的版本就收场：不跑包管理，也不碰用户的档案。
+///
+/// **只注册进完整版**：Lite 的能力边界明文禁止连接 harness（`verify-lite-bundle.ps1` 会检查），
+/// 这条命令不该出现在那边。
+// Lite 构建里连 harness_launch 模块都不存在（见文件顶部那一串 cfg），所以这条命令也要同门。
+#[cfg(not(feature = "lite"))]
+#[tauri::command]
+async fn ensure_profile_bridge(
+    caller: tauri::WebviewWindow,
+    subject_id: String,
+    profile: String,
+) -> Result<Vec<harness_launch::BridgeInstallOutcome>, String> {
+    // 两个应用窗口都会调它：设置中心负责"换主体时对齐并报告"，壁纸宿主负责"每次启动静默对齐"。
+    // 所以这里不能只认设置窗口 —— 早先那样写，启动那一路被拒绝、又被前端的 catch 吞掉，
+    // 实测表现为"删掉桥、重启应用后桥没有回来"（2026-09-30 06:30）。
+    let label = caller.label();
+    // 先记请求本身：三次"什么都没发生"的实测（2026-09-30）都是因为没有这条记录 —— 拒绝、
+    // spawn 失败、CLI 报错在前端都被同一句话吞掉了，日志里什么都看不到。
+    log::info!("装桥请求：caller={label} subject={subject_id} profile={profile}");
+    if label != SETTINGS_WINDOW_LABEL && label != BACKGROUND_WINDOW_LABEL {
+        log::warn!("装桥被拒：caller={label} 不是应用自己的窗口");
+        return Err("该命令只允许壁纸宿主与设置中心调用。".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let kind = harness_launch::subject_kind_from_id(&subject_id);
+        let outcomes = harness_launch::install_bridge_for_subject(&subject_id, &profile, kind);
+        for outcome in &outcomes {
+            log::info!(
+                "装桥结果：profile={} status={} command={} detail={}",
+                outcome.profile,
+                outcome.status,
+                outcome.command,
+                outcome.detail
+            );
+        }
+        outcomes
+    })
+    .await
+    .map_err(|error| format!("装桥任务未完成：{error}"))
+}
+
 /// List the harness execution subjects this machine offers.
 ///
 /// This is the shim's "find" half: it answers "which subjects exist" for the two
@@ -418,22 +463,24 @@ async fn launch_harness_target(
 ) -> Result<harness_launch::HarnessLaunchOutcome, String> {
     require_wallpaper_surface(&caller)?;
     let args = harness_launch::normalize_launch_args(args)?;
-    let plan = harness_launch::plan_launch(
-        &target_id,
-        profile.as_deref().unwrap_or_default(),
-        &args,
-        harness_launch::LaunchTrigger::Slider,
-    )
-    .map_err(str::to_string)?;
-    // Starting a shell waits for the client to answer (up to the launch timeout),
-    // so it must not run on the caller's own thread. The managed state is taken
-    // inside the blocking task, where acquiring it cannot block the UI.
+    let profile = profile.unwrap_or_default();
+    // 决定"跑什么"要看扫描记录、必要时还要重扫一次（施工文档 §7.4 第 5 条），所以它与启动一起
+    // 留在阻塞线程上：那一步最坏要几秒，而它绝不该占住界面线程。
     tauri::async_runtime::spawn_blocking(move || {
+        let host_cli = harness_launch::shell_host_cli(&target_id);
+        let plan = harness_launch::plan_background_launch(
+            &target_id,
+            &profile,
+            &args,
+            harness_launch::LaunchTrigger::Slider,
+            host_cli.as_deref(),
+        )
+        .map_err(str::to_string)?;
         let managed = app.state::<ManagedDshState>();
-        harness_launch::run_launch(&plan, managed.inner(), harness_launch::LaunchTrigger::Slider)
+        Ok::<_, String>(harness_launch::run_launch(&plan, managed.inner(), harness_launch::LaunchTrigger::Slider))
     })
     .await
-    .map_err(|error| format!("启动 Harness 执行主体未完成：{error}"))
+    .map_err(|error| format!("启动 Harness 执行主体未完成：{error}"))?
 }
 
 /// The one automatic-launch record, read without consuming it.
@@ -623,29 +670,38 @@ async fn autostart_harness_target(
         return Ok(serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null));
     };
     let args = harness_launch::normalize_launch_args(args)?;
-    let plan = match harness_launch::plan_launch(
-        &target_id,
-        &profile,
-        &args,
-        harness_launch::LaunchTrigger::Automatic,
-    ) {
-        Ok(plan) => plan,
+    // The handle is cloned into the blocking task so this one keeps working for
+    // the record below: the task owns the clone, this frame owns the original.
+    let worker = app.clone();
+    // 计划连同启动一起放进阻塞任务：决定"跑什么"可能要重扫一次扫描记录（§7.4 第 5 条），
+    // 而那条路最坏几秒。拿不到计划时把拒绝码原样带回来记进那一次尝试的结果里。
+    let subject_for_plan = target_id.clone();
+    let planned = tauri::async_runtime::spawn_blocking(move || {
+        let host_cli = harness_launch::shell_host_cli(&subject_for_plan);
+        let plan = harness_launch::plan_background_launch(
+            &subject_for_plan,
+            &profile,
+            &args,
+            harness_launch::LaunchTrigger::Automatic,
+            host_cli.as_deref(),
+        )?;
+        let managed = worker.state::<ManagedDshState>();
+        Ok::<_, &'static str>(harness_launch::run_launch(
+            &plan,
+            managed.inner(),
+            harness_launch::LaunchTrigger::Automatic,
+        ))
+    })
+    .await
+    .map_err(|error| format!("启动 Harness 执行主体未完成：{error}"))?;
+    let outcome = match planned {
+        Ok(outcome) => outcome,
         Err(code) => {
             let outcome = ManagedDshAutostart::new(code);
             record_autostart_attempt(&app, &outcome)?;
             return Ok(serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null));
         }
     };
-
-    // The handle is cloned into the blocking task so this one keeps working for
-    // the record below: the task owns the clone, this frame owns the original.
-    let worker = app.clone();
-    let outcome = tauri::async_runtime::spawn_blocking(move || {
-        let managed = worker.state::<ManagedDshState>();
-        harness_launch::run_launch(&plan, managed.inner(), harness_launch::LaunchTrigger::Automatic)
-    })
-    .await
-    .map_err(|error| format!("启动 Harness 执行主体未完成：{error}"))?;
 
     let record = ManagedDshAutostart {
         // An `already-running` subject is someone else's live client, left
@@ -1683,7 +1739,8 @@ fn lite_settings_save(
         "animationSpeed",
         "playWakeOnEveryUnlock",
         "skipWakeAnimation",
-        "lockScreenEnabled",
+// FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
+//         "lockScreenEnabled",
         "desktopWallpaperFallback",
         "autostart",
     ];
@@ -1835,29 +1892,30 @@ fn lite_image_resolve(
 /// wallpaper with the packaged sleep artwork. This masks the short interval
 /// before WorkerW/WebView2 paints after login. The source is resolved inside
 /// Rust and the renderer can only choose the boolean setting.
-#[tauri::command]
-#[cfg(feature = "lite")]
-fn set_desktop_wallpaper_fallback(
-    caller: tauri::WebviewWindow,
-    enabled: bool,
-) -> Result<String, String> {
-    require_settings(&caller)?;
-    if enabled {
-        let source = desktop_fallback::bundled_sleep_source()?;
-        desktop_fallback::set_fallback(Some(&source), true)
-    } else {
-        desktop_fallback::set_fallback(None, false)
-    }
-}
-
-#[tauri::command]
-#[cfg(feature = "lite")]
-fn desktop_wallpaper_fallback_status(
-    caller: tauri::WebviewWindow,
-) -> Result<desktop_fallback::DesktopWallpaperFallbackStatus, String> {
-    require_settings(&caller)?;
-    Ok(desktop_fallback::status())
-}
+// FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30 决定，见 docs/plans/release-scope-cleanup-plan.md）。恢复办法：取消注释。
+// #[tauri::command]
+// #[cfg(feature = "lite")]
+// fn set_desktop_wallpaper_fallback(
+//     caller: tauri::WebviewWindow,
+//     enabled: bool,
+// ) -> Result<String, String> {
+//     require_settings(&caller)?;
+//     if enabled {
+//         let source = desktop_fallback::bundled_sleep_source()?;
+//         desktop_fallback::set_fallback(Some(&source), true)
+//     } else {
+//         desktop_fallback::set_fallback(None, false)
+//     }
+// }
+// 
+// #[tauri::command]
+// #[cfg(feature = "lite")]
+// fn desktop_wallpaper_fallback_status(
+//     caller: tauri::WebviewWindow,
+// ) -> Result<desktop_fallback::DesktopWallpaperFallbackStatus, String> {
+//     require_settings(&caller)?;
+//     Ok(desktop_fallback::status())
+// }
 
 #[cfg(all(test, feature = "lite"))]
 mod lite_asset_tests {
@@ -1899,36 +1957,37 @@ fn notify_appearance_changed(
     Ok(())
 }
 
-#[tauri::command]
-async fn set_lock_screen_enabled(
-    caller: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-    enabled: bool,
-) -> Result<String, String> {
-    require_settings(&caller)?;
-    windows_integration::set_lock_screen(&app, enabled).await
-}
-
-#[tauri::command]
-async fn clear_stale_lock_screen_backup(
-    caller: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-    confirmed: bool,
-) -> Result<String, String> {
-    require_settings(&caller)?;
-    windows_integration::clear_stale_lock_screen_backup(&app, confirmed).await
-}
-
-#[tauri::command]
-async fn get_lock_screen_diagnostics(
-    caller: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-) -> Result<windows_integration::LockScreenDiagnostics, String> {
-    require_settings(&caller)?;
-    tauri::async_runtime::spawn_blocking(move || windows_integration::lock_screen_diagnostics(&app))
-        .await
-        .map_err(|error| format!("读取锁屏诊断未完成：{error}"))?
-}
+// FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
+// #[tauri::command]
+// async fn set_lock_screen_enabled(
+//     caller: tauri::WebviewWindow,
+//     app: tauri::AppHandle,
+//     enabled: bool,
+// ) -> Result<String, String> {
+//     require_settings(&caller)?;
+//     windows_integration::set_lock_screen(&app, enabled).await
+// }
+// 
+// #[tauri::command]
+// async fn clear_stale_lock_screen_backup(
+//     caller: tauri::WebviewWindow,
+//     app: tauri::AppHandle,
+//     confirmed: bool,
+// ) -> Result<String, String> {
+//     require_settings(&caller)?;
+//     windows_integration::clear_stale_lock_screen_backup(&app, confirmed).await
+// }
+// 
+// #[tauri::command]
+// async fn get_lock_screen_diagnostics(
+//     caller: tauri::WebviewWindow,
+//     app: tauri::AppHandle,
+// ) -> Result<windows_integration::LockScreenDiagnostics, String> {
+//     require_settings(&caller)?;
+//     tauri::async_runtime::spawn_blocking(move || windows_integration::lock_screen_diagnostics(&app))
+//         .await
+//         .map_err(|error| format!("读取锁屏诊断未完成：{error}"))?
+// }
 
 fn set_autostart_blocking(enabled: bool) -> Result<windows_integration::AutostartStatus, String> {
     // The whole operation lives next to the Windows calls it makes: which path
@@ -1959,158 +2018,160 @@ async fn autostart_status(
         .map_err(|error| format!("读取开机自启状态未完成：{error}"))?
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TranslucentTbStatus {
-    installed: bool,
-    running: bool,
-    source: Option<String>,
-}
+// FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30 决定，见 docs/plans/release-scope-cleanup-plan.md）。恢复办法：取消注释。
+// #[derive(serde::Serialize)]
+// #[serde(rename_all = "camelCase")]
+// struct TranslucentTbStatus {
+//     installed: bool,
+//     running: bool,
+//     source: Option<String>,
+// }
+// 
+// #[cfg(windows)]
+// fn hide_child_console(command: &mut std::process::Command) {
+//     std::os::windows::process::CommandExt::creation_flags(command, 0x08000000);
+// }
+// 
+// fn translucent_tb_status_blocking() -> Result<TranslucentTbStatus, String> {
+//     #[cfg(windows)]
+//     {
+//         let mut tasklist = std::process::Command::new("tasklist");
+//         tasklist.args(["/FI", "IMAGENAME eq TranslucentTB.exe", "/FO", "CSV", "/NH"]);
+//         hide_child_console(&mut tasklist);
+//         let running = tasklist.output().ok().is_some_and(|output| {
+//             String::from_utf8_lossy(&output.stdout)
+//                 .to_ascii_lowercase()
+//                 .contains("translucenttb.exe")
+//         });
+// 
+//         let mut where_command = std::process::Command::new("where.exe");
+//         where_command.arg("ttb.exe");
+//         hide_child_console(&mut where_command);
+//         let alias = where_command
+//             .output()
+//             .ok()
+//             .is_some_and(|output| output.status.success());
+// 
+//         // AppX discovery is occasionally slow on a busy Windows session, so
+//         // this whole probe runs on a blocking worker and the child console is
+//         // explicitly suppressed. The settings WebView remains responsive.
+//         let mut packaged_command = std::process::Command::new("powershell.exe");
+//         packaged_command.args([
+//             "-NoLogo",
+//             "-NoProfile",
+//             "-NonInteractive",
+//             "-Command",
+//             "if (Get-AppxPackage -Name TranslucentTB -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }",
+//         ]);
+//         hide_child_console(&mut packaged_command);
+//         let packaged = packaged_command
+//             .status()
+//             .ok()
+//             .is_some_and(|status| status.success());
+// 
+//         return Ok(TranslucentTbStatus {
+//             installed: alias || packaged,
+//             running,
+//             source: if alias {
+//                 Some("execution-alias".into())
+//             } else if packaged {
+//                 Some("msix".into())
+//             } else {
+//                 None
+//             },
+//         });
+//     }
+// 
+//     #[cfg(not(windows))]
+//     Ok(TranslucentTbStatus {
+//         installed: false,
+//         running: false,
+//         source: None,
+//     })
+// }
+// 
+// #[tauri::command]
+// async fn translucent_tb_status(
+//     caller: tauri::WebviewWindow,
+// ) -> Result<TranslucentTbStatus, String> {
+//     require_settings(&caller)?;
+//     tauri::async_runtime::spawn_blocking(translucent_tb_status_blocking)
+//         .await
+//         .map_err(|error| format!("读取透明任务栏状态未完成：{error}"))?
+// }
+// 
+// #[tauri::command]
+// fn launch_translucent_tb(caller: tauri::WebviewWindow) -> Result<(), String> {
+//     require_settings(&caller)?;
+//     std::process::Command::new("ttb.exe")
+//         .spawn()
+//         .map(|_| ())
+//         .map_err(|_| {
+//             "未找到 TranslucentTB。请先从 Microsoft Store 安装并启用 ttb.exe 执行别名。".into()
+//         })
+// }
+// 
+// #[tauri::command]
+// fn open_translucent_tb_install(caller: tauri::WebviewWindow) -> Result<(), String> {
+//     require_settings(&caller)?;
+//     // `explorer.exe <uri>` may treat the Store URI as a filesystem path and
+//     // open Documents instead. Ask ShellExecute to resolve the URI protocol.
+//     #[cfg(windows)]
+//     {
+//         let store_uri = "ms-windows-store://pdp/?ProductId=9PF4KZ2VN4W9";
+//         let status = std::process::Command::new("powershell.exe")
+//             .args([
+//                 "-NoProfile",
+//                 "-NonInteractive",
+//                 "-Command",
+//                 "Start-Process",
+//                 store_uri,
+//             ])
+//             .status()
+//             .map_err(|error| format!("无法启动 Microsoft Store：{error}"))?;
+//         if status.success() {
+//             return Ok(());
+//         }
+// 
+//         // A Store-disabled Windows installation still gets a useful route.
+//         std::process::Command::new("rundll32.exe")
+//             .args([
+//                 "url.dll,FileProtocolHandler",
+//                 "https://apps.microsoft.com/detail/9PF4KZ2VN4W9",
+//             ])
+//             .spawn()
+//             .map(|_| ())
+//             .map_err(|error| format!("无法打开 TranslucentTB 下载页：{error}"))
+//     }
+//     #[cfg(not(windows))]
+//     Err("TranslucentTB 仅支持 Windows。".into())
+// }
 
-#[cfg(windows)]
-fn hide_child_console(command: &mut std::process::Command) {
-    std::os::windows::process::CommandExt::creation_flags(command, 0x08000000);
-}
-
-fn translucent_tb_status_blocking() -> Result<TranslucentTbStatus, String> {
-    #[cfg(windows)]
-    {
-        let mut tasklist = std::process::Command::new("tasklist");
-        tasklist.args(["/FI", "IMAGENAME eq TranslucentTB.exe", "/FO", "CSV", "/NH"]);
-        hide_child_console(&mut tasklist);
-        let running = tasklist.output().ok().is_some_and(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .to_ascii_lowercase()
-                .contains("translucenttb.exe")
-        });
-
-        let mut where_command = std::process::Command::new("where.exe");
-        where_command.arg("ttb.exe");
-        hide_child_console(&mut where_command);
-        let alias = where_command
-            .output()
-            .ok()
-            .is_some_and(|output| output.status.success());
-
-        // AppX discovery is occasionally slow on a busy Windows session, so
-        // this whole probe runs on a blocking worker and the child console is
-        // explicitly suppressed. The settings WebView remains responsive.
-        let mut packaged_command = std::process::Command::new("powershell.exe");
-        packaged_command.args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "if (Get-AppxPackage -Name TranslucentTB -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }",
-        ]);
-        hide_child_console(&mut packaged_command);
-        let packaged = packaged_command
-            .status()
-            .ok()
-            .is_some_and(|status| status.success());
-
-        return Ok(TranslucentTbStatus {
-            installed: alias || packaged,
-            running,
-            source: if alias {
-                Some("execution-alias".into())
-            } else if packaged {
-                Some("msix".into())
-            } else {
-                None
-            },
-        });
-    }
-
-    #[cfg(not(windows))]
-    Ok(TranslucentTbStatus {
-        installed: false,
-        running: false,
-        source: None,
-    })
-}
-
-#[tauri::command]
-async fn translucent_tb_status(
-    caller: tauri::WebviewWindow,
-) -> Result<TranslucentTbStatus, String> {
-    require_settings(&caller)?;
-    tauri::async_runtime::spawn_blocking(translucent_tb_status_blocking)
-        .await
-        .map_err(|error| format!("读取透明任务栏状态未完成：{error}"))?
-}
-
-#[tauri::command]
-fn launch_translucent_tb(caller: tauri::WebviewWindow) -> Result<(), String> {
-    require_settings(&caller)?;
-    std::process::Command::new("ttb.exe")
-        .spawn()
-        .map(|_| ())
-        .map_err(|_| {
-            "未找到 TranslucentTB。请先从 Microsoft Store 安装并启用 ttb.exe 执行别名。".into()
-        })
-}
-
-#[tauri::command]
-fn open_translucent_tb_install(caller: tauri::WebviewWindow) -> Result<(), String> {
-    require_settings(&caller)?;
-    // `explorer.exe <uri>` may treat the Store URI as a filesystem path and
-    // open Documents instead. Ask ShellExecute to resolve the URI protocol.
-    #[cfg(windows)]
-    {
-        let store_uri = "ms-windows-store://pdp/?ProductId=9PF4KZ2VN4W9";
-        let status = std::process::Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "Start-Process",
-                store_uri,
-            ])
-            .status()
-            .map_err(|error| format!("无法启动 Microsoft Store：{error}"))?;
-        if status.success() {
-            return Ok(());
-        }
-
-        // A Store-disabled Windows installation still gets a useful route.
-        std::process::Command::new("rundll32.exe")
-            .args([
-                "url.dll,FileProtocolHandler",
-                "https://apps.microsoft.com/detail/9PF4KZ2VN4W9",
-            ])
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| format!("无法打开 TranslucentTB 下载页：{error}"))
-    }
-    #[cfg(not(windows))]
-    Err("TranslucentTB 仅支持 Windows。".into())
-}
-
-/// Opens the system-owned lock-screen settings page. During the current
-/// MSIX-only test phase Windows accepts the package's bundled sleep image but
-/// may reject a user-image restore snapshot; delegating the choice to Windows
-/// is clearer and safer than pretending a restore has completed.
-#[tauri::command]
-fn open_windows_lock_screen_settings(caller: tauri::WebviewWindow) -> Result<(), String> {
-    require_settings(&caller)?;
-    #[cfg(windows)]
-    {
-        std::process::Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "Start-Process",
-                "ms-settings:lockscreen",
-            ])
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| format!("无法打开 Windows 锁屏设置：{error}"))
-    }
-    #[cfg(not(windows))]
-    Err("锁屏设置仅支持 Windows。".into())
-}
+// FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
+// /// Opens the system-owned lock-screen settings page. During the current
+// /// MSIX-only test phase Windows accepts the package's bundled sleep image but
+// /// may reject a user-image restore snapshot; delegating the choice to Windows
+// /// is clearer and safer than pretending a restore has completed.
+// #[tauri::command]
+// fn open_windows_lock_screen_settings(caller: tauri::WebviewWindow) -> Result<(), String> {
+//     require_settings(&caller)?;
+//     #[cfg(windows)]
+//     {
+//         std::process::Command::new("powershell.exe")
+//             .args([
+//                 "-NoProfile",
+//                 "-NonInteractive",
+//                 "-Command",
+//                 "Start-Process",
+//                 "ms-settings:lockscreen",
+//             ])
+//             .spawn()
+//             .map(|_| ())
+//             .map_err(|error| format!("无法打开 Windows 锁屏设置：{error}"))
+//     }
+//     #[cfg(not(windows))]
+//     Err("锁屏设置仅支持 Windows。".into())
+// }
 
 /// 「桌面会话」目录名。与桥那边（`bridge/src/index.ts`）保持一致：**同一个名字**既是工作区标题，
 /// 也是壁纸数据目录下的那个子目录名。
@@ -3819,9 +3880,10 @@ mod harness_status_tests {
     fn a_configured_subject_narrows_the_candidates_to_its_own_ports() {
         let state = HarnessEndpointState::default();
         apply_endpoint_scope(&state, None, Some("shell:com.deepseek.dsh"), &[], None).expect("scope");
-        // The official shell owns 19387 and nothing else, even though the shipped
-        // order also holds 3080.
-        assert_eq!(candidates_of(&state), vec![19387]);
+        // The official shell owns 19387, and the wallpaper's own host port follows it: the
+        // client is asked first, and only when nothing answers there does the host we run
+        // ourselves come into play. 3080 belongs to neither — a CLI host may be on it.
+        assert_eq!(candidates_of(&state), vec![19387, crate::harness_targets::WALLPAPER_HOST_PORT]);
 
         // A checkout owns DSH's default plus the ports the user added for it.
         apply_endpoint_scope(&state, None, Some(r"D:\tree"), &[3081], None).expect("scope");
@@ -3849,7 +3911,7 @@ mod harness_status_tests {
         // 换回没有参数 ⇒ 回到默认端口（一个不再生效的设置不该留下痕迹）。
         apply_endpoint_scope(&state, None, Some(r"D:\tree"), &[], Some(&[])).expect("scope");
         assert_eq!(candidates_of(&state), vec![HARNESS_DEFAULT_PORT]);
-        // 官壳的端口编译在它自己的包里，参数改不了它。
+        // 官壳的端口编译在它自己的包里，参数改不了它 —— 壁纸自己宿主的那个端口也不受参数影响。
         apply_endpoint_scope(
             &state,
             None,
@@ -3858,7 +3920,10 @@ mod harness_status_tests {
             Some(&args),
         )
         .expect("scope");
-        assert_eq!(candidates_of(&state), vec![19387]);
+        assert_eq!(
+            candidates_of(&state),
+            vec![19387, crate::harness_targets::WALLPAPER_HOST_PORT]
+        );
     }
 
     /// Changing the subject is the one moment the wallpaper may move, and it does
@@ -4812,17 +4877,19 @@ macro_rules! register_edition_commands {
             lite_settings_save,
             lite_image_import,
             lite_image_resolve,
-            set_desktop_wallpaper_fallback,
-            desktop_wallpaper_fallback_status,
-            set_lock_screen_enabled,
-            clear_stale_lock_screen_backup,
-            get_lock_screen_diagnostics,
+            // set_desktop_wallpaper_fallback,
+            // desktop_wallpaper_fallback_status,
+// FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
+//             set_lock_screen_enabled,
+//             clear_stale_lock_screen_backup,
+//             get_lock_screen_diagnostics,
             set_autostart,
             autostart_status,
-            translucent_tb_status,
-            launch_translucent_tb,
-            open_translucent_tb_install,
-            open_windows_lock_screen_settings,
+            // translucent_tb_status,
+            // launch_translucent_tb,
+            // open_translucent_tb_install,
+// FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
+//             open_windows_lock_screen_settings,
             native_bootstrap_generation,
             release_native_bootstrap,
             start_settings_drag,
@@ -4841,10 +4908,12 @@ macro_rules! register_edition_commands {
             select_backend,
             dispatch_app_action,
             publish_settings,
+            ensure_profile_bridge,
             notify_appearance_changed,
-            set_lock_screen_enabled,
-            clear_stale_lock_screen_backup,
-            get_lock_screen_diagnostics,
+// FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
+//             set_lock_screen_enabled,
+//             clear_stale_lock_screen_backup,
+//             get_lock_screen_diagnostics,
             set_autostart,
             autostart_status,
             scan_dsh_paths,
@@ -4858,10 +4927,11 @@ macro_rules! register_edition_commands {
             managed_dsh_autostart_status,
             managed_dsh_status,
             stop_managed_dsh,
-            translucent_tb_status,
-            launch_translucent_tb,
-            open_translucent_tb_install,
-            open_windows_lock_screen_settings,
+            // translucent_tb_status,
+            // launch_translucent_tb,
+            // open_translucent_tb_install,
+// FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
+//             open_windows_lock_screen_settings,
             save_api_key,
             api_key_status,
             desktop_workspace_status,

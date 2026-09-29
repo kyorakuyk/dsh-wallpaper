@@ -395,9 +395,21 @@ pub(crate) fn subject_endpoint_ports(
         return Vec::new();
     }
     if let Some(aumid) = subject.strip_prefix(SHELL_ID_PREFIX) {
-        // 壳的端口编译在它自己的包里，参数改不了它 —— 这也是这里刻意**不看** `declared_port`
-        // 的原因：给它另一个端口等于说那是另一个客户端。
-        return known_shell_ports(aumid).unwrap_or_default();
+        // 壳自己的端口排在**前面**：它在跑时壁纸就连它 —— 同一份数据、同一套桥，而且只有一个
+        // 宿主，这是最不容易出岔子的答案。它不在跑时，壁纸的宿主在 [`WALLPAPER_HOST_PORT`] 上
+        // 服务；那个端口不归客户端所有，所以用户随后打开壳永远不会撞车（这正是 19387 不能借的
+        // 原因）。参数里的端口在这里依然**不看**：给它另一个端口等于说那是另一个客户端。
+        let client_ports = known_shell_ports(aumid).unwrap_or_default();
+        // 本 build **不认识**的 AUMID 一个端口都不给（与 `endpoints.ts` 同一条规则）：给它我们的
+        // 宿主端口，等于让壁纸把我们自己的宿主当成"那个陌生客户端"。
+        if client_ports.is_empty() {
+            return client_ports;
+        }
+        let mut ports = client_ports;
+        if !ports.contains(&WALLPAPER_HOST_PORT) {
+            ports.push(WALLPAPER_HOST_PORT);
+        }
+        return ports;
     }
     let mut ports: Vec<u16> = Vec::new();
     if let Some(declared) = declared_port {
@@ -508,6 +520,35 @@ fn checkout_target(root_path: &str, source: &str) -> HarnessTarget {
 /// Like `SHELL_ID_PREFIX`, the launcher parses this namespace back out of a stored
 /// id, so the two spellings must not drift.
 pub(crate) const CLI_ID_PREFIX: &str = "cli:";
+
+/// Prefix of the id under which this app records **the host it runs for a subject**.
+///
+/// Deliberately not the subject's own id. `shell:<aumid>` means "the user's client
+/// process", and that process is never ours to stop — the bottom line the whole
+/// subject model is built on. This prefix means "the process *this app* started to
+/// serve that subject", which is ours by construction, so it may be stopped by us
+/// without ever touching the client. A shell's background host is the client's own
+/// bundled CLI (施工文档 §7.6 走法 A), and that is exactly the process this names.
+pub(crate) const HOST_ID_PREFIX: &str = "host:";
+
+/// The id this app records its own host for `subject_id` under.
+///
+/// One place, because the writer (`remember_child`) and the reader (the hand-over
+/// that stops it before the client binds the port itself) must spell it identically.
+pub(crate) fn host_subject_id(subject_id: &str) -> String {
+    format!("{HOST_ID_PREFIX}{}", subject_id.trim())
+}
+
+/// 壁纸自己跑宿主时用的端口，**专给"端口归客户端所有"的那一类主体**（今天只有壳）。
+///
+/// 为什么不能借壳的 19387：那个端口是**壳自己要绑的**。我们占着它，用户从开始菜单、
+/// 任务栏或快捷方式打开壳时，壳的引导会**硬失败**并弹一个错误框 —— 2026-09-30 实测的崩溃日志
+/// 就是这么写的：`webserver (required) ... listen EADDRINUSE: address already in use
+/// 127.0.0.1:19387`。所以壁纸的宿主另占一个端口，客户端的端口永远留给客户端。
+///
+/// 也别拿 3080：那是 DSH 自己的 web 默认端口，用户可能正跑着一个 CLI 宿主在那里
+/// （本机就是这样），我们再去绑它同样是撞车。
+pub(crate) const WALLPAPER_HOST_PORT: u16 = 3099;
 
 /// One globally installed DSH CLI, as a subject.
 ///
@@ -1360,11 +1401,12 @@ mod tests {
     /// decides what is scanned and the other what is shown.
     #[test]
     fn a_subject_decides_which_ports_may_be_probed() {
-        // A shell owns the port compiled into it, and nothing else: 3080 is
-        // another client's.
+        // 壳的主体有两个端口，顺序是刻意的：**客户端自己的在前**（它在跑时壁纸连的就是它 ——
+        // 同一份数据、同一套桥，只有一个宿主），壁纸自己宿主的在后（它不在跑时才轮到我们）。
+        // 3080 谁都不给：那是 DSH 的 web 默认端口，用户可能正跑着一个 CLI 宿主在那里。
         assert_eq!(
             subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}{OFFICIAL}"), &[], None),
-            vec![19387]
+            vec![19387, WALLPAPER_HOST_PORT]
         );
         // 第三方客户端已移除 ⇒ 它的 AUMID 现在与陌生 AUMID 一样：**一个端口都不给**（而不是
         // "给 43120 然后探测失败"）。这正是与 `endpoints.ts` 必须一致的那条规则。
@@ -1379,7 +1421,7 @@ mod tests {
         // The id is matched the same way the launcher matches it.
         assert_eq!(
             subject_endpoint_ports("shell:COM.DeepSeek.DSH", &[], None),
-            vec![19387]
+            vec![19387, WALLPAPER_HOST_PORT]
         );
         // A source tree owns DSH's own default plus the ports the user added for it.
         assert_eq!(subject_endpoint_ports(r"D:\tree", &[], None), vec![3080]);
@@ -1402,10 +1444,11 @@ mod tests {
         assert_eq!(subject_endpoint_ports(r"D:\tree", &[], Some(3080)), vec![3080]);
         // `--port 0`（让系统挑）不是一个可以拿去探测的端口，所以它被当作"没声明"。
         assert_eq!(subject_endpoint_ports(r"D:\tree", &[], Some(0)), vec![3080]);
-        // 壳的端口编译在它自己的包里：参数改不了它，也不该让壁纸去别处找它。
+        // 壳的端口编译在它自己的包里：参数改不了它，也不该让壁纸去别处找它。后面那个是壁纸
+        // 自己宿主的端口，同样不受参数影响。
         assert_eq!(
             subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}{OFFICIAL}"), &[], Some(4000)),
-            vec![19387]
+            vec![19387, WALLPAPER_HOST_PORT]
         );
     }
 

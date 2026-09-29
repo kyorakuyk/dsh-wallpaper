@@ -4,6 +4,7 @@ import { Button, Glass, Icon } from '../../ui/primitives/index.ts'
 import { composerPlaceholder, formatCost, isBusyActivity, sessionCostSummary, turnUsageSummary } from './conversationViewModel.ts'
 import { growHistoryWindow, historyWindow, HISTORY_RENDER_WINDOW } from './streamRender.ts'
 import { harnessStateLabel, harnessFailureVisible } from '../../connect/harnessLabels.ts'
+import type { ConversationHostChip } from '../../connect/conversationHost.ts'
 import { MarkdownBody } from './MarkdownBody.tsx'
 // 调试量尺（画内容边缘引导线）：本程序**不给入口**，默认不挂载。
 // 需要时把下面两行注释打开 —— 见 src/features/chat/LayoutProbe.tsx 的说明。
@@ -16,7 +17,13 @@ export type ConversationSpeakerLabels = Partial<Record<ChatMessage['role'], stri
 export interface ConversationBubbleProps {
   backend: BackendMode
   activity: Activity
-  modelLabel: string
+  /**
+   * 页脚左侧那枚指示器：这段对话跑在谁身上。
+   *
+   * 文字与解释都由 `conversationHostChip` 给出（纯函数，可测）。不传时元素整体不渲染，
+   * 于是只测气泡本身的用例与预览不必编一份宿主出来。
+   */
+  hostChip?: ConversationHostChip
   messages: ChatMessage[]
   streamingText: string
   historyExpanded: boolean
@@ -438,7 +445,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           </div>}
         </div> : null}
         {props.permission && <label className="dsh-chat__permission-picker">◈<select aria-label="选择权限" value={props.permission.current} onChange={(event) => props.onSelectPermission?.(event.target.value)}>{props.permission.options.map((permission) => <option key={permission} value={permission}>{permission}</option>)}</select></label>}
-        {(!props.onSelectModel || !props.modelOptions?.length) && <span className="dsh-chat__meta"><Icon name="model" size={13} /><span className="dsh-chat__model">{props.modelLabel}</span></span>}
+        {props.hostChip && <span className="dsh-chat__meta" title={props.hostChip.title}><Icon name="host" size={13} /><span className="dsh-chat__host">{props.hostChip.text}</span></span>}
         {/* 模型选择器是**岛内自绘**的下拉，不是原生 `<select>`。
             原生 `<select>` 的弹层是 Chromium 创建的独立窗口，在这个窗口里弹不出来——实测
             框里已经显示 `DeepSeek-V41-Flash`（枚举成功、有多个选项），点开却没有任何列表。

@@ -22,7 +22,6 @@ describe('ConversationBubble', () => {
     const html = renderToStaticMarkup(<ConversationBubble
       backend="deepseek-web"
       activity="idle"
-      modelLabel="Flash · 幼年形态"
       messages={[]}
       streamingText=""
       historyExpanded={false}
@@ -45,7 +44,6 @@ describe('ConversationBubble', () => {
     const html = renderToStaticMarkup(<ConversationBubble
       backend="harness"
       activity="streaming"
-      modelLabel="deepseek-reasoner"
       messages={[{ id: 'message-1', role: 'user', content: '继续', createdAt: 1 }]}
       streamingText="正在处理"
       historyExpanded
@@ -68,7 +66,6 @@ describe('ConversationBubble', () => {
     const baseProps = {
       backend: 'deepseek-web' as const,
       activity: 'idle' as const,
-      modelLabel: 'Flash · 幼年形态',
       messages: [{ id: 'message-1', role: 'user' as const, content: '测试', createdAt: 1 }],
       streamingText: '回复',
       historyExpanded: true,
@@ -91,7 +88,6 @@ describe('ConversationBubble', () => {
     const html = renderToStaticMarkup(<ConversationBubble
       backend="deepseek-api"
       activity="done"
-      modelLabel="deepseek-chat"
       messages={[{ id: 'message-1', role: 'assistant', content: '完成', createdAt: 1, usage: { input: 2, output: 3, cacheRead: 0, cost: 0, estimated: true } }]}
       streamingText=""
       historyExpanded={false}
@@ -112,7 +108,6 @@ describe('ConversationBubble', () => {
     const html = renderToStaticMarkup(<ConversationBubble
       backend="harness"
       activity="idle"
-      modelLabel="deepseek-v4-flash"
       messages={[]}
       streamingText=""
       historyExpanded={false}
@@ -139,7 +134,6 @@ describe('ConversationBubble', () => {
     const html = renderToStaticMarkup(<ConversationBubble
       backend="deepseek-web"
       activity="idle"
-      modelLabel="deepseek-chat"
       messages={[]}
       streamingText=""
       historyExpanded={false}
@@ -158,7 +152,6 @@ describe('ConversationBubble', () => {
     const kept = renderToStaticMarkup(<ConversationBubble
       backend="deepseek-web"
       activity="idle"
-      modelLabel="deepseek-chat"
       messages={[{ id: 'message-1', role: 'assistant', content: '上次的回答', createdAt: 1 }]}
       streamingText=""
       historyExpanded
@@ -173,7 +166,6 @@ describe('ConversationBubble', () => {
     const fresh = renderToStaticMarkup(<ConversationBubble
       backend="deepseek-web"
       activity="idle"
-      modelLabel="deepseek-chat"
       messages={[{ id: 'message-1', role: 'assistant', content: '当前后端的回答', createdAt: 1 }]}
       streamingText=""
       historyExpanded
@@ -185,7 +177,6 @@ describe('ConversationBubble', () => {
     const empty = renderToStaticMarkup(<ConversationBubble
       backend="deepseek-web"
       activity="idle"
-      modelLabel="deepseek-chat"
       messages={[]}
       streamingText=""
       historyExpanded
@@ -198,7 +189,6 @@ describe('ConversationBubble', () => {
   it('renders the assistant as markdown but never rewrites what the user typed', () => {
     const base = {
       activity: 'idle' as const,
-      modelLabel: 'deepseek-chat',
       streamingText: '',
       // 转写只在展开时渲染 —— 不展开的话这条测试什么都没测到（第一版就是这么假绿的）。
       historyExpanded: true,
@@ -230,7 +220,6 @@ describe('ConversationBubble', () => {
     const connecting = renderToStaticMarkup(<ConversationBubble
       backend="deepseek-web"
       activity="idle"
-      modelLabel="deepseek-chat"
       messages={[]}
       streamingText=""
       historyExpanded={false}
@@ -248,7 +237,6 @@ describe('ConversationBubble', () => {
     const gone = renderToStaticMarkup(<ConversationBubble
       backend="deepseek-web"
       activity="idle"
-      modelLabel="deepseek-chat"
       messages={[]}
       streamingText=""
       historyExpanded={false}
@@ -264,7 +252,6 @@ describe('ConversationBubble', () => {
     const failed = renderToStaticMarkup(<ConversationBubble
       backend="deepseek-web"
       activity="idle"
-      modelLabel="deepseek-chat"
       messages={[]}
       streamingText=""
       historyExpanded={false}
@@ -284,7 +271,6 @@ describe('ConversationBubble', () => {
     const html = renderToStaticMarkup(<ConversationBubble
       backend="deepseek-web"
       activity="idle"
-      modelLabel="deepseek-chat"
       messages={[]}
       streamingText=""
       historyExpanded={false}
@@ -305,7 +291,6 @@ describe('ConversationBubble', () => {
     const html = renderToStaticMarkup(<ConversationBubble
       backend="deepseek-web"
       activity="idle"
-      modelLabel="deepseek-chat"
       messages={[]}
       streamingText=""
       historyExpanded={false}
@@ -324,7 +309,6 @@ describe('ConversationBubble', () => {
     const html = renderToStaticMarkup(<ConversationBubble
       backend="harness"
       activity="idle"
-      modelLabel="deepseek-v4-flash"
       messages={[]}
       streamingText=""
       historyExpanded={false}
@@ -343,6 +327,50 @@ describe('ConversationBubble', () => {
     expect(css).toMatch(/\.dsh-chat__history \{[\s\S]*?position: relative;[\s\S]*?z-index: 1;/)
     expect(css).toContain('mask-image: none')
     expect(css).toContain('-webkit-mask-image: none')
+  })
+
+  it('shows the host indicator in the footer of every backend', () => {
+    const props = {
+      activity: 'idle' as const,
+      messages: [],
+      streamingText: '',
+      historyExpanded: false,
+      ...callbacks,
+    }
+    // 网页与 API 两侧都要有：用户分不清的正是这两个（免费额度还是自己的钱）。
+    const web = renderToStaticMarkup(<ConversationBubble {...props} backend="deepseek-web" hostChip={{ text: 'Web', title: 'DeepSeek 网页额度，不产生 API 费用。' }} />)
+    expect(web).toContain('dsh-chat__host')
+    expect(web).toContain('>Web</span>')
+    expect(web).toContain('title="DeepSeek 网页额度，不产生 API 费用。"')
+
+    const api = renderToStaticMarkup(<ConversationBubble {...props} backend="deepseek-api" hostChip={{ text: 'API', title: '你自己的 DeepSeek API key，按 token 计费。' }} />)
+    expect(api).toContain('>API</span>')
+
+    // 之前这个位置是"模型不可切换时显示模型名"的只读盒子，harness 模式里干脆不渲染。
+    // 现在两侧都有，而且它替换掉了那个盒子。
+    const harness = renderToStaticMarkup(<ConversationBubble {...props} backend="harness" hostChip={{ text: 'Desktop', title: '本机 DeepSeek Harness 客户端，它带自己的窗口。' }} />)
+    expect(harness).toContain('>Desktop</span>')
+    expect(harness).not.toContain('dsh-chat__model"')
+
+    // 指示器是状态不是控件：它自己那一段里不能出现可点的元素。
+    for (const html of [web, api, harness]) {
+      const chipStart = html.indexOf('dsh-chat__meta')
+      const textStart = html.indexOf('dsh-chat__host')
+      expect(chipStart).toBeGreaterThan(-1)
+      expect(html.slice(chipStart, textStart)).not.toContain('<button')
+    }
+  })
+
+  it('omits the indicator when the caller has no host to name', () => {
+    const html = renderToStaticMarkup(<ConversationBubble
+      backend="deepseek-web"
+      activity="idle"
+      messages={[]}
+      streamingText=""
+      historyExpanded={false}
+      {...callbacks}
+    />)
+    expect(html).not.toContain('dsh-chat__host')
   })
 })
 

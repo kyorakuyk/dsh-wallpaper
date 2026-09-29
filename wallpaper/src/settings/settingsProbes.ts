@@ -20,10 +20,13 @@ export type SettingsPage = (typeof SETTINGS_PAGES)[number]
 export const DISPLAY_LIST_FALLBACK_INTERVAL_MS = 30_000
 
 export const SETTINGS_PROBES = [
-  'translucentTb',
+  // FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30），这条探针退出。恢复办法：取消注释。
+  // 'translucentTb',
   'managedDsh',
   'deepseekWebAdapterConfig',
-  'lockScreenDiagnostics',
+  // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
+  // 恢复办法：取消这里的注释，并把下面 PAGE_PROBES.system 与 PROBE_ERROR_MESSAGES 里同名的两处一起还原。
+  // 'lockScreenDiagnostics',
   'autostartStatus',
   'desktopDisplays',
   'apiHistory',
@@ -36,11 +39,15 @@ export type SettingsProbe = (typeof SETTINGS_PROBES)[number]
  */
 export const PAGE_PROBES: Record<SettingsPage, readonly SettingsProbe[]> = {
   general: ['desktopDisplays'],
-  connections: ['managedDsh', 'translucentTb', 'deepseekWebAdapterConfig'],
+    // FREEZE(1B)：
+  // connections: ['managedDsh', 'translucentTb', 'deepseekWebAdapterConfig'],
+  connections: ['managedDsh', 'deepseekWebAdapterConfig'],
   appearance: [],
   personas: [],
   history: ['apiHistory'],
-  system: ['lockScreenDiagnostics', 'autostartStatus'],
+  // FREEZE(1A)：同上。
+  // system: ['lockScreenDiagnostics', 'autostartStatus'],
+  system: ['autostartStatus'],
 }
 
 /**
@@ -50,7 +57,8 @@ export const PAGE_PROBES: Record<SettingsPage, readonly SettingsProbe[]> = {
  * "启动 DSH" button, so it belongs to the required group.
  */
 export const LOW_PRIORITY_PROBES: ReadonlySet<SettingsProbe> = new Set<SettingsProbe>([
-  'translucentTb',
+  // FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30），这条探针退出。恢复办法：取消注释。
+  // 'translucentTb',
   'deepseekWebAdapterConfig',
 ])
 
@@ -182,10 +190,12 @@ export function createSettingsProbeController(options: {
 }
 
 const PROBE_ERROR_MESSAGES: Record<SettingsProbe, string> = {
-  translucentTb: '读取 TranslucentTB 状态失败',
+  // FREEZE(1B)：
+  // translucentTb: '读取 TranslucentTB 状态失败',
   managedDsh: '读取受管 DSH 状态失败',
   deepseekWebAdapterConfig: '网页适配器配置读取失败',
-  lockScreenDiagnostics: '锁屏检查失败',
+  // FREEZE(1A)：同上。
+  // lockScreenDiagnostics: '锁屏检查失败',
   autostartStatus: '读取开机自启状态失败',
   desktopDisplays: '显示器列表读取失败',
   apiHistory: '读取 API 会话记录失败',

@@ -19,7 +19,8 @@ import { endpointScopeOf, subjectEndpointPorts } from './connect/endpoints.ts'
 // ---------------------------------------------------------------------------
 // import { parseLaunchArgs } from './connect/launchArgs.ts'
 import { HARNESS_STATE_DETAILS } from './connect/harnessLabels.ts'
-import { isEmbeddedShellSubject, isInstalledCliSubject, reachNeedsBrowser } from './connect/harnessSubjects.ts'
+import { isEmbeddedShellSubject, isInstalledCliSubject, reachNeedsBrowser, subjectAlias } from './connect/harnessSubjects.ts'
+import { conversationHostChip } from './connect/conversationHost.ts'
 import { profileForLaunch } from './connect/harnessProfiles.ts'
 import {
   apiModelDirectory,
@@ -811,7 +812,10 @@ export function App({ surface = 'combined' }: AppProps) {
   const dispatchCore = (action: Parameters<typeof appCoreClient.dispatch>[0], options?: Parameters<typeof appCoreClient.dispatch>[1]) => {
     if (!appCoreClient.native) return
     coreDispatchQueueRef.current = coreDispatchQueueRef.current
-      .catch(() => undefined)
+      .catch((error) => {
+        // 不弹提示（启动检查是家务活），但**不许消失**：这里曾经连吞两次真失败。
+        console.warn('bridge alignment failed', error)
+      })
       .then(() => appCoreClient.dispatch(action, options))
       .catch((error) => patchRuntime({ error: String(error) }))
   }
@@ -986,7 +990,16 @@ export function App({ surface = 'combined' }: AppProps) {
     ? tier === 'pro' ? 'persona.harness.pro' : 'persona.harness.flash'
     : tier === 'pro' ? 'persona.deepseek.pro' : 'persona.deepseek.flash'
   const resolvedPersona = resolvedAssets[personaSlot]
-  const modelLabel = runtime.model ?? (tier === 'pro' ? 'Pro · 成年形态' : 'Flash · 幼年形态')
+  /**
+   * 岛左下角那枚宿主指示器。派生规则是纯函数（`conversationHostChip`，可测），这里只负责
+   * 把"当下这一份设置"喂给它：主体 id 与「打开」路线都随设置变，别名只在用户起过名字时出现。
+   */
+  const hostChip = conversationHostChip({
+    backend: runtime.backend,
+    subjectId: settings.dshLaunch.subjectId ?? settings.dshLaunch.rootPath,
+    window: settings.dshLaunch.window,
+    alias: subjectAlias(settings.dshLaunch.subjectId, settings.dshLaunch.aliases),
+  })
   /**
    * 黄灯：中间态，规则见 `isHarnessTransitioning`（纯函数，可测）。两个来源各自算：原生监控
    * 把 `harnessProbing` 随快照发下来（它能看到端口属主的进程是否还活着），浏览器预览那条路
@@ -1416,7 +1429,10 @@ const enterInnerWorkspace = () => {
         if (disposed) return
         void nativeRuntime.desktopLayoutMetrics(conversationDisplayId)
           .then((metrics) => { if (!disposed) setExpandedBottomInset(metrics.expandedBottomInset) })
-          .catch(() => undefined)
+          .catch((error) => {
+        // 不弹提示（启动检查是家务活），但**不许消失**：这里曾经连吞两次真失败。
+        console.warn('bridge alignment failed', error)
+      })
       })
     }
     refresh()
@@ -1817,12 +1833,45 @@ const enterInnerWorkspace = () => {
     return () => window.clearTimeout(timer)
   }, [wakeEnter])
 
+  // 每次启动检查一次：把当前主体的桥对齐到我们钉住的那一版。
+  //
+  // **静默**：版本相符时 CLI 那边是空操作；失败也不在这里打扰用户 —— 报告由设置窗口承担
+  // （那里有一句话的总结），而"桥不在"这件事聊天区本来就会显示出来。
+  // FREEZE（临时冻结，不是删除）：这条"每次启动"的对齐**做不到**，已由原生接手。
+  // 为什么关：壁纸窗口的 settings 是异步快照来的，而且原生根本不建模 dshLaunch —— 实测四次，
+  // 这条 effect 连一次请求都发不出来（日志里没有"装桥请求"）。真正能拿到主体的是原生：
+  // harness_launch 在起宿主之前对齐（见那里的注释）。界面这条留作记录，恢复它没有意义。
+  /*
+  const bridgedAtStartupRef = useRef(false)
+  useEffect(() => {
+    const subjectId = settings.dshLaunch.subjectId ?? settings.dshLaunch.rootPath
+    // 挂载那一刻 settings 还是默认值（壁纸窗口的设置是异步从原生快照来的），所以**不能**只跑一次：
+    // 依赖里必须带上主体，等它出现时再动手。2026-09-30 实测：写成 `[]` 时这条 effect 永远在
+    // `!subjectId` 那行返回，日志里连一次请求都没有。
+    if (bridgedAtStartupRef.current) return
+    if (!subjectId) return
+    bridgedAtStartupRef.current = true
+    void nativeRuntime
+      // 档案刻意不从这里读：启动 DSH 时"档案由应用自己决定"是既有规矩（`dshAutostart.spec.ts`
+      // 钉着"App 里不许出现那个档案字段"）。传空串，由原生侧按主体类别决定 ——
+      // 壳要 web 与 desktop 两份，其余主体用 web。
+      .ensureProfileBridge(subjectId, '')
+      .catch((error) => {
+        // 不弹提示（启动检查是家务活），但**不许消失**：这里曾经连吞两次真失败。
+        console.warn('bridge alignment failed', error)
+      })
+    // 守卫保证"每个主体只对齐一次"，所以依赖变化不会变成重复跑。
+  }, [settings.dshLaunch.subjectId, settings.dshLaunch.rootPath])
+  */
+
   const scene = useMemo(() => {
     if (runtime.phase === 'booting' || runtime.phase === 'locked') return <SleepScene persona={persona} mode="system" />
     if (runtime.phase === 'waking') {
       const wakeProps = {
         persona,
-        startIndex: 1,
+        // 从**熟睡**那一帧开始播（原来是 1 = 睁眼）。旧的 1 有个具体理由："锁屏已经显示过
+        // sleep.png，解锁不必再播一遍"；锁屏那块整体退出之后，这个理由随之消失。
+        startIndex: 0,
         handoffGeneration: nativeHandoffGeneration,
         enabled: settings.animationsEnabled && !settings.skipWakeAnimation,
         speed: settings.animationSpeed,
@@ -1863,7 +1912,7 @@ const enterInnerWorkspace = () => {
       return <ConversationBubble
       backend={runtime.backend}
       activity={runtime.activity}
-      modelLabel={modelLabel}
+      hostChip={hostChip}
       messages={messages}
       streamingText={streamingText}
       historyExpanded={workspace === 'front' ? runtime.historyExpanded : innerHistoryExpanded}

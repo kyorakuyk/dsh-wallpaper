@@ -12,11 +12,11 @@ name: Package Full
 #
 # 版本怎么来（与 docs/plans/wallpaper-update-detection-plan.md 第三节的标签约定一致）：
 #   1. 手动运行填了 package_version → 用它（必须四段数字，每段 ≤ 65535）；
-#   2. 标签 v…（约定 v0.2.0.<N>）    → 去掉前缀 v，不足四段补 0；
+#   2. 标签 v…（约定 v0.3.0.<N>）    → 去掉前缀 v，不足四段补 0；
 #                                      不像版本号的 v* 标签直接失败 —— 宁可让这一轮变红，
 #                                      也不要把版本与标签对不上的包放进 Release；
 #   3. 手动运行且没填             → <Cargo.toml 的 major>.<minor>.<运行号>.0。
-#                                      第一次运行即 0.2.1.0，比当前在用的 0.2.0.205 高，
+#                                      第一次运行即 0.3.<运行号>.0，比当前在用的 0.2.0.251 高，
 #                                      下下来可以直接试装。
 #
 # 版本守门（三种来源都要过）：算出的版本会与**本仓库已发布版本**比较 —— 通过 GitHub API
@@ -30,7 +30,7 @@ on:
   workflow_dispatch:
     inputs:
       package_version:
-        description: '四段 MSIX 包版本，例如 0.2.0.206。留空时：标签 v0.2.0.<N> 用标签，手动运行用 0.2.<运行号>.0'
+        description: '四段 MSIX 包版本，例如 0.3.0.1。留空时：标签 v0.3.0.<N> 用标签，手动运行用 <Cargo.toml 的 major>.<minor>.<运行号>.0'
         required: false
         type: string
       allow_version_downgrade:
@@ -107,7 +107,7 @@ jobs:
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile
 
-      # 清单里的 Identity Version 是仓库里的固定值（0.2.0.74）；这里按上面的规则算出本轮版本，
+      # 清单里的 Identity Version 是仓库里的固定值（0.3.0.0）；这里按上面的规则算出本轮版本，
       # 只在临时清单里替换它，仓库文件不动 —— 与 scripts/publish-local-msix.ps1 的做法一致。
       # 同一步里做"版本守门"：比本仓库已发布的版本更旧就直接失败（见文件头）。
       - name: Resolve the package version and write the versioned manifest

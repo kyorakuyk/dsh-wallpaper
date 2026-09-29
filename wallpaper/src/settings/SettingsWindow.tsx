@@ -1,9 +1,14 @@
+import { summarizeBridgeInstall } from '../connect/bridgeInstall.ts'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import type { BackendMode } from '../domain/types.ts'
 import { appCoreClient } from '../runtime/appCoreClient.ts'
-import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type ApiKeyStatus, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type DesktopWorkspaceStatus, type HarnessEndpointScan, type HarnessTarget, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
+// FREEZE(1A)：锁屏退出，这个类型随之冻结（单行 import 列表里不能用 // 注释单项，所以整行注释、旁边写出不含它的版本）。
+// import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type ApiKeyStatus, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type DesktopWorkspaceStatus, type HarnessEndpointScan, type HarnessTarget, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
+// FREEZE(1B)：透明任务栏退出，这个类型随之冻结（单行 import 列表里不能用 // 注释单项）。
+// import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type ApiKeyStatus, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type DesktopWorkspaceStatus, type HarnessEndpointScan, type HarnessTarget, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
+import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type ApiKeyStatus, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type DesktopWorkspaceStatus, type HarnessEndpointScan, type HarnessTarget, type ManagedDshStatus } from '../native/runtime.ts'
 import { loadSettings, saveSettings, type WallpaperSettings } from './store.ts'
 import {
   CLI_SUBJECT_PREFIX,
@@ -94,7 +99,8 @@ export function SettingsWindow() {
   const [page, setPage] = useState<SettingsPage>('general')
   const [harness, setHarness] = useState<SettingsPanelHarnessStatus>('offline')
   const [interactionEnabled, setInteractionEnabled] = useState(true)
-  const [translucentTb, setTranslucentTb] = useState<TranslucentTbStatus>({ installed: false, running: false })
+  // FREEZE(1B)：探针冻结后没人再写它，界面也不再读它（卡片已冻结），保留初始值不动。
+  // const [translucentTb, setTranslucentTb] = useState<TranslucentTbStatus>({ installed: false, running: false })
   const [harnessTargets, setHarnessTargets] = useState<HarnessTarget[]>([])
   /**
    * When the shown subject list was last confirmed by a real scan. Kept so the card
@@ -113,9 +119,11 @@ export function SettingsWindow() {
    * 下拉一起冻住 —— 底部那个按钮需要它来挡住重复点击。恢复办法：什么都不用做。
    */
   const [managedDshBusy, setManagedDshBusy] = useState(false)
-  const [lockScreenDiagnostics, setLockScreenDiagnostics] = useState<LockScreenDiagnostics>()
+  // FREEZE(1A)：锁屏退出后没人再用（见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
+  //   const [lockScreenDiagnostics, setLockScreenDiagnostics] = useState<LockScreenDiagnostics>()
   const [desktopDisplays, setDesktopDisplays] = useState<DesktopDisplayInfo[]>([])
-  const [lockScreenBusy, setLockScreenBusy] = useState(false)
+  // FREEZE(1A)：锁屏退出后没人再用（见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
+  //   const [lockScreenBusy, setLockScreenBusy] = useState(false)
   const [autostartBusy, setAutostartBusy] = useState(false)
   /**
    * The real Windows autostart state, kept separately from the boolean the user
@@ -169,7 +177,8 @@ export function SettingsWindow() {
   // lock-screen request never overwrites unrelated settings changed while it
   // was in flight.
   const settingsRef = useRef(settings)
-  const lockScreenOperationRef = useRef(false)
+  // FREEZE(1A)：锁屏退出后没人再用（见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
+  //   const lockScreenOperationRef = useRef(false)
   const autostartOperationRef = useRef(false)
   /**
    * What the autostart switch currently stands for: the user's latest request
@@ -190,7 +199,8 @@ export function SettingsWindow() {
     ?? endpointScan.find((item) => item.port === settings.dshLaunch.endpointPort)?.kind
     ?? 'official-web'
   const dshScanOperationRef = useRef(false)
-  const lockScreenDiagnosticsRequestRef = useRef(0)
+  // FREEZE(1A)：锁屏退出后没人再用（见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
+  //   const lockScreenDiagnosticsRequestRef = useRef(0)
   const apiHistoryOperationRef = useRef(false)
   // Probes must never outlive this window: `hide_settings_window` keeps the
   // WebView alive, but a reload or a real teardown would otherwise let a late
@@ -320,18 +330,19 @@ export function SettingsWindow() {
     })()
   }, [])
 
-  const refreshLockScreenDiagnostics = async () => {
-    const request = ++lockScreenDiagnosticsRequestRef.current
-    try {
-      const diagnostics = await nativeRuntime.lockScreenDiagnostics()
-      if (!mountedRef.current) return
-      // An older initial/refresh request may finish after a successful
-      // takeover or restore. Never let it replace the newer system result.
-      if (request === lockScreenDiagnosticsRequestRef.current) setLockScreenDiagnostics(diagnostics)
-    } catch (error) {
-      if (request === lockScreenDiagnosticsRequestRef.current) setNotice(`锁屏检查失败：${String(error)}`)
-    }
-  }
+  // FREEZE(1A)：锁屏退出后没人再用（见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
+  //   const refreshLockScreenDiagnostics = async () => {
+  //     const request = ++lockScreenDiagnosticsRequestRef.current
+  //     try {
+  //       const diagnostics = await nativeRuntime.lockScreenDiagnostics()
+  //       if (!mountedRef.current) return
+  //       // An older initial/refresh request may finish after a successful
+  //       // takeover or restore. Never let it replace the newer system result.
+  //       if (request === lockScreenDiagnosticsRequestRef.current) setLockScreenDiagnostics(diagnostics)
+  //     } catch (error) {
+  //       if (request === lockScreenDiagnosticsRequestRef.current) setNotice(`锁屏检查失败：${String(error)}`)
+  // }
+  // }
 
   const refreshDesktopDisplays = async () => {
     try {
@@ -499,16 +510,44 @@ export function SettingsWindow() {
   }
 
   /**
+   * 把某个主体的桥对齐到我们钉住的那一版。
+   *
+   * 版本相符时这条命令在 CLI 那边是**空操作**（同一个包同一个版本再 add 一次），所以它同时
+   * 覆盖两个触发点：换主体时、以及设置窗口每次打开时（用户批准的就是"每次启动检查一次"）。
+   * 结果只经 summarizeBridgeInstall 说一句：需要用户确认版本豁免的那种情况，决定权在他手里。
+   */
+  const ensureBridgeFor = async (subjectId: string) => {
+    const profile = settingsRef.current.dshLaunch.profile ?? 'web'
+    try {
+      const outcomes = await nativeRuntime.ensureProfileBridge(subjectId, profile)
+      const summary = summarizeBridgeInstall(outcomes)
+      if (summary) setNotice(summary.text)
+    } catch (error) {
+      setNotice(`装桥失败：${String(error)}`)
+    }
+  }
+
+  // 只在**主体真的换了**（或首次挂载）时动手，而不是每次渲染。
+  const bridgedSubjectRef = useRef<string>()
+  useEffect(() => {
+    const subjectId = settings.dshLaunch.subjectId
+    if (!subjectId || bridgedSubjectRef.current === subjectId) return
+    bridgedSubjectRef.current = subjectId
+    void ensureBridgeFor(subjectId)
+  }, [settings.dshLaunch.subjectId])
+
+  /**
    * One runner per probe. The controller decides *when* a runner may start;
    * it never lets two runs of the same probe overlap, and it reports a failed
    * probe as a notice instead of letting the window lose its interactivity.
    */
   const probeControllerHolder = useRef<{ refresh: (probe: SettingsProbe) => Promise<void> }>()
   const probeRunners = useMemo<Record<SettingsProbe, () => Promise<unknown>>>(() => ({
-    translucentTb: async () => {
-      const status = await nativeRuntime.translucentTbStatus()
-      if (mountedRef.current) setTranslucentTb(status)
-    },
+    // FREEZE(1B)：TranslucentTB 探针冻结（状态仍可由用户点「刷新」手动读取）。
+    // translucentTb: async () => {
+    //   const status = await nativeRuntime.translucentTbStatus()
+    //   if (mountedRef.current) setTranslucentTb(status)
+    // },
     managedDsh: async () => {
       // FREEZE（临时冻结，不是删除）：这里原来带上主体 id（`managedDshStatus(subjectId)`），
       // 问的是"我这次启动的那个孩子还在不在"。不带主体问的是同一件事的单实例形态。
@@ -520,7 +559,9 @@ export function SettingsWindow() {
       const status = await nativeRuntime.deepseekWebAdapterConfig()
       if (mountedRef.current) setDeepseekWebAdapterConfig(status)
     },
-    lockScreenDiagnostics: refreshLockScreenDiagnostics,
+    // FREEZE(1A)：锁屏退出，这一条探针不再注册（见 docs/plans/release-scope-cleanup-plan.md 第一节）。
+    // 恢复办法：取消注释即可 —— refreshLockScreenDiagnostics 仍然存在，只是暂时没人调用它。
+    // lockScreenDiagnostics: refreshLockScreenDiagnostics,
     autostartStatus: refreshAutostartStatus,
     desktopDisplays: refreshDesktopDisplays,
     // The history listing is a management view, not a live surface: it is read
@@ -544,7 +585,8 @@ export function SettingsWindow() {
    * second run while the first one is still in flight.
    */
   const refreshProbe = (probe: SettingsProbe) => void probeControllerHolder.current?.refresh(probe)
-  const refreshTranslucentTb = () => refreshProbe('translucentTb')
+  // FREEZE(1B)：这条探针已退出。
+  // const refreshTranslucentTb = () => refreshProbe('translucentTb')
   const refreshManagedDsh = () => refreshProbe('managedDsh')
   const refreshDeepSeekWebAdapterConfig = () => refreshProbe('deepseekWebAdapterConfig')
   const openDeepSeekWebAdapterConfig = async () => {
@@ -735,52 +777,53 @@ export function SettingsWindow() {
     }
   }
 
-  const setLockScreenEnabled = async (enabled: boolean, force = false) => {
-    // `lockScreenBusy` only changes after a render. The ref closes the small
-    // double-click / keyboard activation window before that render occurs.
-    if (lockScreenOperationRef.current || (!force && settingsRef.current.lockScreenEnabled === enabled)) return
-    lockScreenOperationRef.current = true
-    setLockScreenBusy(true)
-    try {
-      const confirmation = await nativeRuntime.setLockScreen(enabled)
-      // Do not optimistically persist or broadcast the setting: Windows is
-      // authoritative here. Only record the requested state after its native
-      // setter succeeds.
-      commitSettings({ ...settingsRef.current, lockScreenEnabled: enabled })
-      setNotice(confirmation)
-      await refreshLockScreenDiagnostics()
-    } catch (error) {
-      // Keep the previously committed setting visible and persisted. This is
-      // especially important when the MSIX identity gate rejects takeover.
-      setNotice(`${enabled ? '接管锁屏图片' : '恢复原锁屏图片'}失败：${String(error)}`)
-    } finally {
-      lockScreenOperationRef.current = false
-      setLockScreenBusy(false)
-    }
-  }
-  const openWindowsLockScreenSettings = async () => {
-    try {
-      await nativeRuntime.openWindowsLockScreenSettings()
-      setNotice('已打开 Windows 锁屏设置；请在系统设置中选择要恢复的图片。')
-    } catch (error) {
-      setNotice(`无法打开 Windows 锁屏设置：${String(error)}`)
-    }
-  }
-  const clearStaleLockScreenBackup = async () => {
-    if (lockScreenOperationRef.current) return
-    if (!window.confirm('清理旧锁屏恢复点会永久删除已保存的原锁屏图片副本。Windows 当前锁屏图片不会被修改。确定继续吗？')) return
-    lockScreenOperationRef.current = true
-    setLockScreenBusy(true)
-    try {
-      setNotice(await nativeRuntime.clearStaleLockScreenBackup(true))
-      await refreshLockScreenDiagnostics()
-    } catch (error) {
-      setNotice(`清理旧恢复点失败：${String(error)}`)
-    } finally {
-      lockScreenOperationRef.current = false
-      setLockScreenBusy(false)
-    }
-  }
+  // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：把下面这段还原。
+  // const setLockScreenEnabled = async (enabled: boolean, force = false) => {
+  // // `lockScreenBusy` only changes after a render. The ref closes the small
+  // // double-click / keyboard activation window before that render occurs.
+  // if (lockScreenOperationRef.current || (!force && settingsRef.current.lockScreenEnabled === enabled)) return
+  // lockScreenOperationRef.current = true
+  // setLockScreenBusy(true)
+  // try {
+  // const confirmation = await nativeRuntime.setLockScreen(enabled)
+  // // Do not optimistically persist or broadcast the setting: Windows is
+  // // authoritative here. Only record the requested state after its native
+  // // setter succeeds.
+  // commitSettings({ ...settingsRef.current, lockScreenEnabled: enabled })
+  // setNotice(confirmation)
+  // await refreshLockScreenDiagnostics()
+  // } catch (error) {
+  // // Keep the previously committed setting visible and persisted. This is
+  // // especially important when the MSIX identity gate rejects takeover.
+  // setNotice(`${enabled ? '接管锁屏图片' : '恢复原锁屏图片'}失败：${String(error)}`)
+  // } finally {
+  // lockScreenOperationRef.current = false
+  // setLockScreenBusy(false)
+  // }
+  // }
+  // const openWindowsLockScreenSettings = async () => {
+  // try {
+  // await nativeRuntime.openWindowsLockScreenSettings()
+  // setNotice('已打开 Windows 锁屏设置；请在系统设置中选择要恢复的图片。')
+  // } catch (error) {
+  // setNotice(`无法打开 Windows 锁屏设置：${String(error)}`)
+  // }
+  // }
+  // const clearStaleLockScreenBackup = async () => {
+  // if (lockScreenOperationRef.current) return
+  // if (!window.confirm('清理旧锁屏恢复点会永久删除已保存的原锁屏图片副本。Windows 当前锁屏图片不会被修改。确定继续吗？')) return
+  // lockScreenOperationRef.current = true
+  // setLockScreenBusy(true)
+  // try {
+  // setNotice(await nativeRuntime.clearStaleLockScreenBackup(true))
+  // await refreshLockScreenDiagnostics()
+  // } catch (error) {
+  // setNotice(`清理旧恢复点失败：${String(error)}`)
+  // } finally {
+  // lockScreenOperationRef.current = false
+  // setLockScreenBusy(false)
+  // }
+  // }
 
   // First paint owns no probe at all: only the local settings and the AppCore
   // snapshot (which the "显示中央会话窗" switch needs) are read up front. The
@@ -878,14 +921,17 @@ export function SettingsWindow() {
   }
 
   const change = (next: WallpaperSettings) => {
-    const previous = settingsRef.current
+    // FREEZE(1A)：只为上面那段已冻结的合并而生，随之冻结。
+    // const previous = settingsRef.current
     const autostartChanged = next.autostart !== latestAutostartRef.current
-    // System lock-screen ownership is deliberately excluded from the normal
-    // immediate-save path. The dedicated async operation above is the only
-    // place allowed to persist or broadcast a change to this field.
-    const normalNext = next.lockScreenEnabled === previous.lockScreenEnabled
-      ? next
-      : { ...next, lockScreenEnabled: previous.lockScreenEnabled }
+    // FREEZE(1A)：锁屏退出，字段已不存在，合并回归"直接用 next"。恢复办法：还原下面被注释的六行。
+    // // System lock-screen ownership is deliberately excluded from the normal
+    // // immediate-save path. The dedicated async operation above is the only
+    // // place allowed to persist or broadcast a change to this field.
+    // const normalNext = next.lockScreenEnabled === previous.lockScreenEnabled
+    //   ? next
+    //   : { ...next, lockScreenEnabled: previous.lockScreenEnabled }
+    const normalNext = next
     if (autostartChanged) {
       // The switch follows the user at once; Windows' answer decides whether it
       // stays there. A second toggle is queued instead of dropped, and the
@@ -929,7 +975,8 @@ export function SettingsWindow() {
       page={page}
       onPageChange={(next) => { setPage(next); if (next === 'appearance') refreshAppearance() }}
       harnessStatus={harness}
-      translucentTb={translucentTb}
+      /* FREEZE(1B)：透明任务栏退出，这几个 prop 随之冻结。
+      translucentTb={translucentTb} */
       harnessTargets={harnessTargets}
       subjectCatalogVerifiedAt={catalogVerifiedAt}
       subjectChoice={subjectChoicePrompt(harnessTargets) ?? undefined}
@@ -1025,9 +1072,10 @@ export function SettingsWindow() {
         dshLaunch: { ...settingsRef.current.dshLaunch, window: value },
       })}
       onChange={change}
+      /* FREEZE(1B)：同上。
       onRefreshTranslucentTb={refreshTranslucentTb}
       onLaunchTranslucentTb={() => void nativeRuntime.launchTranslucentTb().then(refreshTranslucentTb).catch((error) => setNotice(String(error)))}
-      onInstallTranslucentTb={() => void nativeRuntime.openTranslucentTbInstall().catch((error) => setNotice(String(error)))}
+      onInstallTranslucentTb={() => void nativeRuntime.openTranslucentTbInstall().catch((error) => setNotice(String(error)))} */
       appearanceAssets={appearanceAssets}
       appearanceOverrides={appearanceOverrides}
       appearanceBusy={appearanceBusy}
@@ -1035,12 +1083,14 @@ export function SettingsWindow() {
       onClassifyAppearance={(assetId, slot) => { void classifyAppearance(assetId, slot) }}
       onSelectAppearance={(slot, assetId) => { void selectAppearance(slot, assetId) }}
       onClearAppearance={(slot) => { void clearAppearance(slot) }}
+      /* FREEZE(1A)：锁屏退出，以下 6 个 prop 随之冻结。恢复办法：去掉这对块注释即可。
       lockScreenDiagnostics={lockScreenDiagnostics}
       onRefreshLockScreenDiagnostics={refreshLockScreenDiagnostics}
       onRestoreLockScreen={() => { void openWindowsLockScreenSettings() }}
       onClearStaleLockScreenBackup={() => { void clearStaleLockScreenBackup() }}
       onSetLockScreenEnabled={(enabled) => { void setLockScreenEnabled(enabled) }}
       lockScreenBusy={lockScreenBusy}
+      */
       autostartBusy={autostartBusy}
       desktopDisplays={desktopDisplays}
       onRefreshDesktopDisplays={refreshDesktopDisplays}

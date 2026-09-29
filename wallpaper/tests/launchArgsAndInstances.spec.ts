@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { launchArgsIssue, launchPortFromArgs, launchSettingsPort, parseLaunchArgs } from '../src/connect/launchArgs.ts'
-import { endpointScopeOf, subjectEndpointPorts } from '../src/connect/endpoints.ts'
+import { endpointScopeOf, subjectEndpointPorts, WALLPAPER_HOST_PORT } from '../src/connect/endpoints.ts'
 import { instanceLabel, subjectOptionLabel } from '../src/connect/harnessSubjects.ts'
 import { normalizeSettings } from '../src/settings/store.ts'
 import type { HarnessTarget } from '../src/native/runtime.ts'
@@ -135,7 +135,9 @@ describe('端口从设置一路流到「打开界面」', () => {
 
   it('does not let a launch arg move a shell off the port compiled into it', () => {
     // 官壳的端口编译在它自己的包里，参数改不了它 —— 给它"另一个端口"等于说那是另一个客户端。
-    expect(subjectEndpointPorts({ subjectId: 'shell:com.deepseek.dsh', args: '--port 4000' })).toEqual([19387])
+    // 后随那个是**壁纸自己宿主的**端口（客户端随时可以打开，不会撞车），同样不受参数影响。
+    expect(subjectEndpointPorts({ subjectId: 'shell:com.deepseek.dsh', args: '--port 4000' }))
+      .toEqual([19387, WALLPAPER_HOST_PORT])
   })
 
   it('is carried by endpointScopeOf, which is the one place the stored fields become a scope', () => {

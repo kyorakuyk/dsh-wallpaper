@@ -262,7 +262,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\publish-local-msix.ps1
 
 ## 素材与版权
 
-- 立绘/动画帧/背景均为 **AI 生成或用户自备**，代码 MIT 许可
+- **代码以 MIT 授权**；立绘、动画帧与背景**不与代码同许可**（CC BY-NC-SA 4.0，见 [LICENSE-ASSETS.md](LICENSE-ASSETS.md)）
 - `assets/personas/abolished/` 保留全部历史迭代版本（留档）
 - 四张默认立绘的源图位于 `assets/personas/`：`蓝幼.png`、`蓝熟.png`、`黑红幼.png`、`黑红熟.png`。运行 `python scripts/remove-bg.py` 会将它们分别准备到 `wallpaper/public/personas/portrait-blue-child.png`、`portrait-blue-adult.png`、`portrait-black-child.png`、`portrait-black-adult.png`；已有透明通道会原样保留，白底图才会抠图。
 - 单用户换装可在「设置中心 → 外观 → 素材库」导入图片并分配到 DeepSeek Flash/Pro 或 Harness Flash/Pro 槽位；要改项目默认图则替换上述源图并重新生成运行时资源，再构建安装包。
@@ -282,4 +282,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\publish-local-msix.ps1
 
 ## 许可
 
-MIT（项目代码）；内置素材为 AI 生成或用户自备，用户自备素材版权归其所有。
+**代码**：MIT（见 [LICENSE](LICENSE)）。
+
+**美术素材**（立绘、动画帧、背景）：CC BY-NC-SA 4.0 —— 原型来自 ZipZipPipe 与上善无形，本项目的立绘是其衍生，因此沿用该许可：**署名 + 非商业 + 相同方式共享**；用户自备素材的版权仍归其作者。详见 [LICENSE-ASSETS.md](LICENSE-ASSETS.md)。
+
+两者分开授权：**MIT 只覆盖代码**——再用到美术素材时，按 CC BY-NC-SA 4.0 的署名与非商业要求来。

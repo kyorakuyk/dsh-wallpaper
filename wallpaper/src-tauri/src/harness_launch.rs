@@ -262,6 +262,29 @@ pub(crate) enum LaunchPlan {
         profile: String,
         args: Vec<String>,
     },
+    /// 本应用为**某个主体**跑起来的宿主：它的 CLI，**绑壁纸自己的端口**（`WALLPAPER_HOST_PORT`）。
+    ///
+    /// 与 `InstalledCli` 的差别有两处，两处都关键：记录用的主体 id 是 `host:<主体>`
+    /// （所以它归我们管、可以被我们收回；而主体自己的 `shell:<aumid>` 仍然永不归我们管），
+    /// 而且它**没有窗口**（`web` 档案、`--no-open`）——那正是这条路存在的理由。
+    ///
+    /// 端口**不是**主体自己的那个（施工文档 §7.6 修正版）：19387 是壳自己要绑的，我们占着它，
+    /// 用户直接打开壳就会撞上 `EADDRINUSE` 并拿到一个错误框（实测）。所以两个字段分开：
+    /// `subject_port` 只用来判断"客户端是不是已经在自己服务了"，`host_port` 才是我们绑的。
+    SubjectHost {
+        /// `host:<主体 id>`：记录与停止都用它。
+        host_id: String,
+        /// 主体自己的 id，只用于日志与类别。
+        subject_id: String,
+        kind: HarnessTargetKind,
+        launcher: String,
+        profile: String,
+        args: Vec<String>,
+        /// 主体自己（客户端）的端口；它已经有人应答时我们什么都不起。
+        subject_port: Option<u16>,
+        /// 我们的宿主绑哪个端口。
+        host_port: u16,
+    },
 }
 
 /// The web app's own hand-off address, per port.
@@ -379,6 +402,24 @@ pub(crate) fn owned_instances(subject_id: &str) -> Vec<ManagedChild> {
         .collect()
 }
 
+/// 从一份记录里挑出"本应用启动的、官壳除外"的那些，且**此刻还确实是同一个进程**。
+///
+/// 独立成纯函数是为了能被钉住：这里曾经把判据写反过（`!is_managed_by_us`），而两个消费者
+/// （状态清单、"停止全部"）各自都会再滤一遍官壳，于是它**一声不响**——落盘记录那一半永远是空的：
+/// 壁纸重启之后既列不出、也停不掉自己启动过的宿主，而"停止全部"还会静默报成功。
+fn our_live_instances(
+    cylinder: &ManagedChildren,
+    alive: &dyn Fn(&str) -> bool,
+) -> Vec<ManagedChild> {
+    cylinder
+        .children
+        .values()
+        .filter(|child| is_managed_by_us(&child.subject_id))
+        .filter(|child| alive(&child.instance_key))
+        .cloned()
+        .collect()
+}
+
 /// 本应用启动的**每一个**仍然活着的实例，官壳除外。
 ///
 /// 官壳那一类**必须**被排除，它不在本应用的管辖范围内：它是用户自己的客户端，退出方式是它
@@ -386,13 +427,8 @@ pub(crate) fn owned_instances(subject_id: &str) -> Vec<ManagedChild> {
 /// 这里不能只靠"壳没有孩子"这个假设，而是明确按 id 前缀过滤。
 pub(crate) fn owned_instances_all() -> Vec<ManagedChild> {
     let Some(path) = RECORDS_PATH.get() else { return Vec::new() };
-    read_managed_children(path)
-        .children
-        .values()
-        .filter(|child| !is_managed_by_us(&child.subject_id))
-        .filter(|child| owned_instance(&child.instance_key).is_some())
-        .cloned()
-        .collect()
+    let cylinder = read_managed_children(path);
+    our_live_instances(&cylinder, &|key| owned_instance(key).is_some())
 }
 
 /// 这一类主体是不是"本应用可以启动、也可以停止"的那一类。
@@ -600,7 +636,19 @@ pub(crate) fn redact_handoff(path: &str) -> String {
 /// and dropping it is what left the browser opening a page that could only say
 /// "authentication required". The reader keeps draining for the child's whole life — a
 /// pipe closed early would hand the CLI a write error it does not deserve.
-fn launch_installed_cli(launcher: &str, profile: &str, args: &[String]) -> HarnessLaunchOutcome {
+/// 跑一个主体的 **CLI 宿主**：`.cmd`/`.exe` 的差别、`web` 档案才有的门票、以及"这个孩子是
+/// 我们起的"那条记录，全在这一处。
+///
+/// `subject_id` 是**记录用的 id**，不一定是主体的 id：壳的后台宿主记在 `host:<主体>` 下
+/// （见 `LaunchPlan::SubjectHost`），而那正是"它归我们管、主体自己的进程不归我们管"的分界。
+fn launch_cli_host(
+    subject_id: &str,
+    kind: HarnessTargetKind,
+    launcher: &str,
+    profile: &str,
+    args: &[String],
+    hidden: bool,
+) -> HarnessLaunchOutcome {
     let (program, command_args) = installed_cli_command(Path::new(launcher), profile, args);
     let wants_handoff = profile.trim() == "web";
     let mut command = std::process::Command::new(&program);
@@ -620,9 +668,32 @@ fn launch_installed_cli(launcher: &str, profile: &str, args: &[String]) -> Harne
         command.creation_flags(CREATE_NO_WINDOW);
     }
     log::info!(
-        "harness installed-cli launch: program={} args={command_args:?}",
+        "harness cli host launch: subject={subject_id} program={} args={command_args:?}",
         program.display()
     );
+    // 起宿主之前先把桥对齐（缺桥、或版本不是我们钉的那一版时补齐）。
+    //
+    // **为什么在原生而不是界面**：主体这个值在原生这边；界面那份设置是异步快照来的，启动那一刻
+    // 还没有它 —— 2026-09-30 实测，界面那条 effect 连一次请求都发不出来。而这里正好是"需要桥的
+    // 那一刻"：宿主一起来就会去加载插件。
+    //
+    // 放后台线程：装桥要跑包管理（几秒），不能拖住宿主的启动。代价要说清：如果这次真的装了桥，
+    // **当前这个宿主**启动时还看不到它，要等下一次启动加载 —— 下一次因为版本已相符，不会重复安装。
+    {
+        let subject = subject_id.to_string();
+        std::thread::spawn(move || {
+            let outcomes = install_bridge_for_subject(&subject, "", kind);
+            for outcome in &outcomes {
+                log::info!(
+                    "装桥结果：profile={} status={} command={} detail={}",
+                    outcome.profile,
+                    outcome.status,
+                    outcome.command,
+                    outcome.detail
+                );
+            }
+        });
+    }
     match command.spawn() {
         Ok(mut child) => {
             if wants_handoff {
@@ -633,7 +704,7 @@ fn launch_installed_cli(launcher: &str, profile: &str, args: &[String]) -> Harne
                     //
                     // 为什么非要在这一处记：启动有三条入口（设置里的「打开」、壁纸面的「启动主体」、
                     // 开机自启），只有这一处**知道端口**，也只有这一处能确定"是我们启动的"。
-                    let subject = format!("{CLI_ID_PREFIX}{launcher}");
+                    let subject = subject_id.to_string();
                     let record_args = args.to_vec();
                     std::thread::spawn(move || {
                         use std::io::BufRead;
@@ -671,16 +742,28 @@ fn launch_installed_cli(launcher: &str, profile: &str, args: &[String]) -> Harne
             // 而"孩子"应当指真正在服务的那一个 —— 端口的属主。统一由调用方在端口起来之后记。
             HarnessLaunchOutcome {
                 outcome: "started".into(),
-                kind: HarnessTargetKind::InstalledCli,
+                kind,
                 pid: Some(child.id()),
-                hidden: false,
+                hidden,
             }
         }
         Err(error) => {
-            log::warn!("harness installed-cli launch failed: {error}");
-            HarnessLaunchOutcome::new("spawn-failed", HarnessTargetKind::InstalledCli)
+            log::warn!("harness cli host launch failed: subject={subject_id} error={error}");
+            HarnessLaunchOutcome::new("spawn-failed", kind)
         }
     }
+}
+
+/// 已安装 CLI 那一类：记录 id 就是它自己，界面在浏览器里，所以不算"隐藏"。
+fn launch_installed_cli(launcher: &str, profile: &str, args: &[String]) -> HarnessLaunchOutcome {
+    launch_cli_host(
+        &format!("{CLI_ID_PREFIX}{launcher}"),
+        HarnessTargetKind::InstalledCli,
+        launcher,
+        profile,
+        args,
+        false,
+    )
 }
 
 /// The command that raises the TUI in a console window of its own.
@@ -737,25 +820,501 @@ pub(crate) fn installed_cli_command(
     profile: &str,
     args: &[String],
 ) -> (PathBuf, Vec<String>) {
-    let mut profile_args = vec!["--profile".to_string(), profile.to_string()];
-    // `dsh web` 的默认行为是"起服务**并且打开默认浏览器**"。这个决定该由壁纸来做：设置里选的
-    // 是浏览器还是终端里的 TUI，而且开机自启时更不该自己弹窗。`--no-open` 是 **web 应用自己的**
-    // 旗标，所以只在 `web` 这个档案上带 —— 别的档案的 app 未必认这个参数。
-    if profile.trim() == "web" {
-        profile_args.push("--no-open".to_string());
-    }
-    profile_args.extend(args.iter().cloned());
-    let extension = launcher
+    let profile_args = {
+        let mut profile_args = vec!["--profile".to_string(), profile.to_string()];
+        // `dsh web` 的默认行为是"起服务**并且打开默认浏览器**"。这个决定该由壁纸来做：设置里选的
+        // 是浏览器还是终端里的 TUI，而且开机自启时更不该自己弹窗。`--no-open` 是 **web 应用自己的**
+        // 旗标，所以只在 `web` 这个档案上带 —— 别的档案的 app 未必认这个参数。
+        if profile.trim() == "web" {
+            profile_args.push("--no-open".to_string());
+        }
+        profile_args.extend(args.iter().cloned());
+        profile_args
+    };
+    windows_launch_command(launcher, &profile_args)
+}
+
+/// 从"程序 + 参数"得到真正要 spawn 的东西。
+///
+/// npm 在 Windows 上的启动器是 `.cmd` 批处理，`CreateProcess` 不能直接跑它，前面要加 `cmd /c`；
+/// `.exe`（别的打包方式，或将来的 npm）原样跑。
+///
+/// 抽成纯函数是因为**有两个**地方要跑 CLI：启动宿主（`installed_cli_command`）与装桥
+/// （`install_bridge_for_subject`）。2026-09-30 的实测教训：装桥那一路没走这里、直接 spawn 了
+/// `.cmd`，于是启动失败、又被前端的 catch 吞掉 —— 表现为"每次启动检查"什么都不做。
+pub(crate) fn windows_launch_command(program: &Path, args: &[String]) -> (PathBuf, Vec<String>) {
+    let extension = program
         .extension()
         .map(|value| value.to_string_lossy().to_ascii_lowercase());
     match extension.as_deref() {
         Some("cmd") | Some("bat") => {
-            let mut command_args = vec!["/c".to_string(), launcher.to_string_lossy().into_owned()];
-            command_args.extend(profile_args);
+            let mut command_args = vec!["/c".to_string(), program.to_string_lossy().into_owned()];
+            command_args.extend(args.iter().cloned());
             (PathBuf::from("cmd.exe"), command_args)
         }
-        _ => (launcher.to_path_buf(), profile_args),
+        _ => (program.to_path_buf(), args.to_vec()),
     }
+}
+
+/// A shell's own CLI, relative to the executable its windows belong to.
+///
+/// Measured on the official client: `DeepSeek Harness.exe` sits beside
+/// `resources\runtime\cli\bin\dsh.cmd`, and that batch file starts the same executable
+/// again in `ELECTRON_RUN_AS_NODE` mode — which is why this route needs no separate
+/// Node and why its version can never drift from the client's.
+const BUNDLED_CLI_RELATIVE: [&str; 5] = ["resources", "runtime", "cli", "bin", "dsh.cmd"];
+
+/// How a subject's **CLI** is reached, which is what every subject kind collapses onto
+/// (施工文档 §7：三种主体都退化为"跑它的 CLI"，所以后台宿主只需要这一条解析).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BackgroundCli {
+    /// Start this launcher. `installed_cli_command` owns the `cmd /c` difference and
+    /// the `--profile`/`--no-open` prefix; this only answers *which* file.
+    Launch(PathBuf),
+    /// A source tree already *is* its CLI: the managed chain runs `apps/cli` under the
+    /// tree, so there is no separate launcher to resolve and nothing to substitute.
+    TreeChain,
+}
+
+/// Which CLI can serve as this subject's background host.
+///
+/// `shell_executable` is the path the scan recorded for the client's own windows
+/// (`HarnessTarget::executable`) — never a path derived from the AUMID. That is not
+/// pedantry: the id is deliberately location-independent, so the AUMID alone cannot
+/// answer where the client is installed, and a caller that "figured it out" from the
+/// name would start a path nobody measured.
+///
+/// `exists` is injected rather than read, so the resolver stays pure: the happy path and
+/// both refusals can be pinned without a machine, and the *caller* decides what a
+/// refusal means. A shell that refuses falls back to AUMID activation, which is exactly
+/// why the two refusals are different codes instead of one.
+pub(crate) fn plan_background_cli(
+    subject_id: &str,
+    shell_executable: Option<&str>,
+    exists: &dyn Fn(&Path) -> bool,
+) -> Result<BackgroundCli, &'static str> {
+    let id = subject_id.trim();
+    if let Some(launcher) = id.strip_prefix(CLI_ID_PREFIX) {
+        let launcher = launcher.trim();
+        if launcher.is_empty() {
+            return Err("unknown-target");
+        }
+        let path = PathBuf::from(launcher);
+        return if exists(&path) {
+            Ok(BackgroundCli::Launch(path))
+        } else {
+            Err("missing-launcher")
+        };
+    }
+    if id.starts_with(SHELL_ID_PREFIX) {
+        let Some(executable) = shell_executable.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Err("missing-executable");
+        };
+        // A bare file name has no directory to hang the install on, and an empty parent
+        // would silently turn the relative path into one against the current directory.
+        let Some(install) = Path::new(executable)
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        else {
+            return Err("missing-executable");
+        };
+        let mut path = install.to_path_buf();
+        for segment in BUNDLED_CLI_RELATIVE {
+            path.push(segment);
+        }
+        return if exists(&path) {
+            Ok(BackgroundCli::Launch(path))
+        } else {
+            Err("missing-launcher")
+        };
+    }
+    Ok(BackgroundCli::TreeChain)
+}
+
+/// 主体后台宿主该用哪个 CLI 启动器，含"记录可能比这一版构建旧"的处理。
+///
+/// 政策（施工文档 §7.4 第 5 条）：记录里放不出可执行文件时**先重扫一次**再判。理由是实测的：
+/// 本机那份记录是 2026-09-29 写的、没有 `executable` 字段，而同一次重扫就能读到，于是从安装
+/// 位置推出的 `resources\runtime\cli\bin\dsh.cmd` 确实存在。记录只在设置窗口扫描时才写，
+/// 所以"启动一次"完全可能发生在"记录还没被这一版构建重写过"之前。
+///
+/// `rescan` 由调用方给：它做完扫描并把新记录落盘后，返回新的可执行文件。**至多重扫一次**，
+/// 而且重扫没有带来不同答案时直接沿用第一次的拒绝 —— 同一个输入问两遍只是多花两秒。
+pub(crate) fn resolve_background_cli(
+    subject_id: &str,
+    recorded: Option<String>,
+    rescan: &dyn Fn() -> Option<String>,
+    exists: &dyn Fn(&Path) -> bool,
+) -> Result<BackgroundCli, &'static str> {
+    let first = plan_background_cli(subject_id, recorded.as_deref(), exists);
+    if first.is_ok() {
+        return first;
+    }
+    let refreshed = rescan();
+    if refreshed == recorded {
+        return first;
+    }
+    plan_background_cli(subject_id, refreshed.as_deref(), exists)
+}
+
+/// 一个壳主体的后台宿主该跑哪个 CLI；`None` 表示退回 AUMID 激活。
+///
+/// 三处 I/O 都收在这里（读记录、必要时重扫一次、查路径），调用方拿到的就是一个答案 ——
+/// 启动路径上不该再出现第二处"这个路径从哪来"的判断。
+pub(crate) fn shell_host_cli(subject_id: &str) -> Option<PathBuf> {
+    let aumid = subject_id.trim().strip_prefix(SHELL_ID_PREFIX)?;
+    known_shell(aumid)?;
+    let resolved = resolve_background_cli(
+        subject_id,
+        recorded_shell_executable(aumid),
+        &|| {
+            // 重扫**只用这一次，绝不落盘**。理由是一次实测：浅扫描（`deep_scan = false`）只读开始菜单
+            // 与 PATH 上的启动器，**不扫磁盘**，看不到用户用「扫描」找出来的源码检出；把它的结果写进
+            // 目录，等于拿"我没找"覆盖"上次找到了" —— 本机就是这么丢掉两个源码检出的
+            // （2026-09-30 03:08，`harness-targets.json` 从 4 个主体变成 2 个）。
+            //
+            // 规则：**目录只归手动扫描所有**（设置窗口的注释也这么写：走磁盘的深度扫描只有那一次）。
+            // 代价是记录被刷新之前每次启动都要多跑一次这段重扫（本机约 2.8 秒）—— 那是"慢一点"，
+            // 而上面那条是"用户的主体没了"。
+            let scan = crate::harness_targets::scan_harness_targets_blocking(None, false);
+            crate::harness_targets::recorded_shell_executable(&scan.targets, aumid)
+        },
+        &|path| path.exists(),
+    );
+    match resolved {
+        Ok(BackgroundCli::Launch(path)) => Some(path),
+        _ => None,
+    }
+}
+
+/// 装进档案的桥包与版本。**只此一处**：壁纸启动宿主后校验它回报的 build 时也用这个常量，
+/// 免得"钉的版本"与"校验的版本"各写一份、慢慢漂开。
+pub(crate) const BRIDGE_PACKAGE: &str = "dsh-wallpaper-bridge@0.1.5";
+
+/// 把桥装进某个档案该怎么跑（纯函数，只算不执行）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BridgeInstallPlan {
+    /// 用哪个 CLI 执行。
+    pub launcher: PathBuf,
+    /// 传给它的参数：`plugin --profile <档案> add <包>`。
+    pub args: Vec<String>,
+    /// 目标档案。
+    pub profile: String,
+    /// 目标包（含版本）。
+    pub package: String,
+}
+
+/// 计划一次"把桥装进档案"。
+///
+/// `desktop` 档案**只能由官壳自带的 CLI 管**：全局 CLI 会直接拒绝它，原话是
+/// `profile "desktop" is managed exclusively by the Electron application`（2026-09-30 实测）。
+/// 所以壳主体那一路必须把壳的 CLI 传进来；其余档案用主体自己的 CLI。
+///
+/// 官方文档里这是**唯一**受支持的外部插件分发路径（`dsh plugin --profile <name> add …`），
+/// 所以这里不自己写包管理，只是把那条命令拼出来交给调用方去跑。
+pub(crate) fn plan_bridge_install(
+    profile: &str,
+    subject_launcher: &std::path::Path,
+    shell_cli: Option<PathBuf>,
+) -> Result<BridgeInstallPlan, String> {
+    let profile = profile.trim();
+    if profile.is_empty() {
+        return Err("没有指定要装桥的档案。".into());
+    }
+    let launcher = if profile == "desktop" {
+        shell_cli.ok_or_else(|| {
+            "desktop 档案只能由桌面客户端自带的 CLI 管理，但没能解析出它的位置。".to_string()
+        })?
+    } else {
+        subject_launcher.to_path_buf()
+    };
+    Ok(BridgeInstallPlan {
+        launcher,
+        args: vec![
+            "plugin".to_string(),
+            "--profile".to_string(),
+            profile.to_string(),
+            "add".to_string(),
+            BRIDGE_PACKAGE.to_string(),
+        ],
+        profile: profile.to_string(),
+        package: BRIDGE_PACKAGE.to_string(),
+    })
+}
+
+/// 桥的版本号（`BRIDGE_PACKAGE` 里的那一段）。与包名分开写，是为了让"校验宿主回报的版本"
+/// 有东西可比；两者是否一致由一个测试钉住，免得改一处忘另一处。
+pub(crate) const BRIDGE_VERSION: &str = "0.1.5";
+
+/// 一个主体需要装桥的档案。
+///
+/// 壳主体要**两份**：客户端在跑时壁纸连的是它的 `desktop` 档案宿主，客户端不在跑时才用壁纸
+/// 自己起的 `web` 档案宿主（§7.6 走法 B′）。少装哪一份，对应的那半段路就是"灯亮着但建不了会话"。
+/// 其余主体只有一份，就是设置里选的那个档案。
+pub(crate) fn bridge_profiles_for(kind: HarnessTargetKind, profile: &str) -> Vec<String> {
+    let profile = if profile.trim().is_empty() { "web" } else { profile.trim() };
+    match kind {
+        HarnessTargetKind::EmbeddedShell => vec!["web".to_string(), "desktop".to_string()],
+        _ => vec![profile.to_string()],
+    }
+}
+
+/// 一次"装桥"尝试的结果状态。
+pub(crate) const BRIDGE_STATUS_INSTALLED: &str = "installed";
+/// 档案里已经是对应的版本：**没有跑包管理**（这是"每次启动检查"不产生副作用的关键）。
+pub(crate) const BRIDGE_STATUS_ALREADY_PRESENT: &str = "already-present";
+pub(crate) const BRIDGE_STATUS_NEEDS_CONFIRMATION: &str = "needs-confirmation";
+pub(crate) const BRIDGE_STATUS_FAILED: &str = "failed";
+
+/// DSH 档案目录的根：`$DSH_HOME`（或 `~/.dsh`）下的 `profiles`。
+///
+/// 与 `chat.rs` 解析家目录的方式一致 —— 那处负责桥 token，两处必须看同一个家。
+pub(crate) fn dsh_profiles_root() -> Option<PathBuf> {
+    let home = std::env::var_os("DSH_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(|value| PathBuf::from(value).join(".dsh")))?;
+    Some(home.join("profiles"))
+}
+
+/// 某个档案里现装的桥版本（读它的 `node_modules/dsh-wallpaper-bridge/package.json`）。
+/// 读不到就是 `None`：没装、或那个档案目录不在。
+pub(crate) fn installed_bridge_version(profiles_root: &Path, profile: &str) -> Option<String> {
+    let path = profiles_root
+        .join(profile)
+        .join("node_modules")
+        .join("dsh-wallpaper-bridge")
+        .join("package.json");
+    let text = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value.get("version")?.as_str().map(str::to_string)
+}
+
+/// 判读 CLI 的输出。**纯函数**，因为这里藏着一条政策：不代劳风险确认。
+///
+/// * 退出码 0 且输出里没有"豁免/不兼容"的字样 → 装好了；
+/// * 退出码 0 但提到了 `allow-version` 或 `incompatible` → **交给用户**（DSH 的规矩是
+///   "不兼容插件需要用户明确确认精确版本豁免"，我们只把原文带回去，绝不替他点）；
+/// * 非 0 退出码 → 失败，原因取 stderr（没有就取 stdout）。
+///
+/// 返回值里的文本会截断到 `MAX_BRIDGE_OUTPUT_CHARS`，避免把整段包管理日志塞进界面。
+pub(crate) const MAX_BRIDGE_OUTPUT_CHARS: usize = 600;
+
+pub(crate) fn interpret_install_output(
+    code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+) -> (&'static str, String) {
+    let mut detail = String::new();
+    let trimmed_out = stdout.trim();
+    let trimmed_err = stderr.trim();
+    if !trimmed_out.is_empty() {
+        detail.push_str(trimmed_out);
+    }
+    if !trimmed_err.is_empty() {
+        if !detail.is_empty() {
+            detail.push('\n');
+        }
+        detail.push_str(trimmed_err);
+    }
+    let lowered = detail.to_lowercase();
+    let mentions_exemption =
+        lowered.contains("allow-version") || lowered.contains("incompatible") || lowered.contains("豁免");
+    let status = match (code, mentions_exemption) {
+        (Some(0), false) => BRIDGE_STATUS_INSTALLED,
+        (Some(0), true) => BRIDGE_STATUS_NEEDS_CONFIRMATION,
+        _ => BRIDGE_STATUS_FAILED,
+    };
+    (status, truncate_for_surface(&detail))
+}
+
+fn truncate_for_surface(text: &str) -> String {
+    if text.chars().count() <= MAX_BRIDGE_OUTPUT_CHARS {
+        return text.to_string();
+    }
+    let mut clipped: String = text.chars().take(MAX_BRIDGE_OUTPUT_CHARS).collect();
+    clipped.push('…');
+    clipped
+}
+
+/// 从主体 id 推出它的类别。前缀就是约定（与前端 `subjectKindOf` 同一套）：
+/// `shell:` 是官壳、`cli:` 是已安装的 CLI、其余（路径）是源码树。
+pub(crate) fn subject_kind_from_id(subject_id: &str) -> HarnessTargetKind {
+    let id = subject_id.trim();
+    if id.starts_with(SHELL_ID_PREFIX) {
+        HarnessTargetKind::EmbeddedShell
+    } else if id.starts_with(CLI_ID_PREFIX) {
+        HarnessTargetKind::InstalledCli
+    } else {
+        HarnessTargetKind::Checkout
+    }
+}
+
+/// 某个主体的启动器。`cli:<路径>` 就是它自己；`shell:<AUMID>` 用壳自带的 CLI；
+/// 源码树返回 `None`（自动装桥暂不支持它，调用方要给出可读原因而不是猜一个 CLI）。
+pub(crate) fn subject_launcher(subject_id: &str) -> Option<PathBuf> {
+    let id = subject_id.trim();
+    if let Some(path) = id.strip_prefix(CLI_ID_PREFIX) {
+        let path = path.trim();
+        return if path.is_empty() { None } else { Some(PathBuf::from(path)) };
+    }
+    if id.starts_with(SHELL_ID_PREFIX) {
+        return shell_host_cli(id);
+    }
+    None
+}
+
+/// 一次装桥尝试的结果，一个档案一条。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct BridgeInstallOutcome {
+    /// 目标档案。
+    pub profile: String,
+    /// `installed` / `needs-confirmation` / `failed`。
+    pub status: String,
+    /// CLI 的原文（截断后的）；失败或需要确认时，用户要能读到它。
+    pub detail: String,
+    /// 实际跑过的命令，方便用户照着手动复现。
+    pub command: String,
+}
+
+/// 把桥装进某个主体该用的那些档案。**只跑官方那条命令**（`dsh plugin --profile <档案> add <包>`），
+/// 不自己动包管理；遇到需要用户确认的提示原样带回去（见 `interpret_install_output`）。
+pub(crate) fn install_bridge_for_subject(
+    subject_id: &str,
+    profile: &str,
+    kind: HarnessTargetKind,
+) -> Vec<BridgeInstallOutcome> {
+    let shell_cli = if subject_id.trim().starts_with(SHELL_ID_PREFIX) {
+        shell_host_cli(subject_id)
+    } else {
+        None
+    };
+    let launcher = subject_launcher(subject_id);
+    bridge_profiles_for(kind, profile)
+        .into_iter()
+        .map(|profile| {
+            let chosen = if profile == "desktop" {
+                shell_cli.clone()
+            } else {
+                launcher.clone()
+            };
+            let Some(chosen) = chosen else {
+                return BridgeInstallOutcome {
+                    profile,
+                    status: BRIDGE_STATUS_FAILED.to_string(),
+                    detail: "没能解析出可用的 CLI：源码树主体暂不支持自动装桥，请按文档手动执行。".to_string(),
+                    command: String::new(),
+                };
+            };
+            let plan = match plan_bridge_install(&profile, &chosen, shell_cli.clone()) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    return BridgeInstallOutcome {
+                        profile,
+                        status: BRIDGE_STATUS_FAILED.to_string(),
+                        detail: error,
+                        command: String::new(),
+                    }
+                }
+            };
+            // 先看档案里现装的是不是这一版。相符就**不跑包管理**：2026-09-30 实测，即使
+            // `add` 是空操作，pnpm 也会重写 `pnpm-lock.yaml` —— 每次启动都动用户的档案不该发生。
+            if dsh_profiles_root()
+                .and_then(|root| installed_bridge_version(&root, &profile))
+                .as_deref()
+                == Some(BRIDGE_VERSION)
+            {
+                return BridgeInstallOutcome {
+                    profile,
+                    status: BRIDGE_STATUS_ALREADY_PRESENT.to_string(),
+                    detail: format!("档案里已经是 {BRIDGE_VERSION}，没有跑包管理。"),
+                    command: String::new(),
+                };
+            }
+            let command = format!("{} {}", plan.launcher.display(), plan.args.join(" "));
+            let (program, program_args) = windows_launch_command(&plan.launcher, &plan.args);
+            let actual = format!("{} {}", program.display(), program_args.join(" "));
+            match std::process::Command::new(&program).args(&program_args).output() {
+                Ok(output) => {
+                    let (status, detail) = interpret_install_output(
+                        output.status.code(),
+                        &String::from_utf8_lossy(&output.stdout),
+                        &String::from_utf8_lossy(&output.stderr),
+                    );
+                    BridgeInstallOutcome {
+                        profile,
+                        status: status.to_string(),
+                        detail,
+                        command: actual,
+                    }
+                }
+                Err(error) => BridgeInstallOutcome {
+                    profile,
+                    status: BRIDGE_STATUS_FAILED.to_string(),
+                    detail: format!("无法启动 CLI：{error}（命令：{command}）"),
+                    command: actual,
+                },
+            }
+        })
+        .collect()
+}
+
+/// 后台启动（滑槽、随壁纸自启）该怎么跑 —— §7.6 走法 A 之后，壳与别的类走的路不同了。
+///
+/// * 壳：能解析出它自带的 CLI 就跑那个（`web` 档案、**绑壁纸自己的端口**、没有窗口），
+///   记录用的 id 是 `host:<主体>`；解析不出来就退回原来的 AUMID 激活（背景启动照旧把窗口
+///   留在屏幕外）；
+/// * 已安装 CLI 与源码树：原样交给 `plan_launch` —— 它们本来就是"跑自己的 CLI"。
+pub(crate) fn plan_background_launch(
+    id: &str,
+    profile: &str,
+    args: &[String],
+    trigger: LaunchTrigger,
+    subject_host_cli: Option<&Path>,
+) -> Result<LaunchPlan, &'static str> {
+    let subject = id.trim();
+    if let Some(aumid) = subject.strip_prefix(SHELL_ID_PREFIX) {
+        if let (Some(launcher), Some(shell)) = (subject_host_cli, known_shell(aumid)) {
+            // **端口是我们的，不是用户说的那个**：许可端口表里壳自己的端口是 19387、我们的宿主
+            // 在 `WALLPAPER_HOST_PORT`，而参数里的 `--port` 在这里一律丢掉 —— 让用户改掉我们绑在
+            // 哪个端口上，就等于让探测表与实际对不上（表是按主体算的，不读参数）。
+            // 「启动参数」的其余部分照常送达。
+            let mut host_args = without_port_flag(args);
+            host_args.push("--port".to_string());
+            host_args.push(crate::harness_targets::WALLPAPER_HOST_PORT.to_string());
+            return Ok(LaunchPlan::SubjectHost {
+                host_id: crate::harness_targets::host_subject_id(subject),
+                subject_id: subject.to_string(),
+                kind: HarnessTargetKind::EmbeddedShell,
+                launcher: launcher.to_string_lossy().into_owned(),
+                // 只有 `web` 能提供 HTTP 且能装桥；`desktop` 档案两边的 CLI 都会拒绝。
+                profile: "web".to_string(),
+                args: host_args,
+                subject_port: shell.default_port,
+                host_port: crate::harness_targets::WALLPAPER_HOST_PORT,
+            });
+        }
+    }
+    plan_launch(subject, profile, args, trigger)
+}
+
+/// 「启动参数」去掉 `--port` 那一段（`--port N` 与 `--port=N` 两种写法都算）。
+///
+/// 壳那条路上端口是**契约**不是偏好：探测表按主体算端口，用户改不掉它，所以也不该能改我们绑在
+/// 哪儿。其余参数一个字都不动 —— 用户写的别的词仍然原样送到启动器后面。
+fn without_port_flag(args: &[String]) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    let mut iterator = args.iter();
+    while let Some(value) = iterator.next() {
+        if value == "--port" {
+            let _ = iterator.next();
+            continue;
+        }
+        if value.starts_with("--port=") {
+            continue;
+        }
+        kept.push(value.clone());
+    }
+    kept
 }
 
 /// Who is asking for the start, which is what decides the one rule that still differs.
@@ -872,6 +1431,42 @@ pub(crate) fn run_launch(
             port,
             hide_window,
         } => launch_shell(aumid, alias, *port, *hide_window, trigger),
+        LaunchPlan::SubjectHost {
+            host_id,
+            subject_id,
+            kind,
+            launcher,
+            profile,
+            args,
+            subject_port,
+            host_port,
+        } => {
+            // 两个端口各有一句话要说。
+            //
+            // **主体自己的端口有人应答**（用户开着客户端，或者另一个 DSH 宿主在那儿）⇒ 什么都别起：
+            // 那个进程服务的是同一份数据、同一套桥，壁纸连上它就是对的答案。这与 `launch_shell`
+            // 开头那条判断是同一条规矩。
+            if let Some(port) = subject_port {
+                if crate::client_window::endpoint_is_listening(*port) {
+                    log::info!(
+                        "harness subject host not needed: subject={subject_id} port={port} already answers"
+                    );
+                    return HarnessLaunchOutcome::new("already-running", *kind);
+                }
+            }
+            // **我们自己的端口有人应答** ⇒ 上一次起的宿主还在，重复按「启动」应当是幂等的一次，
+            // 而不是第二个进程白撞一次 `EADDRINUSE`。
+            if crate::client_window::endpoint_is_listening(*host_port) {
+                log::info!(
+                    "harness subject host already serving: subject={subject_id} port={host_port}"
+                );
+                return HarnessLaunchOutcome::new("already-running", *kind);
+            }
+            log::info!(
+                "harness subject host: subject={subject_id} record={host_id} profile={profile} port={host_port}"
+            );
+            launch_cli_host(host_id, *kind, launcher, profile, args, true)
+        }
         LaunchPlan::InstalledCli {
             launcher,
             profile,
@@ -2096,6 +2691,175 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn the_installed_bridge_version_is_read_from_the_profile_tree() {
+        let root = std::env::temp_dir().join(format!("dsh-bridge-test-{}", std::process::id()));
+        let module = root.join("web").join("node_modules").join("dsh-wallpaper-bridge");
+        std::fs::create_dir_all(&module).expect("临时目录");
+        std::fs::write(
+            module.join("package.json"),
+            format!(r#"{{"name":"dsh-wallpaper-bridge","version":"{BRIDGE_VERSION}"}}"#),
+        )
+        .expect("写 package.json");
+        assert_eq!(
+            installed_bridge_version(&root, "web").as_deref(),
+            Some(BRIDGE_VERSION)
+        );
+        // 没装过的档案、以及内容不是 JSON 的情况都读成 None，而不是报错。
+        assert_eq!(installed_bridge_version(&root, "desktop"), None);
+        let broken = root.join("broken").join("node_modules").join("dsh-wallpaper-bridge");
+        std::fs::create_dir_all(&broken).expect("临时目录");
+        std::fs::write(broken.join("package.json"), "not json").expect("写坏文件");
+        assert_eq!(installed_bridge_version(&root, "broken"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_plugin_command_also_goes_through_cmd_when_the_launcher_is_a_batch_file() {
+        let args = vec![
+            "plugin".to_string(),
+            "--profile".to_string(),
+            "web".to_string(),
+            "add".to_string(),
+            BRIDGE_PACKAGE.to_string(),
+        ];
+        let (program, actual) = windows_launch_command(std::path::Path::new("C:\\npm\\dsh.cmd"), &args);
+        assert_eq!(program, PathBuf::from("cmd.exe"));
+        assert_eq!(actual[0], "/c");
+        assert_eq!(actual[1], "C:\\npm\\dsh.cmd");
+        // 参数原样跟在后面，不再注入 --profile/--no-open：这条命令自己带 --profile。
+        assert_eq!(&actual[2..], &args[..]);
+        // `.exe` 不套壳。
+        let (program, actual) = windows_launch_command(std::path::Path::new("C:\\dsh.exe"), &args);
+        assert_eq!(program, PathBuf::from("C:\\dsh.exe"));
+        assert_eq!(actual, args);
+    }
+
+    #[test]
+    fn a_subject_id_carries_its_kind_and_a_checkout_offers_no_launcher() {
+        assert_eq!(
+            subject_kind_from_id("shell:com.deepseek.dsh"),
+            HarnessTargetKind::EmbeddedShell
+        );
+        assert_eq!(
+            subject_kind_from_id("cli:C:\\Users\\me\\AppData\\Roaming\\npm\\dsh.cmd"),
+            HarnessTargetKind::InstalledCli
+        );
+        assert_eq!(
+            subject_kind_from_id("D:\\Family\\DeepSeekHarness\\deepseek-harness"),
+            HarnessTargetKind::Checkout
+        );
+        // `cli:` 前缀就是启动器本身；空路径与源码树都没有可用的启动器。
+        assert_eq!(
+            subject_launcher("cli:C:\\npm\\dsh.cmd"),
+            Some(PathBuf::from("C:\\npm\\dsh.cmd"))
+        );
+        assert_eq!(subject_launcher("cli:   "), None);
+        assert_eq!(subject_launcher("D:\\tree"), None);
+    }
+
+    #[test]
+    fn a_clean_install_reads_as_installed_and_a_failure_keeps_its_reason() {
+        let (status, detail) = interpret_install_output(Some(0), "Packages: +1\nDone in 2.7s", "");
+        assert_eq!(status, BRIDGE_STATUS_INSTALLED);
+        assert!(detail.contains("Done in 2.7s"));
+
+        let (status, detail) = interpret_install_output(Some(1), "", "ERR_PNPM_FETCH_404  未找到该版本");
+        assert_eq!(status, BRIDGE_STATUS_FAILED);
+        assert!(detail.contains("ERR_PNPM_FETCH_404"), "失败原因要带原文：{detail}");
+    }
+
+    #[test]
+    fn a_version_exemption_is_handed_to_the_user_instead_of_being_accepted() {
+        // 这行是 2026-09-30 实测的原文形状：宿主拒了插件，并提示用户可以自己授予豁免。
+        let warning = "dsh: warning: Plugin @deepseek-harness-tui/dsh-tui@0.11.1 is incompatible with dsh 0.2.0-rc.1\n\
+                       To accept this risk explicitly, grant the exact-version exemption … with `dsh plugin allow-version`\n\
+                       Exact-version exemption: not active.";
+        let (status, detail) = interpret_install_output(Some(0), warning, "");
+        assert_eq!(status, BRIDGE_STATUS_NEEDS_CONFIRMATION);
+        assert!(detail.contains("allow-version"), "要把原文交回去：{detail}");
+    }
+
+    #[test]
+    fn a_long_package_manager_log_is_clipped_before_it_reaches_the_surface() {
+        let long = "x".repeat(MAX_BRIDGE_OUTPUT_CHARS + 200);
+        let (_, detail) = interpret_install_output(Some(1), &long, "");
+        assert!(detail.chars().count() <= MAX_BRIDGE_OUTPUT_CHARS + 1, "长度 {}", detail.chars().count());
+        assert!(detail.ends_with('…'));
+    }
+
+    #[test]
+    fn the_package_string_and_the_pinned_version_cannot_drift() {
+        assert!(BRIDGE_PACKAGE.starts_with("dsh-wallpaper-bridge@"));
+        assert!(
+            BRIDGE_PACKAGE.ends_with(BRIDGE_VERSION),
+            "包名里的版本与 BRIDGE_VERSION 不一致：{BRIDGE_PACKAGE} vs {BRIDGE_VERSION}"
+        );
+    }
+
+    #[test]
+    fn a_shell_needs_both_profiles_and_other_subjects_need_one() {
+        assert_eq!(
+            bridge_profiles_for(HarnessTargetKind::EmbeddedShell, "web"),
+            vec!["web".to_string(), "desktop".to_string()]
+        );
+        assert_eq!(
+            bridge_profiles_for(HarnessTargetKind::InstalledCli, "web"),
+            vec!["web".to_string()]
+        );
+        assert_eq!(
+            bridge_profiles_for(HarnessTargetKind::Checkout, "dsh-tui"),
+            vec!["dsh-tui".to_string()]
+        );
+        // 档案留空时按 web 处理，与设置里的默认值一致。
+        assert_eq!(
+            bridge_profiles_for(HarnessTargetKind::InstalledCli, "   "),
+            vec!["web".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_desktop_profile_is_installed_through_the_shell_s_own_cli() {
+        let plan = plan_bridge_install(
+            "desktop",
+            std::path::Path::new("C:\\npm\\dsh.cmd"),
+            Some(PathBuf::from("C:\\shell\\cli\\bin\\dsh.cmd")),
+        )
+        .expect("desktop 有壳 CLI 时应当能计划出来");
+        assert_eq!(plan.launcher, PathBuf::from("C:\\shell\\cli\\bin\\dsh.cmd"));
+        assert_eq!(
+            plan.args,
+            vec![
+                "plugin".to_string(),
+                "--profile".to_string(),
+                "desktop".to_string(),
+                "add".to_string(),
+                BRIDGE_PACKAGE.to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn the_desktop_profile_refuses_to_guess_when_the_shell_cli_is_missing() {
+        let error = plan_bridge_install("desktop", std::path::Path::new("C:\\npm\\dsh.cmd"), None)
+            .expect_err("没有壳 CLI 时不能拿别的 CLI 去碰 desktop 档案");
+        assert!(
+            error.contains("desktop"),
+            "错误里要说清是哪个档案：{error}"
+        );
+    }
+
+    #[test]
+    fn other_profiles_are_installed_through_the_subject_s_own_cli() {
+        let plan = plan_bridge_install("web", std::path::Path::new("C:\\npm\\dsh.cmd"), None)
+            .expect("非 desktop 档案用主体自己的 CLI");
+        assert_eq!(plan.launcher, PathBuf::from("C:\\npm\\dsh.cmd"));
+        assert_eq!(plan.profile, "web");
+        assert_eq!(plan.package, BRIDGE_PACKAGE);
+        assert!(plan.args.contains(&"--profile".to_string()));
+    }
+
+    #[test]
     fn an_installed_cli_starts_through_cmd_because_npm_ships_a_batch_file() {
         let (program, command_args) = installed_cli_command(
             Path::new(r"C:\Users\u\AppData\Roaming\npm\dsh.cmd"),
@@ -2455,6 +3219,284 @@ mod tests {
     const MANUAL: LaunchTrigger = LaunchTrigger::Manual;
     const AUTO: LaunchTrigger = LaunchTrigger::Automatic;
     const SLIDER: LaunchTrigger = LaunchTrigger::Slider;
+
+    /// 施工文档 §7 把三种主体都收成"跑它的 CLI"，所以这条解析是所有主体共用的一步。
+    ///
+    /// 三件事必须钉住，否则错法都是安静的：壳的路径**从安装位置推**（不是存的，也不是从
+    /// AUMID 猜的）、两种拒绝**分得开**（缺可执行文件 vs 缺启动器，调用方的退路不一样）、
+    /// 源码树**不查启动器**（它自己就是 CLI）。
+    #[test]
+    fn a_shells_cli_is_derived_from_its_install_and_never_stored() {
+        let executable = r"D:\Family\dsh-official\DeepSeek Harness.exe";
+        let bundled = r"D:\Family\dsh-official\resources\runtime\cli\bin\dsh.cmd";
+        let found = |path: &Path| path == Path::new(bundled);
+        assert_eq!(
+            plan_background_cli(OFFICIAL_ID, Some(executable), &found),
+            Ok(BackgroundCli::Launch(PathBuf::from(bundled)))
+        );
+
+        // 换一个安装目录，答案跟着走：这正是"不存路径"要保住的性质（客户端重装到别处时，
+        // 存储里那份 id 一个字都不该改）。
+        let elsewhere = r"E:\Apps\DSH\DeepSeek Harness.exe";
+        let bundled_elsewhere = r"E:\Apps\DSH\resources\runtime\cli\bin\dsh.cmd";
+        let found_elsewhere = |path: &Path| path == Path::new(bundled_elsewhere);
+        assert_eq!(
+            plan_background_cli(OFFICIAL_ID, Some(elsewhere), &found_elsewhere),
+            Ok(BackgroundCli::Launch(PathBuf::from(bundled_elsewhere)))
+        );
+
+        // 反过来也要成立：问的是"这份安装里那个启动器在不在"，不是"某个固定路径在不在"。
+        assert_eq!(
+            plan_background_cli(OFFICIAL_ID, Some(elsewhere), &found),
+            Err("missing-launcher")
+        );
+    }
+
+    #[test]
+    fn a_shell_without_a_measured_executable_refuses_instead_of_guessing() {
+        // AUMID 换不出路径。没有扫描到的可执行文件时只能拒绝，让调用方退回 AUMID 激活；
+        // 拼一个"看起来对"的目录，会在用户机器上开出一个没人验证过的路径。
+        assert_eq!(plan_background_cli(OFFICIAL_ID, None, &|_| true), Err("missing-executable"));
+        assert_eq!(plan_background_cli(OFFICIAL_ID, Some("   "), &|_| true), Err("missing-executable"));
+        // 只有文件名、没有目录：没有安装位置可挂，同样拒绝（否则相对路径会落到当前目录）。
+        assert_eq!(
+            plan_background_cli(OFFICIAL_ID, Some("DeepSeek Harness.exe"), &|_| true),
+            Err("missing-executable")
+        );
+    }
+
+    #[test]
+    fn a_missing_launcher_is_a_different_refusal_than_a_missing_executable() {
+        // 这两个错误码不能合成一个：缺可执行文件是"这个主体没有可用的安装位置"，缺启动器是
+        // "安装位置有，但那份 CLI 不在"。客户端的退路（AUMID 激活）只对后者有意义。
+        assert_eq!(
+            plan_background_cli(OFFICIAL_ID, Some(r"D:\gone\DeepSeek Harness.exe"), &|_| false),
+            Err("missing-launcher")
+        );
+    }
+
+    #[test]
+    fn an_installed_cli_is_its_own_launcher() {
+        let launcher = r"C:\Users\someone\AppData\Roaming\npm\dsh.cmd";
+        let id = format!("{CLI_ID_PREFIX}{launcher}");
+        let found = |path: &Path| path == Path::new(launcher);
+        assert_eq!(
+            plan_background_cli(&id, None, &found),
+            Ok(BackgroundCli::Launch(PathBuf::from(launcher)))
+        );
+        // 两端空白是存储格式的噪音，不是路径的一部分。
+        let padded = format!("  {CLI_ID_PREFIX}  {launcher}  ");
+        assert_eq!(
+            plan_background_cli(&padded, None, &found),
+            Ok(BackgroundCli::Launch(PathBuf::from(launcher)))
+        );
+        // 空启动器与已卸载的 CLI 是两件事：前者是坏 id，后者是"这个主体现在起不来"。
+        assert_eq!(plan_background_cli("cli:", None, &|_| true), Err("unknown-target"));
+        assert_eq!(plan_background_cli("cli:   ", None, &|_| true), Err("unknown-target"));
+        assert_eq!(plan_background_cli(&id, None, &|_| false), Err("missing-launcher"));
+    }
+
+    /// 这台机器上的真话：官方客户端自带的 CLI 到底在不在那个相对位置上。
+    ///
+    /// 默认忽略（要读本机安装目录）。跑法：
+    /// `cargo test --lib -- --ignored --nocapture this_machine_resolves_the_bundled_cli`。
+    /// 它只读路径、不启动任何东西 —— 与上面那条 `this_machine_*` 同一条规矩。
+    #[test]
+    #[ignore = "reads this machine's installed client; starts nothing"]
+    fn this_machine_resolves_the_bundled_cli() {
+        let aumid = "com.deepseek.dsh";
+        let id = format!("{SHELL_ID_PREFIX}{aumid}");
+        // 两条来源分开打：记录里那份可能比这一版构建旧（本机实测就是），而"重扫一次能不能
+        // 解析成功"才是这条路可不可用的真话。差在这两者之间，是**重扫**要补的，不是推导错。
+        let recorded = recorded_shell_executable(aumid);
+        println!("recorded executable: {recorded:?}");
+        println!(
+            "plan from the record: {:?}",
+            plan_background_cli(&id, recorded.as_deref(), &|path| path.exists())
+        );
+
+        let scan = crate::harness_targets::scan_harness_targets_blocking(None, false);
+        let live = scan
+            .targets
+            .iter()
+            .find(|target| target.id.eq_ignore_ascii_case(&id))
+            .and_then(|target| target.executable.clone());
+        println!("scanned executable: {live:?}");
+        println!(
+            "plan from a live scan: {:?}",
+            plan_background_cli(&id, live.as_deref(), &|path| path.exists())
+        );
+    }
+
+    #[test]
+    fn a_checkout_is_already_its_own_cli() {
+        // 源码树的 CLI 就在树里（托管链跑的是它的 `apps/cli`），所以这里没有"启动器"要解析，
+        // 也就**不查**任何路径：树本身是不是成立，由托管链按根的形状自己去验。
+        assert_eq!(plan_background_cli(CHECKOUT, None, &|_| false), Ok(BackgroundCli::TreeChain));
+        assert_eq!(
+            plan_background_cli(CHECKOUT, Some(r"D:\ignored\DeepSeek Harness.exe"), &|_| false),
+            Ok(BackgroundCli::TreeChain)
+        );
+        assert_eq!(plan_background_cli("   ", None, &|_| false), Ok(BackgroundCli::TreeChain));
+    }
+
+    /// 后台启动的分岔（施工文档 §7.6 修正版）：壳走它自带的 CLI，但**绑壁纸自己的端口**。
+    #[test]
+    fn a_shells_background_host_binds_the_wallpapers_own_port() {
+        let launcher = Path::new(r"D:\Family\dsh-official\resources\runtime\cli\bin\dsh.cmd");
+        let plan = plan_background_launch(OFFICIAL_ID, "web", &[], SLIDER, Some(launcher)).expect("host plan");
+        match plan {
+            LaunchPlan::SubjectHost {
+                host_id,
+                subject_id,
+                kind,
+                launcher: planned,
+                profile,
+                args,
+                subject_port,
+                host_port,
+            } => {
+                // 记录用的是 **host:<主体>**：它归我们管；而 `shell:<aumid>` 永远不归我们管，
+                // 这两件事必须分得开，否则"收掉自己的宿主"会变成"杀掉用户的客户端"。
+                assert_eq!(host_id, "host:shell:com.deepseek.dsh");
+                assert_eq!(subject_id, OFFICIAL_ID);
+                assert_eq!(kind, HarnessTargetKind::EmbeddedShell);
+                assert_eq!(planned, launcher.to_string_lossy());
+                // 只有 `web` 能提供 HTTP 且能装桥；`desktop` 档案两边的 CLI 都会拒绝。
+                assert_eq!(profile, "web");
+                // 客户端自己的端口只用来问"它在不在跑"。
+                assert_eq!(subject_port, Some(19387));
+                // 我们绑的是**壁纸自己的**端口。占着 19387 会让用户从开始菜单直接打开壳时
+                // 引导失败并弹错误框（2026-09-30 实测的 `EADDRINUSE 127.0.0.1:19387`）。
+                assert_eq!(host_port, crate::harness_targets::WALLPAPER_HOST_PORT);
+                assert_eq!(args, argv(&["--port", "3099"]));
+            }
+            other => panic!("expected a subject host plan, got {other:?}"),
+        }
+    }
+
+    /// 壳那条路上端口是**契约**，不是用户的偏好。
+    #[test]
+    fn a_launch_arg_port_cannot_move_the_shell_host() {
+        let launcher = Path::new(r"D:\Family\dsh-official\resources\runtime\cli\bin\dsh.cmd");
+        let declared = argv(&["--port", "4000", "--verbose"]);
+        let plan = plan_background_launch(OFFICIAL_ID, "web", &declared, AUTO, Some(launcher)).expect("host plan");
+        match plan {
+            LaunchPlan::SubjectHost { args, host_port, .. } => {
+                assert_eq!(host_port, crate::harness_targets::WALLPAPER_HOST_PORT);
+                // 用户写的端口被丢掉、别的词照常送达：探测表按主体算端口，读不到用户的参数，
+                // 所以让参数改掉我们绑在哪儿，等于让表与实际对不上。
+                assert_eq!(args, argv(&["--verbose", "--port", "3099"]));
+            }
+            other => panic!("expected a subject host plan, got {other:?}"),
+        }
+        // 两种写法都要认，而且 `--port` 后面那个值必须一起走 —— 留下孤零零的 `4000` 会被
+        // 启动器当成一个它不认识的词。
+        assert_eq!(without_port_flag(&argv(&["--port=4000", "a"])), argv(&["a"]));
+        assert_eq!(without_port_flag(&argv(&["--port"])), Vec::<String>::new());
+        assert_eq!(without_port_flag(&argv(&["a", "--port", "4000", "b"])), argv(&["a", "b"]));
+    }
+
+    #[test]
+    fn a_shell_without_a_resolvable_cli_falls_back_to_activating_the_client() {
+        // 解析不出来（记录旧、CLI 被删、客户端换过地方）时退回原来的路：背景启动照旧把窗口
+        // 留在屏幕外，而不是什么都不起。
+        let automatic = plan_background_launch(OFFICIAL_ID, "desktop", &[], AUTO, None).expect("shell plan");
+        assert!(matches!(automatic, LaunchPlan::Shell { hide_window: true, .. }));
+        let slider = plan_background_launch(OFFICIAL_ID, "desktop", &[], SLIDER, None).expect("shell plan");
+        assert_eq!(slider, automatic);
+    }
+
+    #[test]
+    fn other_subject_kinds_are_untouched_by_the_host_route() {
+        // 已安装 CLI 与源码树本来就是"跑自己的 CLI"，这条岔路与它们无关：即便递进来一个启动器，
+        // 计划也不该变成"用壳的方式跑它"。
+        let launcher = Path::new(r"D:\Family\dsh-official\resources\runtime\cli\bin\dsh.cmd");
+        let cli = format!("{CLI_ID_PREFIX}C:\\Users\\u\\AppData\\Roaming\\npm\\dsh.cmd");
+        assert!(matches!(
+            plan_background_launch(&cli, "web", &[], SLIDER, Some(launcher)),
+            Ok(LaunchPlan::InstalledCli { .. })
+        ));
+        assert!(matches!(
+            plan_background_launch(CHECKOUT, " web ", &[], SLIDER, Some(launcher)),
+            Ok(LaunchPlan::Checkout { .. })
+        ));
+    }
+
+    /// "记录可能比这一版构建旧"的处理：先重扫一次，而且**只扫一次**。
+    #[test]
+    fn a_stale_record_is_rescanned_once_before_refusing() {
+        let bundled = r"D:\Family\dsh-official\resources\runtime\cli\bin\dsh.cmd";
+        let found = |path: &Path| path == Path::new(bundled);
+        let exe = r"D:\Family\dsh-official\DeepSeek Harness.exe";
+
+        // 记录里就有可执行文件 ⇒ 一次都不扫（重扫本机实测约 2.8 秒，不该花在能直接回答的时候）。
+        let scans = std::cell::Cell::new(0);
+        let resolved = resolve_background_cli(
+            OFFICIAL_ID,
+            Some(exe.to_string()),
+            &|| { scans.set(scans.get() + 1); None },
+            &found,
+        );
+        assert!(matches!(resolved, Ok(BackgroundCli::Launch(_))));
+        assert_eq!(scans.get(), 0, "记录够用时不该扫描");
+
+        // 记录里没有 ⇒ 扫一次，并用新答案。
+        let scans = std::cell::Cell::new(0);
+        let resolved = resolve_background_cli(
+            OFFICIAL_ID,
+            None,
+            &|| { scans.set(scans.get() + 1); Some(exe.to_string()) },
+            &found,
+        );
+        assert!(matches!(resolved, Ok(BackgroundCli::Launch(_))));
+        assert_eq!(scans.get(), 1);
+
+        // 重扫没有带来不同答案 ⇒ 沿用第一次的拒绝，而不是拿同一个输入再问一遍。
+        let scans = std::cell::Cell::new(0);
+        assert_eq!(
+            resolve_background_cli(OFFICIAL_ID, None, &|| { scans.set(scans.get() + 1); None }, &found),
+            Err("missing-executable")
+        );
+        assert_eq!(scans.get(), 1);
+
+        // 客户端换过地方是同一个形状：旧记录指向一条不存在的路径，新记录给出新安装位置。
+        let moved = |path: &Path| path == Path::new(r"E:\Apps\DSH\resources\runtime\cli\bin\dsh.cmd");
+        assert_eq!(
+            resolve_background_cli(
+                OFFICIAL_ID,
+                Some(r"D:\old\DeepSeek Harness.exe".to_string()),
+                &|| Some(r"E:\Apps\DSH\DeepSeek Harness.exe".to_string()),
+                &moved,
+            ),
+            Ok(BackgroundCli::Launch(PathBuf::from(r"E:\Apps\DSH\resources\runtime\cli\bin\dsh.cmd")))
+        );
+    }
+
+    /// 落盘记录那一半挑出来的必须是**我们自己的**实例，官壳除外。
+    ///
+    /// 这条判据曾经写反（`!is_managed_by_us`），而两个消费者各自又滤了一遍官壳，于是它一声不响：
+    /// 重启过的壁纸既列不出、也停不掉自己启动的宿主，而"停止全部"还会静默报成功。
+    #[test]
+    fn the_record_only_half_lists_ours_and_never_the_client() {
+        let cli = r"cli:C:\Users\u\AppData\Roaming\npm\dsh.cmd";
+        let host = "host:shell:com.deepseek.dsh";
+        let mut cylinder = ManagedChildren::default();
+        cylinder.remember(child(CHECKOUT, CHECKOUT, 111, Some(1)));
+        cylinder.remember(child(cli, cli, 222, Some(1)));
+        cylinder.remember(child(host, host, 333, Some(1)));
+        cylinder.remember(child(OFFICIAL_ID, OFFICIAL_ID, 444, Some(1)));
+
+        let listed = our_live_instances(&cylinder, &|_| true);
+        let ours: Vec<&str> = listed.iter().map(|entry| entry.subject_id.as_str()).collect();
+        assert!(ours.contains(&CHECKOUT) && ours.contains(&cli) && ours.contains(&host));
+        // 官壳那条记录混在这份文件里是正常的（它是给"门票"用的），但它一次都不该出现在"我们的"里。
+        assert!(!ours.contains(&OFFICIAL_ID), "the client is never ours: {ours:?}");
+        assert_eq!(ours.len(), 3);
+
+        // 存活判定同样要生效：报"已经不是同一个进程"的一条都不留。
+        assert!(our_live_instances(&cylinder, &|_| false).is_empty());
+    }
 
     #[test]
     fn a_shell_plan_carries_the_alias_this_build_knows() {

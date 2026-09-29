@@ -322,9 +322,9 @@ dsh-wallpaper/
 
 <h2 id="license">📄 License</h2>
 
-本项目程序部分以AGPL-3.0协议开源（注，代码部分因为涉及网页桥接与凭证管理，所以使用强协议约定。）
+**代码以 MIT 授权**（见 [LICENSE](LICENSE)）。这个项目涉及网页桥接与凭证管理，所以安全上不靠许可、靠别的：安装包签名与官方发布渠道、桥的控制面只暴露壁纸真正需要的能力、以及宿主回报的桥构建可核对（见 [bridge/README.md](bridge/README.md) 的信任模型）。
 
-美术部分灵感与立绘原型来自于ZipZipPipe大佬，按照协议本项目的美术素材部分同样以CC BY-NC-SA 4.0协议开源。
+**美术素材不与代码同许可**：立绘原型来自 ZipZipPipe（鲸鱼娘形象另致谢上善无形），本项目的立绘是在其基础上的**衍生**，因此**沿用** CC BY-NC-SA 4.0（署名 + 非商业 + 相同方式共享），不适用 MIT。详见 [LICENSE-ASSETS.md](LICENSE-ASSETS.md)。
 
 <br>
 
