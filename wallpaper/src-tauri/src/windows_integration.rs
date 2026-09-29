@@ -1027,6 +1027,16 @@ fn is_desktop_foreground_class(class: Option<&str>) -> bool {
     matches!(class, Some("WorkerW") | Some("Progman"))
 }
 
+/// 这个类是不是**桌面表面本身**。只给双击切换那条判据用，别改
+/// `is_desktop_foreground_class` 的含义 —— 那个是 Win+D 覆盖层的老判据（只认 WorkerW/Progman），
+/// 现在这里要多认两个：点空白桌面时前台可能落到图标视图上。
+fn is_desktop_surface_class(class: Option<&str>) -> bool {
+    matches!(
+        class,
+        Some("Progman") | Some("WorkerW") | Some("SHELLDLL_DefView") | Some("SysListView32")
+    )
+}
+
 fn should_upgrade_wallpaper_parent(current_class: Option<&str>, worker_available: bool) -> bool {
     current_class == Some("Progman") && worker_available
 }
@@ -2559,11 +2569,16 @@ fn restore_desktop_keyboard_focus(app: &tauri::AppHandle) {
 fn double_click_became_someone_elses(
     foreground_pid_at_first_click: Option<u32>,
     foreground_pid_now: Option<u32>,
-    explorer_pid: Option<u32>,
     our_pid: u32,
+    foreground_now_is_desktop_surface: bool,
 ) -> bool {
+    // 放行只有两种：前台换成**我们自己**，或换成**桌面表面窗口**（Progman/WorkerW/图标视图）。
+    //
+    // 这里刻意不再用「进程号 == Explorer」当放行条件：用资源管理器打开文件夹或文件时，
+    // 动作正是由 explorer 自己完成的，进程号不变，于是双击图标那一类会漏过去（实测复发过一次）。
+    // 按窗口类判断才分得清「桌面表面」与「Explorer 开出来的窗口」。
     match (foreground_pid_at_first_click, foreground_pid_now) {
-        (Some(before), Some(now)) if before != now => now != our_pid && Some(now) != explorer_pid,
+        (Some(before), Some(now)) if before != now => now != our_pid && !foreground_now_is_desktop_surface,
         _ => false,
     }
 }
@@ -2773,25 +2788,27 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                             if pid == 0 { None } else { Some(pid) }
                         }
                     };
-                    // Explorer 的进程号：我们的壁纸窗口挂在它的 WorkerW 之下，所以父窗口属于它。
-                    let explorer_pid = background.and_then(|background| unsafe {
-                        let host = GetParent(background).ok()?;
-                        if host.0.is_null() {
-                            return None;
+                    let foreground_now_class = unsafe {
+                        let window = GetForegroundWindow();
+                        if window.0.is_null() {
+                            None
+                        } else {
+                            window_class(window)
                         }
-                        let mut pid = 0u32;
-                        GetWindowThreadProcessId(host, Some(&mut pid));
-                        if pid == 0 { None } else { Some(pid) }
-                    });
+                    };
+                    let foreground_now_is_desktop_surface =
+                        is_desktop_surface_class(foreground_now_class.as_deref());
                     if double_click_became_someone_elses(
                         foreground_pid_at_first_click,
                         foreground_pid_now,
-                        explorer_pid,
                         std::process::id(),
+                        foreground_now_is_desktop_surface,
                     ) {
                         // 这次双击启动了别的东西（例如桌面上的快捷方式）：那是它在响应你，
                         // 不是"对着空白桌面双击"。不翻，并把这一对点击忘掉。
-                        log::info!("双击落在了会启动东西的位置：不切换表/里桌面");
+                        log::info!(
+                            "双击落在了会启动东西的位置：不切换表/里桌面（前台 pid={foreground_pid_now:?} class={foreground_now_class:?} 首次 pid={foreground_pid_at_first_click:?}）"
+                        );
                         last_blank_click = None;
                         foreground_pid_at_first_click = None;
                         was_down = down;
@@ -4756,44 +4773,32 @@ mod tests {
 fn a_double_click_that_activated_something_else_never_toggles_the_workspace() {
     let ours = 1000u32;
     let explorer = 2000u32;
-    // 前台换成了第三个进程（双击快捷方式/文件夹/文件都会这样）：不翻。
-    assert!(double_click_became_someone_elses(
-        Some(ours),
-        Some(3000),
-        Some(explorer),
-        ours
-    ));
-    // 前台换成了 Explorer 的窗口（点空白桌面时的常见结果）：仍然翻 —— 上一版按窗口类名判断时，
-    // 正是这种情况被误当成别人，把空白双击也挡掉了。
-    assert!(!double_click_became_someone_elses(
-        Some(3000),
-        Some(explorer),
-        Some(explorer),
-        ours
-    ));
+    // 前台换成了别的进程的普通窗口：不翻。
+    assert!(double_click_became_someone_elses(Some(ours), Some(3000), ours, false));
+    // 前台换成了 Explorer **开出来的**窗口（双击文件夹/文件，动作由 explorer 自己完成）：
+    // 同样不翻 —— 这正是上一版按「进程号 == Explorer」放行时漏过去的那一类。
+    assert!(double_click_became_someone_elses(Some(ours), Some(explorer), ours, false));
+    // 前台换成了桌面表面窗口（点空白桌面的常见结果，含图标视图）：仍然翻。
+    assert!(!double_click_became_someone_elses(Some(3000), Some(explorer), ours, true));
     // 前台换成了我们自己：仍然翻。
-    assert!(!double_click_became_someone_elses(
-        Some(explorer),
-        Some(ours),
-        Some(explorer),
-        ours
-    ));
+    assert!(!double_click_became_someone_elses(Some(explorer), Some(ours), ours, false));
     // 前台没变（点击穿透）：仍然翻。
-    assert!(!double_click_became_someone_elses(
-        Some(3000),
-        Some(3000),
-        Some(explorer),
-        ours
-    ));
+    assert!(!double_click_became_someone_elses(Some(3000), Some(3000), ours, false));
     // 首次点击没记到前台：不因此阻止（宁可保留原行为，也不要让功能静默失效）。
-    assert!(!double_click_became_someone_elses(
-        None,
-        Some(3000),
-        Some(explorer),
-        ours
-    ));
-    // 认不出桌面宿主进程号时，只按「不是我们自己」保守判断。
-    assert!(double_click_became_someone_elses(Some(ours), Some(3000), None, ours));
+    assert!(!double_click_became_someone_elses(None, Some(3000), ours, false));
+}
+
+#[test]
+fn the_desktop_surface_classes_are_the_wallpaper_hosts_not_explorer_windows() {
+    // 桌面表面：Progman/WorkerW 是宿主，另两个是空白双击时前台可能落到的图标视图。
+    for class in ["Progman", "WorkerW", "SHELLDLL_DefView", "SysListView32"] {
+        assert!(is_desktop_surface_class(Some(class)), "{class}");
+    }
+    // Explorer 开出来的窗口不是桌面表面 —— 这条区分正是这个缺陷的修复点。
+    for class in ["CabinetWClass", "ExploreWClass", "Chrome_WidgetWin_1"] {
+        assert!(!is_desktop_surface_class(Some(class)), "{class}");
+    }
+    assert!(!is_desktop_surface_class(None));
 }
 
 #[test]
