@@ -2586,10 +2586,11 @@ fn double_click_pairing_window_ms(system_ms: u32) -> u64 {
     // 这里是**我们自己的手势**，不是操作系统的双击：系统那个 500ms 决定的是"Explorer 要不要打开
     // 图标"，而"在空白桌面上连点两下"在系统看来只是两次普通点击。实测用户自然的节奏会超过 500ms
     // （系统值就是 500，而功能一直不触发），所以取系统值与 900ms 里较大的那个，再夹到 2 秒以内。
-    // 实测这台机器上用户的双击节奏在 1000~1600ms 之间（日志里的"双击配对：间隔"），所以下限给到
-    // 1500ms —— 900ms 时有一半的配对失败，而**所有**判据都是通过的，卡的只是时间。
-    // 放宽时间带来的误配对风险，由"两次点击必须位置相近"那条条件兜住（见 within_double_click_reach）。
-    u64::from(system_ms).clamp(200, 2000).max(1500)
+    // 用户决定按 900ms 试（此前 1500ms）。两者的取舍是明确写下来的：日志里一次**真实的**桌面双击
+    // 间隔是 1044ms —— 900ms 时那种节奏会落空；反过来 1500ms 更容易让两次无关的单击凑成一对。
+    // 位置相近那条条件（within_double_click_reach）继续兜住后者的风险。日志每次配对都会打印实测间隔，
+    // 所以下一步该往哪边调，看数字即可。
+    u64::from(system_ms).clamp(200, 2000).max(900)
 }
 
 fn double_click_became_someone_elses(
@@ -5041,11 +5042,11 @@ fn a_double_click_that_activated_something_else_never_toggles_the_workspace() {
 fn the_pairing_window_follows_the_system_setting_within_sane_bounds() {
     // 系统默认 500ms 原样使用。
     // 系统值 500ms：我们的手势仍给到 900ms —— 实测用户自然节奏会超过系统值。
-    assert_eq!(double_click_pairing_window_ms(500), 1500);
+    assert_eq!(double_click_pairing_window_ms(500), 900);
     // 系统值本身更宽时跟着系统。
     assert_eq!(double_click_pairing_window_ms(1700), 1700);
     // 极端值夹住，避免误配对。
-    assert_eq!(double_click_pairing_window_ms(50), 1500);
+    assert_eq!(double_click_pairing_window_ms(50), 900);
     assert_eq!(double_click_pairing_window_ms(10_000), 2000);
 }
 
