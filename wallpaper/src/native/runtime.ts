@@ -21,7 +21,8 @@ export interface NativeSendOptions {
   priceOutputPerMillion?: number
 }
 
-export interface TranslucentTbStatus { installed: boolean; running: boolean; source?: string }
+  // FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30 决定），这一项随之冻结。恢复办法：取消注释。
+  // export interface TranslucentTbStatus { installed: boolean; running: boolean; source?: string }
 export interface LockScreenDiagnostics { supported: boolean; packageIdentity: boolean; takeoverAvailable: boolean; originalImageUri?: string; backupExists: boolean; backupValid: boolean; staleBackup: boolean; managedImageReady: boolean; managedImageActive: boolean; developmentBuild: boolean; warnings: string[] }
 /**
  * 本应用启动的**一个** DSH 实例。
@@ -351,9 +352,10 @@ export interface NativeRuntime {
   //   lockScreenDiagnostics(): Promise<LockScreenDiagnostics>
   setAutostart(enabled: boolean): Promise<AutostartStatus>
   autostartStatus(): Promise<AutostartStatus>
-  translucentTbStatus(): Promise<TranslucentTbStatus>
-  launchTranslucentTb(): Promise<void>
-  openTranslucentTbInstall(): Promise<void>
+  // FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30 决定），这一项随之冻结。恢复办法：取消注释。
+  // translucentTbStatus(): Promise<TranslucentTbStatus>
+  // launchTranslucentTb(): Promise<void>
+  // openTranslucentTbInstall(): Promise<void>
   // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
   //   openWindowsLockScreenSettings(): Promise<void>
   /**
@@ -592,19 +594,20 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<AutostartStatus>('autostart_status')
   },
-  async translucentTbStatus() {
-    if (!await tauriAvailable()) return { installed: false, running: false }
-    const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<TranslucentTbStatus>('translucent_tb_status')
-  },
-  async launchTranslucentTb() {
-    const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('launch_translucent_tb')
-  },
-  async openTranslucentTbInstall() {
-    const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('open_translucent_tb_install')
-  },
+  // FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30 决定），这一项随之冻结。恢复办法：取消注释。
+  // async translucentTbStatus() {
+  // if (!await tauriAvailable()) return { installed: false, running: false }
+  // const { invoke } = await import('@tauri-apps/api/core')
+  // return invoke<TranslucentTbStatus>('translucent_tb_status')
+  // },
+  // async launchTranslucentTb() {
+  // const { invoke } = await import('@tauri-apps/api/core')
+  // await invoke('launch_translucent_tb')
+  // },
+  // async openTranslucentTbInstall() {
+  // const { invoke } = await import('@tauri-apps/api/core')
+  // await invoke('open_translucent_tb_install')
+  // },
   // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
   //   async openWindowsLockScreenSettings() {
   //     if (!await tauriAvailable()) return
