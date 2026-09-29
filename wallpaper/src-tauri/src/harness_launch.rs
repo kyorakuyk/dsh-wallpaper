@@ -797,24 +797,39 @@ pub(crate) fn installed_cli_command(
     profile: &str,
     args: &[String],
 ) -> (PathBuf, Vec<String>) {
-    let mut profile_args = vec!["--profile".to_string(), profile.to_string()];
-    // `dsh web` 的默认行为是"起服务**并且打开默认浏览器**"。这个决定该由壁纸来做：设置里选的
-    // 是浏览器还是终端里的 TUI，而且开机自启时更不该自己弹窗。`--no-open` 是 **web 应用自己的**
-    // 旗标，所以只在 `web` 这个档案上带 —— 别的档案的 app 未必认这个参数。
-    if profile.trim() == "web" {
-        profile_args.push("--no-open".to_string());
-    }
-    profile_args.extend(args.iter().cloned());
-    let extension = launcher
+    let profile_args = {
+        let mut profile_args = vec!["--profile".to_string(), profile.to_string()];
+        // `dsh web` 的默认行为是"起服务**并且打开默认浏览器**"。这个决定该由壁纸来做：设置里选的
+        // 是浏览器还是终端里的 TUI，而且开机自启时更不该自己弹窗。`--no-open` 是 **web 应用自己的**
+        // 旗标，所以只在 `web` 这个档案上带 —— 别的档案的 app 未必认这个参数。
+        if profile.trim() == "web" {
+            profile_args.push("--no-open".to_string());
+        }
+        profile_args.extend(args.iter().cloned());
+        profile_args
+    };
+    windows_launch_command(launcher, &profile_args)
+}
+
+/// 从"程序 + 参数"得到真正要 spawn 的东西。
+///
+/// npm 在 Windows 上的启动器是 `.cmd` 批处理，`CreateProcess` 不能直接跑它，前面要加 `cmd /c`；
+/// `.exe`（别的打包方式，或将来的 npm）原样跑。
+///
+/// 抽成纯函数是因为**有两个**地方要跑 CLI：启动宿主（`installed_cli_command`）与装桥
+/// （`install_bridge_for_subject`）。2026-09-30 的实测教训：装桥那一路没走这里、直接 spawn 了
+/// `.cmd`，于是启动失败、又被前端的 catch 吞掉 —— 表现为"每次启动检查"什么都不做。
+pub(crate) fn windows_launch_command(program: &Path, args: &[String]) -> (PathBuf, Vec<String>) {
+    let extension = program
         .extension()
         .map(|value| value.to_string_lossy().to_ascii_lowercase());
     match extension.as_deref() {
         Some("cmd") | Some("bat") => {
-            let mut command_args = vec!["/c".to_string(), launcher.to_string_lossy().into_owned()];
-            command_args.extend(profile_args);
+            let mut command_args = vec!["/c".to_string(), program.to_string_lossy().into_owned()];
+            command_args.extend(args.iter().cloned());
             (PathBuf::from("cmd.exe"), command_args)
         }
-        _ => (launcher.to_path_buf(), profile_args),
+        _ => (program.to_path_buf(), args.to_vec()),
     }
 }
 
@@ -1160,7 +1175,9 @@ pub(crate) fn install_bridge_for_subject(
                 }
             };
             let command = format!("{} {}", plan.launcher.display(), plan.args.join(" "));
-            match std::process::Command::new(&plan.launcher).args(&plan.args).output() {
+            let (program, program_args) = windows_launch_command(&plan.launcher, &plan.args);
+            let actual = format!("{} {}", program.display(), program_args.join(" "));
+            match std::process::Command::new(&program).args(&program_args).output() {
                 Ok(output) => {
                     let (status, detail) = interpret_install_output(
                         output.status.code(),
@@ -1171,14 +1188,14 @@ pub(crate) fn install_bridge_for_subject(
                         profile,
                         status: status.to_string(),
                         detail,
-                        command,
+                        command: actual,
                     }
                 }
                 Err(error) => BridgeInstallOutcome {
                     profile,
                     status: BRIDGE_STATUS_FAILED.to_string(),
-                    detail: format!("无法启动 CLI：{error}"),
-                    command,
+                    detail: format!("无法启动 CLI：{error}（命令：{command}）"),
+                    command: actual,
                 },
             }
         })
@@ -2618,6 +2635,27 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn the_plugin_command_also_goes_through_cmd_when_the_launcher_is_a_batch_file() {
+        let args = vec![
+            "plugin".to_string(),
+            "--profile".to_string(),
+            "web".to_string(),
+            "add".to_string(),
+            BRIDGE_PACKAGE.to_string(),
+        ];
+        let (program, actual) = windows_launch_command(std::path::Path::new("C:\\npm\\dsh.cmd"), &args);
+        assert_eq!(program, PathBuf::from("cmd.exe"));
+        assert_eq!(actual[0], "/c");
+        assert_eq!(actual[1], "C:\\npm\\dsh.cmd");
+        // 参数原样跟在后面，不再注入 --profile/--no-open：这条命令自己带 --profile。
+        assert_eq!(&actual[2..], &args[..]);
+        // `.exe` 不套壳。
+        let (program, actual) = windows_launch_command(std::path::Path::new("C:\\dsh.exe"), &args);
+        assert_eq!(program, PathBuf::from("C:\\dsh.exe"));
+        assert_eq!(actual, args);
+    }
+
     #[test]
     fn a_subject_id_carries_its_kind_and_a_checkout_offers_no_launcher() {
         assert_eq!(
