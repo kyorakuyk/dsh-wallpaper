@@ -2574,7 +2574,10 @@ fn restore_desktop_keyboard_focus(app: &tauri::AppHandle) {
 /// 日志里连续三次 armed 却一次都没切换）。Windows 把这个间隔作为用户设置暴露给程序，
 /// 就应该按它来；上限夹到 2 秒，防止被设成极端值时误配对。
 fn double_click_pairing_window_ms(system_ms: u32) -> u64 {
-    u64::from(system_ms).clamp(200, 2000)
+    // 这里是**我们自己的手势**，不是操作系统的双击：系统那个 500ms 决定的是"Explorer 要不要打开
+    // 图标"，而"在空白桌面上连点两下"在系统看来只是两次普通点击。实测用户自然的节奏会超过 500ms
+    // （系统值就是 500，而功能一直不触发），所以取系统值与 900ms 里较大的那个，再夹到 2 秒以内。
+    u64::from(system_ms).clamp(200, 2000).max(900)
 }
 
 fn double_click_became_someone_elses(
@@ -5005,10 +5008,10 @@ fn a_double_click_that_activated_something_else_never_toggles_the_workspace() {
 #[test]
 fn the_pairing_window_follows_the_system_setting_within_sane_bounds() {
     // 系统默认 500ms 原样使用。
-    assert_eq!(double_click_pairing_window_ms(500), 500);
-    // 用户把双击速度调慢（Windows 允许到 900ms 以上）：必须跟着放宽，否则系统认双击、我们不认 ——
-    // 那正是"时好时坏"的来源。
-    assert_eq!(double_click_pairing_window_ms(900), 900);
+    // 系统值 500ms：我们的手势仍给到 900ms —— 实测用户自然节奏会超过系统值。
+    assert_eq!(double_click_pairing_window_ms(500), 900);
+    // 系统值本身更宽时跟着系统。
+    assert_eq!(double_click_pairing_window_ms(1200), 1200);
     // 极端值夹住，避免误配对。
     assert_eq!(double_click_pairing_window_ms(50), 200);
     assert_eq!(double_click_pairing_window_ms(10_000), 2000);
