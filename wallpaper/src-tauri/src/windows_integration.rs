@@ -2548,6 +2548,28 @@ fn restore_desktop_keyboard_focus(app: &tauri::AppHandle) {
     }
 }
 
+/// 一次双击里，前台窗口是否已经换了人 —— 也就是这次双击确实**启动了/激活了什么东西**。
+///
+/// 这是"双击桌面图标会翻桌面层"这个缺陷的行为兜底：判据（UIA）可以说谎，但"双击之后前台变成了
+/// 别的应用的窗口"不会 —— 那说明这次双击不是对着空白桌面发的，就不该翻。
+///
+/// 只在前台**从某个值变成了另一个值**、且新值既不是桌面家族也不是我们自己时才为真：
+/// - 空白桌面双击可能让 Progman 变成前台（那是桌面本身），仍然允许翻；
+/// - 前台没变（点空白时常见，因为点击穿透让前台留在原处）也仍然允许翻。
+fn double_click_became_someone_elses(
+    foreground_at_first_click: Option<isize>,
+    foreground_now: Option<isize>,
+    foreground_now_is_desktop: bool,
+    foreground_now_is_wallpaper: bool,
+) -> bool {
+    match (foreground_at_first_click, foreground_now) {
+        (Some(before), Some(now)) if before != now => {
+            !(foreground_now_is_desktop || foreground_now_is_wallpaper)
+        }
+        _ => false,
+    }
+}
+
 /// Uses UI Automation, rather than ListView messages with a pointer owned by
 /// Explorer, to distinguish desktop icons from empty desktop space. This is a
 /// supported cross-process accessibility boundary and never consumes input.
@@ -2566,11 +2588,19 @@ fn cursor_is_over_desktop_blank(automation: &IUIAutomation) -> bool {
         // point blank; no Explorer memory or window messages are involved.
         let walker = automation.ControlViewWalker().ok();
         let mut current = Some(element);
-        for _ in 0..4 {
+        // 8 层而不是 4 层：Windows 11 的图标在自动化树里可能藏得比一层标签文本更深，而漏判的
+        // 代价是真实的 —— 用户双击桌面图标时这一条若报"空白"，就会同时打开应用并翻掉桌面层
+        // （2026-09-30 实测的缺陷）。
+        for depth in 0..8 {
             let Some(element) = current else {
                 break;
             };
             if element.CurrentControlType().ok() == Some(UIA_ListItemControlTypeId) {
+                return false;
+            }
+            // 空白桌面表面没有名字；图标（含它的标签文本子元素）有。这一条比只看控件类型更稳，
+            // 因为它不依赖图标在树里的具体深度。
+            if depth < 3 && element.CurrentName().is_ok_and(|name| !name.to_string().trim().is_empty()) {
                 return false;
             }
             current = walker
@@ -2708,6 +2738,7 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
 
         let mut was_down = false;
         let mut last_blank_click: Option<std::time::Instant> = None;
+        let mut foreground_at_first_click: Option<isize> = None;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(16));
             if app.get_webview_window("background").is_none() {
@@ -2729,6 +2760,32 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                 if can_toggle {
                     log_workspace_toggle_decision(false, true);
                     let now = std::time::Instant::now();
+                    let foreground_now = unsafe {
+                        let window = GetForegroundWindow();
+                        if window.0.is_null() { None } else { Some(window.0 as isize) }
+                    };
+                    let foreground_now_is_desktop = unsafe {
+                        let window = GetForegroundWindow();
+                        !window.0.is_null()
+                            && (window == GetDesktopWindow()
+                                || is_desktop_foreground_class(window_class(window).as_deref()))
+                    };
+                    let foreground_now_is_wallpaper = background
+                        .is_some_and(|background| unsafe { GetForegroundWindow() } == background);
+                    if double_click_became_someone_elses(
+                        foreground_at_first_click,
+                        foreground_now,
+                        foreground_now_is_desktop,
+                        foreground_now_is_wallpaper,
+                    ) {
+                        // 这次双击启动了别的东西（例如桌面上的快捷方式）：那是它在响应你，
+                        // 不是"对着空白桌面双击"。不翻，并把这一对点击忘掉。
+                        log::info!("双击落在了会启动东西的位置：不切换表/里桌面");
+                        last_blank_click = None;
+                        foreground_at_first_click = None;
+                        was_down = down;
+                        continue;
+                    }
                     if last_blank_click.is_some_and(|previous| {
                         now.duration_since(previous) <= std::time::Duration::from_millis(500)
                     }) {
@@ -2757,9 +2814,11 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                         );
                     } else {
                         last_blank_click = Some(now);
+                        foreground_at_first_click = foreground_now;
                     }
                 } else {
                     last_blank_click = None;
+                    foreground_at_first_click = None;
                 }
             }
             was_down = down;
@@ -4680,7 +4739,24 @@ mod tests {
     }
 
     #[test]
-    fn workspace_toggle_requires_a_blank_desktop_and_never_a_chat_region() {
+    /// 「双击图标会翻桌面层」这个缺陷的回归钉子。判据（UIA）在真实机器上可能说谎，这条兜底不依赖
+/// 它：只要这次双击让前台换成了**别人的**窗口，就说明双击落在了会启动东西的位置，不该翻。
+#[test]
+fn a_double_click_that_activated_something_else_never_toggles_the_workspace() {
+    // 点亮了别的东西（例如桌面快捷方式）：不翻。
+    assert!(double_click_became_someone_elses(Some(101), Some(202), false, false));
+    // 前台变成了桌面本身（空白双击的常见结果）：允许翻。
+    assert!(!double_click_became_someone_elses(Some(101), Some(202), true, false));
+    // 前台变成了我们自己：允许翻。
+    assert!(!double_click_became_someone_elses(Some(101), Some(202), false, true));
+    // 前台没变（点击穿透时常见）：允许翻。
+    assert!(!double_click_became_someone_elses(Some(101), Some(101), false, false));
+    // 首次点击没记到前台：不因此阻止（宁可保留原行为，也不要让功能静默失效）。
+    assert!(!double_click_became_someone_elses(None, Some(202), false, false));
+}
+
+#[test]
+fn workspace_toggle_requires_a_blank_desktop_and_never_a_chat_region() {
         assert!(should_toggle_desktop_workspace(true, false, true));
         assert!(!should_toggle_desktop_workspace(false, false, true));
         assert!(!should_toggle_desktop_workspace(true, true, true));
