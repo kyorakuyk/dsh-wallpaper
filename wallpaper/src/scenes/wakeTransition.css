@@ -1,0 +1,64 @@
+/* 苏醒收尾这一幕的样式。
+ *
+ * 放在这里而不是 styles.css：Lite 版**不加载** styles.css（它有自己的 LiteScene.css，
+ * 首发包刻意不带对话与设置样式），而两个版本都渲染 WakeScene。样式跟着组件走，两个版本
+ * 才共用同一套节奏；否则 Lite 那边只有一个没有样式的空 div。
+ *
+ * 三拍：动画最后一帧压黑（.wake-curtain）→ 桌面在帷幕下面挂载、帷幕淡出即背景淡入
+ * （.wake-curtain-out）→ 立绘从虚影里收束成角色（.wake-enter .portrait-slot）。 */
+
+.wake-curtain {
+  position: absolute;
+  inset: 0;
+  z-index: 150;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  animation-name: wake-curtain-in;
+  animation-timing-function: ease-in;
+  animation-fill-mode: both;
+}
+
+.wake-curtain-out {
+  position: absolute;
+  inset: 0;
+  z-index: 150;
+  background: #000;
+  pointer-events: none;
+  animation-name: wake-curtain-out;
+  animation-timing-function: ease-out;
+  animation-fill-mode: both;
+}
+
+@keyframes wake-curtain-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes wake-curtain-out { from { opacity: 1; } to { opacity: 0; } }
+
+/* 睡眠、启动与苏醒帧动画期间，画面本身盖过桌面交互层：解锁那一刻不该先看到输入岛，
+   再看到动画。数字要高于输入岛（`.dsh-chat` 与 `.display-interaction-layer` 都是 80），
+   低于帷幕（150）。桌面（idle/chat）不在此列——那时输入岛本来就该在最上面。 */
+.wallpaper-root.phase-booting .scene,
+.wallpaper-root.phase-locked .scene,
+.wallpaper-root.phase-waking .scene,
+.lite-wallpaper-root.lite-phase-booting .scene,
+.lite-wallpaper-root.lite-phase-locked .scene,
+.lite-wallpaper-root.lite-phase-waking .scene {
+  z-index: 100;
+}
+
+/* 立绘：0% 是一团放大、模糊、偏亮的虚影，随后收束为角色本身（blur 与 opacity 同时收）。 */
+.wake-enter .portrait-slot {
+  animation: portrait-from-ghost 1100ms cubic-bezier(.22, .61, .36, 1) 700ms both;
+}
+
+@keyframes portrait-from-ghost {
+  0% { opacity: 0; filter: blur(26px) brightness(1.3) saturate(1.1); transform: scale(1.05); }
+  45% { opacity: .8; filter: blur(13px) brightness(1.14) saturate(1.05); transform: scale(1.03); }
+  100% { opacity: 1; filter: blur(0) brightness(1) saturate(1); transform: scale(1); }
+}
+
+/* 系统要求减少动态时不留这一幕：帷幕瞬间走完，立绘直接出现。 */
+@media (prefers-reduced-motion: reduce) {
+  .wake-curtain,
+  .wake-curtain-out { animation-duration: 1ms !important; }
+  .wake-enter .portrait-slot { animation-duration: 1ms !important; animation-delay: 0ms !important; }
+}

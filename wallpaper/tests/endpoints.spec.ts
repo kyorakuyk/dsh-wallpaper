@@ -1,7 +1,9 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import {
   CHECKOUT_ENDPOINT_PORT,
+  CLI_SUBJECT_PREFIX,
   DEFAULT_ENDPOINT_PORTS,
+  OFFICIAL_SHELL_SUBJECT_ID,
   SHELL_SUBJECT_PREFIX,
   clientRaiseAction,
   endpointPriority,
@@ -14,6 +16,7 @@ import {
   subjectClientKind,
   subjectEndpointPorts,
   scanEndpoints,
+  unsupportedShellSubjectFallback,
   type EndpointScope,
   type HarnessEndpointCandidate,
 } from '../src/connect/endpoints.ts'
@@ -21,7 +24,8 @@ import { isEmbeddedShellSubject } from '../src/connect/harnessSubjects.ts'
 import { monitorHarnessEndpoint, type EndpointUpdate } from '../src/connect/harnessEndpoint.ts'
 
 const OFFICIAL_SHELL = `${SHELL_SUBJECT_PREFIX}com.deepseek.dsh`
-const COMMUNITY_SHELL = `${SHELL_SUBJECT_PREFIX}ai.deepseek.dsh.desktop`
+/** 一个**不是**已知主体的 AUMID：第三方客户端 2026-09-27 起不再受支持，用它验证"未知主体不给端口"。 */
+const UNKNOWN_SHELL = `${SHELL_SUBJECT_PREFIX}ai.deepseek.dsh.desktop`
 const CHECKOUT = 'D:\\Family\\DeepSeekHarness\\deepseek-harness'
 
 function candidate(
@@ -42,13 +46,12 @@ afterEach(() => vi.unstubAllGlobals())
 
 describe('reaching a client interface', () => {
   it('opens a browser only for the windowless CLI/webui shape', () => {
-    // The two desktop clients own Windows windows; the CLI/webui shape has none,
+    // The official desktop client owns a Windows window; the CLI/webui shape has none,
     // and its interface is the browser at the port it listens on. Getting this
     // backwards would try to raise a window that does not exist, or open a
     // browser for a client that already has a window.
     expect(clientRaiseAction('official-web')).toBe('browser')
     expect(clientRaiseAction('official-desktop')).toBe('window')
-    expect(clientRaiseAction('community-desktop')).toBe('window')
     // The windowless shape is the one on DSH's own default port.
     expect(DEFAULT_ENDPOINT_PORTS.find((entry) => entry.port === 3080)?.kind).toBe('official-web')
   })
@@ -66,8 +69,8 @@ describe('reaching a client interface', () => {
     expect(noWindow).toContain('桌面客户端')
     expect(noWindow).toContain('浏览器')
 
-    const notRunning = raiseOutcomeNotice('not-running', 'community-desktop')
-    expect(notRunning).toContain('第三方桌面客户端')
+    const notRunning = raiseOutcomeNotice('not-running', 'official-desktop')
+    expect(notRunning).toContain('桌面客户端')
     // Not-running must say to start it, not imply the wallpaper will.
     expect(notRunning).toContain('请先启动')
 
@@ -79,21 +82,21 @@ describe('reaching a client interface', () => {
 })
 
 describe('endpoint priority', () => {
-  it('ships the official desktop first, then community desktop, then web/CLI', () => {
-    // The user's stated default order. This is also why the three known ports are
+  it('ships the official desktop first, then the web/CLI shape', () => {
+    // The user's stated default order. This is also why the two known ports are
     // listed in this sequence rather than numerically.
-    expect(endpointPriority('official-desktop')).toBeLessThan(endpointPriority('community-desktop'))
-    expect(endpointPriority('community-desktop')).toBeLessThan(endpointPriority('official-web'))
-    expect(DEFAULT_ENDPOINT_PORTS.map((entry) => entry.port)).toEqual([19387, 43120, 3080])
+    expect(endpointPriority('official-desktop')).toBeLessThan(endpointPriority('official-web'))
+    expect(DEFAULT_ENDPOINT_PORTS.map((entry) => entry.port)).toEqual([19387, 3080])
   })
 
   it('orders candidates by kind and then by port, without mutating the input', () => {
     const input = [
       candidate(3080, 'bridge-ready', 'official-web'),
-      candidate(43120, 'bridge-ready', 'community-desktop'),
+      candidate(43120, 'bridge-ready', 'official-web'),
       candidate(19387, 'bridge-ready', 'official-desktop'),
     ]
-    expect(orderCandidates(input).map((entry) => entry.port)).toEqual([19387, 43120, 3080])
+    // 同 kind 内按端口升序 ⇒ 3080 在 43120 前；官方桌面整体优先。
+    expect(orderCandidates(input).map((entry) => entry.port)).toEqual([19387, 3080, 43120])
     // The caller's array keeps its original order.
     expect(input.map((entry) => entry.port)).toEqual([3080, 43120, 19387])
   })
@@ -161,7 +164,9 @@ describe('endpoint selection', () => {
 describe('the configured subject decides the endpoint', () => {
   it('gives a shell the one port compiled into it', () => {
     expect(subjectEndpointPorts({ subjectId: OFFICIAL_SHELL })).toEqual([19387])
-    expect(subjectEndpointPorts({ subjectId: COMMUNITY_SHELL })).toEqual([43120])
+    // 第三方桌面客户端 2026-09-27 起不再受支持：它的 AUMID 现在与任何陌生 AUMID 一样
+    // **不给出任何端口**（而不是"给出 43120 然后探测失败"）。
+    expect(subjectEndpointPorts({ subjectId: UNKNOWN_SHELL })).toEqual([])
     // The AUMID is matched case-insensitively, like the native table does.
     expect(subjectEndpointPorts({ subjectId: `${SHELL_SUBJECT_PREFIX}COM.DeepSeek.DSH` })).toEqual([19387])
   })
@@ -192,26 +197,28 @@ describe('the configured subject decides the endpoint', () => {
 
   it('never uses another client\u2019s ready Bridge while the chosen one is down', () => {
     const scan = [
-      candidate(43120, 'bridge-ready', 'community-desktop'),
+      candidate(43120, 'bridge-ready', 'official-web'),
       candidate(3080, 'bridge-ready', 'official-web'),
       candidate(19387, 'offline', 'official-desktop'),
     ]
     const chosen = selectEndpoint(scan, { subjectId: OFFICIAL_SHELL })
-    // The third-party client is up and ready, and it is still not the answer: the
-    // light stays off until the *chosen* subject answers.
+    // 端口 43120 上有个现成可用的 Bridge，而它依然不是答案：在**被选中的主体**应答之前，
+    // 灯就应当是不亮的。
     expect(chosen?.port).toBe(19387)
     expect(chosen?.status.availability).toBe('offline')
   })
 
   it('keeps a live conversation on the endpoint it started on', () => {
+    // 一个主体可以有多个许可端口（源码树默认 3080 + 用户给它加的端口）：点在谁身上就留在谁身上，
+    // 即使另一个端口优先级更高。
     const scan = [
-      candidate(19387, 'bridge-ready', 'official-desktop'),
-      candidate(43120, 'bridge-ready', 'community-desktop'),
+      candidate(3080, 'bridge-ready', 'official-web'),
+      candidate(3081, 'bridge-ready', 'official-web'),
     ]
-    // Both are ready; the one already in use wins, even against a higher priority.
-    expect(selectEndpoint(scan, { subjectId: COMMUNITY_SHELL }, 43120)?.port).toBe(43120)
-    // And a sticky port outside the configured subject is ignored, not restored.
-    expect(selectEndpoint(scan, { subjectId: COMMUNITY_SHELL }, 19387)?.port).toBe(43120)
+    const scope = { subjectId: CHECKOUT, extraPorts: [3081] }
+    expect(selectEndpoint(scan, scope, 3081)?.port).toBe(3081)
+    // 而主体之外的粘滞端口被忽略，不会被"恢复"回来。
+    expect(selectEndpoint(scan, scope, 9999)?.port).toBe(3080)
     // A sticky port that stopped answering hands the choice to the next permitted
     // one rather than freezing the wallpaper on a dead port.
     expect(selectEndpoint([
@@ -245,23 +252,58 @@ describe('the configured subject decides the endpoint', () => {
     // The shape decides how the interface is reached, and it must not depend on
     // something being live in order to be known.
     expect(subjectClientKind(OFFICIAL_SHELL)).toBe('official-desktop')
-    expect(subjectClientKind(COMMUNITY_SHELL)).toBe('community-desktop')
     expect(subjectClientKind(CHECKOUT)).toBe('official-web')
+    // 第三方客户端的 AUMID 现在与陌生 AUMID 一样：**没有形状**（因为它不再受支持）。
+    expect(subjectClientKind(UNKNOWN_SHELL)).toBeUndefined()
     expect(subjectClientKind(`${SHELL_SUBJECT_PREFIX}com.unknown.client`)).toBeUndefined()
     expect(subjectClientKind(undefined)).toBeUndefined()
   })
 
+  it('falls back to the official client when the stored subject is unsupported', () => {
+    // 设置里存着一个本 build 已不支持的壳主体（第三方客户端被移除前的遗留）：不静默、也不
+    // 卡在"未知主体"，而是落回官方桌面客户端并把原因说清楚。
+    const fallback = unsupportedShellSubjectFallback(UNKNOWN_SHELL)
+    expect(fallback?.subjectId).toBe(OFFICIAL_SHELL_SUBJECT_ID)
+    expect(fallback?.notice).toContain('已不再受支持')
+    expect(fallback?.notice).toContain('已切回官方桌面客户端')
+    // 落回去的那个 id 必须真的是本 build 认识的主体，否则等于换了个看不到的灯。
+    expect(subjectClientKind(OFFICIAL_SHELL_SUBJECT_ID)).toBe('official-desktop')
+    expect(subjectEndpointPorts({ subjectId: OFFICIAL_SHELL_SUBJECT_ID })).toEqual([19387])
+    // 反例：没有存值、存的是已知主体、或存的是源码目录路径 ⇒ **不动**（路径永远是合法身份）。
+    expect(unsupportedShellSubjectFallback(undefined)).toBeNull()
+    expect(unsupportedShellSubjectFallback('   ')).toBeNull()
+    expect(unsupportedShellSubjectFallback(OFFICIAL_SHELL)).toBeNull()
+    expect(unsupportedShellSubjectFallback(CHECKOUT)).toBeNull()
+  })
+
+  it('treats a globally installed CLI as the web shape, named by its launcher', () => {
+    // 第三类主体：本机全局安装的 DSH CLI（`npm i -g @deepseek-ai/dsh`）。无 AUMID、无源码树，
+    // 身份就是 PATH 上那个启动器；服务形状与检出一致 ⇒ 端口与 client 都沿用检出的规则。
+    const cli = `${CLI_SUBJECT_PREFIX}C:\\Users\\someone\\AppData\\Roaming\\npm\\dsh.cmd`
+    expect(subjectEndpointPorts({ subjectId: cli })).toEqual([CHECKOUT_ENDPOINT_PORT])
+    expect(subjectEndpointPorts({ subjectId: cli, extraPorts: [3081] }))
+      .toEqual([CHECKOUT_ENDPOINT_PORT, 3081])
+    expect(subjectClientKind(cli)).toBe('official-web')
+    // 不是壳：`shell:` 的规则不该套到它头上（也不会把它当成陌生 AUMID 而拒绝给端口）。
+    expect(isEmbeddedShellSubject(cli)).toBe(false)
+    expect(endpointScopeConfigured({ subjectId: cli })).toBe(true)
+    // 前缀与原生 `harness_targets.rs::CLI_ID_PREFIX` 必须一致。
+    expect(CLI_SUBJECT_PREFIX).toBe('cli:')
+  })
+
   it('agrees with the shell table the rest of the bridge uses', () => {
-    // Three copies of the same two AUMIDs exist (this file, `harness_targets.rs`,
-    // and the scan's wording). The ports are what may not drift: a subject scoped
-    // to a port nobody listens on is an offline wallpaper with no visible cause.
-    for (const aumid of ['com.deepseek.dsh', 'ai.deepseek.dsh.desktop']) {
+    // 同一份 AUMID↔端口表在这里与 `harness_targets.rs` 各存一份。端口不许漂移：主体被绑到一个
+    // 没人监听的端口上，就是"灯不亮而看不到原因"。
+    for (const aumid of ['com.deepseek.dsh']) {
       const ports = subjectEndpointPorts({ subjectId: `${SHELL_SUBJECT_PREFIX}${aumid}` })
       expect(ports).toHaveLength(1)
       const known = DEFAULT_ENDPOINT_PORTS.find((entry) => entry.port === ports?.[0])
       expect(known, `port for ${aumid} must be a client port this build scans`).toBeDefined()
       expect(known?.kind).toBe(subjectClientKind(`${SHELL_SUBJECT_PREFIX}${aumid}`))
     }
+    // 曾经也在表里的第三方客户端：现在既不给端口，也不给形状（§ 用户 2026-09-27 的要求）。
+    expect(subjectEndpointPorts({ subjectId: UNKNOWN_SHELL })).toEqual([])
+    expect(subjectClientKind(UNKNOWN_SHELL)).toBeUndefined()
     // The subject prefix is one namespace, not two spellings of it.
     expect(isEmbeddedShellSubject(OFFICIAL_SHELL)).toBe(true)
     expect(isEmbeddedShellSubject(CHECKOUT)).toBe(false)
@@ -287,7 +329,7 @@ describe('scan summary', () => {
 
     const ready = scanSummary([
       candidate(19387, 'bridge-ready', 'official-desktop'),
-      candidate(43120, 'bridge-ready', 'community-desktop'),
+      candidate(43120, 'bridge-ready', 'official-web'),
     ])
     expect(ready.ready).toBe(2)
     expect(ready.summary).toContain('2 个可用')
@@ -318,15 +360,17 @@ describe('scanning', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
 
-    const found = await scanEndpoints()
-    expect(found.map((entry) => entry.port)).toEqual([19387, 43120, 3080])
+    // 43120 不再是默认端口（第三方客户端已移除）⇒ 作为**用户自己填的端口**探测：壁纸仍然要能
+    // 诚实回答"那儿有个别的服务"，而不是把它当成会话端点。
+    const found = await scanEndpoints([43120])
+    expect(found.map((entry) => entry.port)).toEqual([19387, 3080, 43120])
     expect(found[0]).toMatchObject({ port: 19387, bridgeFound: true })
     expect(found[0]?.status.availability).toBe('bridge-ready')
+    expect(found[1]).toMatchObject({ port: 3080, bridgeFound: false })
+    expect(found[1]?.status.availability).toBe('offline')
     // A non-Bridge document must not be promoted to an endpoint.
-    expect(found[1]).toMatchObject({ port: 43120, bridgeFound: false })
-    expect(found[1]?.status.availability).toBe('web-only')
-    expect(found[2]).toMatchObject({ port: 3080, bridgeFound: false })
-    expect(found[2]?.status.availability).toBe('offline')
+    expect(found[2]).toMatchObject({ port: 43120, bridgeFound: false })
+    expect(found[2]?.status.availability).toBe('web-only')
   })
 
   it('accepts user-supplied ports without letting duplicates or junk in', async () => {
@@ -336,7 +380,7 @@ describe('scanning', () => {
       throw new Error('refused')
     }))
     const found = await scanEndpoints([19387, 6000, 0, 70000, 6000, 1.5])
-    expect(found.map((entry) => entry.port)).toEqual([19387, 43120, 3080, 6000])
+    expect(found.map((entry) => entry.port)).toEqual([19387, 3080, 6000])
     // A duplicate of a default port is not probed twice.
     expect(seen.filter((url) => url.includes(':19387/'))).toHaveLength(1)
     // Invalid values never become candidates.
@@ -404,8 +448,7 @@ describe('the endpoint monitor', () => {
 
   it('keeps the light off while another client answers instead of the chosen one', async () => {
     vi.useFakeTimers()
-    // The third-party client is up and perfectly ready; the configured subject is
-    // the official one. Answering with the ready client would be a substitution.
+    // 另一个端口上有个现成可用的服务，而被选中的是官方客户端：拿那个来应答就是"替用户换了主体"。
     stubDialled(() => [43120])
     const updates = await published(() => ({ subjectId: OFFICIAL_SHELL }))
     expect(updates.length).toBeGreaterThan(0)
@@ -420,10 +463,11 @@ describe('the endpoint monitor', () => {
     vi.useFakeTimers()
     const seen: string[] = []
     stubDialled(() => [], seen)
-    await published(() => ({ subjectId: COMMUNITY_SHELL }), 2)
-    // Probing the official shell's port on the way would be harmless but dishonest:
+    await published(() => ({ subjectId: OFFICIAL_SHELL }), 2)
+    // Probing another client's port on the way would be harmless but dishonest:
     // the settings say which subject this wallpaper talks to.
-    expect(seen.every((url) => url.includes(':43120'))).toBe(true)
+    expect(seen.length).toBeGreaterThan(0)
+    expect(seen.every((url) => url.includes(':19387'))).toBe(true)
   })
 
   it('publishes the configured subject as soon as it answers', async () => {
@@ -458,7 +502,7 @@ describe('the endpoint monitor', () => {
 
   it('hands over only when the settings change the subject', async () => {
     vi.useFakeTimers()
-    stubDialled(() => [19387, 43120])
+    stubDialled(() => [19387, 3080])
     let scope: EndpointScope = { subjectId: OFFICIAL_SHELL }
     const updates: EndpointUpdate[] = []
     const monitor = monitorHarnessEndpoint({
@@ -470,9 +514,9 @@ describe('the endpoint monitor', () => {
     await vi.advanceTimersByTimeAsync(20)
     expect(updates.at(-1)?.port).toBe(19387)
     // A real change of subject is the one thing that may move the endpoint.
-    scope = { subjectId: COMMUNITY_SHELL }
+    scope = { subjectId: CHECKOUT }
     await vi.advanceTimersByTimeAsync(20)
     monitor.stop()
-    expect(updates.at(-1)?.port).toBe(43120)
+    expect(updates.at(-1)?.port).toBe(3080)
   })
 })

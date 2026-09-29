@@ -183,6 +183,18 @@
           "markdownDescription": "Enables the api_history command without any pre-configured scope."
         },
         {
+          "description": "Enables the api_key_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-api-key-status",
+          "markdownDescription": "Enables the api_key_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the api_models command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-api-models",
+          "markdownDescription": "Enables the api_models command without any pre-configured scope."
+        },
+        {
           "description": "Enables the appearance_activate_theme command without any pre-configured scope.",
           "type": "string",
           "const": "allow-appearance-activate-theme",
@@ -291,6 +303,12 @@
           "markdownDescription": "Enables the clear_stale_lock_screen_backup command without any pre-configured scope."
         },
         {
+          "description": "Enables the clear_user_data command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-clear-user-data",
+          "markdownDescription": "Enables the clear_user_data command without any pre-configured scope."
+        },
+        {
           "description": "Enables the connect_harness command without any pre-configured scope.",
           "type": "string",
           "const": "allow-connect-harness",
@@ -345,6 +363,12 @@
           "markdownDescription": "Enables the desktop_wallpaper_fallback_status command without any pre-configured scope."
         },
         {
+          "description": "Enables the desktop_workspace_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-desktop-workspace-status",
+          "markdownDescription": "Enables the desktop_workspace_status command without any pre-configured scope."
+        },
+        {
           "description": "Enables the dispatch_app_action command without any pre-configured scope.",
           "type": "string",
           "const": "allow-dispatch-app-action",
@@ -355,6 +379,12 @@
           "type": "string",
           "const": "allow-ensure-harness-ui",
           "markdownDescription": "Enables the ensure_harness_ui command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the enter_inner_workspace_from_ball command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-enter-inner-workspace-from-ball",
+          "markdownDescription": "Enables the enter_inner_workspace_from_ball command without any pre-configured scope."
         },
         {
           "description": "Enables the get_app_snapshot command without any pre-configured scope.",
@@ -393,10 +423,22 @@
           "markdownDescription": "Enables the harness_history command without any pre-configured scope."
         },
         {
+          "description": "Enables the harness_models command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-harness-models",
+          "markdownDescription": "Enables the harness_models command without any pre-configured scope."
+        },
+        {
           "description": "Enables the harness_presets command without any pre-configured scope.",
           "type": "string",
           "const": "allow-harness-presets",
           "markdownDescription": "Enables the harness_presets command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the harness_set_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-harness-set-model",
+          "markdownDescription": "Enables the harness_set_model command without any pre-configured scope."
         },
         {
           "description": "Enables the harness_set_permission command without any pre-configured scope.",
@@ -439,6 +481,12 @@
           "type": "string",
           "const": "allow-launch-translucent-tb",
           "markdownDescription": "Enables the launch_translucent_tb command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the leave_inner_workspace command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-leave-inner-workspace",
+          "markdownDescription": "Enables the leave_inner_workspace command without any pre-configured scope."
         },
         {
           "description": "Enables the list_api_conversations command without any pre-configured scope.",
@@ -507,10 +555,28 @@
           "markdownDescription": "Enables the open_deepseek_web_adapter_config command without any pre-configured scope."
         },
         {
+          "description": "Enables the open_external_link command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-external-link",
+          "markdownDescription": "Enables the open_external_link command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_project_memory command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-project-memory",
+          "markdownDescription": "Enables the open_project_memory command without any pre-configured scope."
+        },
+        {
           "description": "Enables the open_settings_window command without any pre-configured scope.",
           "type": "string",
           "const": "allow-open-settings-window",
           "markdownDescription": "Enables the open_settings_window command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_subject_tui command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-subject-tui",
+          "markdownDescription": "Enables the open_subject_tui command without any pre-configured scope."
         },
         {
           "description": "Enables the open_translucent_tb_install command without any pre-configured scope.",
@@ -529,12 +595,6 @@
           "type": "string",
           "const": "allow-probe-harness",
           "markdownDescription": "Enables the probe_harness command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the prompt_for_api_key command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-prompt-for-api-key",
-          "markdownDescription": "Enables the prompt_for_api_key command without any pre-configured scope."
         },
         {
           "description": "Enables the publish_settings command without any pre-configured scope.",
@@ -559,6 +619,12 @@
           "type": "string",
           "const": "allow-reset-deepseek-web-adapter-config",
           "markdownDescription": "Enables the reset_deepseek_web_adapter_config command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_api_key command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-api-key",
+          "markdownDescription": "Enables the save_api_key command without any pre-configured scope."
         },
         {
           "description": "Enables the scan_dsh_paths command without any pre-configured scope.",
@@ -661,6 +727,18 @@
           "type": "string",
           "const": "deny-api-history",
           "markdownDescription": "Denies the api_history command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the api_key_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-api-key-status",
+          "markdownDescription": "Denies the api_key_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the api_models command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-api-models",
+          "markdownDescription": "Denies the api_models command without any pre-configured scope."
         },
         {
           "description": "Denies the appearance_activate_theme command without any pre-configured scope.",
@@ -771,6 +849,12 @@
           "markdownDescription": "Denies the clear_stale_lock_screen_backup command without any pre-configured scope."
         },
         {
+          "description": "Denies the clear_user_data command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-clear-user-data",
+          "markdownDescription": "Denies the clear_user_data command without any pre-configured scope."
+        },
+        {
           "description": "Denies the connect_harness command without any pre-configured scope.",
           "type": "string",
           "const": "deny-connect-harness",
@@ -825,6 +909,12 @@
           "markdownDescription": "Denies the desktop_wallpaper_fallback_status command without any pre-configured scope."
         },
         {
+          "description": "Denies the desktop_workspace_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-desktop-workspace-status",
+          "markdownDescription": "Denies the desktop_workspace_status command without any pre-configured scope."
+        },
+        {
           "description": "Denies the dispatch_app_action command without any pre-configured scope.",
           "type": "string",
           "const": "deny-dispatch-app-action",
@@ -835,6 +925,12 @@
           "type": "string",
           "const": "deny-ensure-harness-ui",
           "markdownDescription": "Denies the ensure_harness_ui command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the enter_inner_workspace_from_ball command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-enter-inner-workspace-from-ball",
+          "markdownDescription": "Denies the enter_inner_workspace_from_ball command without any pre-configured scope."
         },
         {
           "description": "Denies the get_app_snapshot command without any pre-configured scope.",
@@ -873,10 +969,22 @@
           "markdownDescription": "Denies the harness_history command without any pre-configured scope."
         },
         {
+          "description": "Denies the harness_models command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-harness-models",
+          "markdownDescription": "Denies the harness_models command without any pre-configured scope."
+        },
+        {
           "description": "Denies the harness_presets command without any pre-configured scope.",
           "type": "string",
           "const": "deny-harness-presets",
           "markdownDescription": "Denies the harness_presets command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the harness_set_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-harness-set-model",
+          "markdownDescription": "Denies the harness_set_model command without any pre-configured scope."
         },
         {
           "description": "Denies the harness_set_permission command without any pre-configured scope.",
@@ -919,6 +1027,12 @@
           "type": "string",
           "const": "deny-launch-translucent-tb",
           "markdownDescription": "Denies the launch_translucent_tb command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the leave_inner_workspace command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-leave-inner-workspace",
+          "markdownDescription": "Denies the leave_inner_workspace command without any pre-configured scope."
         },
         {
           "description": "Denies the list_api_conversations command without any pre-configured scope.",
@@ -987,10 +1101,28 @@
           "markdownDescription": "Denies the open_deepseek_web_adapter_config command without any pre-configured scope."
         },
         {
+          "description": "Denies the open_external_link command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-external-link",
+          "markdownDescription": "Denies the open_external_link command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_project_memory command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-project-memory",
+          "markdownDescription": "Denies the open_project_memory command without any pre-configured scope."
+        },
+        {
           "description": "Denies the open_settings_window command without any pre-configured scope.",
           "type": "string",
           "const": "deny-open-settings-window",
           "markdownDescription": "Denies the open_settings_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_subject_tui command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-subject-tui",
+          "markdownDescription": "Denies the open_subject_tui command without any pre-configured scope."
         },
         {
           "description": "Denies the open_translucent_tb_install command without any pre-configured scope.",
@@ -1009,12 +1141,6 @@
           "type": "string",
           "const": "deny-probe-harness",
           "markdownDescription": "Denies the probe_harness command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the prompt_for_api_key command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-prompt-for-api-key",
-          "markdownDescription": "Denies the prompt_for_api_key command without any pre-configured scope."
         },
         {
           "description": "Denies the publish_settings command without any pre-configured scope.",
@@ -1039,6 +1165,12 @@
           "type": "string",
           "const": "deny-reset-deepseek-web-adapter-config",
           "markdownDescription": "Denies the reset_deepseek_web_adapter_config command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_api_key command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-api-key",
+          "markdownDescription": "Denies the save_api_key command without any pre-configured scope."
         },
         {
           "description": "Denies the scan_dsh_paths command without any pre-configured scope.",

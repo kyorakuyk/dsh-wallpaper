@@ -9,8 +9,18 @@ import { personaIdFor, resolveModelTier } from './domain/modelTier.ts'
 import { isHarnessReady } from './connect/harness.ts'
 import { monitorHarnessEndpoint } from './connect/harnessEndpoint.ts'
 import { endpointScopeOf, subjectEndpointPorts } from './connect/endpoints.ts'
+// ---------------------------------------------------------------------------
+// FREEZE（临时冻结，不是删除）：「启动参数」把分词结果交给启动链，所以这一行随那个功能一起冻住。
+// 为什么关：本 build 有意回到该功能之前的行为 —— 三个启动入口都不再携带任何参数（见下面三处
+// FREEZE 注释）。参数为空时原生侧的行为与加这个功能之前逐字相同，所以只关调用处、不动原生。
+// 怎么恢复：取消注释这一行与那三处 `args:`，再取消 SettingsPanel / SettingsWindow 里同名的
+// 冻结块（「启动参数」行、实例下拉、每实例停止）。`connect/launchArgs.ts` 本身一行都没动，
+// 它仍然在 `runtime.ts` 里为端点镜子供词（探针与「打开界面」盯同一个端口），分词测试也照常跑。
+// ---------------------------------------------------------------------------
+// import { parseLaunchArgs } from './connect/launchArgs.ts'
 import { HARNESS_STATE_DETAILS } from './connect/harnessLabels.ts'
-import { isEmbeddedShellSubject, reachNeedsBrowser } from './connect/harnessSubjects.ts'
+import { isEmbeddedShellSubject, isInstalledCliSubject, reachNeedsBrowser } from './connect/harnessSubjects.ts'
+import { profileForLaunch } from './connect/harnessProfiles.ts'
 import {
   apiModelDirectory,
   bridgeModelDirectory,
@@ -25,9 +35,9 @@ import { IdleScene } from './scenes/IdleScene.tsx'
 import { MultiScreenIdleScene } from './scenes/MultiScreenIdleScene.tsx'
 import { MultiScreenWakeScene } from './scenes/MultiScreenWakeScene.tsx'
 import { SleepScene } from './scenes/SleepScene.tsx'
-import { WakeScene } from './scenes/WakeScene.tsx'
+import { WAKE_CURTAIN_OUT_MS, WAKE_ENTER_MS, WakeScene } from './scenes/WakeScene.tsx'
 import { INITIAL_RUNTIME_STATE, reduceRuntime } from './scenes/stateMachine.ts'
-import { BACKGROUND_OPTIONS, applyBubbleOverrides, assetUrl, loadSettings, localCalendarDay, normalizeReceivedSettings, resumeConversationId, saveConversationPointer, saveSettings, type WallpaperSettings } from './settings/store.ts'
+import { BACKGROUND_OPTIONS, DEFAULT_DAY_BOUNDARY_HOUR, applyBubbleOverrides, assetUrl, assistantDay, loadSettings, normalizeReceivedSettings, resumeConversationId, saveConversationPointer, saveSettings, type WallpaperSettings } from './settings/store.ts'
 import { nativeRuntime, type DesktopDisplayInfo, type ManagedDshAutostart, type NativeSendOptions } from './native/runtime.ts'
 import { reportNativeBootstrapReady } from './native/bootstrapHandoff.ts'
 import { listen } from '@tauri-apps/api/event'
@@ -97,7 +107,7 @@ let dshAutostartRequestedInProcess = false
  * owned here. Same module-scope reasoning as above: this survives a remount, and
  * it is only a label — the native side decides what actually happens.
  */
-let harnessLaunchedKind: 'embedded-shell' | 'checkout' = 'checkout'
+let harnessLaunchedKind: 'embedded-shell' | 'checkout' | 'installed-cli' = 'checkout'
 
 export function canAutoSelectHarness(
   availability: RuntimeState['harness'],
@@ -144,6 +154,20 @@ export function shouldReturnToHarness(
   autoResetByWallpaper: boolean,
 ): boolean {
   return autoResetByWallpaper && backend !== 'harness' && isHarnessReady(availability)
+}
+
+/**
+ * "上次是壁纸自己把滑槽拨离 Harness 的"这件事是否成立。
+ *
+ * 它存在两处，缺一不可：内存里的 `ref` 管**本次运行**，设置里的时间戳管**重启之后**——升级安装
+ * 必然重启壁纸，而壁纸自己做过的事不会因为重启就不算数。只存内存的后果实测过：桥回来、灯是绿的，
+ * 滑槽却停在左侧，用户以为还在跟 DSH 说话，而输入进的是另一个后端（"输入被吞"）。
+ *
+ * 这条判断只回答"壁纸有没有这个权利"，不回答"现在该不该拨"——后者还得看桥是否就绪
+ * （`shouldReturnToHarness`）。用户手动拨动滑槽会同时清掉这两处凭据，他选的那一侧永远优先。
+ */
+export function harnessResetClaimed(inMemory: boolean, persistedAt: number | undefined): boolean {
+  return inMemory || (typeof persistedAt === 'number' && Number.isFinite(persistedAt))
 }
 
 /**
@@ -242,13 +266,18 @@ export function dshAutostartNotice(result: ManagedDshAutostart): string | null {
     case 'root-path-invalid':
       return '已开启「随壁纸启动 DSH」，但配置的根目录不是可识别的 DSH 项目；请在设置中心修正。'
     case 'launcher-missing':
-      return '已开启「随壁纸启动 DSH」，但未找到 Node.js 或 pnpm。请在设置中心填写启动命令的完整路径，或安装后重试。'
+      return '已开启「随壁纸启动 DSH」，但未找到 Node.js 或 pnpm。请在设置中心确认这两个程序已安装，并能在命令提示符里直接运行。'
     case 'profile-invalid':
       return '已开启「随壁纸启动 DSH」，但配置的 profile 名称无效（只能包含字母、数字、连字符或下划线）。请在设置中心修正。'
-    case 'command-not-confirmed':
-      return '「随壁纸启动 DSH」不会在无人值守时执行自定义启动命令。请在设置中心确认使用该命令，或清空它改用内建启动器。'
+    // FREEZE 留档（临时冻结，不是删除）：这一条是「启动参数」的失败码。参数冻结之后它到不了这里
+    // —— 没有参数就没有"参数无效"这回事 —— 但**必须留着**：那条码仍然在原生侧的结果枚举里
+    // (`ManagedDshAutostart`)，删掉这条 case 会让它落进下面那句泛泛的"进程启动失败"，而一句更
+    // 具体的、说得出该改哪里的提示比一句泛泛的话更值钱（dshAutostart.spec.ts 也钉着它）。
+    // 恢复办法：什么都不用做 —— 它在功能复活的同一天自动重新可达。
+    case 'launch-args-invalid':
+      return '已开启「随壁纸启动 DSH」，但「启动参数」无效。请在设置中心修正后重试。'
     default:
-      return '已开启「随壁纸启动 DSH」，但进程启动失败。请在设置中心检查根目录与启动命令。'
+      return '已开启「随壁纸启动 DSH」，但进程启动失败。请在设置中心检查根目录与启动参数。'
   }
 }
 
@@ -259,6 +288,22 @@ export function dshAutostartNotice(result: ManagedDshAutostart): string | null {
  *
  * Returns `null` while the launch is still legitimately pending.
  */
+/** 启动后多久才允许下"它退出了"这个结论（宽限期内不下结论，见函数内注释）。
+ *
+ * 各类别不一样长，因为它们的启动成本不一样：源码目录直接跑本机二进制，已安装的 CLI 要先经过
+ * 一层 npm 批处理（cmd）再拉起 node，冷启动明显更慢。同一条时限套在所有人身上，就是"刚报错
+ * 就连上"的来源 —— 报错早于事实。
+ */
+export const IMMEDIATE_EXIT_GRACE_MS = {
+  checkout: 8_000,
+  'installed-cli': 20_000,
+} as const
+
+/** 只有非壳主体才是本进程能观察"退出"的孩子，所以只有它们有宽限。 */
+function exitGraceMs(launchedKind: 'embedded-shell' | 'checkout' | 'installed-cli'): number {
+  return launchedKind === 'embedded-shell' ? 0 : IMMEDIATE_EXIT_GRACE_MS[launchedKind]
+}
+
 export function harnessLaunchOutcome(
   status: { availability: RuntimeState['harness']; reasonCode?: string },
   elapsedMs: number,
@@ -270,11 +315,18 @@ export function harnessLaunchOutcome(
    * not ours, and "not managed" would otherwise be reported as "started and
    * immediately exited" for a client that is running perfectly well.
    */
-  launchedKind: 'embedded-shell' | 'checkout' = 'checkout',
+  launchedKind: 'embedded-shell' | 'checkout' | 'installed-cli' = 'checkout',
 ): { message: string } | null {
   if (status.availability === 'bridge-ready') return null
-  if (launchedKind === 'checkout' && (!managed.managed || !managed.running)) {
-    return { message: 'DSH 启动后立即退出；请检查 DSH 配置或启动日志。' }
+  // "还没被我管起来"不等于"已经退出了"：宿主起来要几秒（实测：启动 22:27:54、端口与门票
+  // 22:27:56；已安装 CLI 还要先经过一层 cmd 与批处理）。各类别给各自长度的宽限期，期内不下
+  // 结论 —— 否则用户会先看到"启动后很快退出"，两秒后指示灯又变绿：一次假警报，比不说更糟。
+  if (
+    launchedKind !== 'embedded-shell'
+    && elapsedMs > exitGraceMs(launchedKind)
+    && (!managed.managed || !managed.running)
+  ) {
+    return { message: 'DSH 启动后很快退出；请检查 DSH 配置或启动日志。' }
   }
   if (elapsedMs <= timeoutMs) return null
   // Past the deadline the most specific available cause wins: a Bridge that
@@ -316,6 +368,41 @@ export function updateApiAdapterOptions(
 ): NativeSendOptions {
   Object.assign(options, apiAdapterOptionsFromSettings(settings))
   return options
+}
+
+/**
+ * 壁纸新建 Harness 会话时默认装载的 agent 预设。
+ *
+ * 用户要求："工作区的预设先默认为'极简模式'试试，应该能省不少上下文"。宿主那边的 id 实测是
+ * `minimal`（预设表：`standard` 默认 / `minimal` / `ptc` / `cordis`）。
+ */
+export const DEFAULT_HARNESS_PRESET = 'minimal'
+
+/**
+ * 切换主体之后，黄灯（"连接中"）至少要亮这么久。
+ *
+ * 用户的要求是"进入固定 1–2s 的黄灯缓冲后**立刻载入**"：答案往往一次性就回来了，如果灯跟着答案
+ * 一闪而过，用户根本看不到"它在连"，只会觉得界面抖了一下。所以这是**最短停留**，不是超时。
+ *
+ * 顺带说清"缓存"在这里指什么：**不是缓存会话 id**。桥的规矩是"只有没有 resume id 时才去建
+ * '今天这条桌面会话'"（每日边界 04:00，你们自己定的），把昨天的 id 存下来再恢复就等于悄悄破了
+ * 那条边界。所以切回来时该做的是"端点保持热 + 这一小段缓冲"，让宿主用一次往返把今天的会话交回来。
+ */
+export const HARNESS_SWITCH_BUFFER_MS = 1_200
+
+/**
+ * Harness 适配器的选项：模型 + 预设。
+ *
+ * **端点不在这里**：`connect_harness` 命令自己按主体范围解析端口（源码注释原话"resolved here
+ * rather than trusted from the caller"——渲染端不许指定任意端口，监视器读同一个值，于是状态与
+ * 会话不会指着两个不同的客户端）。曾经在这里算过一个 `endpointPort` 交出去，命令根本不看它：
+ * 一个死参数，已删。
+ */
+export function harnessAdapterOptionsFromSettings(
+  settings: Pick<WallpaperSettings, 'harnessPreset'>,
+  model: string | undefined,
+): NativeSendOptions {
+  return { model, preset: settings.harnessPreset ?? DEFAULT_HARNESS_PRESET }
 }
 
 type ConversationPointerAdapter = ChatAdapter & {
@@ -366,8 +453,26 @@ export function disposeChatAdapter(
 export function chatAdapterLifecycleKey(
   backend: BackendMode,
   conversationGeneration: number,
+  subjectScope: string,
 ): string {
-  return `${backend}:${conversationGeneration}`
+  return `${backend}:${conversationGeneration}:${subjectScope}`
+}
+
+/**
+ * 主体范围在生命周期键里的形态。
+ *
+ * 主体**必须**进这个键：切换主体不会重建聊天适配器，而适配器持有的正是"连着哪一个端点、哪一条
+ * 会话"。实测的边界情况是：从 CLI 切到官壳时，原生侧收到了新的探测范围（指示灯因此变绿），但事件
+ * 流与那条会话仍留在旧端点上 —— 用户看到的就是"灯说已连接，一发消息却说会话尚未建立"。
+ */
+export function subjectScopeKey(launch: {
+  subjectId?: string
+  rootPath?: string
+  endpointPort?: number
+  extraEndpointPorts?: readonly number[]
+}): string {
+  const scope = endpointScopeOf(launch)
+  return [scope.subjectId ?? '', scope.endpointPort ?? '', (scope.extraPorts ?? []).join(',')].join('|')
 }
 
 /**
@@ -386,9 +491,10 @@ export function shouldStartNewConversationOnUnlock(
   policy: WallpaperSettings['conversationPolicy'],
   previousUnlockDay: string,
   now: Date = new Date(),
+  boundaryHour: number = DEFAULT_DAY_BOUNDARY_HOUR,
 ): boolean {
   return policy === 'new-on-unlock'
-    || (policy === 'daily' && previousUnlockDay !== localCalendarDay(now))
+    || (policy === 'daily' && previousUnlockDay !== assistantDay(now, boundaryHour))
 }
 
 /**
@@ -440,6 +546,18 @@ export function harnessAvailabilityPatch(
     activity: 'idle',
     error: `${HARNESS_DISCONNECTED_ERROR_PREFIX}${HARNESS_STATE_DETAILS[availability]} 已保留当前 Harness 会话和对话记录；Bridge 恢复后可继续，或由你手动切换后端。`,
   }
+}
+
+/**
+ * 通知条上该显示哪一句。
+ *
+ * 两句话来自两个不同的世界：`chatNotice` 是**聊天层**说的（"这条会话被拒绝了，已换新会话重发"），
+ * `error` 是**原生宿主**说的（Bridge 断开等）。必须分开存，因为 `error` 会被**原生快照整体覆写**
+ * （`error: snapshot.error`）——以前两者挤在同一个字段里，聊天层的通知刚写进去就被下一条快照擦掉，
+ * 用户只看到"顶上闪了一下"（实测）。聊天层那句更新、更针对此刻，所以它在前面。
+ */
+export function visibleNotice(state: Pick<RuntimeState, 'chatNotice' | 'error'>): string | undefined {
+  return state.chatNotice ?? state.error
 }
 
 export interface AppProps { surface?: AppSurface }
@@ -505,9 +623,26 @@ export function App({ surface = 'combined' }: AppProps) {
   const [selectedPreset, setSelectedPreset] = useState<string>()
   const [harnessControls, setHarnessControls] = useState<{ permission: { current: string; options: string[] }; commands: Array<{ name: string; description: string; input?: { hint: string } }> }>()
   const [harnessStarting, setHarnessStarting] = useState(false)
+  /**
+   * 握手**失败**过（不是"还没连"）。
+   *
+   * 与黄灯（连接中）必须分开：黄灯是"还没定"，红灯是"试过了、没成"。用户要的动作也不同——
+   * 红灯时点滑槽＝立刻拉起对应 harness 进程并发一次握手申请，而黄灯时只需要等。
+   */
+  const [harnessFailed, setHarnessFailed] = useState(false)
+  /** 切换主体之后黄灯的**最短**停留（见 `HARNESS_SWITCH_BUFFER_MS`）。 */
+  const [harnessBuffering, setHarnessBuffering] = useState(false)
   const [nativeHandoffGeneration, setNativeHandoffGeneration] = useState<number>()
   const harnessLaunchPendingRef = useRef(false)
   const harnessLaunchStartedAtRef = useRef<number>()
+  /**
+   * 上面那个失败分支要用的两样东西，用 ref 拿最新值。
+   *
+   * 那个 effect 只在 `[harnessStarting, runtime.harness]` 变化时重建，直接闭包捕获 `changeBackend`
+   * 会拿到**过期的**那一份（它每次渲染都重建）。失败复位滑槽是一次性动作，必须用当下这一份。
+   */
+  const changeBackendRef = useRef<((backend: 'deepseek-web' | 'deepseek-api' | 'harness', options?: { keepTranscript?: boolean; automatic?: boolean }) => void) | undefined>(undefined)
+  const nonHarnessBackendRef = useRef<'deepseek-web' | 'deepseek-api'>('deepseek-web')
   /**
    * 壁纸自己把滑槽复位过（主体退出），因此它有权在主体回来后自己拨回去。
    *
@@ -520,6 +655,14 @@ export function App({ surface = 'combined' }: AppProps) {
   const markAutoResetFromHarness = (value: boolean) => {
     autoResetFromHarnessRef.current = value
     setAutoResetFromHarness(value)
+    // 同一件事写进设置，让它活过下一个进程：装一次新版就重启一次壁纸，只记在内存里的规则
+    // 会在重启那一刻悄悄失效（见 `harnessResetClaimed`）。用户手动选后端会清掉它。
+    const current = settingsRef.current
+    if (value) {
+      saveSettings({ ...current, harnessAutoResetAt: Date.now() })
+    } else if (current.harnessAutoResetAt !== undefined) {
+      saveSettings({ ...current, harnessAutoResetAt: undefined })
+    }
   }
   const adapterRef = useRef<ChatAdapter>(new PreviewAdapter(settings.defaultBackend))
   const chatActivityRef = useRef<{ adapter: ChatAdapter; backend: BackendMode; activity: RuntimeState['activity'] }>()
@@ -527,6 +670,22 @@ export function App({ surface = 'combined' }: AppProps) {
   // each IPC call. Serialize this queue so a late `streaming` dispatch cannot
   // be processed after the terminal `done` dispatch.
   const coreDispatchQueueRef = useRef<Promise<unknown>>(Promise.resolve())
+  /**
+   * 切换主体之后，黄灯**至少**亮满 `HARNESS_SWITCH_BUFFER_MS`。
+   *
+   * 依赖与下面那个"把主体范围交给原生"的 effect 相同 —— 同一件事触发两处：原生开始按新主体探测，
+   * 界面则先进入"连接中"。启动时也会走一次，那是对的：那时确实还在连。
+   */
+  useEffect(() => {
+    setHarnessBuffering(true)
+    const timer = window.setTimeout(() => setHarnessBuffering(false), HARNESS_SWITCH_BUFFER_MS)
+    return () => window.clearTimeout(timer)
+  }, [
+    settings.dshLaunch.subjectId,
+    settings.dshLaunch.rootPath,
+    settings.dshLaunch.endpointPort,
+    settings.dshLaunch.extraEndpointPorts,
+  ])
   // Do not put mutable API request settings in the adapter lifecycle effect.
   // The adapter captures this object by reference and snapshots it only when
   // sending, so a settings edit changes the next request without disconnecting
@@ -534,9 +693,10 @@ export function App({ surface = 'combined' }: AppProps) {
   const apiAdapterOptionsRef = useRef<NativeSendOptions>(apiAdapterOptionsFromSettings(settings))
   const conversationPolicyRef = useRef(settings.conversationPolicy)
   // Keep the day from the last session return, not from the last render. A
-  // long-running process therefore notices local midnight when the user
-  // returns to the desktop and asks for a daily conversation.
-  const previousUnlockDayRef = useRef(localCalendarDay())
+  // long-running process therefore notices the day boundary when the user
+  // returns to the desktop and asks for a daily conversation. 「助手日」= 本地
+  // 04:00 起算，深夜还在做的事不会被零点切走（`assistantDay`）。
+  const previousUnlockDayRef = useRef(assistantDay(new Date(), settings.dayBoundaryHour))
   // This ref is updated synchronously by user/backend actions. React state is
   // intentionally asynchronous, so runtimeRef alone would leave a short gap
   // in which an old adapter could finish and persist its pointer under a new
@@ -557,6 +717,21 @@ export function App({ surface = 'combined' }: AppProps) {
    * decides *how* something is drawn must not be able to re-trigger an event that means
    * "this session just started".
    */
+  /**
+   * 中央玻璃悬浮（`interactionLayout === 'floating'`）把输入岛固定在桌面上，悬浮球因此没有职责。
+   *
+   * 这条必须作为**状态**报给原生，不能让原生从热区列表推断：岛在重挂载与相位切换时有几十毫秒
+   * 不在列表里，球会抓住那个空窗弹出来（实测日志 `island_visible=false region_count=0` 之后紧接
+   * `floating ball: shown reason=approach`）。用户报告的就是这一幕。
+   *
+   * 调用点是**事件**（启动、设置变更），不是以偏好为依赖的 effect —— 那条护栏是历史教训的产物
+   * （见 tests/interactionLayout.spec.ts：偏好不该能重新触发"这次会话刚开始"）。
+   */
+  const reportIslandPinned = (layout: WallpaperSettings['interactionLayout']) => {
+    if (!appCoreClient.native) return
+    dispatchCore('set-island-pinned', { value: layout === 'floating' ? 'true' : 'false' })
+  }
+
   const settingsRef = useRef(settings)
   settingsRef.current = settings
 
@@ -736,7 +911,7 @@ export function App({ surface = 'combined' }: AppProps) {
   // 了回调，于是网页模式下它是一枚纯图标：点了什么都不发生，看起来就是"按钮拉不起来窗口"。
   //
   // 规则与设置中心「打开」那套完全一致，关键是**不能只调 raise**：主体没在运行时先把它启动；
-  // 官壳/第三方桌面客户端有自己的窗口 → 拉到前台；**检出（CLI/webui 形态）根本没有窗口** →
+  // 官壳有自己的窗口 → 拉到前台；**检出/CLI（webui 形态）根本没有窗口** →
   // 交给默认浏览器打开。走哪条路由**原生的结果**决定（`no-window`），不由这里猜主体形态：
   // 什么都没配置时没有形态可读，猜出来的"无窗口"会让浏览器抢在窗口之前被打开。
   const openSubjectInterface = useCallback(() => {
@@ -755,7 +930,10 @@ export function App({ surface = 'combined' }: AppProps) {
           targetId: subjectId,
           port,
           profile: launch.profile,
-          command: launch.command,
+          // FREEZE（临时冻结，不是删除）：「启动参数」不在这条路上传。恢复办法：取消注释下面
+          // 这一行，并恢复本文件顶部的 `parseLaunchArgs` import。原生侧 `args` 是可选参数，
+          // 不传等价于空参数列表 —— 也就是这个功能之前的行为。
+          // args: parseLaunchArgs(launch.args),
         })
         if (reachNeedsBrowser(ensured.outcome)) {
           const live = port > 0
@@ -822,7 +1000,7 @@ export function App({ surface = 'combined' }: AppProps) {
   // The WorkerW host is permanently desktop-sized. Both the floating window
   // and the taskbar capsule now use CSS placement inside that one viewport.
   const interactionDirection = 'center' as const
-  const adapterLifecycleKey = chatAdapterLifecycleKey(runtime.backend, conversationGeneration)
+  const adapterLifecycleKey = chatAdapterLifecycleKey(runtime.backend, conversationGeneration, subjectScopeKey(settings.dshLaunch))
 
   // Commit settings into the stable holder after React commits the matching
   // render.  Mutating the ref during render could leak a discarded concurrent
@@ -839,21 +1017,41 @@ export function App({ surface = 'combined' }: AppProps) {
     settings.deepseekApi.priceOutputPerMillion,
   ])
 
-  const enterInnerWorkspace = () => {
+  // 入场/离场的代际计数：两个延时收尾（280ms 入场、220ms 离场）都要先确认自己仍是最新那一次，
+// 否则快速进出时，旧定时器会把新状态覆盖掉。
+const workspaceEpochRef = useRef(0)
+
+const enterInnerWorkspace = () => {
     // The existing drawer already has its own state and visual treatment. The
     // preference therefore only chooses its initial state as a workspace is
     // entered; it does not add another surface or force a transcript open.
     // Read through the ref: these handlers are held by a long-lived listener, so a
     // captured value would go stale the moment the preference changed.
+    // 已经在里桌面（或正在入场）时直接返回。
+    //
+    // 立绘的单击路径直达这里（`onOpenChat`），而它不该有"重新入场"的语义：不加这道判断，
+    // 每次点立绘都会把状态重新置回 `entering-inner`，280ms 的入场动画便从透明+模糊重播
+    // （看起来就是输入岛闪一下），并且会把会话记录的展开状态重置回设置里的默认值。
+    // 读 ref 而不是闭包里的 `workspace`：这些处理器被长生命周期监听器持有。
+    if (workspaceRef.current === 'entering-inner' || workspaceRef.current === 'inner') {
+      return
+    }
+    const epoch = ++workspaceEpochRef.current
     setInnerHistoryExpanded(settingsRef.current.historyStartsExpanded)
     setWorkspace('entering-inner')
     setInteractionState('expanded')
     baseDispatch({ type: 'OPEN_CHAT' })
     dispatchCore('open-chat')
-    window.setTimeout(() => setWorkspace('inner'), 280)
+    window.setTimeout(() => {
+      if (workspaceEpochRef.current === epoch) {
+        setWorkspace('inner')
+      }
+    }, 280)
   }
 
   const leaveInnerWorkspace = () => {
+    // 代际 +1：任何尚未触发的入场收尾（280ms）就此作废，不会在离场后把状态又置回 inner。
+    const epoch = ++workspaceEpochRef.current
     setInnerHistoryExpanded(false)
     if (settingsRef.current.interactionLayout === 'floating') {
       // A floating surface is either fully present or absent. Resizing its native
@@ -866,6 +1064,9 @@ export function App({ surface = 'combined' }: AppProps) {
     }
     setWorkspace('leaving-inner')
     window.setTimeout(() => {
+      if (workspaceEpochRef.current !== epoch) {
+        return
+      }
       setWorkspace('front')
       setInteractionState('collapsed')
       baseDispatch({ type: 'CLOSE_CHAT' })
@@ -975,6 +1176,8 @@ export function App({ surface = 'combined' }: AppProps) {
    */
   useEffect(() => {
     const playWake = settingsRef.current.animationsEnabled && !settingsRef.current.skipWakeAnimation
+    // 布局报一次"岛是否常驻"：中央玻璃悬浮把岛钉在桌面上，悬浮球因此永不弹出（见 reportIslandPinned）。
+    reportIslandPinned(settingsRef.current.interactionLayout)
     const timer = setTimeout(() => {
       if (appCoreClient.native) dispatchCore('boot-ready', { playWake })
       else baseDispatch({ type: 'BOOT_READY', playWake })
@@ -992,7 +1195,14 @@ export function App({ surface = 'combined' }: AppProps) {
     // the desktop renderer a value of the wrong type.
     return listenUntilDisposed<WallpaperSettings>(
       (emit) => listen<WallpaperSettings>('settings-changed', (event) => emit(event.payload)),
-      (payload) => setSettings(normalizeReceivedSettings(payload)),
+      (payload) => {
+        const next = normalizeReceivedSettings(payload)
+        // 布局真正变了才报：偏好可以改画什么，但不该反复触发一次副作用。
+        if (next.interactionLayout !== settingsRef.current.interactionLayout) {
+          reportIslandPinned(next.interactionLayout)
+        }
+        setSettings(next)
+      },
       { onError: (error) => patchRuntime({ error: String(error) }) },
     ).dispose
   }, [])
@@ -1061,11 +1271,19 @@ export function App({ surface = 'combined' }: AppProps) {
     }
   }, [harnessStarting])
 
+  // 桥就绪后必须清掉失败标记：它记录的是**上一次尝试**，不是当前连接。实测症状是绿灯配"连接失败"——
+  // 那次尝试失败后标记粘住，而下面那个 effect 的清除分支有"握手中"前置条件，此后再也不会执行，
+  // 于是常驻监视器后来把桥连上了，界面上仍写着失败。
+  useEffect(() => {
+    if (runtime.harness === 'bridge-ready') setHarnessFailed(false)
+  }, [runtime.harness])
+
   useEffect(() => {
     if (!nativeRuntime.isNative || !harnessLaunchPendingRef.current) return
     if (runtime.harness === 'bridge-ready') {
       harnessLaunchPendingRef.current = false
       harnessLaunchStartedAtRef.current = undefined
+      setHarnessFailed(false)
       if (harnessStarting) setHarnessStarting(false)
       return
     }
@@ -1073,6 +1291,10 @@ export function App({ surface = 'combined' }: AppProps) {
     let disposed = false
     const check = async () => {
       try {
+        // FREEZE（临时冻结，不是删除）：这里原来把**主体**也传进去（`managedDshStatus(subjectId
+        // ?? rootPath)`），因为并行实例之后"我这次启动的那个孩子还在不在"要按主体问。回到不带
+        // 主体：单实例世界里两者答案相同，而这一版就该是那个世界的形状。恢复办法：把那个实参加
+        // 回去（一行）。参数仍然在 `runtime.ts` 的签名里，`instances` / 每实例停止也照旧。
         const managed = await nativeRuntime.managedDshStatus()
         if (disposed || !harnessLaunchPendingRef.current) return
         const outcome = harnessLaunchOutcome(
@@ -1086,6 +1308,10 @@ export function App({ surface = 'combined' }: AppProps) {
         harnessLaunchPendingRef.current = false
         harnessLaunchStartedAtRef.current = undefined
         setHarnessStarting(false)
+        // 握手失败：灯转红（"试过、没成"），滑槽拨回左边。旧的那条连接**不动** —— 连接层是
+        // make-before-break，没有成功的新会话就不会拆旧的；它只是不再冒充"已连接"。
+        setHarnessFailed(true)
+        changeBackendRef.current?.(nonHarnessBackendRef.current)
         patchRuntime({ error: outcome.message })
       } catch (error) {
         if (!disposed) patchRuntime({ error: String(error) })
@@ -1125,16 +1351,21 @@ export function App({ surface = 'combined' }: AppProps) {
         const subjectId = settings.dshLaunch.subjectId ?? settings.dshLaunch.rootPath
         const result = await nativeRuntime.autostartHarnessTarget({
           targetId: subjectId,
-          profile: settings.dshLaunch.profile,
-          command: settings.dshLaunch.command,
-          trustedCommand: settings.dshLaunch.trustedCommandForAutoStart,
+          profile: profileForLaunch(),
+          // FREEZE（临时冻结，不是删除）：随壁纸自动启动这条路上也不带任何参数 —— 它和手动
+          // 「启动」跑的是同一个启动器，所以两条路一起冻结。恢复办法：取消注释这一行。
+          // args: parseLaunchArgs(settings.dshLaunch.args),
         })
         if (disposed) return
         if (result.outcome === 'started' || result.outcome === 'started-unconfirmed') {
           // Reuse the manual launch's readiness window, so the same 45-second
           // supervision, timeout message and exit detection apply. A shell is
           // supervised on the bridge probe alone: nothing here owns its process.
-          harnessLaunchedKind = isEmbeddedShellSubject(subjectId) ? 'embedded-shell' : 'checkout'
+          harnessLaunchedKind = isEmbeddedShellSubject(subjectId)
+            ? 'embedded-shell'
+            : isInstalledCliSubject(subjectId)
+              ? 'installed-cli'
+              : 'checkout'
           harnessLaunchStartedAtRef.current = Date.now()
           harnessLaunchPendingRef.current = true
           setHarnessStarting(true)
@@ -1221,8 +1452,8 @@ export function App({ surface = 'combined' }: AppProps) {
             adapterBackend,
             adapterBackend === 'deepseek-api'
               ? apiAdapterOptionsRef.current
-              : adapterBackend === 'harness' && harnessModelChoice
-                ? { model: harnessModelChoice }
+              : adapterBackend === 'harness'
+                ? harnessAdapterOptionsFromSettings(settings, harnessModelChoice)
                 : {},
             // Harness owns its own daily workspace/session lifecycle. Never
             // feed it a renderer-local resume pointer, which could belong to
@@ -1293,9 +1524,25 @@ export function App({ surface = 'combined' }: AppProps) {
       }
       if (event.type === 'approval-required') { patchRuntime({ activity: 'tool', error: `${event.summary}；请打开 Harness 处理。` }); dispatchCore('set-activity', { value: 'tool' }) }
       if (event.type === 'question-required') { setQuestionPrompt(event.questions); patchRuntime({ activity: 'tool', error: undefined }); dispatchCore('set-activity', { value: 'tool' }) }
+      if (event.type === 'conversation-reset') {
+        // 这条会话不能用了（用户归档，或宿主拒绝了这一轮）：轨道上这段记录**立刻**停止看起来
+        // 像活的（症状正是"输入被吞了、灯还是绿的"——转写看着正常，其实没有人在听）。
+        // 同步清空而不是等新会话的历史对账回来：那个请求可能回空，而且它赢不了"重发那句话已经
+        // 在路上"这件事；新会话的内容由随后的事件与历史对账填回来。通知走 `chatNotice` 而不是
+        // `error`：原生快照会整体覆写 `error`，挤在一起就只能"闪一下"。
+        setMessages([])
+        setStreamingText('')
+        setUsage(undefined)
+        setQuestionPrompt(undefined)
+        if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current.activity = 'sending'
+        patchRuntime({ activity: 'sending', chatNotice: event.message })
+        dispatchCore('set-activity', { value: 'sending' })
+      }
       if (event.type === 'error') {
         if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current.activity = 'idle'
-        setStreamingText(''); patchRuntime({ activity: 'idle', error: event.message }); dispatchCore('set-activity', { value: 'idle' })
+        // 同样是**聊天层**的话（"DSH 拒绝了这一轮…"、"发送失败…"），走 `chatNotice`：
+        // 它在屏幕上留得住，而原生快照碰不到它。
+        setStreamingText(''); patchRuntime({ activity: 'idle', chatNotice: event.message }); dispatchCore('set-activity', { value: 'idle' })
       }
     })
     void (async () => {
@@ -1351,10 +1598,11 @@ export function App({ surface = 'combined' }: AppProps) {
           if (settingsRef.current.interactionLayout === 'taskbar-docked') setInteractionState('collapsed')
           const now = new Date()
           const policy = conversationPolicyRef.current
-          if (shouldStartNewConversationOnUnlock(policy, previousUnlockDayRef.current, now)) {
+          const boundaryHour = settingsRef.current.dayBoundaryHour
+          if (shouldStartNewConversationOnUnlock(policy, previousUnlockDayRef.current, now, boundaryHour)) {
             setConversationGeneration((value) => value + 1)
           }
-          previousUnlockDayRef.current = localCalendarDay(now)
+          previousUnlockDayRef.current = assistantDay(now, boundaryHour)
           observedLockOrSuspend = false
           if (!appCoreClient.native) baseDispatch({ type: 'UNLOCK', playWake: settingsRef.current.playWakeOnEveryUnlock && settingsRef.current.animationsEnabled && !settingsRef.current.skipWakeAnimation })
         }
@@ -1473,7 +1721,7 @@ export function App({ surface = 'combined' }: AppProps) {
         patchRuntime({ harness: status.availability, model: status.model ?? runtimeRef.current.model, provider: status.provider ?? runtimeRef.current.provider, reasoningEffort: status.reasoningEffort })
         if (isHarnessReady(status.availability) && runtimeRef.current.backend !== 'harness') {
           if (canAutoSelectHarness(status.availability, runtimeRef.current.backend, settings.autoSwitchHarness)
-            || shouldReturnToHarness(status.availability, runtimeRef.current.backend, autoResetFromHarnessRef.current)) {
+            || shouldReturnToHarness(status.availability, runtimeRef.current.backend, harnessResetClaimed(autoResetFromHarnessRef.current, settingsRef.current.harnessAutoResetAt))) {
             markAutoResetFromHarness(false)
             changeBackend('harness', { automatic: true })
           }
@@ -1492,7 +1740,7 @@ export function App({ surface = 'combined' }: AppProps) {
     if (!appCoreClient.native) return
     if (isHarnessReady(runtime.harness) && runtime.backend !== 'harness') {
       if (canAutoSelectHarness(runtime.harness, runtime.backend, settings.autoSwitchHarness)
-        || shouldReturnToHarness(runtime.harness, runtime.backend, autoResetFromHarnessRef.current)) {
+        || shouldReturnToHarness(runtime.harness, runtime.backend, harnessResetClaimed(autoResetFromHarnessRef.current, settings.harnessAutoResetAt))) {
         markAutoResetFromHarness(false)
         changeBackend('harness', { automatic: true })
       }
@@ -1500,7 +1748,8 @@ export function App({ surface = 'combined' }: AppProps) {
     // 主体退出后复位到左侧：拉起 harness 的入口就在壁纸里，停在死掉的一侧会让用户
     // 不得不再手动切一次 ✗。记录不会丢——会话按日期命名、转写留在宿主那边，切回去自动接上。
     // 复位时**保留轨道里的转写**：用户看到的是"上次的 Harness 会话"，而不是一片空白；
-    // `autoResetFromHarnessRef` 同时记下"这次是壁纸复位的"，主体回来后由它自己拨回去。
+    // `autoResetFromHarnessRef` 与设置里的时间戳同时记下"这次是壁纸复位的"，主体回来后由它自己
+    // 拨回去——包括壁纸重启之后（升级安装必然重启）。
     const fallback = harnessFallbackBackend(runtime.harness, runtime.backend, settings.defaultBackend)
     if (fallback) {
       markAutoResetFromHarness(true)
@@ -1555,6 +1804,19 @@ export function App({ surface = 'combined' }: AppProps) {
     baseDispatch({ type: 'RECOVER' })
     if (appCoreClient.native) void appCoreClient.selectBackend(backend).catch((error) => patchRuntime({ error: String(error) }))
   }
+  /**
+   * 苏醒收尾这一幕是否还在演。
+   *
+   * 只在".wake-enter"存在期间挂帷幕、给立绘加虚影动画；时间到就摘掉，免得它变成常驻状态，
+   * 让"从聊天窗回到桌面"也重演一遍入场。时长由 WakeScene 的三个常量决定，两边共用一个节奏。
+   */
+  const [wakeEnter, setWakeEnter] = useState(false)
+  useEffect(() => {
+    if (!wakeEnter) return
+    const timer = window.setTimeout(() => setWakeEnter(false), WAKE_ENTER_MS)
+    return () => window.clearTimeout(timer)
+  }, [wakeEnter])
+
   const scene = useMemo(() => {
     if (runtime.phase === 'booting' || runtime.phase === 'locked') return <SleepScene persona={persona} mode="system" />
     if (runtime.phase === 'waking') {
@@ -1565,7 +1827,12 @@ export function App({ surface = 'combined' }: AppProps) {
         enabled: settings.animationsEnabled && !settings.skipWakeAnimation,
         speed: settings.animationSpeed,
         onFirstWakeFrame: (generation: number) => reportNativeBootstrapReady(generation, nativeRuntime, { verifySceneImages: false }),
-        onWakeDone: () => { baseDispatch({ type: 'WAKE_DONE' }); dispatchCore('wake-done') },
+        onWakeDone: () => {
+          // 苏醒帧的最后一帧已经把画面压黑（WakeScene 的帷幕），这里接手的是"仍然全黑"：
+          // 桌面在帷幕下面挂载，帷幕淡出即桌面背景淡入，立绘随后从虚影里浮出。
+          if (settings.animationsEnabled && !settings.skipWakeAnimation) setWakeEnter(true)
+          baseDispatch({ type: 'WAKE_DONE' }); dispatchCore('wake-done')
+        },
       }
       return multiScreenActive
         ? <MultiScreenWakeScene displays={desktopDisplays} {...wakeProps} />
@@ -1587,7 +1854,13 @@ export function App({ surface = 'combined' }: AppProps) {
     && runtime.phase !== 'booting'
     && runtime.phase !== 'locked'
     && (settings.interactionLayout === 'taskbar-docked' || workspace !== 'front')
-    ? <ConversationBubble
+    ? (() => {
+      // 失败复位要用的两样东西取"当下这一份"（见上面 ref 的说明）。这里赋值而不是在 effect 里：
+      // 切换后端与主体都发生在用户动作之后，任何一次渲染都比上一次更新。
+      changeBackendRef.current = changeBackend as typeof changeBackendRef.current
+      const fallback = (settings.defaultBackend === 'harness' ? 'deepseek-web' : settings.defaultBackend) as 'deepseek-web' | 'deepseek-api'
+      nonHarnessBackendRef.current = fallback
+      return <ConversationBubble
       backend={runtime.backend}
       activity={runtime.activity}
       modelLabel={modelLabel}
@@ -1610,8 +1883,13 @@ export function App({ surface = 'combined' }: AppProps) {
       apiPricingConfigured={settings.deepseekApi.priceInputPerMillion !== undefined && settings.deepseekApi.priceOutputPerMillion !== undefined}
       harnessAvailability={runtime.harness}
       harnessStarting={harnessStarting}
+      harnessFailed={harnessFailed}
+      harnessSuspect={harnessTransitioning || harnessBuffering}
       onStartHarness={async () => {
         if (harnessLaunchPendingRef.current) return
+        // 红灯时点滑槽＝**动手再试一次**：拉起对应 harness 进程（这一步本身就是"握手申请"的前半，
+        // 后半由切到 harness 后适配器连接时发出）。所以先清掉失败标记，灯回到"连接中"。
+        setHarnessFailed(false)
         setHarnessStarting(true)
         harnessLaunchPendingRef.current = true
         harnessLaunchStartedAtRef.current = Date.now()
@@ -1627,11 +1905,17 @@ export function App({ surface = 'combined' }: AppProps) {
             await nativeRuntime.openSettingsWindow()
             return
           }
-          harnessLaunchedKind = isEmbeddedShellSubject(subjectId) ? 'embedded-shell' : 'checkout'
+          harnessLaunchedKind = isEmbeddedShellSubject(subjectId)
+            ? 'embedded-shell'
+            : isInstalledCliSubject(subjectId)
+              ? 'installed-cli'
+              : 'checkout'
           await nativeRuntime.launchHarnessTarget({
             targetId: subjectId,
-            profile: settings.dshLaunch.profile,
-            command: settings.dshLaunch.command,
+            profile: profileForLaunch(),
+            // FREEZE（临时冻结，不是删除）：手动「启动」这条路同样不带参数。恢复办法：取消
+            // 注释这一行。原生侧 `args?` 是可选参数，缺省就是空参数列表。
+            // args: parseLaunchArgs(settings.dshLaunch.args),
           })
         } catch (error) {
           harnessLaunchPendingRef.current = false
@@ -1648,7 +1932,7 @@ export function App({ surface = 'combined' }: AppProps) {
       nonHarnessBackend={settings.defaultBackend === 'harness' ? 'deepseek-web' : settings.defaultBackend}
       // 保留下来的是**上一个后端**的转写（壁纸因主体退出自己复位时才发生），所以它只在
       // 已经不在 Harness 上、而且确实有记录可看时才标注来历。
-      keptTranscript={autoResetFromHarness && runtime.backend !== 'harness' && messages.length > 0}
+      keptTranscript={harnessResetClaimed(autoResetFromHarness, settings.harnessAutoResetAt) && runtime.backend !== 'harness' && messages.length > 0}
       presetOptions={presetOptions}
       selectedPreset={selectedPreset}
       onSelectPreset={messages.length === 0 ? (preset) => { void nativeRuntime.setHarnessPreset(preset).then(() => setSelectedPreset(preset)).catch((error) => patchRuntime({ error: String(error) })) } : undefined}
@@ -1660,11 +1944,7 @@ export function App({ surface = 'combined' }: AppProps) {
       modelLabels={modelLabels}
       modelSwitchDisabledReason={modelSwitchDisabledReason}
       harnessReady={isHarnessReady(runtime.harness)}
-      // 黄灯 = **连接与断开的中间态**（用户要求它是呼吸灯）：正在把 harness 后台拉起来、
-      // 宿主在装载 Bridge、或者已经连上但暂时失联还没判死。它不是告警，所以是呼吸而不是闪烁。
-      // 两个来源各自算：原生监控把 `harnessProbing` 随快照发下来（它能看到端口属主的进程是否
-      // 还活着），浏览器预览那条路自己在本地探针里判断。
-      harnessSuspect={harnessTransitioning}
+      // 黄灯（`harnessSuspect`）在面板顶部那处统一给：原生的 `harnessProbing` + 刚才那段最短停留。
       // 每个后端都接上：它是"拉起当前主体可视化窗口"的快捷键，与岛上当前是哪个后端无关
       // （用户要求的是"每个样式"都有这个按钮）。没有主体可拉时，原生会退到"这个端点上
       // 应答的那台"，所以网页模式下点击也不会落空。
@@ -1714,7 +1994,8 @@ export function App({ surface = 'combined' }: AppProps) {
         setUsage(undefined)
         setStreamingText('')
         if (chatActivityRef.current?.adapter === adapter && chatActivityRef.current.backend === adapterBackend) chatActivityRef.current.activity = 'sending'
-        patchRuntime({ activity: 'sending', error: undefined })
+        // 一次新的发送清掉上一条聊天层通知（宿主的 `error` 由原生快照自己维护，不动它）。
+        patchRuntime({ activity: 'sending', error: undefined, chatNotice: undefined })
         dispatchCore('set-activity', { value: 'sending' })
         const sending = adapter.send(text)
         persistConversationPointerWhenAvailable(adapter, adapterBackend)
@@ -1756,7 +2037,14 @@ export function App({ surface = 'combined' }: AppProps) {
         }
         void nativeRuntime.leaveInnerWorkspace().catch((error) => patchRuntime({ error: `离开里桌面失败：${String(error)}` }))
       }}
+      // 打开转写里的链接：地址来自模型输出，真正的白名单在 Rust 侧（`external_link::validate`）。
+      // 失败要说出来 —— 中键点了没反应，用户只会以为是手势没生效。
+      onOpenLink={(href) => {
+        void nativeRuntime.openExternalLink(href)
+          .catch((error) => patchRuntime({ chatNotice: `打开链接失败：${String(error)}` }))
+      }}
     />
+    })()
     : null
 
   const conversationDisplay = desktopDisplays.find((display) => display.id === conversationDisplayId) ?? desktopDisplays[0]
@@ -1791,12 +2079,13 @@ export function App({ surface = 'combined' }: AppProps) {
     </div>
     : conversationBubble
 
-  return <div className={`wallpaper-root surface-${surface} effort-${runtime.reasoningEffort ?? 'normal'} workspace-${workspace}`} data-workspace={workspace}>
+  return <div className={`wallpaper-root phase-${runtime.phase} surface-${surface} effort-${runtime.reasoningEffort ?? 'normal'} workspace-${workspace}${wakeEnter ? ' wake-enter' : ''}`} data-workspace={workspace}>
     {scene}
+    {wakeEnter && <div className="wake-curtain-out" style={{ animationDuration: `${WAKE_CURTAIN_OUT_MS}ms` }} />}
     <>
       <WidgetHost workspace={workspace} widgets={[]} />
       {conversationSurface}
-      {runtime.error && runtime.phase !== 'error' && <div className="runtime-notice" role="status">{runtime.error}<button onClick={() => patchRuntime({ error: undefined })}>×</button></div>}
+      {visibleNotice(runtime) && runtime.phase !== 'error' && <div className="runtime-notice" role="status">{visibleNotice(runtime)}<button onClick={() => patchRuntime({ error: undefined, chatNotice: undefined })}>×</button></div>}
       {runtime.phase === 'auth-required' && <div className="auth-overlay" data-interaction-region="auth"><div className="auth-card"><h2>需要登录 DeepSeek 网页入口</h2><p>应用内官方页面已经打开，请在其中完成登录。登录状态只保存在独立 WebView2 配置目录，本应用不会读取或复制 Cookie；登录完成后回到桌面即可继续发送。</p><button onClick={() => { baseDispatch({ type: 'AUTH_READY' }); dispatchCore('auth-ready') }}>我已完成登录</button></div></div>}
     </>
   </div>

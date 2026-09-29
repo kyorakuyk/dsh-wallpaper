@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-subject-tui"
+description = "Enables the open_subject_tui command without any pre-configured scope."
+commands.allow = ["open_subject_tui"]
+
+[[permission]]
+identifier = "deny-open-subject-tui"
+description = "Denies the open_subject_tui command without any pre-configured scope."
+commands.deny = ["open_subject_tui"]

@@ -46,6 +46,7 @@
     "allow-set-harness-endpoint",
     "allow-raise-client-window",
     "allow-open-client-in-browser",
+    "allow-open-external-link",
     "allow-harness-endpoint-listening",
     "allow-harness-endpoint-window",
     "allow-launch-dsh",

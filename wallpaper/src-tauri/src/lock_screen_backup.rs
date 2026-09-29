@@ -381,11 +381,17 @@ pub fn managed_image_path_from_file(config_dir: &Path, file_name: &str) -> Resul
     asset_path(config_dir, file_name, "锁屏托管图片")
 }
 
-/// Allocates a new filename for a managed sleep image. Windows rejects a
-/// repeated personalization update that reuses the previous filename, even
-/// when the bytes changed, so callers must use this for every new takeover.
-pub fn next_managed_image_file(
-    captured_at_unix_ms: u64,
+/// 托管图的文件名由**内容**决定，不是由"第几次接管"决定。
+///
+/// 为什么改成这样（用户实测）：Windows 把每一次不同的文件名都当成一次新的个性化输入，
+/// 记进"设置 → 个性化 → 锁屏界面 → 最近使用的图像"。以前每次接管都生成带时间戳的新名字，
+/// 于是同一张睡颜在系统那一侧占了**三个栏位**。名字跟着内容走以后，一张素材只有一条记录；
+/// 素材真的换了（内容变了）才会出现新名字 —— 那正是我们希望系统记住的变化。
+///
+/// Windows 仍需"不能拿当前正在用的那个文件名再设一次"，所以调用方在**内容没变**时压根不该重设；
+/// 这条由接管前的 `current == original` 预检 + 内容寻址的名字共同保证。
+pub fn managed_image_file_for_content(
+    content_hash: &str,
     extension: &str,
 ) -> Result<String, String> {
     let extension = extension
@@ -398,10 +404,33 @@ pub fn next_managed_image_file(
     {
         return Err("锁屏托管图片扩展名无效".into());
     }
-    let sequence = CAPTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let digest = content_hash.trim().to_ascii_lowercase();
+    if digest.len() < 16 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("锁屏托管图片的内容摘要无效".into());
+    }
     Ok(format!(
-        "dsh-wallpaper-sleep-{captured_at_unix_ms}-{sequence}.{extension}"
+        "dsh-wallpaper-sleep-{}.{extension}",
+        &digest[..16]
     ))
+}
+
+/// 一个文件内容的 sha256（十六进制），用于按内容给托管图命名。
+pub fn file_content_hash(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+
+    let mut file =
+        fs::File::open(path).map_err(|error| format!("无法读取锁屏图片以计算摘要：{error}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = std::io::Read::read(&mut file, &mut buffer)
+            .map_err(|error| format!("无法读取锁屏图片以计算摘要：{error}"))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// Removes ownership markers after native code has positively verified that
@@ -855,12 +884,34 @@ mod tests {
         assert_eq!(manifest.managed_image_file, LEGACY_MANAGED_IMAGE_FILE);
     }
 
+    /// 同一张素材 ⇒ 同一个文件名（系统那一侧只留一条"最近使用的图像"）；素材换了才换名字。
     #[test]
-    fn managed_image_filenames_are_unique_and_constrained() {
-        let first = next_managed_image_file(42, "png").expect("first name");
-        let second = next_managed_image_file(42, ".png").expect("second name");
-        assert_ne!(first, second);
-        assert!(first.starts_with("dsh-wallpaper-sleep-42-"));
-        assert!(next_managed_image_file(42, "../exe").is_err());
+    fn managed_image_filenames_follow_the_content() {
+        let digest = "0123456789abcdef0123456789abcdef";
+        let first = managed_image_file_for_content(digest, "png").expect("name");
+        let again = managed_image_file_for_content(digest, ".PNG").expect("name again");
+        let changed = managed_image_file_for_content("fedcba9876543210fedcba9876543210", "png")
+            .expect("changed name");
+        assert_eq!(first, again, "同样的内容必须得到同样的名字");
+        assert_ne!(first, changed, "内容变了才允许出现新名字");
+        assert_eq!(first, "dsh-wallpaper-sleep-0123456789abcdef.png");
+        assert!(managed_image_file_for_content(digest, "../exe").is_err());
+        assert!(managed_image_file_for_content("short", "png").is_err());
+        assert!(managed_image_file_for_content("zzzzzzzzzzzzzzzzzz", "png").is_err());
+    }
+
+    #[test]
+    fn content_hash_distinguishes_bytes() {
+        let root = std::env::temp_dir().join(format!("dsh-lock-hash-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("temp dir");
+        let same = root.join("same.png");
+        let other = root.join("other.png");
+        std::fs::write(&same, b"sleep frame").expect("write");
+        std::fs::write(&other, b"sleep frame").expect("write");
+        let first = file_content_hash(&same).expect("hash");
+        assert_eq!(first, file_content_hash(&other).expect("hash"));
+        std::fs::write(&other, b"sleep frame!").expect("write");
+        assert_ne!(first, file_content_hash(&other).expect("hash"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

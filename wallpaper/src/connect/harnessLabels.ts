@@ -24,11 +24,34 @@ export const HARNESS_STATE_DETAILS: Record<HarnessAvailability, string> = {
   'bridge-ready': '',
 }
 
+/**
+ * 失败标记该不该显示。
+ *
+ * `harnessFailed` 只在**启动握手失败**时置真，而清除它的那条 effect 开头就有前置条件（"握手中"），
+ * 而失败时那个标记已经被清掉了 —— 于是这条清除路径此后再也不执行。实测症状：上一次尝试失败后标记
+ * 粘住，等桥由常驻监视器自己连上来时没人清它，界面上就是**绿灯配"连接失败"**。
+ *
+ * 已就绪时一律不显示失败：灯的绿是当下的事实，失败标记只是对上一次尝试的记录。
+ */
+export function harnessFailureVisible(
+  failed: boolean | undefined,
+  availability: HarnessAvailability,
+): boolean {
+  return failed === true && availability !== 'bridge-ready'
+}
+
 /** Short label for the status dot in the bubble and the settings sidebar. */
-export function harnessStateLabel(availability: HarnessAvailability): string {
+export function harnessStateLabel(
+  state: HarnessAvailability | { availability: HarnessAvailability; probing?: boolean },
+): string {
+  const availability = typeof state === 'string' ? state : state.availability
+  const probing = typeof state === 'string' ? false : state.probing === true
+  // 黄灯只有一种含义：**还没定**。所以凡是黄灯（正在连、正在装载、就绪过的桥接暂时失联还没判死）
+  // 一律说"连接中"，绝不在呼吸着的同时写着"已连接" —— 那句话属于上一条连接，用户读到的却是
+  // "能用了"，于是发消息才发现会话根本没建立。这是实测过的症状，不是假想。
+  if (probing || availability === 'bridge-loading') return '连接中'
   switch (availability) {
     case 'bridge-ready': return 'DSH Bridge 已连接'
-    case 'bridge-loading': return 'DSH Bridge 正在装载'
     case 'bridge-auth-unavailable': return 'DSH Bridge 令牌不可用'
     case 'bridge-incompatible': return 'DSH Bridge 版本不兼容'
     case 'web-only': return 'DSH 在线，缺少 Bridge'

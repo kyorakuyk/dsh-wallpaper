@@ -42,6 +42,12 @@ export interface AppSnapshot {
   harnessProbing?: boolean
   wallpaperHost: WallpaperHostSnapshot
   interaction: InteractionSnapshot
+  /**
+   * 输入岛是否被当前布局固定在桌面上（中央玻璃悬浮）。
+   *
+   * 渲染层自己不读它 —— 它是报给原生的一份状态，摆在这里是为了让诊断能看到"球为什么不弹"。
+   */
+  islandPinned: boolean
   privacyScreen: boolean
   error?: string
 }
@@ -74,5 +80,6 @@ export const PREVIEW_APP_SNAPSHOT: AppSnapshot = {
     historyExpanded: false,
     settingsOpen: false,
   },
+  islandPinned: false,
   privacyScreen: false,
 }

@@ -28,7 +28,8 @@
 //! * **Facts here, wording there.** This module returns labels only where a
 //!   label is an identity (the two known shells reuse the strings
 //!   `wallpaper/src/connect/endpoints.ts` already shows); every sentence the
-//!   user reads is composed by the renderer.
+//!   user reads is composed by the renderer. The version is the second such fact:
+//!   it is *read* here and *placed* there.
 //!
 //! Deliberately *not* here yet (next slices, see §9 of the design): the protocol
 //! fingerprint (which subject is answering right now), persistence of the scan
@@ -50,19 +51,26 @@ pub enum HarnessTargetKind {
     /// A source tree. The service is this tree; the window is chosen separately,
     /// because a checkout has none of its own.
     Checkout,
+    /// A DSH CLI installed on this machine rather than a tree the user owns — the
+    /// `npm i -g @deepseek-ai/dsh` shape. It has no AUMID (it is not a shell) and no
+    /// source tree (it ships packed), so it is neither of the two classes above; what
+    /// it *does* have is a launcher on `PATH`, and that launcher is its identity.
+    ///
+    /// The service it starts is the same web/app shape a checkout starts — same
+    /// profile, same default port — which is why its `client` is `OfficialWeb`.
+    InstalledCli,
 }
 
 /// The client shapes the endpoint scanner already knows.
 ///
 /// The three strings match `HarnessClientKind` in
 /// `wallpaper/src/connect/endpoints.ts` on purpose: the settings UI already has
-/// one vocabulary for "official desktop / third-party desktop / official web",
-/// and a second one here would eventually disagree with it.
+/// one vocabulary for "official desktop / official web", and a second one here
+/// would eventually disagree with it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HarnessClientKind {
     OfficialDesktop,
-    CommunityDesktop,
     OfficialWeb,
 }
 
@@ -144,10 +152,39 @@ pub struct HarnessTarget {
     pub kind: HarnessTargetKind,
     pub client: HarnessClientKind,
     pub label: String,
+    /// The version this subject declares about itself, read during the scan.
+    ///
+    /// It is a *separate field* rather than part of `label` for two reasons: the
+    /// label is an identity the renderer already composes sentences from, and the
+    /// stored catalogue must survive a build that did not know this field — a
+    /// `None` here deserialises from a file written before it existed instead of
+    /// invalidating the whole list.
+    ///
+    /// `None` means "this scan could not read a version", never "the version is
+    /// unknown to the user": the renderer shows no version segment at all rather
+    /// than a placeholder, because a reader cannot tell a placeholder from a
+    /// measured answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     /// Where the scan found it: a checkout's scan origin, exactly as
     /// `scan_dsh_paths` reports it, or the shortcut directory a shell was
     /// registered from.
     pub source: String,
+    /// The executable a shell's own windows belong to, as the shortcut that
+    /// registers it declares.
+    ///
+    /// This is what makes "start it, then put its window out of sight" possible at
+    /// all: a client's window cannot be reached through the process that holds its
+    /// socket (measured — the listener and the window's owner are two processes of
+    /// this same file), while a path names the whole family at once.
+    ///
+    /// It is a *report about the install*, never part of the subject's identity: the
+    /// id stays location-independent, so reinstalling the client elsewhere changes
+    /// this field and nothing else. `None` means the scan could not read it, and a
+    /// caller then has no path to match rather than a guessed one — the same rule
+    /// `version` follows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable: Option<String>,
     pub identity: TargetIdentity,
     pub launch: LaunchRecipe,
     pub capabilities: TargetCapabilities,
@@ -174,6 +211,14 @@ pub struct ScannedShortcut {
     pub aumid: String,
     /// The directory the shortcut was found in, for the settings row.
     pub directory: String,
+    /// The executable the shortcut starts, as the shell reports its target.
+    ///
+    /// This is the *only* way to reach a shell client's version: an
+    /// electron-builder install keeps no manifest next to the executable, and
+    /// neither the AUMID nor the shortcut carries a version. Read together with
+    /// the AUMID, from the same property store, so the scan pays one property read
+    /// per shortcut rather than two.
+    pub target: Option<String>,
 }
 
 /// A shell this build knows how to start.
@@ -191,8 +236,11 @@ struct ShellAppSpec {
     can_start_hidden: bool,
 }
 
-/// Official client first, then the third-party desktop client — the priority the
-/// endpoint scanner uses as well.
+/// 官方客户端 —— 本 build 唯一按 AUMID 寻址的壳。
+///
+/// 第三方桌面客户端（`ai.deepseek.dsh.desktop`，默认 43120）2026-09-27 按用户要求移除：
+/// 实测它把整台本地 HTTP 服务放在自己的授权之后，用 bridge token 打过去一律 403（连 `/` 都进不去），
+/// 所以它永远点不亮；留在"可选择的主体"里只是误导。
 const SHELL_APPS: &[ShellAppSpec] = &[
     ShellAppSpec {
         aumid: "com.deepseek.dsh",
@@ -205,29 +253,49 @@ const SHELL_APPS: &[ShellAppSpec] = &[
         single_instance: true,
         can_start_hidden: true,
     },
-    ShellAppSpec {
-        aumid: "ai.deepseek.dsh.desktop",
-        label: "第三方桌面客户端",
-        client: HarnessClientKind::CommunityDesktop,
-        default_ports: &[43120],
-        // Measured: no single-instance lock, no tray, no hidden start. A second
-        // launch opens a second window, so none of those may be assumed (§2.3).
-        //
-        // Re-measured 2026-09-27 by scanning this build's `resources/app.asar` for
-        // `requestSingleInstanceLock`, `second-instance`, `focusPrimaryWindow`,
-        // `window-all-closed` and `Tray`: all five are absent, so this stays false.
-        // It is load-bearing — `harness_launch` asks a single-instance shell to focus
-        // its own window *first* and only uses this application's window work as the
-        // fallback, so flipping this flag without re-measuring would make 「打开」 open
-        // a second client instead of showing the one that is running.
-        single_instance: false,
-        can_start_hidden: false,
-    },
 ];
 
 /// Prefix of every shell target id. One definition, because the launcher parses
 /// this namespace back out of a stored id and the two spellings must not drift.
 pub(crate) const SHELL_ID_PREFIX: &str = "shell:";
+
+/// The executable whose windows belong to one known shell, as the last scan measured
+/// it.
+///
+/// Selected by **AUMID** rather than by the caller's stored id: the AUMID is what the
+/// scan matched a shortcut on, while the id is the renderer's key for the same subject
+/// (and the two spellings would have to be kept in step by hand). Only a shell is
+/// asked at all — a checkout's and a CLI's interface is the browser, so they carry no
+/// executable and this answers `None` for them by construction.
+///
+/// `None` means the recorded list has no path for this subject: an empty record, a
+/// subject that is not in it, or one written before the field existed. The caller must
+/// treat it as "no path to match" — the launcher then resolves the same question from
+/// the client that is actually running, or falls back to the port-shaped lookup.
+///
+/// Pure: what it decides is which record answers for which AUMID, and that is testable
+/// without a scan of this machine.
+pub(crate) fn recorded_shell_executable(
+    targets: &[HarnessTarget],
+    aumid: &str,
+) -> Option<String> {
+    let wanted = aumid.trim();
+    if wanted.is_empty() {
+        return None;
+    }
+    targets
+        .iter()
+        .filter(|target| target.kind == HarnessTargetKind::EmbeddedShell)
+        .find(|target| {
+            target
+                .identity
+                .aumid
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(wanted))
+        })
+        .and_then(|target| target.executable.clone())
+        .filter(|path| !path.trim().is_empty())
+}
 
 /// The alias the Windows shell resolves through the current registration.
 fn apps_folder_alias(aumid: &str) -> String {
@@ -299,10 +367,17 @@ pub(crate) fn known_shell_ports(aumid: &str) -> Option<Vec<u16>> {
 /// * a shell owns the port compiled into it — the port is part of the client, so a
 ///   second one would mean a second client, which is also why a checkout's added
 ///   ports deliberately do not apply to it;
-/// * a source tree owns DSH's own web default, plus the ports the user added for
-///   it by hand (adding one *is* the user saying which subject answers there);
+/// * a source tree or installed CLI owns **the port its own 「启动参数」 names**
+///   (`--port 3081`, read by `harness_launch::port_from_args`), else DSH's own web
+///   default, plus the ports the user added for it by hand (adding one *is* the user
+///   saying which subject answers there);
 /// * an unknown shell AUMID yields an empty set, which is not the same as "nothing
 ///   configured" — see below.
+///
+/// `declared_port` 就是这个"参数里点名的端口"，由调用方从设置里读出来交给这里。它排在最前面，
+/// 因为它是**我们要求这个主体服务的地方**，比默认端口更具体：并行实例的第二个在 3081 上，而
+/// 壁纸的探针如果还盯着 3080，那个实例就会永远显示成离线 —— 桥明明在隔壁一个端口上应答。
+/// 这也正是渲染层 `subjectEndpointPorts` 的同一套规则：两边必须给出同一个答案。
 ///
 /// The empty return is loaded with meaning, and there are two of them, so callers
 /// must pass the subject id rather than only this list: an **empty id** means
@@ -310,15 +385,30 @@ pub(crate) fn known_shell_ports(aumid: &str) -> Option<Vec<u16>> {
 /// while an **empty set for a non-empty id** means the subject is configured but
 /// this build cannot say where it answers, which must be reported as unreachable
 /// rather than as a reason to fall back to another client.
-pub(crate) fn subject_endpoint_ports(subject_id: &str, extra_ports: &[u16]) -> Vec<u16> {
+pub(crate) fn subject_endpoint_ports(
+    subject_id: &str,
+    extra_ports: &[u16],
+    declared_port: Option<u16>,
+) -> Vec<u16> {
     let subject = subject_id.trim();
     if subject.is_empty() {
         return Vec::new();
     }
     if let Some(aumid) = subject.strip_prefix(SHELL_ID_PREFIX) {
+        // 壳的端口编译在它自己的包里，参数改不了它 —— 这也是这里刻意**不看** `declared_port`
+        // 的原因：给它另一个端口等于说那是另一个客户端。
         return known_shell_ports(aumid).unwrap_or_default();
     }
-    let mut ports = vec![crate::HARNESS_DEFAULT_PORT];
+    let mut ports: Vec<u16> = Vec::new();
+    if let Some(declared) = declared_port {
+        if declared != 0 {
+            ports.push(declared);
+        }
+    }
+    let default = crate::HARNESS_DEFAULT_PORT;
+    if !ports.contains(&default) {
+        ports.push(default);
+    }
     for port in extra_ports {
         if *port != 0 && !ports.contains(port) {
             ports.push(*port);
@@ -328,15 +418,27 @@ pub(crate) fn subject_endpoint_ports(subject_id: &str, extra_ports: &[u16]) -> V
 }
 
 /// Build the target for one known shell.
-fn shell_target(spec: &ShellAppSpec, source: String) -> HarnessTarget {
+///
+/// The version is read here, from the executable the matched shortcut starts —
+/// once per known shell, never once per shortcut on the machine.
+fn shell_target(spec: &ShellAppSpec, shortcut: &ScannedShortcut) -> HarnessTarget {
     HarnessTarget {
-        // Location-independent by construction: no version, no directory, and
-        // therefore nothing for an update to invalidate.
+        // The id is location-independent by construction: no version, no
+        // directory, and therefore nothing for an update to invalidate. The
+        // `version` below is a report about the install — never part of what names
+        // it, so a client update cannot invalidate a stored choice either.
         id: format!("{SHELL_ID_PREFIX}{}", spec.aumid.to_ascii_lowercase()),
         kind: HarnessTargetKind::EmbeddedShell,
         client: spec.client,
         label: spec.label.into(),
-        source,
+        version: shortcut
+            .target
+            .as_deref()
+            .and_then(|target| file_version(Path::new(target))),
+        // 同一个属性读出来的另一半：版本回答"这是哪一版"，路径回答"它的窗口是哪几个"。
+        // 一次属性读取供两个用途，而不是为了这个功能再扫一遍开始菜单。
+        executable: shortcut.target.clone(),
+        source: shortcut.directory.clone(),
         identity: TargetIdentity {
             aumid: Some(spec.aumid.into()),
             root_path: None,
@@ -375,6 +477,10 @@ fn checkout_target(root_path: &str, source: &str) -> HarnessTarget {
         // official web: no window of its own, interface in the browser.
         client: HarnessClientKind::OfficialWeb,
         label,
+        version: checkout_version(Path::new(root_path)),
+        // 源码树没有自己的窗口（界面是浏览器），所以这里没有"要藏/要显示的那几个窗口"这件
+        // 事：留 `None` 就是让隐藏与显示在这一类上成为空操作。
+        executable: None,
         source: source.to_string(),
         identity: TargetIdentity {
             aumid: None,
@@ -397,6 +503,197 @@ fn checkout_target(root_path: &str, source: &str) -> HarnessTarget {
     }
 }
 
+/// Prefix of a globally installed CLI's target id.
+///
+/// Like `SHELL_ID_PREFIX`, the launcher parses this namespace back out of a stored
+/// id, so the two spellings must not drift.
+pub(crate) const CLI_ID_PREFIX: &str = "cli:";
+
+/// One globally installed DSH CLI, as a subject.
+///
+/// Mirrors `checkout_target` deliberately — same service shape, same default port,
+/// and the same "what you must name is its identity" rule. The only difference is
+/// what gets named: a launcher on `PATH` instead of a tree on disk.
+fn installed_cli_target(launcher: &Path) -> HarnessTarget {
+    let path = launcher.to_string_lossy().into_owned();
+    HarnessTarget {
+        // A globally installed CLI has no tree to point at, so its launcher is what
+        // survives: reinstalling the package rewrites that file in place.
+        id: format!("{CLI_ID_PREFIX}{path}"),
+        kind: HarnessTargetKind::InstalledCli,
+        client: HarnessClientKind::OfficialWeb,
+        // 自报家门式的短标签：它已经说了自己是 CLI，界面上不必再冠一次类别词。
+        label: "DSH CLI".to_string(),
+        version: installed_cli_version(launcher),
+        // 已安装 CLI 的界面是浏览器，它自己没有窗口（`owns_window: false`）：与源码树同理，
+        // `None` 让隐藏/显示在它身上无从发生，而不是拿启动器的路径去碰运气。
+        executable: None,
+        // The settings row shows where a subject came from; for this class that is
+        // the launcher itself, which is also its identity.
+        source: path,
+        identity: TargetIdentity {
+            aumid: None,
+            root_path: None,
+            default_ports: vec![crate::HARNESS_DEFAULT_PORT],
+        },
+        launch: LaunchRecipe {
+            kind: LaunchRecipeKind::ManagedCommand,
+            alias: None,
+        },
+        capabilities: TargetCapabilities {
+            // Single instance is a property of the port, not of this shape, and the
+            // managed chain already leaves an external DSH on that port alone.
+            single_instance: false,
+            owns_window: false,
+            can_start_hidden: true,
+            needs_profile: true,
+        },
+    }
+}
+
+/// The `version` a manifest declares, or `None` for anything unreadable.
+///
+/// One reader for every manifest-shaped source, because "which file" differs per
+/// class while "a version is a JSON string" does not. A missing file, invalid
+/// JSON, a non-string value and an empty string are all the same answer here: the
+/// subject is offered without a version rather than with a guessed one.
+fn manifest_version(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let manifest: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let version = manifest.get("version")?.as_str()?.trim();
+    (!version.is_empty()).then(|| version.to_string())
+}
+
+/// The version a source checkout carries.
+///
+/// The tree root's own `package.json` first. DSH's monorepo versions its packages
+/// in lockstep, so the root records the same number the tree's own
+/// `@deepseek-ai/dsh` does — measured on both trees this machine has, where the
+/// root and `apps/cli` agree. A tree whose root carries no `version` falls back to
+/// that package, which is the one the wallpaper actually starts.
+fn checkout_version(root: &Path) -> Option<String> {
+    manifest_version(&root.join("package.json")).or_else(|| {
+        manifest_version(&root.join("apps").join("cli").join("package.json"))
+    })
+}
+
+/// The version of the globally installed CLI behind one launcher.
+///
+/// npm keeps the launcher and the packages it installs side by side: the
+/// launcher's own directory *is* the global prefix, so the manifest sits at
+/// `node_modules\@deepseek-ai\dsh\package.json` under it. Reading that file is why
+/// the scan never has to run `dsh --version`, which would cost a Node start per
+/// scan (§4.1: a scan is expensive enough already).
+fn installed_cli_version(launcher: &Path) -> Option<String> {
+    let prefix = launcher.parent()?;
+    manifest_version(
+        &prefix
+            .join("node_modules")
+            .join("@deepseek-ai")
+            .join("dsh")
+            .join("package.json"),
+    )
+}
+
+/// The version one executable declares in its own `VERSIONINFO` resource.
+///
+/// The only source a bundled shell client has: an electron-builder install ships
+/// no `package.json` beside its executable, and neither the AUMID nor the shortcut
+/// carries a version — so the file itself is asked, which is also what
+/// `Get-Item … | % VersionInfo` shows the user.
+///
+/// Best effort in every step: no resource, an unreadable string table or a missing
+/// value all return `None`, and the subject keeps its version-less label.
+#[cfg(windows)]
+fn file_version(path: &Path) -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
+
+    let wide = |text: &str| -> Vec<u16> {
+        text.encode_utf16().chain(std::iter::once(0)).collect()
+    };
+    let file: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let size = unsafe { GetFileVersionInfoSizeW(PCWSTR(file.as_ptr()), None) };
+    if size == 0 {
+        return None;
+    }
+    let mut block = vec![0u8; size as usize];
+    unsafe { GetFileVersionInfoW(PCWSTR(file.as_ptr()), None, size, block.as_mut_ptr().cast()) }
+        .ok()?;
+
+    // String tables are keyed by language *and* codepage, and the pair cannot be
+    // guessed from the machine's locale: a Chinese-locale build may still ship an
+    // en-US table. So read the translation the resource actually declares, and fall
+    // back to en-US/Unicode (0409 04B0) only when there is none — which is how a
+    // resource written without a translation block is still readable.
+    let mut language = 0x0409u16;
+    let mut codepage = 0x04B0u16;
+    let mut pointer: *mut core::ffi::c_void = std::ptr::null_mut();
+    let mut length = 0u32;
+    let translation = wide(r"\VarFileInfo\Translation");
+    if unsafe {
+        VerQueryValueW(
+            block.as_ptr().cast(),
+            PCWSTR(translation.as_ptr()),
+            &mut pointer,
+            &mut length,
+        )
+    }
+    .as_bool()
+        && length >= 4
+    {
+        // Several translations may be present; the first one is the resource's own
+        // primary language, which is the table the installer wrote.
+        let words = unsafe { std::slice::from_raw_parts(pointer.cast::<u16>(), 2) };
+        language = words[0];
+        codepage = words[1];
+    }
+
+    for key in ["FileVersion", "ProductVersion"] {
+        let query = wide(&format!(
+            r"\StringFileInfo\{language:04x}{codepage:04x}\{key}"
+        ));
+        let mut pointer: *mut core::ffi::c_void = std::ptr::null_mut();
+        let mut length = 0u32;
+        let found = unsafe {
+            VerQueryValueW(
+                block.as_ptr().cast(),
+                PCWSTR(query.as_ptr()),
+                &mut pointer,
+                &mut length,
+            )
+        }
+        .as_bool();
+        if !found || length == 0 {
+            continue;
+        }
+        // `length` counts characters and includes the terminating null.
+        let value = unsafe { std::slice::from_raw_parts(pointer.cast::<u16>(), length as usize) };
+        let version = String::from_utf16_lossy(value)
+            .trim_matches(char::from(0))
+            .trim()
+            .to_string();
+        if !version.is_empty() {
+            return Some(version);
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn file_version(_path: &Path) -> Option<String> {
+    // No shell targets exist off Windows (`scan_shell_shortcuts` finds none), so
+    // this source has nothing to answer.
+    None
+}
+
 /// Match the scanned shortcuts against the shells this build can start.
 ///
 /// Unknown AUMIDs are ignored: they belong to applications that have nothing to
@@ -414,7 +711,7 @@ fn shell_targets_from(shortcuts: &[ScannedShortcut]) -> Vec<HarnessTarget> {
         else {
             continue;
         };
-        targets.push(shell_target(spec, shortcut.directory.clone()));
+        targets.push(shell_target(spec, shortcut));
     }
     targets
 }
@@ -424,10 +721,14 @@ fn shell_targets_from(shortcuts: &[ScannedShortcut]) -> Vec<HarnessTarget> {
 /// Visible to the crate so the catalogue's tests can record a scan built by the
 /// model's own matching rules instead of hand-made targets.
 pub(crate) fn build_scan_for_tests(shortcuts: &[ScannedShortcut]) -> HarnessTargetScan {
-    build_scan(shortcuts, &[])
+    build_scan(shortcuts, &[], &[])
 }
 
-fn build_scan(shortcuts: &[ScannedShortcut], checkouts: &[crate::DshPathCandidate]) -> HarnessTargetScan {
+fn build_scan(
+    shortcuts: &[ScannedShortcut],
+    checkouts: &[crate::DshPathCandidate],
+    installed_clis: &[PathBuf],
+) -> HarnessTargetScan {
     let mut targets = shell_targets_from(shortcuts);
     let mut seen = HashSet::new();
     for checkout in checkouts {
@@ -438,6 +739,14 @@ fn build_scan(shortcuts: &[ScannedShortcut], checkouts: &[crate::DshPathCandidat
             continue;
         }
         targets.push(checkout_target(&checkout.root_path, &checkout.source));
+    }
+    for launcher in installed_clis {
+        // Same defence, same key shape: the discovery already deduplicates, and this
+        // keeps a future caller from listing one launcher twice.
+        if !seen.insert(launcher.to_string_lossy().to_ascii_lowercase()) {
+            continue;
+        }
+        targets.push(installed_cli_target(launcher));
     }
     let requires_subject_choice = targets
         .iter()
@@ -457,9 +766,16 @@ fn build_scan(shortcuts: &[ScannedShortcut], checkouts: &[crate::DshPathCandidat
 pub fn scan_harness_targets_blocking(hint_path: Option<String>, deep_scan: bool) -> HarnessTargetScan {
     let shortcuts = scan_shell_shortcuts();
     let checkouts = crate::scan_dsh_paths_blocking(hint_path, deep_scan);
-    let scan = build_scan(&shortcuts, &checkouts);
+    // npm's global prefix on Windows is `%APPDATA%\npm`, and it also puts that
+    // directory on `PATH`; both are given to the pure matcher, so this is the only
+    // place the environment is read.
+    let installed_clis = installed_cli_launchers_from(
+        std::env::var("APPDATA").ok().as_deref(),
+        std::env::var("PATH").ok().as_deref(),
+    );
+    let scan = build_scan(&shortcuts, &checkouts, &installed_clis);
     log::info!(
-        "harness target scan: {} 个快捷方式，{} 个可选项（{} 个壳，{} 份源码检出）",
+        "harness target scan: {} 个快捷方式，{} 个可选项（{} 个壳，{} 份源码检出，{} 个已安装 CLI）",
         shortcuts.len(),
         scan.targets.len(),
         scan.targets
@@ -469,9 +785,72 @@ pub fn scan_harness_targets_blocking(hint_path: Option<String>, deep_scan: bool)
         scan.targets
             .iter()
             .filter(|target| target.kind == HarnessTargetKind::Checkout)
+            .count(),
+        scan.targets
+            .iter()
+            .filter(|target| target.kind == HarnessTargetKind::InstalledCli)
             .count()
     );
     scan
+}
+
+/// The launchers of a globally installed DSH CLI, as `npm` leaves them.
+///
+/// `npm i -g @deepseek-ai/dsh` writes `dsh`/`dsh.cmd`/`dsh.ps1` into the global
+/// prefix's bin directory (on Windows that is `%APPDATA%\npm`) and puts that
+/// directory on `PATH`. Both halves are checked, prefix first, and the `PATH` walk
+/// looks only for the Windows launchers `.cmd`/`.exe`, because that is what a spawn
+/// from Rust can execute directly.
+///
+/// Pure on purpose: the environment values are parameters, so the layout can be
+/// tested without reading this machine.
+fn installed_cli_launchers_from(npm_prefix: Option<&str>, path: Option<&str>) -> Vec<PathBuf> {
+    npm_launcher_paths(npm_prefix, path, &["dsh"])
+}
+
+/// The launchers of the globally installed TUI, if this machine has one.
+///
+/// `@deepseek-harness-tui/dsh-tui` installs two names for the same entry point, `dst`
+/// and `dsh-tui`, and either may be the one on `PATH` — so both are searched rather
+/// than assuming the shorter one.
+pub(crate) fn tui_launcher_paths(npm_prefix: Option<&str>, path: Option<&str>) -> Vec<PathBuf> {
+    npm_launcher_paths(npm_prefix, path, &["dst", "dsh-tui"])
+}
+
+/// The same search for any npm-installed launcher, by base name.
+///
+/// Kept general because the TUI is a second such command (`dst`, installed globally
+/// from `@deepseek-harness-tui/dsh-tui`) and it has to be found the same way, in the
+/// same places, with the same rules — a second implementation would drift from this
+/// one about which directory counts.
+fn npm_launcher_paths(
+    npm_prefix: Option<&str>,
+    path: Option<&str>,
+    names: &[&str],
+) -> Vec<PathBuf> {
+    let mut launchers = Vec::new();
+    let mut push = |candidate: PathBuf| {
+        if candidate.is_file() && !launchers.iter().any(|existing| existing == &candidate) {
+            launchers.push(candidate);
+        }
+    };
+    if let Some(prefix) = npm_prefix {
+        for name in names {
+            for extension in ["cmd", "exe"] {
+                push(PathBuf::from(prefix).join(format!("{name}.{extension}")));
+            }
+        }
+    }
+    if let Some(path) = path {
+        for directory in std::env::split_paths(path) {
+            for name in names {
+                for extension in ["cmd", "exe"] {
+                    push(directory.join(format!("{name}.{extension}")));
+                }
+            }
+        }
+    }
+    launchers
 }
 
 /// The directories a shell registration can live in.
@@ -510,21 +889,40 @@ fn shortcut_directories() -> Vec<PathBuf> {
     )
 }
 
-/// Read the `System.AppUserModel.ID` the shell registered for one shortcut.
+/// Read the `System.AppUserModel.ID` the shell registered for one shortcut, and
+/// the executable it starts.
 ///
 /// This is why a shell needs no path: the same string that proves the
 /// application is installed is the string `shell:AppsFolder\<AUMID>` resolves at
 /// launch time. A shortcut without the property (most of them) reports no error
 /// worth surfacing — it simply is not a candidate.
+///
+/// The target comes from the *same* property store, in the same read: the shell
+/// exposes it as `PKEY_Link_TargetParsingPath`, which is the shortcut's resolution
+/// of its own target — the file the client's version can be read from.
 #[cfg(windows)]
-fn shortcut_aumid(path: &Path) -> Option<String> {
+fn shortcut_registration(path: &Path) -> Option<(String, Option<String>)> {
     use windows::core::HSTRING;
-    use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID;
-    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::Storage::EnhancedStorage::{PKEY_AppUserModel_ID, PKEY_Link_TargetParsingPath};
     use windows::Win32::UI::Shell::{IShellItem2, SHCreateItemFromParsingName};
 
     let item: IShellItem2 = unsafe { SHCreateItemFromParsingName(&HSTRING::from(path), None).ok()? };
-    let raw = unsafe { item.GetString(&PKEY_AppUserModel_ID).ok()? };
+    let aumid = shell_item_string(&item, &PKEY_AppUserModel_ID)?;
+    // A shortcut whose target is not a filesystem object answers nothing here, and
+    // that is not an error: it just means this subject has no readable version.
+    Some((aumid, shell_item_string(&item, &PKEY_Link_TargetParsingPath)))
+}
+
+/// One string property of a shell item, trimmed, or `None` when it is absent or
+/// empty. Both keys above are `VT_LPWSTR`, so one reader serves both.
+#[cfg(windows)]
+fn shell_item_string(
+    item: &windows::Win32::UI::Shell::IShellItem2,
+    key: &windows::Win32::Foundation::PROPERTYKEY,
+) -> Option<String> {
+    use windows::Win32::System::Com::CoTaskMemFree;
+
+    let raw = unsafe { item.GetString(key).ok()? };
     if raw.is_null() {
         return None;
     }
@@ -578,10 +976,11 @@ fn collect_shortcut_aumids(
             continue;
         }
         *budget -= 1;
-        if let Some(aumid) = shortcut_aumid(&path) {
+        if let Some((aumid, target)) = shortcut_registration(&path) {
             found.push(ScannedShortcut {
                 aumid,
                 directory: directory.to_string_lossy().into_owned(),
+                target,
             });
         }
     }
@@ -613,10 +1012,52 @@ fn scan_shell_shortcuts() -> Vec<ScannedShortcut> {
 mod tests {
     use super::*;
 
+    /// 测试里的扫描大多不关心"已安装的 CLI"这一类，所以在这里补一个两参数包装：调用点读起来
+    /// 仍然是"快捷方式 + 检出"两件事，而需要覆盖第三类的测试直接调 `super::build_scan`。
+    fn build_scan(
+        shortcuts: &[ScannedShortcut],
+        checkouts: &[crate::DshPathCandidate],
+    ) -> HarnessTargetScan {
+        super::build_scan(shortcuts, checkouts, &[])
+    }
+
+    #[test]
+    fn the_same_search_finds_the_tui_launcher() {
+        // ③ 要用它找 `dst`（全局安装的 TUI）：同一个搜索、同一批位置、同一套规则，
+        // 只是换一个基名。这里用真实存在的文件验证"按名字找"确实生效。
+        let dir = std::env::temp_dir().join("dsh-wallpaper-launcher-test");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let dst = dir.join("dst.cmd");
+        std::fs::write(&dst, b"@echo off\r\n").expect("write");
+        let found = npm_launcher_paths(None, Some(dir.to_string_lossy().as_ref()), &["dst"]);
+        assert_eq!(found, vec![dst.clone()]);
+        // 同一个目录里找 `dsh` 不会把 `dst` 也算进去 —— 名字是精确的。
+        assert!(npm_launcher_paths(None, Some(dir.to_string_lossy().as_ref()), &["dsh"]).is_empty());
+        // 前缀优先，且同一个启动器不会被列两次。
+        let both = npm_launcher_paths(
+            Some(dir.to_string_lossy().as_ref()),
+            Some(dir.to_string_lossy().as_ref()),
+            &["dst"],
+        );
+        assert_eq!(both, vec![dst]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     fn shortcut(aumid: &str, directory: &str) -> ScannedShortcut {
         ScannedShortcut {
             aumid: aumid.into(),
             directory: directory.into(),
+            // 大多数测试只关心"按 AUMID 匹配"，所以目标默认缺席 —— 那也正是"没有版本"这一情形。
+            target: None,
+        }
+    }
+
+    /// 一个注册在某个可执行文件上的快捷方式，用来覆盖"版本读得到"这一情形。
+    fn shortcut_starting(aumid: &str, directory: &str, target: &str) -> ScannedShortcut {
+        ScannedShortcut {
+            aumid: aumid.into(),
+            directory: directory.into(),
+            target: Some(target.into()),
         }
     }
 
@@ -628,7 +1069,9 @@ mod tests {
     }
 
     const OFFICIAL: &str = "com.deepseek.dsh";
-    const DESKTOP: &str = "ai.deepseek.dsh.desktop";
+    /// 一个**本 build 已不再支持**的 AUMID（第三方桌面客户端，2026-09-27 移除）：
+    /// 用它验证"陌生/不受支持的 AUMID 不会被当成主体"。
+    const UNSUPPORTED_AUMID: &str = "ai.deepseek.dsh.desktop";
 
     #[test]
     fn a_shell_is_matched_by_aumid_and_never_by_path() {
@@ -639,6 +1082,8 @@ mod tests {
         assert_eq!(target.client, HarnessClientKind::OfficialDesktop);
         assert_eq!(target.label, "官方桌面客户端");
         assert_eq!(target.id, "shell:com.deepseek.dsh");
+        // 没读到可执行文件 ⇒ 一条版本都不报，标签原样（渲染层因此不会加第二段）。
+        assert_eq!(target.version, None);
         assert_eq!(target.identity.aumid.as_deref(), Some(OFFICIAL));
         assert_eq!(target.identity.root_path, None);
         assert_eq!(target.identity.default_ports, vec![19387]);
@@ -687,27 +1132,95 @@ mod tests {
         assert_eq!(scan.targets[0].source, r"C:\Start Menu");
     }
 
+    /// 三类主体里只有壳带着"它自己的窗口是哪个可执行文件的"这条路径。
+    ///
+    /// 这条路径本身就是"隐藏与显示要不要做事"的判据：源码树与已安装 CLI 的界面是浏览器
+    /// （`owns_window: false`），给它们一个路径只会让那两个动作去找一个不属于主体的窗口。
+    /// 路径来自快捷方式属性，与版本同一次读取 —— 所以它也是"安装在哪"的报告，不是身份的一部分。
     #[test]
-    fn shells_keep_the_priority_order_whatever_order_they_were_found_in() {
-        let scan = build_scan(
-            &[
-                shortcut(DESKTOP, r"C:\Desktop"),
-                shortcut(OFFICIAL, r"C:\Start Menu"),
-            ],
-            &[],
-        );
-        let clients: Vec<_> = scan.targets.iter().map(|target| target.client).collect();
+    fn only_a_shell_carries_the_executable_its_windows_belong_to() {
+        let exe = r"D:\Family\dsh-official\DeepSeek Harness.exe";
+        let scan = build_scan(&[shortcut_starting(OFFICIAL, r"C:\Start Menu", exe)], &[]);
+        let shell = &scan.targets[0];
+        assert_eq!(shell.kind, HarnessTargetKind::EmbeddedShell);
+        assert_eq!(shell.executable.as_deref(), Some(exe));
+        // 身份仍然是位置无关的那一个：路径不进 id、不进 identity。
+        assert_eq!(shell.id, "shell:com.deepseek.dsh");
+        assert_eq!(shell.identity.aumid.as_deref(), Some(OFFICIAL));
+
+        let tree = build_scan(&[], &[checkout(r"D:\tree\deepseek-harness", "磁盘扫描")]);
+        assert_eq!(tree.targets[0].kind, HarnessTargetKind::Checkout);
+        assert_eq!(tree.targets[0].executable, None);
         assert_eq!(
-            clients,
-            vec![
-                HarnessClientKind::OfficialDesktop,
-                HarnessClientKind::CommunityDesktop
-            ]
+            installed_cli_target(Path::new(r"C:\Users\someone\AppData\Roaming\npm\dsh.cmd")).executable,
+            None
         );
-        let desktop = &scan.targets[1];
-        assert!(!desktop.capabilities.single_instance);
-        assert!(!desktop.capabilities.can_start_hidden);
-        assert!(desktop.capabilities.owns_window);
+    }
+
+    /// 选择"这个壳的窗口属于哪个可执行文件"时，只认壳这一类。
+    ///
+    /// 判据是 AUMID 而不是调用方手里的 id：AUMID 才是扫描用来匹配快捷方式的东西，而 id 是渲染层
+    /// 的键 —— 两份拼法各写一遍，迟早会漂移。
+    #[test]
+    fn the_window_executable_is_answered_by_the_record_that_matches_the_aumid() {
+        let exe = r"D:\Family\dsh-official\DeepSeek Harness.exe";
+        let scan = build_scan(
+            &[shortcut_starting(OFFICIAL, r"C:\Start Menu", exe)],
+            &[checkout(r"D:\tree\deepseek-harness", "磁盘扫描")],
+        );
+        assert_eq!(
+            recorded_shell_executable(&scan.targets, OFFICIAL).as_deref(),
+            Some(exe)
+        );
+        assert_eq!(
+            recorded_shell_executable(&scan.targets, "COM.DEEPSEEK.DSH").as_deref(),
+            Some(exe)
+        );
+        // 检出那一行的 id 就是它的路径：按它去问"窗口路径"必须得不到答案。
+        assert_eq!(recorded_shell_executable(&scan.targets, r"D:\tree\deepseek-harness"), None);
+        assert_eq!(recorded_shell_executable(&scan.targets, UNSUPPORTED_AUMID), None);
+        assert_eq!(recorded_shell_executable(&scan.targets, ""), None);
+        // 读到的是空路径（属性缺失但被写成空串）时也当作"没有路径"。
+        let empty = build_scan(&[shortcut_starting(OFFICIAL, r"C:\Start Menu", "  ")], &[]);
+        assert_eq!(recorded_shell_executable(&empty.targets, OFFICIAL), None);
+    }
+
+    #[test]
+    fn an_installed_cli_is_named_by_its_launcher() {
+        let launcher = r"C:\Users\someone\AppData\Roaming\npm\dsh.cmd";
+        let target = installed_cli_target(Path::new(launcher));
+        assert_eq!(target.kind, HarnessTargetKind::InstalledCli);
+        assert_eq!(target.client, HarnessClientKind::OfficialWeb);
+        // 它的身份就是那个启动器，id 把它带进存储；两者必须是同一份字符串。
+        assert_eq!(target.id, format!("{CLI_ID_PREFIX}{launcher}"));
+        assert_eq!(target.source, launcher);
+        // 没有 AUMID、没有源码树 —— 这正是它必须单列一类的原因。
+        assert!(target.identity.aumid.is_none());
+        assert!(target.identity.root_path.is_none());
+        // 这个路径是编出来的，所以没有版本可读，而目标本身照旧可用。
+        assert_eq!(target.version, None);
+        assert_eq!(
+            target.identity.default_ports,
+            vec![crate::HARNESS_DEFAULT_PORT]
+        );
+        // 它会像检出那样 boot 一个 profile。
+        assert!(target.capabilities.needs_profile);
+        assert!(!target.capabilities.owns_window);
+    }
+
+    #[test]
+    fn a_shell_this_build_no_longer_supports_is_not_a_target() {
+        // 第三方桌面客户端 2026-09-27 移除：它的快捷方式即使就摆在那儿，也必须**扫不出任何主体** ——
+        // 否则设置里又会多出一个永远点不亮的选项（实测它对自己的本地接口一律 403）。
+        let scan = build_scan(&[shortcut(UNSUPPORTED_AUMID, r"C:\Desktop")], &[]);
+        assert!(scan.targets.is_empty(), "unsupported AUMID must not become a subject");
+
+        let official = build_scan(&[shortcut(OFFICIAL, r"C:\Start Menu")], &[]);
+        let clients: Vec<_> = official.targets.iter().map(|target| target.client).collect();
+        assert_eq!(clients, vec![HarnessClientKind::OfficialDesktop]);
+        assert!(official.targets[0].capabilities.single_instance);
+        assert!(official.targets[0].capabilities.can_start_hidden);
+        assert!(official.targets[0].capabilities.owns_window);
     }
 
     #[test]
@@ -725,6 +1238,8 @@ mod tests {
         );
         assert_eq!(target.identity.aumid, None);
         assert_eq!(target.identity.default_ports, vec![3080]);
+        // 版本不在这里断言：这一条用的是**本机真实存在**的那个目录，版本号会随那棵树变化。
+        // "有版本"和"读不到"两种情形各由下面各自造树的测试钉住。
         assert_eq!(target.launch.kind, LaunchRecipeKind::ManagedCommand);
         assert_eq!(target.launch.alias, None);
         // A checkout has no window of its own and no single instance: what
@@ -826,7 +1341,7 @@ mod tests {
 
     #[test]
     fn a_shell_target_id_resolves_back_to_the_same_shell() {
-        let scan = build_scan(&[shortcut(DESKTOP, r"C:\Desktop")], &[]);
+        let scan = build_scan(&[shortcut(OFFICIAL, r"C:\Start Menu")], &[]);
         let target = &scan.targets[0];
         let aumid = target
             .id
@@ -845,37 +1360,224 @@ mod tests {
     /// decides what is scanned and the other what is shown.
     #[test]
     fn a_subject_decides_which_ports_may_be_probed() {
-        // A shell owns the port compiled into it, and nothing else: the shipped
-        // order's other two ports are other clients.
+        // A shell owns the port compiled into it, and nothing else: 3080 is
+        // another client's.
         assert_eq!(
-            subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}{OFFICIAL}"), &[]),
+            subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}{OFFICIAL}"), &[], None),
             vec![19387]
         );
+        // 第三方客户端已移除 ⇒ 它的 AUMID 现在与陌生 AUMID 一样：**一个端口都不给**（而不是
+        // "给 43120 然后探测失败"）。这正是与 `endpoints.ts` 必须一致的那条规则。
         assert_eq!(
-            subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}{DESKTOP}"), &[]),
-            vec![43120]
+            subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}{UNSUPPORTED_AUMID}"), &[], None),
+            Vec::<u16>::new()
+        );
+        assert_eq!(
+            subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}com.unknown.client"), &[], None),
+            Vec::<u16>::new()
         );
         // The id is matched the same way the launcher matches it.
         assert_eq!(
-            subject_endpoint_ports("shell:COM.DeepSeek.DSH", &[]),
+            subject_endpoint_ports("shell:COM.DeepSeek.DSH", &[], None),
             vec![19387]
         );
         // A source tree owns DSH's own default plus the ports the user added for it.
-        assert_eq!(subject_endpoint_ports(r"D:\tree", &[]), vec![3080]);
-        assert_eq!(subject_endpoint_ports(r"D:\tree", &[3081, 3081, 0]), vec![3080, 3081]);
+        assert_eq!(subject_endpoint_ports(r"D:\tree", &[], None), vec![3080]);
+        assert_eq!(subject_endpoint_ports(r"D:\tree", &[3081, 3081, 0], None), vec![3080, 3081]);
+    }
+
+    /// 「启动参数」里点名的端口排在最前面，而且**不再应用在壳上**。
+    ///
+    /// 这一条就是并行实例能不能被壁纸看见的分界线：第二个实例在 3081 上服务，而探针若还盯着
+    /// 3080，它会永远显示成离线 —— 桥明明在隔壁一个端口上应答。渲染层的 `subjectEndpointPorts`
+    /// 给出的是同一个列表（`[3081, 3080, …]`），两边必须逐项一致。
+    #[test]
+    fn a_declared_port_leads_the_subject_s_own_ports() {
+        assert_eq!(subject_endpoint_ports(r"D:\tree", &[], Some(3081)), vec![3081, 3080]);
+        assert_eq!(
+            subject_endpoint_ports(r"D:\tree", &[9000], Some(3081)),
+            vec![3081, 3080, 9000]
+        );
+        // DSH 自己的默认端口仍然在表里：同一个主体的另一个实例可能就在那儿，而壁纸两边都要能用。
+        assert_eq!(subject_endpoint_ports(r"D:\tree", &[], Some(3080)), vec![3080]);
+        // `--port 0`（让系统挑）不是一个可以拿去探测的端口，所以它被当作"没声明"。
+        assert_eq!(subject_endpoint_ports(r"D:\tree", &[], Some(0)), vec![3080]);
+        // 壳的端口编译在它自己的包里：参数改不了它，也不该让壁纸去别处找它。
+        assert_eq!(
+            subject_endpoint_ports(&format!("{SHELL_ID_PREFIX}{OFFICIAL}"), &[], Some(4000)),
+            vec![19387]
+        );
     }
 
     /// The two empty answers mean opposite things, and conflating them is how the
     /// wallpaper would end up on the shipped priority order with a subject chosen.
     #[test]
     fn an_empty_subject_and_an_unplaceable_one_are_different() {
-        assert!(subject_endpoint_ports("", &[3081]).is_empty());
-        assert!(subject_endpoint_ports("   ", &[3081]).is_empty());
+        assert!(subject_endpoint_ports("", &[3081], None).is_empty());
+        assert!(subject_endpoint_ports("   ", &[3081], None).is_empty());
+        // 这一点不因为参数而改变：没有主体就是没有主体，端口不能凭空造出一个主体来。
+        assert!(subject_endpoint_ports("", &[3081], Some(3082)).is_empty());
         // Configured, but this build cannot say where it answers: no port, and the
         // caller must say so rather than scanning elsewhere.
-        assert!(subject_endpoint_ports("shell:com.unknown.client", &[]).is_empty());
+        assert!(subject_endpoint_ports("shell:com.unknown.client", &[], None).is_empty());
         // A checkout with added ports is never empty, even before any scan.
-        assert!(!subject_endpoint_ports(r"D:\tree", &[]).is_empty());
+        assert!(!subject_endpoint_ports(r"D:\tree", &[], None).is_empty());
+    }
+
+    /// 每个主体自己声明的版本号，以及"读不到"这一情形必须与"有版本"一样是正常结果。
+    ///
+    /// 三条来源各不相同（客户端读 exe 的资源、源码目录读它自己的清单、已安装 CLI 读 npm 全局包），
+    /// 但用户看到的是一件事：这一条是哪个版本的 DSH。所以两条路都要钉住 —— 有版本时它必须报出来，
+    /// 读不到时它必须**什么都不报**（渲染层据此保持标签原样，而不是写"未知"）。
+    #[test]
+    fn a_checkout_reports_the_version_its_manifest_declares() {
+        let tree = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            tree.path().join("package.json"),
+            br#"{"name":"@deepseek-ai/dsh-root","private":true,"version":"0.2.0-rc.1"}"#,
+        )
+        .expect("write");
+        let root = tree.path().to_string_lossy().into_owned();
+        let scan = build_scan(&[], &[checkout(&root, "当前设置路径")]);
+        assert_eq!(scan.targets[0].version.as_deref(), Some("0.2.0-rc.1"));
+    }
+
+    #[test]
+    fn a_checkout_falls_back_to_its_own_dsh_package_then_reports_nothing() {
+        // 根清单没写版本时退到 `apps/cli`：那正是这棵树要跑的那个包（`@deepseek-ai/dsh`）。
+        let tree = tempfile::tempdir().expect("temp dir");
+        let cli = tree.path().join("apps").join("cli");
+        std::fs::create_dir_all(&cli).expect("apps/cli");
+        std::fs::write(tree.path().join("package.json"), br#"{"name":"@deepseek-ai/dsh-root"}"#)
+            .expect("write");
+        std::fs::write(
+            cli.join("package.json"),
+            br#"{"name":"@deepseek-ai/dsh","version":"0.1.0-rc.5"}"#,
+        )
+        .expect("write");
+        let root = tree.path().to_string_lossy().into_owned();
+        let scan = build_scan(&[], &[checkout(&root, "当前设置路径")]);
+        assert_eq!(scan.targets[0].version.as_deref(), Some("0.1.0-rc.5"));
+
+        // 两边都没有可用版本（含清单坏了这种）⇒ 这一条不带版本，但仍然是可选项。
+        let bare = tempfile::tempdir().expect("temp dir");
+        std::fs::write(bare.path().join("package.json"), b"{ not json").expect("write");
+        let bare_root = bare.path().to_string_lossy().into_owned();
+        let scan = build_scan(&[], &[checkout(&bare_root, "常见项目目录")]);
+        assert_eq!(scan.targets.len(), 1);
+        assert_eq!(scan.targets[0].version, None);
+    }
+
+    #[test]
+    fn a_manifest_version_that_is_unusable_counts_as_no_version() {
+        // 空串、非字符串、坏 JSON、文件不在 —— 四种都必须是同一个答案，因为用户看到的都是
+        // "这一条没有版本"。任何一条被当成版本报出去，下拉里就会出现一段没有意义的东西。
+        let directory = tempfile::tempdir().expect("temp dir");
+        for (index, body) in [
+            "{}",
+            r#"{"version":""}"#,
+            r#"{"version":"   "}"#,
+            r#"{"version":1}"#,
+            "{ not json",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let path = directory.path().join(format!("manifest-{index}.json"));
+            std::fs::write(&path, body).expect("write");
+            assert_eq!(manifest_version(&path), None, "{body}");
+        }
+        assert_eq!(manifest_version(&directory.path().join("absent.json")), None);
+    }
+
+    #[test]
+    fn an_installed_cli_reports_the_version_of_the_package_its_launcher_belongs_to() {
+        // npm 的全局前缀布局：启动器与 `node_modules` 同层，所以启动器的目录就是前缀。
+        let prefix = tempfile::tempdir().expect("temp dir");
+        let launcher = prefix.path().join("dsh.cmd");
+        std::fs::write(&launcher, b"@echo off\r\n").expect("write");
+        let package = prefix
+            .path()
+            .join("node_modules")
+            .join("@deepseek-ai")
+            .join("dsh");
+        std::fs::create_dir_all(&package).expect("package dir");
+        std::fs::write(
+            package.join("package.json"),
+            br#"{"name":"@deepseek-ai/dsh","version":"0.2.0-rc.1"}"#,
+        )
+        .expect("write");
+
+        let target = installed_cli_target(&launcher);
+        assert_eq!(target.version.as_deref(), Some("0.2.0-rc.1"));
+
+        // 那种清单不在（别的打包方式，或装到一半）：这一条照旧可选，只是没有版本。
+        let bare = tempfile::tempdir().expect("temp dir");
+        let bare_launcher = bare.path().join("dsh.cmd");
+        std::fs::write(&bare_launcher, b"@echo off\r\n").expect("write");
+        let target = installed_cli_target(&bare_launcher);
+        assert_eq!(target.kind, HarnessTargetKind::InstalledCli);
+        assert_eq!(target.version, None);
+    }
+
+    /// 客户端一类的版本只能从它自己的 exe 里读：装好的壳目录里没有清单，AUMID 与快捷方式也都不带版本。
+    ///
+    /// 这里用本机**必然存在**且必然带 VERSIONINFO 的系统组件当样本，而不是假设某台机器装了某个客
+    /// 户端 —— 那件事属于 `this_machine_reports_its_installed_subjects`（手动跑的那条）。
+    #[cfg(windows)]
+    #[test]
+    fn a_shell_reports_the_version_of_the_executable_its_shortcut_starts() {
+        let system_root = std::env::var("SystemRoot").expect("SystemRoot is set on Windows");
+        let binary = PathBuf::from(system_root)
+            .join("System32")
+            .join("kernel32.dll");
+        assert!(binary.is_file(), "{}", binary.display());
+
+        let scan = build_scan(
+            &[shortcut_starting(
+                OFFICIAL,
+                r"C:\Start Menu",
+                &binary.to_string_lossy(),
+            )],
+            &[],
+        );
+        let version = scan.targets[0]
+            .version
+            .clone()
+            .expect("a system binary carries a version resource");
+        // 只断言"像版本号"，不钉具体数字：系统组件随本机更新而变，那不是本应用的事。
+        assert!(
+            version.starts_with(|first: char| first.is_ascii_digit()),
+            "unexpected version string {version}"
+        );
+    }
+
+    #[test]
+    fn a_shell_without_a_readable_version_is_offered_without_one() {
+        // 三种"读不到"：快捷方式没报目标、目标文件不存在、目标是普通文件（没有 VERSIONINFO 资源）。
+        // 三者都必须是"这一条不带版本"，而不是报错，也不是让整次扫描少一个主体。
+        for shortcut in [
+            shortcut(OFFICIAL, r"C:\Start Menu"),
+            shortcut_starting(OFFICIAL, r"C:\Start Menu", r"C:\definitely\missing\client.exe"),
+        ] {
+            let scan = build_scan(&[shortcut], &[]);
+            assert_eq!(scan.targets.len(), 1);
+            assert_eq!(scan.targets[0].version, None);
+        }
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let plain = directory.path().join("not-an-executable.json");
+        std::fs::write(&plain, b"{}").expect("write");
+        let scan = build_scan(
+            &[shortcut_starting(
+                OFFICIAL,
+                r"C:\Start Menu",
+                &plain.to_string_lossy(),
+            )],
+            &[],
+        );
+        assert_eq!(scan.targets.len(), 1);
+        assert_eq!(scan.targets[0].version, None);
     }
 
     /// Ground truth for this machine's shell registrations.
@@ -900,6 +1602,12 @@ mod tests {
                 HarnessTargetKind::Checkout => {
                     assert!(target.identity.root_path.is_some());
                     assert!(target.identity.aumid.is_none());
+                }
+                HarnessTargetKind::InstalledCli => {
+                    // 已安装的 CLI 既不是壳也不是源码树：它没有 AUMID，也没有根目录。
+                    assert!(target.identity.aumid.is_none());
+                    assert!(target.identity.root_path.is_none());
+                    assert_eq!(target.client, HarnessClientKind::OfficialWeb);
                 }
             }
         }

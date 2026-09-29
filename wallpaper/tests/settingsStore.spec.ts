@@ -6,6 +6,7 @@ import {
   DEFAULT_SETTINGS,
   MAX_SETTINGS_SHORT_STRING,
   SETTINGS_VERSION,
+  assistantDay,
   loadSettings,
   normalizeReceivedSettings,
   normalizeSettings,
@@ -36,7 +37,6 @@ const VALID: WallpaperSettings = {
   skipWakeAnimation: true,
   lockScreenEnabled: true,
   autostart: true,
-  sleepHotkey: 'Ctrl+Alt+Q',
   sendShortcut: 'Ctrl+Enter',
   background: 'deepsea-2',
   historyStartsExpanded: true,
@@ -57,9 +57,9 @@ const VALID: WallpaperSettings = {
   dshLaunch: {
     profile: 'desktop',
     rootPath: 'D:\\Family\\DeepSeekHarness',
-    command: 'node bin.js',
+    args: '--port 3081',
+    aliases: { 'D:\\Family\\DeepSeekHarness': '主树' },
     autoStartWithWallpaper: true,
-    trustedCommandForAutoStart: true,
   },
 }
 
@@ -70,6 +70,30 @@ describe('settings normalization boundary', () => {
     expect(normalizeSettings(VALID)).toEqual({ ...VALID, version: SETTINGS_VERSION })
     saveSettings(VALID)
     expect(loadSettings()).toEqual({ ...VALID, version: SETTINGS_VERSION })
+  })
+
+  it('keeps only the two window values, and treats absent as the browser', () => {
+    // ③ 的存储语义：只认 'browser' / 'tui'；缺省**不写**字段，读的人按浏览器处理 ⇒
+    // 旧档案与已存配置的行为逐字不变，不需要迁移。
+    const tui = normalizeSettings({ ...VALID, dshLaunch: { ...VALID.dshLaunch, window: 'tui' } })
+    expect(tui.dshLaunch.window).toBe('tui')
+    const browser = normalizeSettings({ ...VALID, dshLaunch: { ...VALID.dshLaunch, window: 'browser' } })
+    expect(browser.dshLaunch.window).toBeUndefined()
+    expect(normalizeSettings({ ...VALID }).dshLaunch.window).toBeUndefined()
+    // 垃圾值不会被带进存储：既不认它，也不替它猜一个意思。
+    const junk = normalizeSettings({ ...VALID, dshLaunch: { ...VALID.dshLaunch, window: 'terminal' as never } })
+    expect(junk.dshLaunch.window).toBeUndefined()
+  })
+
+  it('does not rewrite the stored choice it was told to leave alone', () => {
+    // 官方桌面客户端自带窗口 ⇒ 这个字段与它无关；归一化只是照存，
+    // 既不替它清掉，也不替它猜（"设置里设置的是什么就是什么"）。
+    const shell = normalizeSettings({
+      ...VALID,
+      dshLaunch: { ...VALID.dshLaunch, subjectId: 'shell:com.deepseek.dsh', window: 'tui' },
+    })
+    expect(shell.dshLaunch.subjectId).toBe('shell:com.deepseek.dsh')
+    expect(shell.dshLaunch.window).toBe('tui')
   })
 
   it('replaces a string animation speed with a number', () => {
@@ -112,10 +136,43 @@ describe('settings normalization boundary', () => {
     }
   })
 
+  it('keeps the assistant day on a 04:00 boundary across months and years', () => {
+    // 用户定的规则：深夜还在做的事，"今天"还没过去 —— 00:30 与 03:59 都属前一天，04:00 才翻页。
+    // 桥用同一个规则给日会话命名，所以这条错了会让"同一段对话"在两侧变成两天。
+    expect(assistantDay(new Date(2026, 8, 27, 0, 30))).toBe('2026-09-26')
+    expect(assistantDay(new Date(2026, 8, 27, 3, 59))).toBe('2026-09-26')
+    expect(assistantDay(new Date(2026, 8, 27, 4, 0))).toBe('2026-09-27')
+    // 跨月与跨年：都是把时间往前挪 4 小时再取日历日。
+    expect(assistantDay(new Date(2026, 9, 1, 0, 30))).toBe('2026-09-30')
+    expect(assistantDay(new Date(2027, 0, 1, 0, 30))).toBe('2026-12-31')
+    // 边界小时可配且被夹在 0–23；0 = 零点跨日（旧行为）；坏值退回默认 4。
+    expect(assistantDay(new Date(2026, 8, 27, 0, 30), 0)).toBe('2026-09-27')
+    expect(assistantDay(new Date(2026, 8, 27, 0, 30), 23)).toBe('2026-09-26')
+    expect(assistantDay(new Date(2026, 8, 27, 0, 30), Number.NaN)).toBe('2026-09-26')
+    expect(DEFAULT_SETTINGS.dayBoundaryHour).toBe(4)
+    expect(normalizeSettings({ ...VALID, dayBoundaryHour: 99 }).dayBoundaryHour).toBe(23)
+    expect(normalizeSettings({ ...VALID, dayBoundaryHour: -5 }).dayBoundaryHour).toBe(0)
+    expect(normalizeSettings({ ...VALID, dayBoundaryHour: 3.6 }).dayBoundaryHour).toBe(4)
+  })
+
   it('accepts non-boolean flags only as their default', () => {
     expect(normalizeSettings({ ...VALID, autoSwitchHarness: 'yes' }).autoSwitchHarness).toBe(false)
     expect(normalizeSettings({ ...VALID, lockScreenEnabled: 1 }).lockScreenEnabled).toBe(DEFAULT_SETTINGS.lockScreenEnabled)
     expect(normalizeSettings({ ...VALID, animationsEnabled: null }).animationsEnabled).toBe(DEFAULT_SETTINGS.animationsEnabled)
+  })
+
+  it('keeps the wallpaper\'s own backend-reset claim only when it is a real timestamp', () => {
+    // 这条记录是"壁纸自己把滑槽拨离 harness 过"的证据，必须活过进程重启：升级安装会重启壁纸，
+    // 只记在内存里的规则会在那一刻失效（滑槽停在左侧、桥的灯却是绿的，输入进错后端）。
+    const claim = Date.parse('2026-09-27T14:06:00+08:00')
+    expect(normalizeSettings({ ...VALID, harnessAutoResetAt: claim }).harnessAutoResetAt).toBe(claim)
+    // 不是真实时间戳就等于没有：宁可不自动拨回去，也不拿坏值当凭据把用户搬走。
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 'yesterday', null, {}, []]) {
+      expect(normalizeSettings({ ...VALID, harnessAutoResetAt: bad as never }).harnessAutoResetAt).toBeUndefined()
+    }
+    // 用户手动选过后端（或还没发生过复位）：字段根本不出现。
+    expect(normalizeSettings({ ...VALID, harnessAutoResetAt: undefined }).harnessAutoResetAt).toBeUndefined()
+    expect(normalizeSettings(VALID).harnessAutoResetAt).toBeUndefined()
   })
 
   it('drops a non-object multi-screen block and over-long display ids', () => {
@@ -131,9 +188,15 @@ describe('settings normalization boundary', () => {
   })
 
   it('drops unknown keys and truncated strings instead of spreading them in', () => {
-    const settings = normalizeSettings({ ...VALID, futureField: { nested: true }, sleepHotkey: 'x'.repeat(MAX_SETTINGS_SHORT_STRING + 1) })
+    const settings = normalizeSettings({
+      ...VALID,
+      futureField: { nested: true },
+      // `profile` carries the same short-string limit the deleted sleep-hotkey
+      // field used to exercise: an over-long value falls back to the default.
+      dshLaunch: { ...VALID.dshLaunch, profile: 'x'.repeat(MAX_SETTINGS_SHORT_STRING + 1) },
+    })
     expect(settings).not.toHaveProperty('futureField')
-    expect(settings.sleepHotkey).toBe(DEFAULT_SETTINGS.sleepHotkey)
+    expect(settings.dshLaunch.profile).toBe(DEFAULT_SETTINGS.dshLaunch.profile)
   })
 
   it('never throws and always produces a usable object for garbage input', () => {
@@ -192,38 +255,64 @@ describe('settings normalization boundary', () => {
     expect(settings.multiScreen).toEqual(VALID.multiScreen)
     expect(settings.dshLaunch.profile).toBe('work')
     expect(settings.dshLaunch.rootPath).toBe('D:\\DSH')
-    expect(settings.dshLaunch.command).toBe('node custom.js')
-    // ...and the new flags arrive off, because starting a resident DSH
-    // unattended, and trusting a custom launcher with it, are both opt-in.
+    // ...**除了 `command`**：那一项已经不存在了。它被丢掉，而不是被改写成「启动参数」：
+    // 一个程序路径与一串参数不是同一种东西，把 `node custom.js` 追加到我们自己的启动器后面只会
+    // 让启动器收到它不认识的词、然后启动失败 —— 那比"这一项没了"更难懂。
+    expect('command' in settings.dshLaunch).toBe(false)
+    expect(settings.dshLaunch.args).toBeUndefined()
+    // ...and the flag that survives arrives off, because starting a resident DSH
+    // unattended is opt-in.
     expect(settings.dshLaunch.autoStartWithWallpaper).toBe(false)
-    expect(settings.dshLaunch.trustedCommandForAutoStart).toBe(false)
+  })
+
+  it('stores one alias per subject and drops the ones that are not aliases', () => {
+    // 别名的归属跟着**树**走：用户在两棵树之间来回切，名字不能换了人。
+    const settings = normalizeSettings({
+      dshLaunch: { profile: 'desktop', aliases: { 'D:\\a': ' 主树 ', 'D:\\b': '   ', 'D:\\c': 7 } },
+    })
+    expect(settings.dshLaunch.aliases).toEqual({ 'D:\\a': '主树' })
+    // 全都被丢掉时不留一个空对象：那会让"没起过别名"看起来像"有别名表但是空的"。
+    expect(normalizeSettings({ dshLaunch: { profile: 'desktop', aliases: { 'D:\\a': '' } } }).dshLaunch.aliases)
+      .toBeUndefined()
+  })
+
+  it('refuses launch args that the launcher could not be given', () => {
+    // 控制字符会让实例键（`\u{1f}` 分隔）把两个不同的实例撞成一个 —— 那是并行实例的反面。
+    const args = normalizeSettings({ dshLaunch: { profile: 'desktop', args: 'a\u{1f}b' } }).dshLaunch.args
+    // 归一化只负责**存下来**（超长/控制字符的拒绝在 `launchArgs.issue` 与原生侧各有一处）；
+    // 这里钉的是它不会把这一项变成一个别的类型或一个空串。
+    expect(typeof args === 'string' || args === undefined).toBe(true)
+    expect(normalizeSettings({ dshLaunch: { profile: 'desktop', args: '   ' } }).dshLaunch.args).toBeUndefined()
   })
 
   it('migrates every historical storage key, newest first', () => {
     // One representative setting per generation, so a key dropped from the
     // migration chain shows up as a lost field rather than a passing test.
+    const generation = (profile: string): Partial<WallpaperSettings> => ({
+      dshLaunch: { ...DEFAULT_SETTINGS.dshLaunch, profile },
+    })
     const generations: Array<[string, Partial<WallpaperSettings>]> = [
-      ['dsh-wallpaper:settings', { sleepHotkey: 'Ctrl+Alt+1' }],
-      ['dsh-wallpaper:settings:v2', { sleepHotkey: 'Ctrl+Alt+2' }],
-      ['dsh-wallpaper:settings:v3', { sleepHotkey: 'Ctrl+Alt+3' }],
-      ['dsh-wallpaper:settings:v4', { sleepHotkey: 'Ctrl+Alt+4' }],
-      ['dsh-wallpaper:settings:v5', { sleepHotkey: 'Ctrl+Alt+5' }],
-      ['dsh-wallpaper:settings:v6', { sleepHotkey: 'Ctrl+Alt+6' }],
-      ['dsh-wallpaper:settings:v7', { sleepHotkey: 'Ctrl+Alt+7' }],
-      ['dsh-wallpaper:settings:v8', { sleepHotkey: 'Ctrl+Alt+8' }],
-      ['dsh-wallpaper:settings:v9', { sleepHotkey: 'Ctrl+Alt+9' }],
-      [KEY, { sleepHotkey: 'Ctrl+Alt+10' }],
+      ['dsh-wallpaper:settings', generation('gen-1')],
+      ['dsh-wallpaper:settings:v2', generation('gen-2')],
+      ['dsh-wallpaper:settings:v3', generation('gen-3')],
+      ['dsh-wallpaper:settings:v4', generation('gen-4')],
+      ['dsh-wallpaper:settings:v5', generation('gen-5')],
+      ['dsh-wallpaper:settings:v6', generation('gen-6')],
+      ['dsh-wallpaper:settings:v7', generation('gen-7')],
+      ['dsh-wallpaper:settings:v8', generation('gen-8')],
+      ['dsh-wallpaper:settings:v9', generation('gen-9')],
+      [KEY, generation('gen-10')],
     ]
     for (const [key, patch] of generations) {
       storage.clear()
       storage.set(key, JSON.stringify({ ...DEFAULT_SETTINGS, ...patch }))
-      expect(loadSettings().sleepHotkey, `key ${key}`).toBe(patch.sleepHotkey)
+      expect(loadSettings().dshLaunch.profile, `key ${key}`).toBe(patch.dshLaunch?.profile)
     }
     // When several keys are present the newest one wins.
     storage.clear()
-    storage.set('dsh-wallpaper:settings:v7', JSON.stringify({ ...DEFAULT_SETTINGS, sleepHotkey: 'Ctrl+Alt+old' }))
-    storage.set('dsh-wallpaper:settings:v9', JSON.stringify({ ...DEFAULT_SETTINGS, sleepHotkey: 'Ctrl+Alt:new' }))
-    expect(loadSettings().sleepHotkey).toBe('Ctrl+Alt:new')
+    storage.set('dsh-wallpaper:settings:v7', JSON.stringify({ ...DEFAULT_SETTINGS, ...generation('gen-old') }))
+    storage.set('dsh-wallpaper:settings:v9', JSON.stringify({ ...DEFAULT_SETTINGS, ...generation('gen-new') }))
+    expect(loadSettings().dshLaunch.profile).toBe('gen-new')
   })
 })
 
@@ -234,7 +323,9 @@ describe('settings normalization wiring', () => {
     const window = (await readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8')).replace(/\r\n?/g, '\n')
 
     // The desktop receiver no longer trusts the cross-WebView payload.
-    expect(app).toContain('setSettings(normalizeReceivedSettings(payload))')
+    // 载荷必须先过归一化器再进 setSettings。允许中间夹一步（布局变化时向原生上报"岛是否常驻"），
+    // 但**不允许**跳过归一化器：断言的是这条链子，而不是某一行的字面写法。
+    expect(app).toMatch(/const next = normalizeReceivedSettings\(payload\)[\s\S]{0,400}setSettings\(next\)/)
     expect(app).toContain('(emit) => listen<WallpaperSettings>')
     expect(app).not.toContain('setSettings(event.payload)')
     // Load and save share the same pure boundary.

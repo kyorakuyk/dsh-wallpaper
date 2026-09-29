@@ -3,7 +3,11 @@ import type { Activity, BackendMode, ChatMessage, RuntimeState, TokenUsage } fro
 import { Button, Glass, Icon } from '../../ui/primitives/index.ts'
 import { composerPlaceholder, formatCost, isBusyActivity, sessionCostSummary, turnUsageSummary } from './conversationViewModel.ts'
 import { growHistoryWindow, historyWindow, HISTORY_RENDER_WINDOW } from './streamRender.ts'
-import { harnessStateLabel } from '../../connect/harnessLabels.ts'
+import { harnessStateLabel, harnessFailureVisible } from '../../connect/harnessLabels.ts'
+import { MarkdownBody } from './MarkdownBody.tsx'
+// 调试量尺（画内容边缘引导线）：本程序**不给入口**，默认不挂载。
+// 需要时把下面两行注释打开 —— 见 src/features/chat/LayoutProbe.tsx 的说明。
+// import { LayoutProbe } from './LayoutProbe.tsx'
 import './ConversationBubble.css'
 
 /** Optional speaker labels for themes that want explicit attribution. */
@@ -80,6 +84,11 @@ export interface ConversationBubbleProps {
    * 用户要的中间态：先挂起 + 提速探测，别一次瞬发就复位滑槽。
    */
   harnessSuspect?: boolean
+  /**
+   * 红灯：握手**试过、没成**（与黄灯的"还没定"是两件事，用户要的动作也不同 —— 这时点滑槽应当
+   * 立刻拉起对应 harness 进程并发一次握手申请）。
+   */
+  harnessFailed?: boolean
   /** 选择器被禁用时，选项里显示的原因。三种"不能切换"的成因不同，文案由调用方决定。 */
   modelSwitchDisabledReason?: string
   onSelectModel?: (model: string) => void
@@ -95,6 +104,11 @@ export interface ConversationBubbleProps {
   onSend: (text: string) => void
   onStop: () => void
   onClose: () => void
+  /**
+   * 打开转写里的外部链接。**不传就只是显示成链接**：组件本身不认识原生层，
+   * 打开这一步由上层（`App.tsx`）接到 native 命令上。
+   */
+  onOpenLink?: (href: string) => void
 }
 
 /// What a drafting or sending action should do to the conversation history view.
@@ -155,7 +169,13 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const turnUsage = turnUsageSummary(props.usage, props.backend, Boolean(props.apiPricingConfigured))
   const harnessAvailability = props.harnessAvailability ?? 'offline'
   const harnessReady = harnessAvailability === 'bridge-ready'
-  const harnessLabel = props.harnessStarting ? 'DSH 正在启动' : harnessStateLabel(harnessAvailability)
+  const harnessLabel = harnessFailureVisible(props.harnessFailed, harnessAvailability)
+    ? '连接失败'
+    : props.harnessStarting
+      ? 'DSH 正在启动'
+      // 黄灯（正在连/装载/失联待判）一律由 `harnessStateLabel` 说"连接中"：那句"已连接"属于上一条
+      // 连接，写在呼吸灯旁边就是自相矛盾（实测过：灯在呼吸，文案却说已连接，一发消息就说没有会话）。
+      : harnessStateLabel({ availability: harnessAvailability, probing: props.harnessSuspect === true })
   const showHistory = props.historyExpanded
   const today = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(new Date())
   const historyView = useMemo(() => historyWindow(props.messages.length, historyLimit), [props.messages.length, historyLimit])
@@ -250,6 +270,8 @@ export function ConversationBubble(props: ConversationBubbleProps) {
     data-interaction-region="chat"
     aria-label="AI 对话"
   >
+    {/* 调试量尺：需要时与上面的 import 一起打开（本程序不给入口）。 */}
+    {/* {showHistory && <LayoutProbe />} */}
     {showHistory && <div className="dsh-chat__history-wrap">
       <div
         className="dsh-chat__history"
@@ -272,12 +294,20 @@ export function ConversationBubble(props: ConversationBubbleProps) {
         </button>}
         {renderedMessages.map((message, index) => <article key={message.id} className={`dsh-chat__message dsh-chat__message--${message.role}`} style={{ ['--message-index' as string]: String(Math.max(0, renderedMessages.length - index - 1)) }}>
           {props.speakerLabels?.[message.role]?.trim() && <span className="dsh-chat__message-label">{props.speakerLabels[message.role]}</span>}
-          <p className="dsh-chat__message-body">{message.content}</p>
+          {message.role === 'user'
+            // 用户自己的字原样显示；**其余一律当模型输出**走最小 Markdown。
+            //
+            // 判据刻意写成"不是用户"而不是"等于 assistant"：三条后端（网页入口、API、Harness）的
+            // 角色名来自三个不同的上游，将来再加一个后端也不该因为角色字符串不同就静默退化成纯文本
+            // （实测：网页入口那条路的助手消息就没吃到 Markdown，而它确实叫 assistant —— 与其继续
+            // 逐个核对上游，不如把这条规矩说死：只有用户输入是不可改写的）。
+            ? <p className="dsh-chat__message-body">{message.content}</p>
+            : <MarkdownBody text={message.content} onOpenLink={props.onOpenLink} />}
           <UsageLine usage={message.usage} />
         </article>)}
         {streamText && <article className="dsh-chat__message dsh-chat__message--assistant">
           {props.speakerLabels?.assistant?.trim() && <span className="dsh-chat__message-label">{props.speakerLabels.assistant}</span>}
-          <p className="dsh-chat__message-body">{streamText}<span className="dsh-chat__caret" aria-hidden="true" /></p>
+          <MarkdownBody text={streamText} onOpenLink={props.onOpenLink} /><span className="dsh-chat__caret" aria-hidden="true" />
         </article>}
       </div>
     </div>}
@@ -309,7 +339,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
         <span className={`dsh-chat__status dsh-chat__status--harness dsh-chat__status--${harnessAvailability}`} title={harnessLabel}>
           {/* 黄灯优先于"熄灭"：中间态包含"还没连上但在连"，那时 `harnessReady` 是 false，
               但它和"后端已经不在了"必须看起来不一样（前者呼吸的黄灯，后者熄灭）。 */}
-          <span className="dsh-chat__status-dot" data-ready={props.harnessSuspect ? 'suspect' : props.harnessReady === false ? 'false' : 'true'} />{harnessLabel}
+          <span className="dsh-chat__status-dot" data-ready={harnessFailureVisible(props.harnessFailed, harnessAvailability) ? 'failed' : props.harnessSuspect ? 'suspect' : props.harnessReady === false ? 'false' : 'true'} />{harnessLabel}
         </span>
         <button
           type="button"

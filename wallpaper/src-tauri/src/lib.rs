@@ -9,6 +9,8 @@ mod client_window;
 pub mod desktop_repair;
 #[cfg(not(feature = "lite"))]
 mod deepseek_web;
+// 打开转写里的外部链接：白名单在这个模块里，见其头部说明。
+mod external_link;
 #[cfg(not(feature = "lite"))]
 mod deepseek_web_config;
 #[cfg(not(feature = "lite"))]
@@ -215,29 +217,42 @@ fn resolve_dsh_launcher(value: &str) -> Option<PathBuf> {
     None
 }
 
+/// 这个端口上有没有人在听。
+///
+/// 端口是**参数**而不是常量 3080：同一个主体可以在 3080 与 3081 上各起一个实例，而"能不能起"
+/// 只取决于**这一次要用的那个端口**。写死 3080 会让第二个实例永远起不来 —— 那不是并行实例，
+/// 那是"并行实例被自己的第一个实例挡住"。
 #[cfg(not(feature = "lite"))]
-fn dsh_port_is_occupied() -> bool {
+fn dsh_port_is_occupied(port: u16) -> bool {
     std::net::TcpStream::connect_timeout(
-        &std::net::SocketAddr::from(([127, 0, 0, 1], 3080)),
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
         std::time::Duration::from_millis(250),
     )
     .is_ok()
 }
 
 /// A DSH process is only "managed" when this instance spawned it and still
-/// owns its `Child` handle. Port 3080 alone never proves ownership.
+/// owns its `Child` handle. A listening port alone never proves ownership.
+///
+/// 一个实例一条：`instance_key`（主体 id + 启动参数）是键，所以"同一个源码目录的两个端口"
+/// 是两条互不覆盖的记录。键由 `harness_launch::instance_key` 生成，与落盘记录用的是同一个函数，
+/// 因此内存与磁盘永远指着同一个实例。
 #[cfg(not(feature = "lite"))]
 struct ManagedDshProcess {
     child: Child,
+    instance_key: String,
+    subject_id: String,
     root_path: String,
     profile: String,
+    /// 启动这个实例时用的「启动参数」，原样留档：状态列表要能说出"这一行是哪一个"。
+    args: Vec<String>,
     /// Where this child's own output was captured, when it could be.
     log_path: Option<PathBuf>,
 }
 
-#[derive(Default)]
 #[cfg(not(feature = "lite"))]
-struct ManagedDshState(Mutex<Option<ManagedDshProcess>>);
+#[derive(Default)]
+struct ManagedDshState(Mutex<std::collections::BTreeMap<String, ManagedDshProcess>>);
 
 /// Records the one automatic launch attempt this process is allowed to make.
 ///
@@ -271,12 +286,32 @@ impl ManagedDshAutostart {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg(not(feature = "lite"))]
-struct ManagedDshStatus {
-    managed: bool,
-    running: bool,
-    pid: Option<u32>,
+struct ManagedDshInstance {
+    /// 停止与下拉都用它定位：`主体 id` + 启动参数（见 `harness_launch::instance_key`）。
+    instance_key: String,
+    subject_id: String,
+    /// 这个实例在哪服务，读不到时为 `None`（渲染层会把它显示成「端口未确认」，而不是 0）。
+    port: Option<u16>,
+    pid: u32,
+    /// 只在**本进程启动**的实例上有：落盘记录里的那一格只有 pid 与端口。
     root_path: Option<String>,
     profile: Option<String>,
+    args: Vec<String>,
+}
+
+/// 本应用启动的每一个 DSH 实例，外加两个给"启动监督"用的汇总字段。
+///
+/// `instances` 是权威答案（用户要的是"本应用启动的全部实例"：并行实例功能的前提）。
+/// `managed` / `running` 留着，是因为启动监督那条路（`harnessLaunchOutcome`）问的是另一个问题
+/// ——"我这次启动的那个孩子还在不在"——它的判据在传了 `subject_id` 时就是那个主体的实例集合。
+/// 两个字段都由同一份列表派生，所以不可能出现"列表有它、汇总说没有"这种自相矛盾。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg(not(feature = "lite"))]
+struct ManagedDshStatus {
+    instances: Vec<ManagedDshInstance>,
+    managed: bool,
+    running: bool,
 }
 
 /// Only the settings surface is allowed to request the API-key prompt. This
@@ -367,6 +402,11 @@ fn harness_target_catalog(
 /// and gets a closed outcome code back instead of branching on client shape
 /// itself. Checkouts still start through `spawn_managed_dsh`, which is what keeps
 /// ownership tracking and the port-occupancy rule in one place.
+///
+/// 渲染层只有一处调它：岛上的「启动」滑槽。那处要的是"把这个主体供起来"（界面在壁纸这边），
+/// 不是"把它的窗口给我看"，所以触发者是 `LaunchTrigger::Slider` —— 与开机自启一样把壳的窗口
+/// 留在屏幕外。要显示窗口的那两个动作（设置里的「打开」、岛上的图标）走的是
+/// `ensure_harness_ui`，它们不带隐藏。
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
 async fn launch_harness_target(
@@ -374,14 +414,15 @@ async fn launch_harness_target(
     app: tauri::AppHandle,
     target_id: String,
     profile: Option<String>,
-    command: Option<String>,
+    args: Option<Vec<String>>,
 ) -> Result<harness_launch::HarnessLaunchOutcome, String> {
     require_wallpaper_surface(&caller)?;
+    let args = harness_launch::normalize_launch_args(args)?;
     let plan = harness_launch::plan_launch(
         &target_id,
         profile.as_deref().unwrap_or_default(),
-        command.as_deref(),
-        harness_launch::LaunchTrigger::Manual,
+        &args,
+        harness_launch::LaunchTrigger::Slider,
     )
     .map_err(str::to_string)?;
     // Starting a shell waits for the client to answer (up to the launch timeout),
@@ -389,7 +430,7 @@ async fn launch_harness_target(
     // inside the blocking task, where acquiring it cannot block the UI.
     tauri::async_runtime::spawn_blocking(move || {
         let managed = app.state::<ManagedDshState>();
-        harness_launch::run_launch(&plan, managed.inner())
+        harness_launch::run_launch(&plan, managed.inner(), harness_launch::LaunchTrigger::Slider)
     })
     .await
     .map_err(|error| format!("启动 Harness 执行主体未完成：{error}"))
@@ -439,24 +480,107 @@ async fn ensure_harness_ui(
     target_id: Option<String>,
     port: u16,
     profile: Option<String>,
-    command: Option<String>,
+    args: Option<Vec<String>>,
 ) -> Result<harness_launch::HarnessUiOutcome, String> {
     require_wallpaper_surface(&caller)?;
     let target_id = target_id.unwrap_or_default();
     let profile = profile.unwrap_or_default();
+    let args = harness_launch::normalize_launch_args(args)?;
     let worker = app.clone();
+    // 闭包要拿走一份用于记录，外部保留一份用于"这次是不是我启动的、pid 是多少"。
+    let subject_for_record = target_id.clone();
+    let profile_for_refresh = profile.clone();
+    let args_for_record = args.clone();
+    let args_for_refresh = args.clone();
+    let record_from = app.clone();
+    // **在动手之前**看一次：这个端口上有属主吗？
+    //
+    // 这是"孩子是不是我启动的"唯一可靠的判据。试过两个标志都不行：`started` 属于壳/受管链那套
+    // 口径（实测已安装 CLI 被真正启动时它仍是 false），`start_outcome` 在这条路上也没带值 ⇒
+    // 记录代码一次都没执行。所以不再问"哪条路发生了什么"，只观察事实本身：
+    //   之前没人听、之后有人听 ⇒ 这次是我们启动的；
+    //   之前就有人听 ⇒ 本来就在跑 ⇒ **不记**（正确的"不是我的"）。
+    let owner_before = crate::client_window::endpoint_process_id(port);
     tauri::async_runtime::spawn_blocking(move || {
         let managed = worker.state::<ManagedDshState>();
         harness_launch::ensure_ui(
             &target_id,
             port,
             &profile,
-            command.as_deref(),
+            &args,
             managed.inner(),
         )
     })
     .await
     .map_err(|error| format!("拉起 Harness 界面未完成：{error}"))
+    .map(|outcome| {
+        // 记录"这个孩子是壁纸启动的"——**记的是端口的属主**，不是刚 spawn 出来的外壳。
+        //
+        // 为什么必须是属主：Windows 上启动 `.cmd` 会多出一层 `cmd.exe`（`dsh.cmd` 与 `pnpm.cmd`
+        // 都是批处理），外壳与真正的 DSH 宿主是两个 pid。记外壳会让状态与停止按钮指错对象：
+        // "还活着吗""是不是同一个进程""要停哪一个"全部会答错。属主才是那个在服务、也是我们真正
+        // 想要停止的东西；`ensure_ui` 返回时端口已经在应答（它自己会等），所以这里读到的一定是它。
+        //
+        // 已安装的 CLI 与源码目录都走这一处：两条路的"孩子"定义本就该一致。
+        if owner_before.is_none() {
+            // 端口**不会**在 `ensure_ui` 返回前就绪：只有壳会等窗口，非壳主体不等（实测：刚 spawn
+            // 完就去问属主，得到的是"还没人在听"，两秒后端口才起来）。所以这里不抢答，交给一个
+            // 有限的轮询：端口一起来就把**那时**的属主记为孩子；等不到就留一条警告，让"没有记录"
+            // 这件事有据可查，而不是静悄悄。
+            let subject_for_record = subject_for_record.trim().to_string();
+            std::thread::spawn(move || {
+                for _ in 0..60 {
+                    if let Some(pid) = crate::client_window::endpoint_process_id(port) {
+                        harness_launch::remember_child(
+                            &subject_for_record,
+                            &args_for_record,
+                            pid,
+                            Some(port),
+                            harness_launch::known_web_handoff(port),
+                        );
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+                log::warn!("harness managed-child unknown: nothing listening on {port} after waiting");
+            });
+        }
+        // 门票只属于**那一次启动**：`dsh web` 每次起来现生成一个，打印一次。如果宿主已经在跑、
+        // 而壁纸手里没有它这一代的门票（装机/重启之后最常见），浏览器会被自己的围栏挡在门外。
+        // 处理分两种，界线是"是不是我启动的"：
+        //   * 是我的 ⇒ 重启它一次去取票（这是本应用自己的孩子，动它不越界）；
+        //   * 不是我的 ⇒ 什么都不做，由调用方如实说明拿不到门票 —— 绝不接管别人的实例。
+        let subject = subject_for_record.trim();
+        let needs_ticket = profile_for_refresh.trim() == "web"
+            && !outcome.started
+            && harness_launch::known_web_handoff(port).is_none();
+        if needs_ticket {
+            // 按**实例**找（主体 + 参数）：同一个主体的另一个端口有它自己的记录，不能被这里认领，
+            // 否则"刷新 3080 的门票"会把 3081 那个实例重启掉。
+            let key = harness_launch::instance_key(subject, &args_for_refresh);
+            if let Some(child) = harness_launch::owned_instance(&key) {
+                log::info!(
+                    "harness handoff refresh: restarting our own host on {port} (pid {}) to capture its browser ticket",
+                    child.pid
+                );
+                crate::client_window::stop_process_tree(child.pid);
+                harness_launch::forget_instance(&key);
+                let state = record_from.state::<ManagedDshState>();
+                let _ = harness_launch::ensure_ui(
+                    subject,
+                    port,
+                    &profile_for_refresh,
+                    &args_for_refresh,
+                    state.inner(),
+                );
+            } else {
+                log::warn!(
+                    "harness handoff unavailable for {port}: the host is not one this app started; leaving it alone"
+                );
+            }
+        }
+        outcome
+    })
 }
 
 /// Start the chosen execution subject at most once per wallpaper process.
@@ -477,8 +601,7 @@ async fn autostart_harness_target(
     app: tauri::AppHandle,
     target_id: Option<String>,
     profile: String,
-    command: Option<String>,
-    trusted_command: Option<bool>,
+    args: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
     require_background(&caller)?;
     if let Some(previous) = autostart_attempt(&app)? {
@@ -499,13 +622,12 @@ async fn autostart_harness_target(
         record_autostart_attempt(&app, &outcome)?;
         return Ok(serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null));
     };
+    let args = harness_launch::normalize_launch_args(args)?;
     let plan = match harness_launch::plan_launch(
         &target_id,
         &profile,
-        command.as_deref(),
-        harness_launch::LaunchTrigger::Automatic {
-            trusted_command: trusted_command == Some(true),
-        },
+        &args,
+        harness_launch::LaunchTrigger::Automatic,
     ) {
         Ok(plan) => plan,
         Err(code) => {
@@ -520,7 +642,7 @@ async fn autostart_harness_target(
     let worker = app.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         let managed = worker.state::<ManagedDshState>();
-        harness_launch::run_launch(&plan, managed.inner())
+        harness_launch::run_launch(&plan, managed.inner(), harness_launch::LaunchTrigger::Automatic)
     })
     .await
     .map_err(|error| format!("启动 Harness 执行主体未完成：{error}"))?;
@@ -544,44 +666,15 @@ fn launch_dsh(
     state: tauri::State<'_, ManagedDshState>,
     root_path: String,
     profile: String,
-    command: Option<String>,
+    args: Option<Vec<String>>,
 ) -> Result<u32, String> {
     // The settings center configures this launch target, while the visible
     // route switch in the WorkerW wallpaper is the user-facing "start DSH"
     // action. Both declared surfaces may request a launch; process ownership
     // and all executable/profile validation remain native below.
     require_wallpaper_surface(&caller)?;
-    spawn_managed_dsh(state.inner(), &root_path, &profile, command.as_deref())
-}
-
-/**
- * Launchers the *automatic* path may use without an explicit user confirmation.
- *
- * A custom `command` is honoured as a single executable path (the Bridge never
- * passes it through a shell, and splits no arguments out of it), but running an
- * arbitrary configured program unattended at every wallpaper start is a
- * different trust decision from a button the user just pressed. The check is
- * stated here, at the automatic entry point, rather than left implicit in
- * `resolve_dsh_launcher` failing to find a file.
- */
-#[cfg(not(feature = "lite"))]
-const AUTO_START_LAUNCHER_ALLOWLIST: [&str; 4] =
-    ["node.exe", "node", "pnpm.cmd", "pnpm"];
-
-#[cfg(not(feature = "lite"))]
-fn is_allowlisted_auto_start_launcher(command: Option<&str>) -> bool {
-    let Some(value) = command.map(str::trim).filter(|value| !value.is_empty()) else {
-        // No command configured: the built-in Node/pnpm launcher is chosen and
-        // validated by `spawn_managed_dsh`.
-        return true;
-    };
-    let file_name = std::path::Path::new(value)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    AUTO_START_LAUNCHER_ALLOWLIST
-        .iter()
-        .any(|allowed| file_name.eq_ignore_ascii_case(allowed))
+    let args = harness_launch::normalize_launch_args(args)?;
+    spawn_managed_dsh(state.inner(), &root_path, &root_path, &profile, &args)
 }
 
 /// Launch DSH at most once per wallpaper process, for the
@@ -593,9 +686,10 @@ fn is_allowlisted_auto_start_launcher(command: Option<&str>) -> bool {
 /// action is to fix the configuration in settings, not to watch the wallpaper
 /// spawn processes in a loop.
 ///
-/// The automatic path deliberately refuses a user-supplied `command` unless the
-/// caller confirmed it: silently executing an arbitrary configured program at
-/// every login is a different trust decision from a button the user pressed.
+/// 这里**不再**有"自定义启动命令需要用户确认"那一步：那个设置已经不在了。「启动参数」加的是
+/// 参数，启动器永远是本 build 自己选的那个（`spawn_managed_dsh` 里决定的 node/pnpm），
+/// 所以"无人值守时会不会执行用户随手填的一个程序"这个问题不再成立 —— 而它不成立，是因为
+/// 那个入口没有了，不是因为这里的检查被放宽了。
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
 fn autostart_managed_dsh(
@@ -604,8 +698,7 @@ fn autostart_managed_dsh(
     autostart: tauri::State<'_, ManagedDshAutostartState>,
     root_path: Option<String>,
     profile: String,
-    command: Option<String>,
-    trusted_command: Option<bool>,
+    args: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
     require_background(&caller)?;
     let mut record = autostart
@@ -618,23 +711,14 @@ fn autostart_managed_dsh(
         return Ok(serde_json::to_value(previous).unwrap_or_else(|_| serde_json::json!({ "outcome": "already-attempted" })));
     }
 
-    let configured = command.as_deref().map(str::trim).filter(|value| !value.is_empty());
-    if !is_allowlisted_auto_start_launcher(configured) && trusted_command != Some(true) {
-        // Never silently run a custom launcher. The manual "启动" button keeps
-        // working; the automatic path needs an explicit confirmation, and even
-        // then the value is used as one executable path, never a shell line.
-        let outcome = ManagedDshAutostart::new("command-not-confirmed");
-        *record = Some(outcome.clone());
-        return Ok(serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null));
-    }
-
-    // An external DSH on 3080 belongs to the user. Do not start a second one,
-    // do not take it over, and do not stop it: fall through to Bridge probing.
-    if dsh_port_is_occupied() {
-        let outcome = ManagedDshAutostart { outcome: "port-occupied-external".into(), pid: None, external: true };
-        *record = Some(outcome.clone());
-        return Ok(serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null));
-    }
+    let args = match harness_launch::normalize_launch_args(args) {
+        Ok(args) => args,
+        Err(error) => {
+            let outcome = ManagedDshAutostart::new(&classify_dsh_launch_failure(&error));
+            *record = Some(outcome.clone());
+            return Ok(serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null));
+        }
+    };
 
     let Some(root_path) = root_path.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) else {
         let outcome = ManagedDshAutostart::new("root-path-missing");
@@ -642,7 +726,18 @@ fn autostart_managed_dsh(
         return Ok(serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null));
     };
 
-    let outcome = match spawn_managed_dsh(state.inner(), &root_path, &profile, configured) {
+    // An external DSH on the instance's port belongs to the user. Do not start a
+    // second one, do not take it over, and do not stop it: fall through to Bridge
+    // probing. 端口从「启动参数」读，因为并行实例的第二、三个各在自己的端口上，而"占用检查"
+    // 问的是**这一次要用的那个端口**。
+    let port = harness_launch::instance_port(&args);
+    if dsh_port_is_occupied(port) {
+        let outcome = ManagedDshAutostart { outcome: "port-occupied-external".into(), pid: None, external: true };
+        *record = Some(outcome.clone());
+        return Ok(serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null));
+    }
+
+    let outcome = match spawn_managed_dsh(state.inner(), &root_path, &root_path, &profile, &args) {
         Ok(pid) => ManagedDshAutostart { outcome: "started".into(), pid: Some(pid), external: false },
         Err(error) => {
             log::warn!("wallpaper DSH autostart failed: {error}");
@@ -682,8 +777,13 @@ fn classify_dsh_launch_failure(error: &str) -> String {
         "launcher-missing".into()
     } else if error.contains("profile") {
         "profile-invalid".into()
-    } else if error.contains("3080") {
+    } else if error.contains("端口已被") {
+        // 端口被占用的**文案**里带着那一个端口号（3080 只是一个可能值），所以判定读的是"占用"
+        // 这件事本身，而不是某一个数字 —— 否则第二个实例换到 3081 之后，同一个失败会被报成
+        // "进程启动失败"，而那是最没法照做的一句话。
         "port-occupied-external".into()
+    } else if error.contains("启动参数") {
+        "launch-args-invalid".into()
     } else {
         "spawn-failed".into()
     }
@@ -691,18 +791,38 @@ fn classify_dsh_launch_failure(error: &str) -> String {
 
 /// Where a DSH started by the wallpaper keeps its own output.
 ///
-/// DSH reports every startup failure on stderr, and a GUI-subsystem parent has
-/// no usable standard streams. Inheriting those handles threw the only evidence
-/// away, which left the wallpaper able to say no more than "DSH 启动后立即退出；
-/// 请检查 DSH 配置或启动日志" and to point at a log that was never written. Keep
-/// the child hidden, but put its own words on disk beside the wallpaper's log.
+/// DSH reports every startup failure on stderr, and a GUI-subsystem parent has no usable standard
+/// streams. Inheriting those handles threw the only evidence away, which left the wallpaper able to
+/// say no more than "DSH 启动后很快退出" and to point at a log that was never written. Keep the child
+/// hidden, but put its own words on disk beside the wallpaper's log.
+///
+/// **一个实例一个文件**。并行实例功能之前这里只有一个 `managed-dsh.log`：两个实例同时写会把
+/// 各自的输出交织在一起，而"孩子退出后它的最后几句话是什么"正是这个文件唯一的用途 —— 混起来的
+/// 输出会让那段诊断指向**另一个实例**的原因。
+///
+/// 文件名由实例键的哈希得出，不是把键直接拼进去：键里有绝对路径与参数（含 `\` `:` `\u{1f}`），
+/// 直接当文件名不合法，而"清洗一下"很容易留下两个键撞成同一个名字的余地。
 #[cfg(not(feature = "lite"))]
-fn managed_dsh_log_path() -> Option<PathBuf> {
+fn managed_dsh_log_path(instance_key: &str) -> Option<PathBuf> {
     dirs::data_local_dir().map(|root| {
         root.join("com.dsh.wallpaper")
             .join("logs")
-            .join("managed-dsh.log")
+            .join(format!("managed-dsh-{:016x}.log", stable_hash(instance_key)))
     })
+}
+
+/// FNV-1a，64 位。**只用来给日志文件起名**：它不是身份，身份是记录里的 pid + 创建时间。
+///
+/// 用它而不是 `DefaultHasher`，因为后者的输出在不同 Rust 版本之间没有稳定保证，而这个文件名会
+/// 跨版本被写、被读（升级后同一个实例应当落在同一个文件里）。
+#[cfg(not(feature = "lite"))]
+fn stable_hash(value: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 /// The last `lines` lines of a managed DSH's captured output, or why there are
@@ -722,17 +842,23 @@ fn managed_dsh_log_tail(path: Option<&PathBuf>, lines: usize) -> String {
 
 /// Shared, validated launch path for the manual button and the autostart
 /// setting. Both callers get identical validation, ownership tracking and
-/// single-instance behaviour because there is only one implementation.
+/// per-instance single-instance behaviour because there is only one
+/// implementation.
 ///
 /// Reachable from `harness_launch`, which is how a chosen execution subject ends
 /// up here: the shim decides *which* class to start, and every checkout still
 /// starts through this one chain.
+///
+/// **`subject_id` 与 `root_path` 分开**，虽然源码目录的 id 就是它的路径、两者一字不差：它们回答
+/// 的是两个不同的问题（"这是谁"与"从哪跑"），而实例键用的是前者。已安装的 CLI 走另一条链，
+/// 那里的 id 与路径本来就不一样，这个签名让两条链的记法保持一致。
 #[cfg(not(feature = "lite"))]
 pub(crate) fn spawn_managed_dsh(
     state: &ManagedDshState,
+    subject_id: &str,
     root_path: &str,
     profile: &str,
-    command: Option<&str>,
+    args: &[String],
 ) -> Result<u32, String> {
     let root = std::fs::canonicalize(root_path.trim())
         .map_err(|_| "DSH 根目录不存在或不可访问".to_string())?;
@@ -747,37 +873,53 @@ pub(crate) fn spawn_managed_dsh(
     {
         return Err("DSH profile 只能包含字母、数字、连字符或下划线".into());
     }
-    let configured_launcher = command.map(str::trim).filter(|value| !value.is_empty());
+    // 参数在入口再洗一遍：`spawn_managed_dsh` 是公开的入口，不该假设每个调用方都洗过。
+    let args = harness_launch::normalize_launch_args(Some(args.to_vec()))?;
+    let key = harness_launch::instance_key(subject_id, &args);
     let bundled_cli = root.join("apps").join("cli").join("lib").join("bin.js");
-    let use_bundled_cli = configured_launcher.is_none() && bundled_cli.is_file();
-    let launcher = configured_launcher.unwrap_or(if use_bundled_cli {
-        "node.exe"
-    } else {
-        "pnpm.cmd"
-    });
+    let use_bundled_cli = bundled_cli.is_file();
+    // 启动器只有这一个来源：本 build 自己选的 node/pnpm。用户能改的只有后面的参数 —— 这是本次
+    // 改动有意收缩的那一处能力（原来这里可以是一个任意程序）。
+    let launcher = if use_bundled_cli { "node.exe" } else { "pnpm.cmd" };
     let launcher_path = resolve_dsh_launcher(launcher).ok_or_else(|| {
-        if configured_launcher.is_some() {
-            format!("找不到自定义 DSH 启动器：{launcher}")
-        } else if use_bundled_cli {
-            "未找到 Node.js。请确认 node.exe 已加入系统 PATH，或在启动命令中填写 Node.js 的完整路径。"
-                .to_string()
+        if use_bundled_cli {
+            "未找到 Node.js。请确认 node.exe 已加入系统 PATH 后再试。".to_string()
         } else {
-            "未找到 pnpm。请确认 pnpm.cmd 已加入系统 PATH，或在启动命令中填写启动器的完整路径。"
-                .to_string()
+            "未找到 pnpm。请确认 pnpm.cmd 已加入系统 PATH 后再试。".to_string()
         }
     })?;
     let mut managed = state
         .0
         .lock()
         .map_err(|_| "DSH 进程状态不可用".to_string())?;
-    if let Some(existing) = managed.as_mut() {
+    // **按实例**查重，而不是按"有没有孩子"：同一个主体的另一个端口已经在跑时，本次仍然要起。
+    // 而同一个实例（同主体、同参数）重复按「启动」只是幂等的一次，不该多出一个进程。
+    if let Some(existing) = managed.get_mut(&key) {
         match existing.child.try_wait() {
             Ok(None) => return Ok(existing.child.id()),
-            Ok(Some(_)) | Err(_) => *managed = None,
+            Ok(Some(_)) | Err(_) => {
+                managed.remove(&key);
+            }
         }
     }
-    if dsh_port_is_occupied() {
-        return Err("本机 3080 端口已被其他进程占用；请先关闭已有 DSH，再启动配置的 DSH。".into());
+    let port = harness_launch::instance_port(&args);
+    // 这个端口上跑的**是本应用启动的另一个实例**（同主体、不同参数，例如只差一个 `--host`）
+    // ⇒ 那不是冲突，而是"已经有了"：如实回答它的 pid，而不是报一句"被别的程序占用"。
+    // 那句话在这里是假的，而且它会指向错误的下一步 —— 用户会去找一个不存在的程序。
+    if let Some(existing) = harness_launch::owned_instances(subject_id)
+        .into_iter()
+        .find(|child| child.port == Some(port))
+    {
+        log::info!(
+            "managed DSH already serving {port} as a sibling instance: pid={}",
+            existing.pid
+        );
+        return Ok(existing.pid);
+    }
+    if dsh_port_is_occupied(port) {
+        return Err(format!(
+            "本机 {port} 端口已被其他进程占用；请先关闭它，或在「启动参数」里为这个实例换一个端口。"
+        ));
     }
     let mut launch = std::process::Command::new(launcher_path);
     if use_bundled_cli {
@@ -790,13 +932,16 @@ pub(crate) fn spawn_managed_dsh(
     } else {
         launch.args(["dsh", "--profile", profile]);
     }
+    // 「启动参数」追加在**最后**：DSH 的启动器只解析自己那几个旗标，第一个不认识的词之后整段
+    // 原样交给被 boot 的档案，所以 `--port 3081` 必须跟在 `--profile` 后面才到得了 web 应用。
+    launch.args(&args);
     launch.current_dir(&root);
     // DSH is a resident background service. `pnpm.cmd` otherwise inherits a new
     // visible console from the desktop process, leaving a stray CMD window
     // beside the wallpaper.
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut launch, 0x08000000);
-    let managed_log = managed_dsh_log_path();
+    let managed_log = managed_dsh_log_path(&key);
     launch.stdin(Stdio::null());
     let log_file = managed_log.as_ref().and_then(|path| {
         std::fs::create_dir_all(path.parent()?).ok()?;
@@ -840,104 +985,277 @@ pub(crate) fn spawn_managed_dsh(
         .spawn()
         .map_err(|error| format!("无法启动 DSH：{error}"))?;
     let pid = child.id();
-    *managed = Some(ManagedDshProcess {
-        child,
-        root_path: root.to_string_lossy().into_owned(),
-        profile: profile.into(),
-        log_path: managed_log,
-    });
+    managed.insert(
+        key.clone(),
+        ManagedDshProcess {
+            child,
+            instance_key: key,
+            subject_id: subject_id.trim().to_string(),
+            root_path: root.to_string_lossy().into_owned(),
+            profile: profile.into(),
+            args,
+            log_path: managed_log,
+        },
+    );
     Ok(pid)
 }
 
+/// 本应用启动的**全部** DSH 实例。
+///
+/// 三件事必须一起成立，否则并行实例这个功能就是半成品：
+///
+/// 1. **每一格都报**，不是"当前对齐的那一格"。用户要的是"本应用启动的全部实例"，因为同一个
+///    源码目录可以有两个端口各起一个，而漏掉任何一个都会让那一行没有停止入口。
+/// 2. **官壳永不出现**。它不是本应用的实例（它是用户自己的客户端，退出方式是它自己的托盘菜单），
+///    所以列表按 id 前缀过滤掉壳 —— 这条规则原来靠"壳不写记录"这个假设成立，而那个假设并不真
+///    （`ensure_harness_ui` 会给它写一条门票记录），所以现在它是**明写**的过滤。
+/// 3. **两种来源都要看**。内存里是本进程启动的（有 `Child` 句柄，能 `wait`）；落盘记录是跨壁纸
+///    重启的那一半（例如每次装机）。任何不确定（没有记录、进程已退出、创建时间对不上）都按
+///    "不是我启动的"处理 —— 安全方向：宁可少一行，绝不多停一个别人的进程。
+///
+/// `subject_id` 只影响 `managed` / `running` 两个汇总字段（启动监督问的是"我这次启动的那个
+/// 孩子还在不在"）；`instances` 永远是全部。
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
 fn managed_dsh_status(
     caller: tauri::WebviewWindow,
     state: tauri::State<'_, ManagedDshState>,
+    subject_id: Option<String>,
 ) -> Result<ManagedDshStatus, String> {
     require_wallpaper_surface(&caller)?;
     let mut managed = state
         .0
         .lock()
         .map_err(|_| "DSH 进程状态不可用".to_string())?;
-    let Some(process) = managed.as_mut() else {
-        return Ok(ManagedDshStatus {
-            managed: false,
-            running: false,
-            pid: None,
-            root_path: None,
-            profile: None,
-        });
-    };
-    match process.child.try_wait() {
-        Ok(None) => Ok(ManagedDshStatus {
-            managed: true,
-            running: true,
-            pid: Some(process.child.id()),
+    let mut instances: Vec<ManagedDshInstance> = Vec::new();
+    // 先扫内存：活着的一条留下，已经退出的那条**顺手清掉**，并把它的最后几句话记进日志 ——
+    // 那是唯一能解释"为什么没了"的证据。
+    let keys: Vec<String> = managed.keys().cloned().collect();
+    for key in keys {
+        let Some(process) = managed.get_mut(&key) else { continue };
+        match process.child.try_wait() {
+            Ok(None) => {}
+            Ok(Some(status)) => {
+                log::warn!(
+                    "managed DSH exited: instance={} pid={} code={:?}; last output:\n{}",
+                    process.instance_key,
+                    process.child.id(),
+                    status.code(),
+                    managed_dsh_log_tail(process.log_path.as_ref(), 20)
+                );
+                managed.remove(&key);
+                continue;
+            }
+            Err(error) => {
+                log::warn!("managed DSH state query failed: {error}");
+                managed.remove(&key);
+                continue;
+            }
+        }
+        let process = managed.get(&key).expect("just checked");
+        instances.push(ManagedDshInstance {
+            instance_key: process.instance_key.clone(),
+            subject_id: process.subject_id.clone(),
+            // 端口：先用**观察到**的那一个（落盘记录里由端口属主写下的），再用"我们要求它听在
+            // 哪儿"（参数里的 `--port`，没有就是 DSH 自己的默认 3080）。两个都不是身份 —— 身份
+            // 永远是 pid + 创建时间 —— 但它们合起来总能让那一行不是空的：一个连端口都显示不出来的
+            // 停止入口，用户没法确认自己要停的是哪一个。
+            port: harness_launch::recorded_port(&process.instance_key)
+                .or_else(|| Some(harness_launch::instance_port(&process.args))),
+            pid: process.child.id(),
             root_path: Some(process.root_path.clone()),
             profile: Some(process.profile.clone()),
-        }),
-        Ok(Some(status)) => {
-            // The child is gone. Its own last words are the only explanation
-            // available, so record them with the exit code rather than leaving a
-            // bare "not running" that no one can act on.
-            log::warn!(
-                "managed DSH exited: pid={} code={:?}; last output:\n{}",
-                process.child.id(),
-                status.code(),
-                managed_dsh_log_tail(process.log_path.as_ref(), 20)
-            );
-            *managed = None;
-            Ok(ManagedDshStatus {
-                managed: false,
-                running: false,
-                pid: None,
-                root_path: None,
-                profile: None,
-            })
+            args: process.args.clone(),
+        });
+    }
+    let in_memory: Vec<ManagedDshInstance> = instances;
+    let instances = merge_managed_instances(in_memory, harness_launch::owned_instances_all());
+    let asked = subject_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|subject| !subject.is_empty());
+    let owned = match asked {
+        Some(subject) => instances
+            .iter()
+            .filter(|item| item.subject_id.trim() == subject)
+            .count(),
+        None => instances.len(),
+    };
+    Ok(ManagedDshStatus {
+        managed: owned > 0,
+        running: owned > 0,
+        instances,
+    })
+}
+
+/// 把两种来源合成**该报给界面的那一份**实例列表。纯函数，所以它的规则可以被测试钉住。
+///
+/// 规则只有三条，而每一条都对应一个具体的坏结果：
+///
+/// 1. **内存里的赢**。同一个实例键在两处都有时用内存那一份，因为只有它知道 `root_path` / `profile`
+///    与真正的 `Child` 句柄；落盘那一份的 pid 与端口可能已经旧了。
+/// 2. **官壳一律丢掉，两条来源都丢**。它是用户自己的客户端，不属于本应用可停止的实例。
+/// 3. **端口至少有一样**：观察到的那一个（落盘记录里由端口属主写下的）优先，否则用"我们要求它
+///    听在哪儿"（参数里的 `--port`，没有就是 DSH 自己的默认）。都不是身份，但一个连端口都显示
+///    不出来的停止入口，用户没法确认自己要停的是哪一个。
+#[cfg(not(feature = "lite"))]
+fn merge_managed_instances(
+    in_memory: Vec<ManagedDshInstance>,
+    recorded: Vec<harness_launch::ManagedChild>,
+) -> Vec<ManagedDshInstance> {
+    let mut merged: Vec<ManagedDshInstance> = Vec::with_capacity(in_memory.len() + recorded.len());
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for instance in in_memory {
+        if !harness_launch::is_managed_by_us(&instance.subject_id) {
+            continue;
         }
-        Err(error) => {
-            log::warn!("managed DSH state query failed: {error}");
-            *managed = None;
-            Ok(ManagedDshStatus {
-                managed: false,
-                running: false,
-                pid: None,
-                root_path: None,
-                profile: None,
-            })
+        seen.insert(instance.instance_key.clone());
+        merged.push(instance);
+    }
+    for child in recorded {
+        if seen.contains(&child.instance_key) {
+            continue;
         }
+        merged.push(ManagedDshInstance {
+            port: child
+                .port
+                .or_else(|| Some(harness_launch::instance_port(&child.args))),
+            instance_key: child.instance_key,
+            subject_id: child.subject_id,
+            pid: child.pid,
+            root_path: None,
+            profile: None,
+            args: child.args,
+        });
+    }
+    merged.retain(|item| harness_launch::is_managed_by_us(&item.subject_id));
+    // 顺序稳定（落盘记录本来就是 BTreeMap）：界面上的每一行不该每次刷新都换个位置。
+    merged.sort_by(|left, right| left.instance_key.cmp(&right.instance_key));
+    merged
+}
+
+/// 停止本应用启动的 DSH：点名一个实例，或者不带名字就停**全部**。
+///
+/// 两个入口共用这一条命令，因为它们是同一个动作：「实例下拉里某一行的 ×」点的是哪一个由
+/// `instance_key` 指名，而「全部停止」不带名字 —— 后者的语义正是原来那个
+/// 「停止本应用启动的 DSH」按钮的语义（它当时只能停"唯一的那个"，现在有了并行实例，"全部"
+/// 才是它本来的意思）。两个控件做同一件事的问题因此只有一个动作、一个实现。
+///
+/// **官壳停不了，而且不是"刚好没找到"**：`harness_launch::is_managed_by_us` 明确拒绝它。
+/// 那不是本应用的实例 —— 停它会当场关掉用户自己的客户端，并弹一条"宿主意外退出"的报错框。
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+async fn stop_managed_dsh(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    instance_key: Option<String>,
+) -> Result<(), String> {
+    require_settings(&caller)?;
+    // 这一步会起 taskkill 并等它结束（正常几百毫秒，遇到卡住的进程更久），所以**不能**在界面
+    // 线程上做 —— 那正是"设置窗口先卡死"的成因。状态也在闭包里重新取，避免借用外部的 State。
+    tauri::async_runtime::spawn_blocking(move || {
+        let named = instance_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        // 清单与 `managed_dsh_status` 用的是同一处（官壳已经滤掉、并且每一条都通过了
+        // pid + 创建时间的校验），所以"界面显示什么"与"这里能停什么"不可能对不上。
+        let targets = stop_targets(named, harness_launch::owned_instances_all())?;
+        let mut failures: Vec<String> = Vec::new();
+        for key in targets {
+            if let Err(error) = stop_one_instance(&app, &key) {
+                failures.push(error);
+            }
+        }
+        match failures.first() {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    })
+    .await
+    .map_err(|error| format!("停止 DSH 未完成：{error}"))?
+}
+
+/// 这一次要停哪些实例。纯函数，因为它是"停哪一个"与"绝不碰官壳"两条规则的落点。
+///
+/// * 点名了 `instance_key` ⇒ 就是它，**一个**。这正是并行实例需要的粒度：3080 上那个还在
+///   服务时，停掉 3081 上那个不该顺手把 3080 也带走。
+/// * 没点名 ⇒ 全部（本应用启动的每一个）。原来那个「停止本应用启动的 DSH」按钮在只有一个孩子时
+///   就是这个意思，现在有了并行实例，"全部"才是它本来的语义。
+/// * **官壳在任何一条路上都被拒绝**：点名它得到一句明确的拒绝（而不是静默成功），不带名字时它
+///   根本不在候选里。两条都必要 —— 前者防止一个被改错键的调用方停掉用户自己的客户端，后者是
+///   正常路径。
+#[cfg(not(feature = "lite"))]
+fn stop_targets(
+    named: Option<String>,
+    owned: Vec<harness_launch::ManagedChild>,
+) -> Result<Vec<String>, String> {
+    match named {
+        Some(key) => {
+            if !harness_launch::is_managed_by_us(&key) {
+                log::warn!("refusing to stop a subject this app does not manage: {key}");
+                return Err("这个主体不由本应用管理，因此没有停止它。".to_string());
+            }
+            Ok(vec![key])
+        }
+        None => Ok(owned
+            .into_iter()
+            .filter(|child| harness_launch::is_managed_by_us(&child.subject_id))
+            .map(|child| child.instance_key)
+            .collect()),
     }
 }
 
-#[tauri::command]
+/// 停掉一个实例：内存里的 `Child`（能等它退出）优先，否则走落盘记录那条路。
 #[cfg(not(feature = "lite"))]
-fn stop_managed_dsh(
-    caller: tauri::WebviewWindow,
-    state: tauri::State<'_, ManagedDshState>,
-) -> Result<(), String> {
-    require_settings(&caller)?;
-    let mut managed = state
-        .0
-        .lock()
-        .map_err(|_| "DSH 进程状态不可用".to_string())?;
-    let Some(mut process) = managed.take() else {
-        return Ok(());
+fn stop_one_instance(app: &tauri::AppHandle, instance_key: &str) -> Result<(), String> {
+    // 官壳在动任何进程之前就被拒绝：这是"绝不接管他人实例"那条底线在**命令**这一侧的落点，
+    // 而不是依赖界面不显示它。
+    if !harness_launch::is_managed_by_us(instance_key) {
+        log::warn!("refusing to stop a subject this app does not manage: {instance_key}");
+        return Err("这个主体不由本应用管理，因此没有停止它。".to_string());
+    }
+    let state = app.state::<ManagedDshState>();
+    let taken = {
+        let mut managed = state
+            .0
+            .lock()
+            .map_err(|_| "DSH 进程状态不可用".to_string())?;
+        managed.remove(instance_key)
     };
-    // Scope termination to the exact process spawned by this application;
-    // never infer a target by probing a port or executable name.
-    #[cfg(windows)]
-    {
-        let _ = std::process::Command::new("taskkill.exe")
-            .args(["/PID", &process.child.id().to_string(), "/T", "/F"])
-            .output();
+    if let Some(mut process) = taken {
+        let pid = process.child.id();
+        #[cfg(windows)]
+        let stopped = crate::client_window::stop_process_tree(pid);
+        #[cfg(not(windows))]
+        let stopped = process.child.kill().is_ok();
+        if !stopped {
+            log::warn!("managed DSH stop failed for pid {pid}");
+        }
+        let _ = process.child.wait();
+        harness_launch::forget_instance(instance_key);
+        return if stopped {
+            Ok(())
+        } else {
+            Err("无法停止该 DSH 进程；它可能已经退出，或被别的程序接管了。".to_string())
+        };
     }
-    #[cfg(not(windows))]
-    {
-        let _ = process.child.kill();
+    // 内存里没有这个孩子（壁纸重启过）⇒ 看落盘记录，而且**只有判定为真的那一格**才动手：
+    // pid 与创建时间都对上，才承认它是本应用启动的那个。对不上就什么都不做。
+    match harness_launch::owned_instance(instance_key) {
+        Some(child) => {
+            if crate::client_window::stop_process_tree(child.pid) {
+                harness_launch::forget_instance(instance_key);
+                Ok(())
+            } else {
+                Err("无法停止该 DSH 进程；它可能已经退出，或被别的程序接管了。".to_string())
+            }
+        }
+        // 记录里没有它，或者已经不是同一个进程：什么都不做，并且如实说"没有可停的"。
+        // 静默成功会更坏 —— 界面会刷新出一个"已经停了"的假象。
+        None => Err("没有找到这个实例：它可能已经退出，或从来不是本应用启动的。".to_string()),
     }
-    let _ = process.child.wait();
-    Ok(())
 }
 
 /// Settings are always authored by the dedicated settings surface and then
@@ -1244,6 +1562,11 @@ fn dispatch_app_action(
         "auth-ready" => AppAction::AuthReady,
         "recover" => AppAction::Recover,
         "fail" => AppAction::Fail(value.unwrap_or_else(|| "未知错误".into())),
+        "set-island-pinned" => AppAction::SetIslandPinned(match value.as_deref() {
+            Some("true") => true,
+            Some("false") => false,
+            _ => return Err("invalid island pinned flag".into()),
+        }),
         "set-activity" => AppAction::SetActivity(match value.as_deref() {
             Some("idle") => Activity::Idle,
             Some("sending") => Activity::Sending,
@@ -1608,30 +1931,11 @@ async fn get_lock_screen_diagnostics(
 }
 
 fn set_autostart_blocking(enabled: bool) -> Result<windows_integration::AutostartStatus, String> {
-    #[cfg(windows)]
-    {
-        if windows_integration::set_startup_task(enabled)?.is_some() {
-            // A package StartupTask is the authoritative autostart path. Drop
-            // any legacy Run value left by an older build so the single-instance
-            // guard does not needlessly process a second launch attempt.
-            let _ = windows_integration::remove_legacy_run_entry();
-            return windows_integration::autostart_status();
-        }
-        // 注册表 Run 键：开机自启 dsh-wallpaper
-        //  开启: 写入当前构建需要的启动命令
-        //  关闭: 删除该值
-        // An MSIX install must record the shell's version-stable launch alias
-        // rather than its own versioned `WindowsApps` path, which the next
-        // package update deletes.
-        if enabled {
-            windows_integration::write_run_entry(
-                &windows_integration::current_run_entry_command()?
-            )?;
-        } else {
-            windows_integration::remove_legacy_run_entry()?;
-        }
-    }
-    windows_integration::autostart_status()
+    // The whole operation lives next to the Windows calls it makes: which path
+    // is authoritative, what is written, and — new — the read-back that decides
+    // whether the settings page may call the change applied. This wrapper only
+    // keeps it off the UI thread.
+    windows_integration::set_autostart(enabled)
 }
 
 #[tauri::command]
@@ -1832,6 +2136,83 @@ fn desktop_workspace_status(
     Ok(desktop_workspace_status_from(&data_dir))
 }
 
+/// 项目记忆的文件名。**必须与桥里的 `PROJECT_MEMORY_FILE_NAME` 一致** —— 桥按它读/注入，
+/// 设置中心按它打开；两处不同的话，用户在设置里看到的和助手实际用的会是两个文件。
+#[cfg(not(feature = "lite"))]
+const PROJECT_MEMORY_FILE_NAME: &str = "项目记忆.md";
+
+/// 在资源管理器里打开「项目记忆」：文件在就选中它，不在就打开工作区目录（顺带建出来）。
+///
+/// 为什么要有这个按钮：记忆文件的**绝对路径不该出现在桌面会话里**（那是聊天面，不是文件管理器），
+/// 但用户确实需要一个地方去改它 —— 那个地方就是设置，路径也只在这里出现。
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+fn open_project_memory(caller: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    require_settings(&caller)?;
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?;
+    let workspace = data_dir.join(DESKTOP_WORKSPACE_DIRECTORY_NAME);
+    std::fs::create_dir_all(&workspace).map_err(|error| format!("无法创建桌面会话目录：{error}"))?;
+    let memory = workspace.join(PROJECT_MEMORY_FILE_NAME);
+    // 有文件就选中它（用户一眼看到要改的东西）；没有就把目录打开，别替他造一个空文件。
+    let argument = if memory.is_file() {
+        format!("/select,{}", memory.display())
+    } else {
+        workspace.display().to_string()
+    };
+    std::process::Command::new("explorer.exe")
+        .arg(&argument)
+        .spawn()
+        .map_err(|error| format!("无法打开资源管理器：{error}"))?;
+    Ok(serde_json::json!({
+        "opened": argument,
+        "memoryFile": memory.display().to_string(),
+        "memoryExists": memory.is_file(),
+    }))
+}
+
+/// 「打开 TUI」：把本机的 TUI（`dst`）在一个**新的终端窗口**里拉起来。
+///
+/// 为什么这件事必须由原生做：能不能开终端窗口、以及**本机到底有没有装 TUI**，都只有原生能回答。
+/// 而这条命令的契约是「缺什么就说什么」：找不到 `dst` 时返回 `opened: false` 加一句怎么办，
+/// **绝不静默改成打开浏览器** —— 那等于替用户换了一条他没选的路。
+///
+/// 与 `open_project_memory` 同样的门：**只有设置中心能调**（`require_settings`）。
+#[tauri::command]
+#[cfg(not(feature = "lite"))]
+fn open_subject_tui(
+    caller: tauri::WebviewWindow,
+    args: Option<Vec<String>>,
+) -> Result<serde_json::Value, String> {
+    require_settings(&caller)?;
+    let args = harness_launch::normalize_launch_args(args)?;
+    let launchers = harness_targets::tui_launcher_paths(
+        std::env::var("APPDATA").ok().as_deref(),
+        std::env::var("PATH").ok().as_deref(),
+    );
+    let Some(launcher) = launchers.first() else {
+        return Ok(serde_json::json!({
+            "opened": false,
+            "reason": "not-installed",
+            "message": "本机没有找到 TUI（dst）。安装：npm i -g @deepseek-harness-tui/dsh-tui",
+        }));
+    };
+    let (program, command_args) = harness_launch::tui_launch_command(launcher, &args);
+    std::process::Command::new(&program)
+        .args(&command_args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|error| format!("无法拉起 TUI：{error}"))?;
+    Ok(serde_json::json!({
+        "opened": true,
+        "launcher": launcher.display().to_string(),
+    }))
+}
+
 /// 「清除全部用户数据」里，**能由本应用安全删掉**的那几处。
 ///
 /// 刻意不含 WebView2 配置目录（设置与网页登录态都住在里面）：那个目录正被运行中的进程占用，
@@ -1896,7 +2277,7 @@ fn remove_api_key_credential() -> Result<bool, String> {
 
 #[cfg(all(test, not(feature = "lite")))]
 mod desktop_workspace_tests {
-    use super::{desktop_workspace_status_from, DESKTOP_WORKSPACE_DIRECTORY_NAME};
+    use super::{desktop_workspace_status_from, DESKTOP_WORKSPACE_DIRECTORY_NAME, PROJECT_MEMORY_FILE_NAME};
 
     /// 位置规则只有一条：数据目录下的「桌面会话」。
     ///
@@ -1914,16 +2295,29 @@ mod desktop_workspace_tests {
         assert_eq!(status["credentialTarget"].as_str().unwrap(), "deepseek-api.dsh-wallpaper");
         // 打包前目录还不存在时也必须给出路径（桥会按同一条规则重建）。
         assert_eq!(status["workspaceExists"].as_bool(), Some(false));
+        // 「项目记忆」的路径也要报出来（设置里那个「打开项目记忆」按钮用它），而且**必须与桥读的
+        // 是同一个名字**：两处不同的话，用户在设置里打开的和助手实际用的是两个文件。
+        assert_eq!(
+            status["memoryFile"].as_str().unwrap(),
+            format!(r"C:\Users\me\AppData\Local\com.dsh.wallpaper\{DESKTOP_WORKSPACE_DIRECTORY_NAME}\{PROJECT_MEMORY_FILE_NAME}")
+        );
+        assert_eq!(status["memoryExists"].as_bool(), Some(false));
     }
 }
 
 /// 纯函数：只负责"路径怎么算"，好让测试直接钉住它（真实的数据目录是运行时才知道的）。
 #[cfg(not(feature = "lite"))]
-fn desktop_workspace_status_from(data_dir: &std::path::Path) -> serde_json::Value {    let workspace = data_dir.join(DESKTOP_WORKSPACE_DIRECTORY_NAME);
+fn desktop_workspace_status_from(data_dir: &std::path::Path) -> serde_json::Value {
+    let workspace = data_dir.join(DESKTOP_WORKSPACE_DIRECTORY_NAME);
+    let memory = workspace.join(PROJECT_MEMORY_FILE_NAME);
     serde_json::json!({
         "dataDirectory": data_dir.display().to_string(),
         "workspaceDirectory": workspace.display().to_string(),
         "workspaceExists": workspace.is_dir(),
+        // 助手维护的「项目记忆」（说话人格等长期要求就落在这里）；设置里给它一个打开入口，
+        // 桌面会话里不贴路径。
+        "memoryFile": memory.display().to_string(),
+        "memoryExists": memory.is_file(),
         // 清除全部用户数据时要一并删掉的那条凭据（在凭据管理器里，不在文件系统上）。
         "credentialTarget": "deepseek-api.dsh-wallpaper",
     })
@@ -2451,6 +2845,7 @@ async fn connect_harness(
     resume_session_id: Option<String>,
     connection_id: String,
     model: Option<String>,
+    preset: Option<String>,
 ) -> Result<String, String> {
     require_background(&caller)?;
     // The session follows the endpoint selected in settings, resolved here rather
@@ -2458,7 +2853,7 @@ async fn connect_harness(
     // and the monitor reads the same value, so status and sessions cannot
     // disagree about which client is in use.
     let endpoint_port = Some(harness_endpoint_port());
-    chat::harness_connect(app, state, resume_session_id, connection_id, model, endpoint_port).await
+    chat::harness_connect(app, state, resume_session_id, connection_id, model, endpoint_port, preset).await
 }
 
 #[tauri::command]
@@ -2565,18 +2960,18 @@ const HARNESS_BRIDGE_PROTOCOL_VERSION: u64 = 1;
 const REQUIRED_HARNESS_BRIDGE_CAPABILITIES: &[&str] =
     &["sessions", "history", "sse", "cancel", "approval-handoff"];
 
-/// The three DSH client shapes listen on different ports, and only some of them
-/// are configurable, so probing one hardcoded port means "only ever connect to
-/// the CLI shape". The official desktop shell compiles 19387 into its asar; the
-/// community desktop defaults to 43120; the CLI and the official web app both
-/// default to 3080 (`ctx.webStartup.port ?? 3080`).
+/// The DSH client shapes listen on different ports, and only some of them are
+/// configurable, so probing one hardcoded port means "only ever connect to the CLI
+/// shape". The official desktop shell compiles 19387 into its asar; the CLI and the
+/// official web app both default to 3080 (`ctx.webStartup.port ?? 3080`).
 ///
-/// Order is the shipped priority: official desktop, then community desktop, then
-/// plain web/CLI. The renderer applies the same order, and
-/// `wallpaper/src/connect/endpoints.ts` documents it.
+/// Order is the shipped priority: official desktop, then plain web/CLI. The renderer
+/// applies the same order, and `wallpaper/src/connect/endpoints.ts` documents it.
+///
+/// （第三方的 43120 2026-09-27 按用户要求移除：它把本地接口锁在自己的授权后面，壁纸一律 403 ✓。）
 #[cfg(not(feature = "lite"))]
 const HARNESS_ENDPOINT_PORTS: &[(u16, &str)] =
-    &[(19387, "official-desktop"), (43120, "community-desktop"), (3080, "official-web")];
+    &[(19387, "official-desktop"), (3080, "official-web")];
 
 /// Port used when a caller does not name one. Matches DSH's own web default, so a
 /// CLI-started Host is found without configuration.
@@ -2628,6 +3023,35 @@ fn harness_endpoint_state() -> &'static HarnessEndpointState {
 #[cfg(not(feature = "lite"))]
 fn locked<T>(value: &Mutex<T>) -> Option<std::sync::MutexGuard<'_, T>> {
     value.lock().ok()
+}
+
+/// 主体范围的稳定标识：钉住的端点 + "哪个主体、允许哪些端口"。
+///
+/// 探测器靠它回答一个问题：**这一轮探的还是同一个对象吗？**
+///
+/// 缺了它，`connected_once` 会跨主体保留。实测症状正是如此：在 CLI（3080）上连过一次之后切到
+/// 官壳，官壳那边没有人在听，可"曾经连上过"这条记忆还在、又拿不到"属主已死"的证据 ⇒ 只把灯
+/// 变成呼吸态、`available` 仍是 BridgeReady ⇒ 界面一直写着"DSH Bridge 已连接"，而一发消息
+/// 就被告知会话没有建立。换了主体，"连接"这个词说的就是另一个对象了。
+#[cfg(not(feature = "lite"))]
+fn harness_scope_key() -> String {
+    let state = harness_endpoint_state();
+    let pinned = locked(&state.pinned).and_then(|guard| *guard);
+    match locked(&state.subject).and_then(|guard| guard.clone()) {
+        Some(subject) => format!("{pinned:?}|{}|{:?}", subject.id, subject.ports),
+        None => format!("{pinned:?}|"),
+    }
+}
+
+/// 主体范围变化时的叫醒通道。
+///
+/// 不加这个，探测器只在自己排定的 tick 上醒来 —— 日志实测：切换发生在 01:10:13，`connecting`
+/// 到 01:10:15 才发布（界面这两秒仍写着"已连接"），结论又等到 01:10:23 才发出（灰灯迟了 8 秒）。
+/// 进程退出那条路早就有一条一模一样的叫醒通道（`exits`），主体变化凭什么要等。
+#[cfg(not(feature = "lite"))]
+fn harness_scope_notify() -> &'static tokio::sync::Notify {
+    static NOTIFY: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+    NOTIFY.get_or_init(tokio::sync::Notify::new)
 }
 
 /// The ports the wallpaper may probe, in order — never widened by what answers.
@@ -2735,13 +3159,17 @@ fn apply_endpoint_scope(
     port: Option<u16>,
     subject_id: Option<&str>,
     extra_ports: &[u16],
+    args: Option<&[String]>,
 ) -> Result<serde_json::Value, String> {
     {
         let mut guard = state.pinned.lock().map_err(|_| "接入端点状态不可用".to_string())?;
         *guard = port;
     }
     let subject_id = subject_id.unwrap_or_default().trim().to_string();
-    let ports = harness_targets::subject_endpoint_ports(&subject_id, extra_ports);
+    // 「启动参数」里点名的端口属于**这个主体**（我们就是这样启动它的），所以它进的是主体的端口
+    // 表；并行实例的第二个因此会被探针看见，而不是永远显示成离线。
+    let declared = args.and_then(harness_launch::port_from_args);
+    let ports = harness_targets::subject_endpoint_ports(&subject_id, extra_ports, declared);
     let previous = {
         let mut guard = state
             .subject
@@ -2767,6 +3195,9 @@ fn apply_endpoint_scope(
         if let Ok(mut guard) = state.active.lock() {
             *guard = None;
         }
+        // 立刻叫醒探测器：切换主体这一步是用户动作，界面必须在**这一拍**进入"连接中"，
+        // 而不是等下一次排定的探测（实测迟 2–5 秒，用户看到的是切换后仍写着"已连接"）。
+        harness_scope_notify().notify_one();
     }
     Ok(serde_json::json!({
         "port": port,
@@ -3076,13 +3507,21 @@ fn set_harness_endpoint(
     port: Option<u16>,
     subject_id: Option<String>,
     extra_ports: Option<Vec<u16>>,
+    args: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
     require_wallpaper_surface(&caller)?;
     if port == Some(0) {
         return Err("接入端点端口必须在 1-65535 之间".into());
     }
+    let args = harness_launch::normalize_launch_args(args)?;
     let state = harness_endpoint_state();
-    apply_endpoint_scope(state, port, subject_id.as_deref(), &extra_ports.unwrap_or_default())
+    apply_endpoint_scope(
+        state,
+        port,
+        subject_id.as_deref(),
+        &extra_ports.unwrap_or_default(),
+        Some(&args),
+    )
 }
 
 /// A root-page response is diagnostic only. It is deliberately not part of
@@ -3101,44 +3540,32 @@ fn root_probe_availability(status: Option<reqwest::StatusCode>) -> HarnessAvaila
 #[cfg(not(feature = "lite"))]
 mod dsh_autostart_tests {
     use super::{
-        classify_dsh_launch_failure, is_allowlisted_auto_start_launcher, resolve_dsh_launcher,
+        classify_dsh_launch_failure, merge_managed_instances, resolve_dsh_launcher, stop_targets,
+        ManagedDshInstance,
     };
+    use crate::harness_launch::{self, ManagedChild};
 
-    /// The automatic path may only use a launcher it knows, unless the user has
-    /// confirmed a custom one. This is a trust boundary, so each case is pinned:
-    /// a bare name is allowlisted, an absolute path to the same binary is
-    /// allowlisted, and anything else is not.
-    #[test]
-    fn only_known_launchers_are_allowed_without_confirmation() {
-        // No command configured: the built-in launcher is chosen further down and
-        // validated by `spawn_managed_dsh`.
-        assert!(is_allowlisted_auto_start_launcher(None));
-        assert!(is_allowlisted_auto_start_launcher(Some("   ")));
-
-        for allowed in [
-            "node.exe",
-            "node",
-            "pnpm.cmd",
-            "pnpm",
-            "NODE.EXE",
-            r"C:\Program Files\nodejs\node.exe",
-            r"D:\tools\pnpm.cmd",
-            "/usr/bin/node",
-        ] {
-            assert!(is_allowlisted_auto_start_launcher(Some(allowed)), "{allowed}");
+    fn instance(instance_key: &str, subject_id: &str, pid: u32, port: Option<u16>) -> ManagedDshInstance {
+        ManagedDshInstance {
+            instance_key: instance_key.into(),
+            subject_id: subject_id.into(),
+            port,
+            pid,
+            root_path: Some(subject_id.into()),
+            profile: Some("desktop".into()),
+            args: Vec::new(),
         }
+    }
 
-        // A different program, or one that merely mentions an allowed name, must
-        // not slip through: the comparison is on the file name, not a substring.
-        for rejected in [
-            "powershell.exe",
-            "cmd.exe",
-            r"C:\tools\mynode.exe",
-            "node-wrapper.exe",
-            "python.exe",
-            "evil-node.exe.bat",
-        ] {
-            assert!(!is_allowlisted_auto_start_launcher(Some(rejected)), "{rejected}");
+    fn recorded(instance_key: &str, subject_id: &str, pid: u32, port: Option<u16>) -> ManagedChild {
+        ManagedChild {
+            instance_key: instance_key.into(),
+            subject_id: subject_id.into(),
+            args: Vec::new(),
+            pid,
+            started_at: Some(1),
+            port,
+            handoff: None,
         }
     }
 
@@ -3154,7 +3581,12 @@ mod dsh_autostart_tests {
         assert_eq!(classify_dsh_launch_failure("未找到 Node.js。请确认 node.exe 已加入系统 PATH"), "launcher-missing");
         assert_eq!(classify_dsh_launch_failure("未找到 pnpm。请确认 pnpm.cmd 已加入系统 PATH"), "launcher-missing");
         assert_eq!(classify_dsh_launch_failure("DSH profile 只能包含字母、数字、连字符或下划线"), "profile-invalid");
+        // 端口占用读的是"这件事"，不是某一个数字：并行实例换到 3081 之后，同一个失败仍要报成
+        // "端口被占"，而不是最没法照做的"进程启动失败"。
         assert_eq!(classify_dsh_launch_failure("本机 3080 端口已被其他进程占用"), "port-occupied-external");
+        assert_eq!(classify_dsh_launch_failure("本机 3081 端口已被其他进程占用"), "port-occupied-external");
+        assert_eq!(classify_dsh_launch_failure("启动参数最多 32 个"), "launch-args-invalid");
+        assert_eq!(classify_dsh_launch_failure("单个启动参数不能超过 512 个字符"), "launch-args-invalid");
         // Anything unrecognised still yields a code rather than leaking the text.
         let other = classify_dsh_launch_failure("something unexpected: 0x80070005");
         assert_eq!(other, "spawn-failed");
@@ -3177,6 +3609,92 @@ mod dsh_autostart_tests {
         assert!(!resolve_dsh_launcher("node.exe")
             .map(|path| path == std::path::PathBuf::from("node.exe"))
             .unwrap_or(false));
+    }
+
+    /// 停止的粒度：点名停一个、不带名字停全部，而且官壳在任何一条路上都停不了。
+    #[test]
+    fn stopping_names_one_instance_or_all_of_them_and_never_the_shell() {
+        let tree = r"D:\Family\DeepSeekHarness\deepseek-harness";
+        let second = harness_launch::instance_key(tree, &["--port".to_string(), "3081".to_string()]);
+        let cli = r"cli:C:\Users\u\AppData\Roaming\npm\dsh.cmd";
+        let owned = vec![
+            recorded(tree, tree, 111, Some(3080)),
+            recorded(&second, tree, 222, Some(3081)),
+            recorded(cli, cli, 333, Some(3080)),
+            // 官壳那条记录是给门票用的，它混在"我们记着的东西"里是**正常的** —— 而它不该出现在
+            // 任何一个停止名单里。
+            recorded("shell:com.deepseek.dsh", "shell:com.deepseek.dsh", 444, Some(19387)),
+        ];
+        // 点名一个：就只有那一个。3080 上那个还在服务时，停 3081 不该顺手把 3080 也带走。
+        assert_eq!(stop_targets(Some(second.clone()), owned.clone()).unwrap(), vec![second.clone()]);
+        assert_eq!(
+            stop_targets(Some(tree.to_string()), owned.clone()).unwrap(),
+            vec![tree.to_string()]
+        );
+        // 不点名：本应用启动的每一个（两个实例 + CLI），官壳不在里面。
+        let all = stop_targets(None, owned.clone()).unwrap();
+        assert_eq!(all.len(), 3);
+        assert!(all.contains(&second));
+        assert!(all.contains(&tree.to_string()));
+        assert!(all.contains(&cli.to_string()));
+        assert!(!all.iter().any(|key| key.starts_with("shell:")), "the official shell is never ours to stop");
+        // 点名官壳 ⇒ **明确拒绝**，而不是静默成功：静默成功会让界面刷新出一个"已经停了"的假象，
+        // 而真相是用户自己的客户端还开着。
+        let refusal = stop_targets(Some("shell:com.deepseek.dsh".to_string()), owned.clone()).unwrap_err();
+        assert!(refusal.contains("不由本应用管理"), "{refusal}");
+        // 只有官壳可停时，"全部"是空名单 —— 一个都不动，也不报错。
+        assert!(stop_targets(None, vec![recorded("shell:com.deepseek.dsh", "shell:com.deepseek.dsh", 1, None)])
+            .unwrap()
+            .is_empty());
+    }
+
+    /// 用户要看的那份清单：**同一个主体的两个实例都在**，而且官壳永远不在。
+    #[test]
+    fn the_status_list_reports_every_instance_this_app_started() {
+        let tree = r"D:\Family\DeepSeekHarness\deepseek-harness";
+        let second_key = harness_launch::instance_key(tree, &["--port".to_string(), "3081".to_string()]);
+        let merged = merge_managed_instances(
+            vec![
+                instance(tree, tree, 111, Some(3080)),
+                instance(&second_key, tree, 222, Some(3081)),
+            ],
+            Vec::new(),
+        );
+        // 两个都在，一行一个：这就是"并行实例"在状态列表这一侧的验收条件。
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged.iter().map(|item| item.pid).collect::<Vec<_>>(), vec![111, 222]);
+        // 官壳即便从两条来源都混进来，也一律不出现在清单里。
+        let merged = merge_managed_instances(
+            vec![instance("shell:com.deepseek.dsh", "shell:com.deepseek.dsh", 9, Some(19387))],
+            vec![recorded("shell:com.deepseek.dsh", "shell:com.deepseek.dsh", 9, Some(19387))],
+        );
+        assert!(merged.is_empty(), "the official shell is not ours to list or stop");
+    }
+
+    /// 壁纸重启过之后，清单靠落盘记录补齐；两处都有时用内存那一份（它才知道 root_path/profile）。
+    #[test]
+    fn the_status_list_merges_the_record_with_what_this_process_spawned() {
+        let tree = r"D:\Family\DeepSeekHarness\deepseek-harness";
+        let cli = r"cli:C:\Users\u\AppData\Roaming\npm\dsh.cmd";
+        let merged = merge_managed_instances(
+            vec![instance(tree, tree, 111, Some(3080))],
+            vec![
+                // 同一个实例在落盘记录里也有（pid 与端口都旧了）⇒ 不重复一行，且内存那份赢。
+                recorded(tree, tree, 999, Some(9999)),
+                // 只有落盘记录有的那个（壁纸重启前启动、现在还在跑）⇒ 补上。
+                recorded(cli, cli, 222, Some(3080)),
+                // 落盘记录里连端口都没有 ⇒ 用参数/默认端口兜底，而不是让那一行空着。
+                recorded(r"D:\other", r"D:\other", 333, None),
+            ],
+        );
+        assert_eq!(merged.len(), 3);
+        let tree_row = merged.iter().find(|item| item.subject_id == tree).expect("the tree");
+        assert_eq!(tree_row.pid, 111, "the in-memory instance wins over the stale record");
+        assert!(merged.iter().any(|item| item.subject_id == cli && item.pid == 222));
+        let bare = merged.iter().find(|item| item.subject_id == r"D:\other").expect("the other");
+        // 没有参数 ⇒ DSH 自己的默认端口：显示 3080 是"我们要求它听在哪儿"，比留空更有用。
+        assert_eq!(bare.port, Some(3080));
+        assert!(bare.root_path.is_none(), "a record alone cannot know the root path");
     }
 }
 
@@ -3286,8 +3804,8 @@ mod harness_status_tests {
         // A recorded endpoint is used while nothing is pinned...
         assert_eq!(note_in_use_on(&state, 19387)[0], 19387);
         // ...and stops mattering the moment the user pins something else.
-        *state.pinned.lock().expect("pin lock") = Some(43120);
-        assert_eq!(candidates_of(&state), vec![43120]);
+        *state.pinned.lock().expect("pin lock") = Some(6000);
+        assert_eq!(candidates_of(&state), vec![6000]);
         // Clearing the pin hands control back to the configured subject, and a pin
         // never recorded anything for itself to revive.
         *state.pinned.lock().expect("pin lock") = None;
@@ -3300,20 +3818,47 @@ mod harness_status_tests {
     #[test]
     fn a_configured_subject_narrows_the_candidates_to_its_own_ports() {
         let state = HarnessEndpointState::default();
-        apply_endpoint_scope(&state, None, Some("shell:com.deepseek.dsh"), &[]).expect("scope");
+        apply_endpoint_scope(&state, None, Some("shell:com.deepseek.dsh"), &[], None).expect("scope");
         // The official shell owns 19387 and nothing else, even though the shipped
-        // order also holds 43120 and 3080.
+        // order also holds 3080.
         assert_eq!(candidates_of(&state), vec![19387]);
 
         // A checkout owns DSH's default plus the ports the user added for it.
-        apply_endpoint_scope(&state, None, Some(r"D:\tree"), &[3081]).expect("scope");
+        apply_endpoint_scope(&state, None, Some(r"D:\tree"), &[3081], None).expect("scope");
         assert_eq!(candidates_of(&state), vec![HARNESS_DEFAULT_PORT, 3081]);
 
         // An unknown shell is *configured* with nowhere to look, which is reported
         // as unreachable rather than as a reason to fall back to another client.
-        apply_endpoint_scope(&state, None, Some("shell:com.unknown.client"), &[]).expect("scope");
+        apply_endpoint_scope(&state, None, Some("shell:com.unknown.client"), &[], None).expect("scope");
         assert!(candidates_of(&state).is_empty());
         assert!(harness_endpoint_configured_on(&state));
+    }
+
+    /// 「启动参数」里点名的端口必须进到探针的候选表里，否则并行实例是看不见的。
+    ///
+    /// 这一条是端到端的：设置里写 `--port 3081` ⇒ 这个主体的候选表以 3081 开头 ⇒ 监视器去敲
+    /// 3081 ⇒ 桥在那个端口上应答。少了任何一环，用户看到的是"第二个实例起来了但一直离线"。
+    #[test]
+    fn launch_args_move_the_probe_to_the_port_the_instance_serves() {
+        let state = HarnessEndpointState::default();
+        let args = vec!["--port".to_string(), "3081".to_string()];
+        apply_endpoint_scope(&state, None, Some(r"D:\tree"), &[], Some(&args)).expect("scope");
+        assert_eq!(candidates_of(&state)[0], 3081);
+        // DSH 自己的默认端口仍然在表里：同一个主体的另一个实例可能就在那儿。
+        assert!(candidates_of(&state).contains(&HARNESS_DEFAULT_PORT));
+        // 换回没有参数 ⇒ 回到默认端口（一个不再生效的设置不该留下痕迹）。
+        apply_endpoint_scope(&state, None, Some(r"D:\tree"), &[], Some(&[])).expect("scope");
+        assert_eq!(candidates_of(&state), vec![HARNESS_DEFAULT_PORT]);
+        // 官壳的端口编译在它自己的包里，参数改不了它。
+        apply_endpoint_scope(
+            &state,
+            None,
+            Some("shell:com.deepseek.dsh"),
+            &[],
+            Some(&args),
+        )
+        .expect("scope");
+        assert_eq!(candidates_of(&state), vec![19387]);
     }
 
     /// Changing the subject is the one moment the wallpaper may move, and it does
@@ -3321,14 +3866,14 @@ mod harness_status_tests {
     #[test]
     fn changing_the_subject_clears_the_endpoint_in_use() {
         let state = HarnessEndpointState::default();
-        apply_endpoint_scope(&state, None, Some("shell:com.deepseek.dsh"), &[]).expect("scope");
+        apply_endpoint_scope(&state, None, Some("shell:com.deepseek.dsh"), &[], None).expect("scope");
         assert_eq!(note_in_use_on(&state, 19387)[0], 19387);
         // Same subject again: the endpoint it is already using stays first.
-        apply_endpoint_scope(&state, None, Some("shell:com.deepseek.dsh"), &[]).expect("scope");
+        apply_endpoint_scope(&state, None, Some("shell:com.deepseek.dsh"), &[], None).expect("scope");
         assert_eq!(candidates_of(&state)[0], 19387);
         // A different subject starts from its own order.
-        apply_endpoint_scope(&state, None, Some("shell:ai.deepseek.dsh.desktop"), &[]).expect("scope");
-        assert_eq!(candidates_of(&state), vec![43120]);
+        apply_endpoint_scope(&state, None, Some(r"D:\tree"), &[], None).expect("scope");
+        assert_eq!(candidates_of(&state), vec![HARNESS_DEFAULT_PORT]);
         assert_eq!(*state.active.lock().expect("active lock"), None);
     }
 
@@ -3336,7 +3881,7 @@ mod harness_status_tests {
     #[test]
     fn nothing_is_recorded_while_pinned() {
         let state = HarnessEndpointState::default();
-        *state.pinned.lock().expect("pin lock") = Some(43120);
+        *state.pinned.lock().expect("pin lock") = Some(6000);
         note_in_use_on(&state, 19387);
         assert_eq!(*state.active.lock().expect("active lock"), None);
     }
@@ -3347,10 +3892,10 @@ mod harness_status_tests {
     fn nothing_configured_is_not_the_same_as_configured_but_unreachable() {
         let state = HarnessEndpointState::default();
         assert!(!harness_endpoint_configured_on(&state));
-        apply_endpoint_scope(&state, None, Some("   "), &[]).expect("scope");
+        apply_endpoint_scope(&state, None, Some("   "), &[], None).expect("scope");
         assert!(!harness_endpoint_configured_on(&state));
         // A pin alone is a configuration too.
-        apply_endpoint_scope(&state, Some(3080), Some(""), &[]).expect("scope");
+        apply_endpoint_scope(&state, Some(3080), Some(""), &[], None).expect("scope");
         assert!(harness_endpoint_configured_on(&state));
     }
 
@@ -3468,6 +4013,39 @@ mod harness_status_tests {
         assert!(publish);
         assert!(!state.probing);
         assert_eq!(state.available, HarnessAvailability::Offline);
+    }
+
+    #[test]
+    fn a_new_subject_cannot_inherit_the_previous_connection() {
+        // 实测的边界情况：在 CLI（3080）上连过一次之后切到官壳（那边没有人在听），旧实现把
+        // `connected_once` 留着 ⇒ 只把灯变成呼吸态、`available` 仍是 BridgeReady ⇒ 界面一直写着
+        // "DSH Bridge 已连接"，而一发消息就被告知会话尚未建立。
+        let mut monitor = HarnessMonitorState::default();
+        monitor = advance_harness_monitor(monitor, HarnessAvailability::BridgeReady, None, 0).0;
+        let (connected, _) =
+            advance_harness_monitor(monitor, HarnessAvailability::BridgeReady, None, 0);
+        assert_eq!(connected.available, HarnessAvailability::BridgeReady);
+
+        // 带着"曾经连上过"的记忆时，新主体没人应答只够让它**可疑**：灯呼吸、标签照旧。
+        // （`publish` 在这里为真是对的：呼吸态本身就是要发布给界面的状态；错的是 `available`
+        // 还停在 BridgeReady —— 于是"呼吸着"和"已连接"同时出现在屏幕上。）
+        let (suspended, publish) =
+            advance_harness_monitor(connected, HarnessAvailability::Offline, Some(true), 1_000);
+        assert!(suspended.probing, "这是呼吸态");
+        assert!(publish);
+        assert_eq!(suspended.available, HarnessAvailability::BridgeReady);
+
+        // 忘掉上一条连接之后（monitor 循环在主体变化时做的正是这件事），新主体的结论就是结论：
+        // 灯熄灭、标签跟着说离线。默认态本来就是 Offline，所以这里不发布也算对 —— 关键是它**没有**
+        // 继承上一条连接。
+        let (fresh, _) = advance_harness_monitor(
+            HarnessMonitorState::default(),
+            HarnessAvailability::Offline,
+            Some(true),
+            1_000,
+        );
+        assert_eq!(fresh.available, HarnessAvailability::Offline);
+        assert!(!fresh.probing);
     }
 
     #[test]
@@ -3800,7 +4378,30 @@ fn open_client_in_browser(
     path: Option<String>,
 ) -> Result<(), String> {
     require_wallpaper_surface(&caller)?;
-    client_window::open_loopback_url(port, path.as_deref().unwrap_or("/"))
+    // 没给路径、或给的就是裸根 `/` 时，用**这次启动打印出来的门票**：`dsh web` 的浏览器围栏要求
+    // URL 上带 token，裸端口只会得到那句 "dsh web authentication required"。门票由启动时捕获
+    // （见 `harness_launch::known_web_handoff`），前端不需要知道它存在。
+    //
+    // 把 `/` 也当作"没指定"是刻意的：渲染层传参默认值就是 `'/'`（实测），而对一个带围栏的宿主
+    // 来说，裸根本来就不是任何人想要的结果 —— 它只会换来一句道歉。
+    let requested = path.as_deref().unwrap_or("/");
+    let target = if requested == "/" {
+        harness_launch::known_web_handoff(port).unwrap_or_else(|| requested.to_string())
+    } else {
+        requested.to_string()
+    };
+    client_window::open_loopback_url(port, &target)
+}
+
+/// Open a link from the transcript in the user's default browser.
+///
+/// The address is model output, so it never reaches the shell unvalidated: see
+/// `external_link::validate` for what counts as openable. This command only adds the
+/// surface check — the link lives on the wallpaper's chat surface, not in settings.
+#[tauri::command]
+fn open_external_link(caller: tauri::WebviewWindow, url: String) -> Result<(), String> {
+    require_wallpaper_surface(&caller)?;
+    external_link::open(&url).map(|_| ())
 }
 
 /// Report whether anything is listening on an endpoint, without raising it.
@@ -3907,6 +4508,19 @@ const HARNESS_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_se
 /// reset — take several times longer than the evidence does.
 #[cfg(not(feature = "lite"))]
 const HARNESS_TRANSITION_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1_200);
+
+/// 切换主体之后，"连接中"至少要占住这段时间，多快拿到结论都不改口。
+///
+/// 与渲染端的最短停留（`HARNESS_SWITCH_BUFFER_MS`）是同一个数字的两半：**这一半是权威**（它决定
+/// 发布什么状态），那一半只管界面上的灯。实测过的坑：新主体的第一份结论会被"从没连过就发布所见"
+/// 那条老规则立刻发出去，于是黄灯一步都没出现、直接变灰 —— 用户看到的就是"没有尝试连接的阶段"。
+#[cfg(not(feature = "lite"))]
+const HARNESS_SWITCH_HOLD: std::time::Duration = std::time::Duration::from_millis(1_200);
+
+/// 切换缓冲期内发布的原因码：界面上它对应"连接中"，与其它任何原因都不同（诊断里一眼能看出
+/// "这是刚换了主体、还在缓冲"，而不是"主体不在"或"桥不兼容"）。
+#[cfg(not(feature = "lite"))]
+const HARNESS_CONNECTING_REASON: &str = "connecting";
 
 /// How long "not answering" may last before the subject is called dead *when there is
 /// nothing to prove it with*.
@@ -4032,7 +4646,37 @@ fn start_harness_monitor(app: tauri::AppHandle) {
         let exits = Arc::new(tokio::sync::Notify::new());
         let started = std::time::Instant::now();
         let mut last_reason: Option<String> = None;
+        // 这一轮探的是哪个主体。变了就把上一条连接的历史作废（见 `harness_scope_key`）。
+        let mut scope = harness_scope_key();
+        // 换了主体必须**发布一次**：界面上那条状态属于上一个对象，不发布就会一直停在它上面。
+        let mut force_publish = false;
+        // 切换主体后**先只发布"连接中"**，多快拿到新主体的结论都不改变这一点。
+        //
+        // 实测：新主体的第一份结论会被"从没连过就发布所见"那条老规则立刻发出去（日志：
+        // `scope changed → Offline (probing false)`），于是界面上根本没有黄灯，直接变成灰 ——
+        // 而用户要的是"切换后固定 1–2s 的黄灯缓冲"。缓冲期内发布的状态是"还没定"，这正是黄灯的
+        // 唯一含义；结论晚 1.2 秒再说，不会晚过任何人的耐心，却让中间态真的看得见。
+        let mut scope_changed_at: Option<std::time::Instant> = None;
         loop {
+            let current_scope = harness_scope_key();
+            if current_scope != scope {
+                log::info!(
+                    "harness monitor: endpoint scope changed ({scope} -> {current_scope}); forgetting the previous connection"
+                );
+                scope = current_scope;
+                // 忘了"曾经连上过"、忘了属主、忘了理由：它们说的都是**上一个**主体。
+                monitor = HarnessMonitorState {
+                    probing: true,
+                    ..HarnessMonitorState::default()
+                };
+                owner_pid = None;
+                watched = None;
+                last_reason = None;
+                force_publish = true;
+                scope_changed_at = Some(std::time::Instant::now());
+            }
+            let holding = scope_changed_at
+                .is_some_and(|at| at.elapsed() < HARNESS_SWITCH_HOLD);
             let (port, status) = probe_current_endpoint().await;
             if let Ok(mut cache) = harness_status_cache().write() {
                 *cache = status.clone();
@@ -4088,7 +4732,29 @@ fn start_harness_monitor(app: tauri::AppHandle) {
                 }
                 _ => reason.clone(),
             };
-            if publish || reason_for_state != last_reason {
+            // 缓冲期结束的那一 tick：缓冲期内压住的结论现在要发出来。
+            if scope_changed_at.is_some() && !holding {
+                scope_changed_at = None;
+                force_publish = true;
+            }
+            if holding {
+                // 缓冲期内**只**发布"连接中"：不发布新主体的结论，也不发布上一个主体的残留。
+                // 状态用 Offline + probing（界面上就是黄灯 + "连接中"），理由是这两件事都是真的：
+                // 此刻确实没有连上，也确实还在连。
+                if last_reason.as_deref() != Some(HARNESS_CONNECTING_REASON) {
+                    last_reason = Some(HARNESS_CONNECTING_REASON.to_string());
+                    log::info!("harness availability: connecting (held for the switch buffer)");
+                    if let Some(core) = app.try_state::<AppCore>() {
+                        let snapshot = core.dispatch(AppAction::SetHarnessDiagnostic {
+                            availability: HarnessAvailability::Offline,
+                            reason_code: Some(HARNESS_CONNECTING_REASON.to_string()),
+                            probing: true,
+                        });
+                        emit_app_snapshot(&app, &snapshot);
+                    }
+                }
+            } else if publish || force_publish || reason_for_state != last_reason {
+                force_publish = false;
                 log::info!(
                     "harness availability: {:?} (probing {}, owner {:?} alive {:?}, reason {:?})",
                     monitor.available,
@@ -4114,6 +4780,8 @@ fn start_harness_monitor(app: tauri::AppHandle) {
             tokio::select! {
                 _ = tokio::time::sleep(harness_probe_interval(monitor.probing)) => {}
                 _ = exits.notified() => {}
+                // 切换主体也叫醒这一轮：见 `harness_scope_notify`。
+                _ = harness_scope_notify().notified() => {}
             }
         }
     });
@@ -4197,6 +4865,8 @@ macro_rules! register_edition_commands {
             save_api_key,
             api_key_status,
             desktop_workspace_status,
+            open_project_memory,
+            open_subject_tui,
             clear_user_data,
             show_deepseek_login,
             native_bootstrap_generation,
@@ -4236,6 +4906,7 @@ macro_rules! register_edition_commands {
             verify_island_click,
             raise_client_window,
             open_client_in_browser,
+            open_external_link,
             harness_endpoint_listening,
             harness_endpoint_window,
             appearance::commands::appearance_get_state,
@@ -4312,6 +4983,17 @@ fn run_with_edition(lite: bool) {
     register_edition_commands!(builder)
         .setup(move |app| {
             native_bootstrap::report_tauri_ready();
+            // "这个孩子是不是我启动的"要跨壁纸重启成立，就得把记录落在本地数据目录里 ——
+            // 这个路径只有 Tauri 算得准（打包应用会被重定向），不能靠环境变量硬拼。
+            // `harness_launch` 是 `#[cfg(not(feature = "lite"))]` 的模块，所以这里必须同样受门控：
+            // Lite 目标里它根本不存在（CI 抓到的就是这个 E0433 —— 我本地只跑默认特性，看不见）。
+            #[cfg(not(feature = "lite"))]
+            {
+                match app.path().app_local_data_dir() {
+                    Ok(dir) => harness_launch::set_records_path(dir.join("managed-dsh.json")),
+                    Err(error) => log::warn!("managed-child record path unavailable: {error}"),
+                }
+            }
             if let Err(error) = windows_integration::start_wallpaper_host(app.handle().clone()) {
                 log::error!("WorkerW wallpaper host failed: {error}");
             }
@@ -4478,18 +5160,15 @@ fn shutdown_native_state(app: &tauri::AppHandle) {
             log::warn!("native bootstrap teardown failed: {error}");
         }
 
-        // 3. Stop only the DSH child this process launched. An external DSH on
-        //    3080 belongs to the user and is never touched.
+        // 3. Stop only the DSH instances this process launched. An external DSH —
+        //    or someone else's client on our port — belongs to the user and is
+        //    never touched. 现在是**每一个**我们自己启动的实例：并行实例意味着出口这里也可能
+        //    不止一个，漏掉一个就会在壁纸退出后留下一台没人认领的宿主。
         #[cfg(not(feature = "lite"))]
         if let Some(state) = app.try_state::<ManagedDshState>() {
             if let Ok(mut managed) = state.0.lock() {
-                if let Some(mut process) = managed.take() {
-                    #[cfg(windows)]
-                    {
-                        let _ = std::process::Command::new("taskkill.exe")
-                            .args(["/PID", &process.child.id().to_string(), "/T", "/F"])
-                            .output();
-                    }
+                for (_, mut process) in std::mem::take(&mut *managed) {
+                    crate::client_window::stop_process_tree(process.child.id());
                     #[cfg(not(windows))]
                     {
                         let _ = process.child.kill();

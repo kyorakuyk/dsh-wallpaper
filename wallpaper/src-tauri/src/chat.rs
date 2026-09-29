@@ -35,6 +35,19 @@ const MAX_HARNESS_SSE_CHUNK_BYTES: usize = MAX_HARNESS_SSE_EVENT_BYTES;
 /// Non-streaming Bridge responses must be bounded before `bytes()` allocates
 /// them. The live-session endpoint is tiny; history has an explicit larger
 /// ceiling because it can contain several completed turns.
+/// 渲染端要认的错误码：这条 Harness 会话已被用户在桌面端归档（桥不再接受它的消息）。
+///
+/// 与桥的 `session-archived` 一一对应，是一条**跨进程契约**：改这里就要改渲染端的判断，
+/// 两边各有一条测试钉住同一个字面量。
+pub const HARNESS_SESSION_ARCHIVED: &str = "HARNESS_SESSION_ARCHIVED";
+/// "这条会话还没建立"的稳定标记，与渲染端 `nativeAdapter.ts` 的 `HARNESS_NO_SESSION` 一一对应。
+///
+/// 为什么需要它：会话是在 `POST /sessions` 时建立的，而**切换主体不会重建渲染端的聊天适配器**
+/// （适配器持有的是"连着哪个端点、哪条会话"）。于是出现这样一种边界：原生侧的探测范围已换成新主体
+/// （指示灯因此变绿），事件流和会话却还留在旧端点上 —— 用户看到"已连接"，一发消息却被告知会话没有
+/// 建立。一句普通字符串渲染端接不住，只能把它显示出来；带上这个标记，它就能**先连上再重发一次**。
+pub const HARNESS_NO_SESSION: &str = "HARNESS_NO_SESSION";
+
 const MAX_HARNESS_SESSION_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_HARNESS_HISTORY_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_HARNESS_HISTORY_MESSAGES: usize = 256;
@@ -1584,6 +1597,15 @@ struct HarnessSessionRequest<'a> {
     resume_session_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<&'a str>,
+    /// 这次会话用哪个 agent 预设（桥的 `/sessions` 读 `agentPreset`，缺省是宿主默认值）。
+    ///
+    /// 壁纸默认给 `minimal`（用户的原话："工作区的预设先默认为'极简模式'试试，应该能省不少
+    /// 上下文"）。一个预设决定会话装载多少指令与工具，而对壁纸这种"每轮都要重建上下文"的
+    /// 常驻场景，默认那套（standard）装的东西明显更多。
+    ///
+    /// **只在新建会话时有效**：恢复一条已有会话时，预设跟着那条会话走，不该被这次请求改写。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_preset: Option<&'a str>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -2729,6 +2751,7 @@ pub async fn harness_connect(
     connection_id: String,
     model: Option<String>,
     endpoint_port: Option<u16>,
+    preset: Option<String>,
 ) -> Result<String, String> {
     let connection_id = connection_id.trim().to_string();
     if connection_id.is_empty() || connection_id.len() > 200 {
@@ -2739,7 +2762,19 @@ pub async fn harness_connect(
     // failed attempt at a new client would silently repoint the old conversation
     // at a client that never answered.
     let port = endpoint_port.unwrap_or_else(|| state.harness_port());
-    cancel_harness_stream(&state);
+    // 这一行是这几轮最缺的东西：连接尝试**必须留下痕迹**。此前日志里只有"启动/门票"那类，
+    // 于是"切换主体后到底连了哪个端口"只能靠猜 —— 而真正的原因恰恰是：不带端点参数时，原生会
+    // 退回"这条会话当初钉下的端口"，那个端口属于**上一个**主体。
+    log::info!(
+        "harness connect: requested_port={:?} resolved_port={port} pinned_port={} resume={} model={}",
+        endpoint_port,
+        state.harness_port(),
+        resume_session_id.is_some(),
+        model.as_deref().unwrap_or("-")
+    );
+    // **先建新的，成功之后才拆旧的**（make-before-break）。这里原来是直接 `cancel_harness_stream`：
+    // 于是切换主体失败时，用户连原本能用的那条连接也一起丢了 —— 而紧挨着的这段注释早就承诺过
+    // "失败的连接不得改动已有会话的端点"，只是事件流那一半没做到。取消挪到新会话建立之后。
     let token = read_bridge_token()?;
     let client = bridge_request_client()?;
     let model = model
@@ -2753,6 +2788,21 @@ pub async fn harness_connect(
     {
         return Err("Harness 模型标识无效".into());
     }
+    // 预设 id 由宿主定义（实测表：`standard` / `minimal` / `ptc` / `cordis`），这里只做形状检查：
+    // 字母数字与 `-` `_`、长度有限、空串当没给。宿主不认识的值它自己会回 400 —— 这一层不猜它的目录。
+    let preset = preset
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    if preset.as_ref().is_some_and(|value| {
+        value.len() > 64
+            || !value
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+    }) {
+        return Err("Harness 预设标识无效".into());
+    }
     let create_session = |resume_session_id: Option<&str>| {
         auth(
             client.post(harness_url(port, "/sessions")),
@@ -2761,6 +2811,12 @@ pub async fn harness_connect(
         .json(&HarnessSessionRequest {
             resume_session_id,
             model: model.as_deref(),
+            // 恢复一条会话时不带预设：预设属于那条会话，别用这次请求去改它。
+            agent_preset: if resume_session_id.is_some() {
+                None
+            } else {
+                preset.as_deref()
+            },
         })
         .send()
     };
@@ -2793,6 +2849,7 @@ pub async fn harness_connect(
         // `sessions` is the route the Bridge must have registered for the
         // capability it advertised, so a 404 here is a version/installation
         // problem rather than a transient connection failure.
+        log::warn!("harness connect failed: port={port} status={}", response.status());
         return Err(harness_http_error(response.status(), "sessions"));
     }
     let session = parse_harness_connection(
@@ -2811,6 +2868,9 @@ pub async fn harness_connect(
     // so every later request for this conversation goes to the client that
     // actually answered.
     state.set_harness_port(port);
+    // 新会话已经建立，现在才放弃旧的：这一步之后"当前连接"才真正换人。切换失败时根本走不到这里，
+    // 旧的事件流与会话原样留着（用户要的正是这个：没连上就继续持有旧的，但界面按未接入处理）。
+    cancel_harness_stream(&state);
     if let Err(error) = connect_harness_events(
         app,
         state.inner().clone(),
@@ -3073,7 +3133,7 @@ pub async fn harness_send(state: tauri::State<'_, ChatState>, text: String) -> R
         .lock()
         .map_err(|_| "Harness session state poisoned")?
         .clone()
-        .ok_or("Harness 会话尚未建立")?;
+        .ok_or_else(|| format!("{HARNESS_NO_SESSION}: Harness 会话尚未建立"))?;
     let token = read_bridge_token()?;
     let url = harness_url(port, &format!("/sessions/{}/messages", urlencoding::encode(&session_id)));
     let client = bridge_request_client()?;
@@ -3082,6 +3142,32 @@ pub async fn harness_send(state: tauri::State<'_, ChatState>, text: String) -> R
         .send()
         .await
         .map_err(|_| "发送到 DSH bridge 失败；请确认 Harness 仍在运行。".to_string())?;
+    if response.status() == reqwest::StatusCode::CONFLICT {
+        // 用户在桌面端把这条会话**归档**掉之后，它在我们缓存里还在，但桥已经不再往它里面写东西了：
+        // 桥会回 `session-archived` 并释放句柄。这不是"发送失败"，而是"这条会话没了"。
+        //
+        // 这里刻意**不**自己重连：重连要重新建立 SSE 事件流，而那条流是渲染端按连接生命周期建的
+        // ——由它接手才不会出现"有会话、没事件流"。所以只把缓存里的会话清掉，并回一个**可识别**的
+        // 错误：渲染端看到 `HARNESS_SESSION_ARCHIVED` 就会重连并把这句重发一次。
+        let archived = bounded_bridge_json::<BridgeErrorResponse>(
+            response,
+            MAX_HARNESS_SESSION_RESPONSE_BYTES,
+            "DSH bridge 返回了无法识别的会话响应。",
+        )
+        .await
+        .ok()
+        .and_then(|body| body.error)
+        .as_deref()
+            == Some("session-archived");
+        if archived {
+            clear_harness_session_if(&state, &session_id);
+            return Err(format!(
+                "{HARNESS_SESSION_ARCHIVED}: 这条会话已在桌面端归档，桥不再接受它的消息。"
+            ));
+        }
+        // 别的 409（例如"另一台 DSH 占用"）保持原来的说法，不要冒充归档。
+        return Err(harness_http_error(reqwest::StatusCode::CONFLICT, "messages"));
+    }
     if !response.status().is_success() {
         return Err(harness_http_error(response.status(), "messages"));
     }

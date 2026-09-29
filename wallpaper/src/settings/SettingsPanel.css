@@ -4,11 +4,15 @@
  * 若这里的半径**大于**系统半径（以前是 22px），两道弧之间会露出透明缺口；
  * **小于**则系统那道裁不到东西，实际形状完全由 CSS 决定。取 8px = "就用 Windows 默认"。 */
 .settings-app{--panel:rgba(12,22,38,.78);--line:rgba(157,210,255,.13);display:grid;grid-template:64px minmax(0,1fr) 36px/230px minmax(0,1fr);box-sizing:border-box;width:100%;height:100%;overflow:hidden;border:0;border-radius:8px;background:linear-gradient(145deg,rgba(13,27,46,.97),rgba(7,14,27,.96));box-shadow:none;color:#eaf6ff;backdrop-filter:blur(28px) saturate(135%)}
-.settings-titlebar{position:relative;grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;padding:0 14px 0 20px;border-bottom:1px solid var(--line);user-select:none}.settings-titlebar__drag{position:absolute;z-index:1;inset:0 58px 0 0;cursor:default}.settings-brand{position:relative;z-index:0;display:flex;align-items:center;gap:11px;pointer-events:none}.settings-brand__mark{display:grid;place-items:center;width:35px;height:35px;border:1px solid rgba(87,194,255,.35);border-radius:11px;background:linear-gradient(145deg,rgba(38,147,220,.32),rgba(25,86,146,.12));font-size:11px;font-weight:800;letter-spacing:.08em;box-shadow:inset 0 1px rgba(255,255,255,.12)}.settings-brand div{display:flex;flex-direction:column}.settings-brand strong{font-size:14px;letter-spacing:.02em}.settings-brand small{margin-top:2px;color:#8297aa;font-size:10px}.settings-window-close{position:relative;z-index:2;width:38px;height:32px;border:0;border-radius:10px;background:transparent;color:#9fb2c4;font-size:22px;cursor:pointer}.settings-window-close:hover{background:rgba(255,90,100,.18);color:#ffdce0}
+.settings-titlebar{position:relative;grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;padding:0 14px 0 20px;border-bottom:1px solid var(--line);user-select:none}.settings-titlebar__drag{position:absolute;z-index:1;inset:0 58px 0 0;cursor:default}.settings-brand{position:relative;z-index:0;display:flex;align-items:center;gap:11px;pointer-events:none}.settings-brand__mark{display:block;width:35px;height:35px;border:1px solid rgba(87,194,255,.35);border-radius:11px;background:linear-gradient(145deg,rgba(38,147,220,.32),rgba(25,86,146,.12));object-fit:cover;box-shadow:inset 0 1px rgba(255,255,255,.12)}.settings-brand div{display:flex;flex-direction:column}.settings-brand strong{font-size:14px;letter-spacing:.02em}.settings-brand small{margin-top:2px;color:#8297aa;font-size:10px}.settings-window-close{position:relative;z-index:2;width:38px;height:32px;border:0;border-radius:10px;background:transparent;color:#9fb2c4;font-size:22px;cursor:pointer}.settings-window-close:hover{background:rgba(255,90,100,.18);color:#ffdce0}
 .settings-sidebar{display:flex;min-height:0;flex-direction:column;justify-content:space-between;padding:20px 14px 14px;border-right:1px solid var(--line);background:rgba(5,13,24,.3)}.settings-sidebar nav{display:grid;gap:6px}.settings-sidebar nav button{display:grid;grid-template-columns:34px 1fr;align-items:center;gap:9px;width:100%;padding:11px 12px;border:1px solid transparent;border-radius:12px;background:transparent;color:#aebdca;text-align:left;cursor:pointer;transition:.16s ease}.settings-sidebar nav button:hover{background:rgba(91,167,222,.08);color:#eaf7ff}.settings-sidebar nav button.is-active{border-color:rgba(81,186,255,.19);background:linear-gradient(90deg,rgba(37,143,214,.23),rgba(35,115,175,.08));color:#f2fbff;box-shadow:inset 3px 0 #4bbcff}.settings-nav__icon{display:grid;place-items:center;width:30px;height:30px;border-radius:9px;background:rgba(143,197,236,.07);font-size:17px}.settings-sidebar nav button>span:last-child{display:flex;flex-direction:column}.settings-sidebar nav strong{font-size:13px}.settings-sidebar nav small{margin-top:3px;color:#6f8598;font-size:10px}.settings-sidebar__status{display:flex;align-items:center;gap:8px;padding:11px;color:#7f93a5;font-size:10px}.settings-sidebar__status i,.integration-status i{width:7px;height:7px;border-radius:50%;background:#657484;box-shadow:0 0 0 4px rgba(101,116,132,.1)}.settings-sidebar__status i.is-online,.integration-status i.is-online{background:#52d8a0;box-shadow:0 0 12px rgba(82,216,160,.65)}
 .settings-content{min-width:0;overflow:auto;padding:27px 34px 42px;scrollbar-color:rgba(99,162,206,.36) transparent}.settings-page-heading{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:20px}.settings-page-heading span{color:#5caee3;font-size:10px;text-transform:uppercase;letter-spacing:.12em}.settings-page-heading h1{margin:4px 0 0;font-size:25px;font-weight:650}.settings-page-heading>p{margin:0 0 4px;color:#73899c;font-size:11px}.settings-card{margin-bottom:14px;border:1px solid var(--line);border-radius:16px;background:linear-gradient(135deg,rgba(23,41,62,.62),rgba(12,24,41,.48));box-shadow:0 12px 34px rgba(0,0,0,.14),inset 0 1px rgba(255,255,255,.025);overflow:hidden}.settings-card>header{padding:17px 20px 13px}.settings-card h2{margin:0;font-size:14px;font-weight:630}.settings-card header p{margin:6px 0 0;color:#71879a;font-size:10.5px;line-height:1.5}.settings-card__body{padding:0 20px 7px}.settings-field{display:flex;align-items:center;justify-content:space-between;gap:24px;min-height:58px;border-top:1px solid rgba(158,205,239,.075)}.settings-field__copy{display:flex;min-width:0;flex-direction:column}.settings-field__copy strong{font-size:12px;font-weight:520}.settings-field__copy span{max-width:420px;margin-top:5px;color:#6f8598;font-size:10px;line-height:1.45}.settings-field__control{display:flex;align-items:center;justify-content:flex-end;flex:0 0 auto}
 .settings-app select,.settings-app input:not([type=range]){height:34px;box-sizing:border-box;border:1px solid rgba(139,196,235,.16);border-radius:9px;outline:0;background:rgba(4,13,25,.48);color:#dcecf8;padding:0 10px;font:inherit;font-size:11px}.settings-app select{min-width:190px}.settings-app input:not([type=range]){width:280px}.settings-app input.short-input{width:130px}.settings-app input.price-input{width:150px;font-variant-numeric:tabular-nums}.settings-app select:focus,.settings-app input:focus{border-color:rgba(76,185,255,.55);box-shadow:0 0 0 3px rgba(43,157,229,.1)}.settings-app option{background:#102035}.settings-toggle{position:relative;width:38px;height:21px;padding:0;border:1px solid rgba(144,190,222,.2);border-radius:20px;background:rgba(66,84,101,.45);cursor:pointer;transition:.2s}.settings-toggle span{position:absolute;top:3px;left:3px;width:13px;height:13px;border-radius:50%;background:#a8b6c2;transition:.2s}.settings-toggle.is-on{border-color:rgba(76,190,255,.5);background:#208cc8;box-shadow:0 0 16px rgba(31,155,221,.22)}.settings-toggle.is-on span{left:20px;background:white}.settings-action{min-height:34px;padding:0 15px;border:1px solid rgba(84,190,255,.38);border-radius:9px;background:linear-gradient(135deg,#238fc8,#176ca5);color:white;font:inherit;font-size:11px;cursor:pointer;box-shadow:0 6px 18px rgba(11,91,143,.2)}.settings-action:hover{filter:brightness(1.12)}.settings-action.secondary{border-color:rgba(139,196,235,.17);background:rgba(98,151,190,.08);box-shadow:none;color:#b9d6e9}
-.settings-choice{position:relative;z-index:4;min-width:190px}
+.settings-choice{position:relative;z-index:4;min-width:190px;max-width:340px}
+/* 触发条是固定高度的单行控件：主体名可能很长（"源码目录 · dsh-wallpaper（DeepSeekHarness）"），
+   不设省略就会折行，把右侧的箭头挤出按钮之外 —— 那正是用户看到的"箭头错位"。让文字自己截断，
+   箭头的位置就不会随内容变化；完整名字仍然能在展开的菜单里看到。 */
+.settings-choice__trigger>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* A card clips its own rounded corners, which also clipped an open dropdown menu:
    the menu is absolutely positioned below its trigger and z-index cannot escape a clip.
    Let it overflow only while a choice inside it is actually open. */
@@ -44,3 +48,33 @@
 .api-key-actions input{width:220px}
 /* 脱敏串用等宽字体：点和首尾字符对齐后，"这就是存着的那条"一眼可见。 */
 .api-key-masked{display:inline-flex;align-items:center;height:34px;min-width:220px;padding:0 10px;border:1px solid rgba(139,196,235,.16);border-radius:9px;background:rgba(4,13,25,.48);color:#9fbdd4;font-family:"Cascadia Code",Consolas,monospace;font-size:11px;letter-spacing:.08em}
+/* 只读的"值"：打开方式只有一条路时的那个词、源码目录的路径。
+   裸 <span> 会继承这一层的默认字号（比旁边的说明大出一截），所以静态值必须带这个类。 */
+.settings-static{display:inline-flex;align-items:center;min-height:34px;min-width:220px;padding:0 10px;border:1px solid rgba(139,196,235,.16);border-radius:9px;background:rgba(4,13,25,.48);color:#9fbdd4;font-size:11px}
+
+/* ---------------------------------------------------------------------------
+   FREEZE（临时冻结，不是删除）：「当前已启动实例」下拉与它的 header 布局。
+
+   为什么关：那个下拉（标题右上角的控件）冻住了，`<Card>` 也不再有 `action`，所以 header 不需要
+   两列布局 —— 留着 `display:flex` 只会让 `__heading` 变成收缩的 flex 项，说明文字被挤窄，
+   与这个功能之前的卡片长得不一样（这条规则本来就是随那个下拉一起加进来的）。
+   怎么恢复：取消这一整块的注释，并恢复 `SettingsPanel.tsx` 里 `<Card>` 的 `action` 与
+   `RunningInstances` 组件。
+
+   「当前已启动实例」：卡片标题右上角的下拉 + 全部停止。
+   header 现在是一个两列容器（标题文案 / 右上角控件），所以原来那条 `.settings-card header p`
+   的边距规则仍然按文案那一列生效 —— 把它包进 __heading 才不会让说明文字被压缩。
+.settings-card>header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}
+.settings-card__heading{min-width:0}
+.settings-card__action{flex:0 0 auto;display:flex;align-items:center;gap:8px}
+.settings-instances{position:relative;display:flex;align-items:center;gap:8px}
+.settings-instances .settings-choice__trigger{max-width:280px}
+.settings-instances__menu{min-width:280px;gap:2px}
+.settings-instances__row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:4px 4px 4px 9px;border-radius:6px}
+.settings-instances__row:hover{background:rgba(58,163,225,.12)}
+.settings-instances__name{overflow:hidden;color:#cfe2ef;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.settings-instances__stop{min-width:0 !important;width:22px;height:22px;padding:0 !important;border-radius:6px !important;color:#9dbdd4;font-size:14px;line-height:1;text-align:center;background:transparent}
+.settings-instances__stop:hover:not(:disabled){background:rgba(224,92,92,.22) !important;color:#fff}
+.settings-instances__stop:disabled{opacity:.4;cursor:default}
+.settings-instances__footer{display:flex;justify-content:flex-end;padding:5px 4px 3px;border-top:1px solid rgba(158,205,239,.09);margin-top:3px}
+   --------------------------------------------------------------------------- */

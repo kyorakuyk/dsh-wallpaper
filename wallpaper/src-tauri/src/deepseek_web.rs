@@ -275,27 +275,184 @@ const SNAPSHOT_SCRIPT: &str = r#"
     if (relation & Node.DOCUMENT_POSITION_PRECEDING) return 1;
     return 0;
   });
+  // ---- DOM → Markdown ----
+  // 网页端能拿到的只有**已经渲染过的 DOM**：`**加粗**` 早就是 <strong>，列表是一条条
+  // <p>/<li>，代码是 <code>，标记本身在到达壁纸之前就不存在了。所以这里按结构把标记
+  // 还原出来，交出去的东西与 API 端保持同一种格式。
+  //
+  // 依据是 2026-09-28 的探针实测：加粗 <strong fw=600>、斜体 <em fs=italic>、行内
+  // <code>、链接 <a href>；删除线**没有元素**——页面不渲染 ~~，它以字面文本留在 <p> 里
+  // （所以只有它看起来"有效"）；列表项各占一个 <p>，因为 <ul>/<li> 不在被读的那批节点里。
+  const INLINE_BOLD = ['strong', 'b'];
+  const INLINE_ITALIC = ['em', 'i'];
+  const INLINE_STRIKE = ['del', 's', 'strike'];
+  const BLOCK_TAGS = ['p', 'div', 'section', 'article', 'ul', 'ol', 'li', 'pre', 'blockquote', 'table', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr'];
+  const SKIP_TAGS = ['button', 'svg', 'script', 'style', 'noscript', 'textarea', 'input', 'select', 'iframe', 'video', 'audio', 'canvas', 'template'];
+  const tagOf = (node) => String(node?.tagName || '').toLowerCase();
+  const cleanText = (value) => String(value || '').replace(/\u00a0/g, ' ').replace(/\r\n?/g, '\n');
+  const times = (text, count) => new Array(Math.max(0, count) + 1).join(text);
+  // 围栏要长过正文里最长的一串反引号，否则内容会提前"关掉"代码块。
+  const backtickFence = (value, minimum) => {
+    const runs = String(value).match(/`+/g) || [];
+    const longest = runs.reduce((max, run) => Math.max(max, run.length), 0);
+    return times('`', Math.max(minimum, longest + 1));
+  };
+  // 工具栏、点赞、复制这类装饰不是回答的一部分。按标签/语义属性/常见类名跳过它们，
+  // 类名判断只是兜底：站点改版后真正还认得出来的是标签和 role。
+  const skipNode = (element) => {
+    const tag = tagOf(element);
+    if (SKIP_TAGS.includes(tag)) return true;
+    if (element.getAttribute?.('aria-hidden') === 'true') return true;
+    if ((element.getAttribute?.('role') || '') === 'button') return true;
+    const className = typeof element.className === 'string' ? element.className : '';
+    return /(?:^|[\s_-])(?:actions?|toolbar|copy|feedback|like|dislike|regenerate|avatar|icon)(?:$|[\s_-])/i.test(className);
+  };
+  const inlineOf = (node) => {
+    if (!node) return '';
+    if (node.nodeType === 3) return cleanText(node.textContent).replace(/\s+/g, ' ');
+    if (node.nodeType !== 1 || skipNode(node)) return '';
+    const tag = tagOf(node);
+    if (tag === 'br') return '\n';
+    if (tag === 'img') {
+      const alt = String(node.getAttribute?.('alt') || '');
+      const src = String(node.getAttribute?.('src') || '');
+      return src ? `![${alt}](${src})` : alt;
+    }
+    const inner = [...node.childNodes].map(inlineOf).join('');
+    if (tag === 'code') {
+      if (!inner.trim()) return '';
+      const fence = backtickFence(inner, 1);
+      return `${fence}${inner.trim()}${fence}`;
+    }
+    if (INLINE_BOLD.includes(tag)) return inner.trim() ? `**${inner.trim()}**` : '';
+    if (INLINE_ITALIC.includes(tag)) return inner.trim() ? `*${inner.trim()}*` : '';
+    if (INLINE_STRIKE.includes(tag)) return inner.trim() ? `~~${inner.trim()}~~` : '';
+    if (tag === 'a') {
+      const href = String(node.getAttribute?.('href') || '');
+      const label = inner.trim();
+      if (!href || !label) return label || href;
+      return `[${label}](${href})`;
+    }
+    return inner;
+  };
+  const listOf = (node, depth) => {
+    const ordered = tagOf(node) === 'ol';
+    const lines = [];
+    for (const item of node.children) {
+      if (tagOf(item) !== 'li') continue;
+      const nested = [];
+      let text = '';
+      for (const part of item.childNodes) {
+        if (part.nodeType === 1 && ['ul', 'ol'].includes(tagOf(part))) nested.push(listOf(part, depth + 1));
+        else text += inlineOf(part);
+      }
+      let marker = ordered ? '1. ' : '- ';
+      let body = text.replace(/\s+/g, ' ').trim();
+      // 任务列表：页面把 `- [x] 做完了` 渲染成一个勾选框，文本里只剩 `[x] 做完了`。
+      const task = body.match(/^\[( |x|X)\]\s*(.*)$/s);
+      if (task) {
+        marker = `- [${task[1].toLowerCase() === 'x' ? 'x' : ' '}] `;
+        body = task[2].trim();
+      }
+      lines.push(`${times('  ', depth)}${marker}${body}`.trimEnd());
+      for (const child of nested) if (child) lines.push(child);
+    }
+    return lines.join('\n');
+  };
+  const codeOf = (node) => {
+    const code = node.querySelector?.('code') || node;
+    const language = (String(code.getAttribute?.('class') || '').match(/language-([\w+#.-]+)/) || [])[1] || '';
+    const text = cleanText(code.textContent || '').replace(/\n+$/, '');
+    const fence = backtickFence(text, 3);
+    return `${fence}${language}\n${text}\n${fence}`;
+  };
+  const tableOf = (node) => {
+    const rows = [...(node.querySelectorAll?.('tr') || [])]
+      .map((row) => [...row.children].map((cell) => inlineOf(cell).replace(/\s+/g, ' ').trim().replace(/\|/g, '\\|')));
+    if (!rows.length) return '';
+    const columns = rows.reduce((max, row) => Math.max(max, row.length), 0);
+    const widthsMatch = rows[0].length === columns;
+    const header = widthsMatch ? rows[0] : rows[0].map((_, index) => `列 ${index + 1}`);
+    const body = widthsMatch ? rows.slice(1) : rows;
+    const line = (cells) => `| ${[...new Array(columns)].map((_, index) => cells[index] || '').join(' | ')} |`;
+    return [line(header), `| ${[...new Array(columns)].map(() => '---').join(' | ')} |`, ...body.map(line)].join('\n');
+  };
+  // 里面没有块级子元素时整块按"行内"处理：否则 `<p><span>a</span><strong>b</strong></p>`
+  // 会被折成好几段，行内的连续文字被拆散（删除线那种"文本-元素-文本"尤其明显）。
+  const blockOfElement = (element, depth) => {
+    const hasBlockChild = [...(element.children || [])]
+      .some((child) => BLOCK_TAGS.includes(tagOf(child)) || ['ul', 'ol', 'pre', 'table', 'blockquote', 'hr'].includes(tagOf(child)));
+    if (hasBlockChild) return blocksOf(element, depth);
+    return inlineOf(element).replace(/\s+/g, ' ').trim();
+  };
+  const blocksOf = (node, depth = 0) => {
+    const blocks = [];
+    for (const child of node.childNodes || []) {
+      if (child.nodeType === 3) {
+        const text = cleanText(child.textContent).replace(/\s+/g, ' ').trim();
+        if (text) blocks.push(text);
+        continue;
+      }
+      if (child.nodeType !== 1 || skipNode(child)) continue;
+      const tag = tagOf(child);
+      if (tag === 'br') continue;
+      if (tag === 'ul' || tag === 'ol') blocks.push(listOf(child, depth));
+      else if (tag === 'pre') blocks.push(codeOf(child));
+      else if (tag === 'blockquote') {
+        const body = blocksOf(child, depth).trim();
+        if (body) blocks.push(body.split('\n').map((line) => `> ${line}`.trimEnd()).join('\n'));
+      } else if (tag === 'table') blocks.push(tableOf(child));
+      else if (/^h[1-6]$/.test(tag)) blocks.push(`${times('#', Number(tag[1]))} ${inlineOf(child).trim()}`);
+      else if (tag === 'hr') blocks.push('---');
+      else if (BLOCK_TAGS.includes(tag)) {
+        blocks.push(blockOfElement(child, depth));
+      } else {
+        const inline = inlineOf(child).replace(/\s+/g, ' ').trim();
+        if (inline) blocks.push(inline);
+      }
+    }
+    return blocks.filter((block) => block.trim()).join('\n\n');
+  };
+  // 容器要**按结构**找，不按 class：站点一改版 class 就没了，结构还在。从第一个 markdown
+  // 段落往上走，取最靠里、且真的含块级标记的那一层；纯段落回复则退回段落本身，免得把
+  // 工具栏和按钮一起读进来。
+  const markdownReportOf = (assistantNode, paragraphNodes) => {
+    if (!assistantNode) return { markdown: '', container: null };
+    const blockSelector = 'ul,ol,pre,table,blockquote,h1,h2,h3,h4,h5,h6,hr';
+    const hasBlockMarkup = (element) => {
+      try { return Boolean(element.querySelectorAll) && element.querySelectorAll(blockSelector).length > 0; } catch (_) { return false; }
+    };
+    let container = null;
+    for (const start of (paragraphNodes.length ? paragraphNodes : [assistantNode])) {
+      const stop = assistantNode.parentElement;
+      for (let current = start.parentElement; current && current !== stop; current = current.parentElement) {
+        if (!hasBlockMarkup(current)) continue;
+        container = current;
+        break;
+      }
+      if (container) break;
+    }
+    if (!container) {
+      // 纯段落回复（没有块级标记）也要按行内规则转换：退回 textOf 会把加粗、代码又丢掉，
+      // 那正是这次要修的毛病。段落节点之外的东西（工具栏、按钮）不读。
+      const fallback = paragraphNodes.length
+        ? paragraphNodes.map((paragraph) => blockOfElement(paragraph, 0)).filter(Boolean).join('\n\n')
+        : blocksOf(assistantNode).trim() || textOf(assistantNode);
+      return { markdown: fallback, container: null };
+    }
+    return { markdown: blocksOf(container) || textOf(assistantNode), container };
+  };
+  const markdownOf = (assistantNode, paragraphNodes) => markdownReportOf(assistantNode, paragraphNodes).markdown;
   const assistantContentOf = (node) => {
-    // DeepSeek currently puts the rendered Markdown in this node, but the
-    // node itself can be `display: contents`. Read the Markdown child first
-    // and fall back to textContent so a zero-size wrapper never hides a reply.
+    // DeepSeek renders the answer inside one markdown container; `markdownSelectors`
+    // points at the paragraphs inside it, so the container is found structurally.
     const bodies = queryWithin(node, adapterConfig.markdownSelectors)
       .filter((candidate) => visible(candidate, true));
-    if (!bodies.length) return textOf(node);
-    const bodySet = new Set(bodies);
-    // A rendered answer can contain nested Markdown nodes, or several
-    // same-level blocks for separate paragraphs. Taking only the final body
-    // loses every preceding block. Keep only the outermost candidates, then merge
-    // sibling blocks in document order.
-    const outerBodies = bodies.filter((candidate) => {
-      let parent = candidate.parentElement;
-      while (parent && parent !== node) {
-        if (bodySet.has(parent)) return false;
-        parent = parent.parentElement;
-      }
-      return true;
-    });
-    return outerBodies.map(textOf).filter(Boolean).join('\n\n') || textOf(node);
+    const markdown = markdownOf(node, bodies);
+    return cleanText(markdown)
+      .replace(/[ \t]+$/gm, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim() || textOf(node);
   };
   const assistantKeyOf = (node) => node.closest?.('[data-virtual-list-item-key]')?.getAttribute('data-virtual-list-item-key')
     || node.getAttribute?.('data-message-id')
@@ -402,6 +559,8 @@ const SNAPSHOT_SCRIPT: &str = r#"
   const state = composer
     ? (busy ? 'generating' : 'ready')
     : (loginHint ? 'logged-out' : (document.readyState !== 'complete' || !document.body?.innerText || appShellHint ? 'loading' : 'unsupported'));
+  // 把还原函数挂到 window 上：测试要拿假 DOM 调**真正下发的这一段**，而不是抄一份副本。
+  window.__DSHWallpaperMarkdown = markdownOf;
   return {
     signature,
     state,
@@ -1756,8 +1915,12 @@ mod tests {
         assert!(super::SNAPSHOT_SCRIPT.contains("latestAssistant"));
         assert!(super::SNAPSHOT_SCRIPT.contains("latestAssistantKey"));
         assert!(super::SNAPSHOT_SCRIPT.contains("assistantCount"));
-        assert!(super::SNAPSHOT_SCRIPT.contains("outerBodies"));
-        assert!(super::SNAPSHOT_SCRIPT.contains("join('\\n\\n')"));
+        // 抽取已经不是"把若干段文本拼起来"了：网页端只有渲染后的 DOM，标记得按结构还原。
+        // 这里钉住那三件事——按结构找容器、块级还原、行内还原——以及给测试留的钩子。
+        assert!(super::SNAPSHOT_SCRIPT.contains("hasBlockMarkup"));
+        assert!(super::SNAPSHOT_SCRIPT.contains("blocksOf"));
+        assert!(super::SNAPSHOT_SCRIPT.contains("inlineOf"));
+        assert!(super::SNAPSHOT_SCRIPT.contains("window.__DSHWallpaperMarkdown = markdownOf"));
         assert!(
             super::SNAPSHOT_SCRIPT.contains("final `s/id`")
                 || super::SNAPSHOT_SCRIPT.contains("literal route segment `s`")

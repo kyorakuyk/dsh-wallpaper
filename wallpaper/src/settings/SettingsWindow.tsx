@@ -6,16 +6,29 @@ import { appCoreClient } from '../runtime/appCoreClient.ts'
 import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type ApiKeyStatus, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type DesktopWorkspaceStatus, type HarnessEndpointScan, type HarnessTarget, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
 import { loadSettings, saveSettings, type WallpaperSettings } from './store.ts'
 import {
+  CLI_SUBJECT_PREFIX,
   clientRaiseAction,
   endpointKindLabel,
   endpointScopeOf,
   raiseOutcomeNotice,
+  staleEndpointPort,
   subjectClientKind,
   subjectEndpointPorts,
+  unsupportedShellSubjectFallback,
   type HarnessClientKind,
 } from '../connect/endpoints.ts'
 import { launchOutcomeNotice, reachNeedsBrowser, subjectChoicePrompt } from '../connect/harnessSubjects.ts'
+import { profileForLaunch } from '../connect/harnessProfiles.ts'
+// ---------------------------------------------------------------------------
+// FREEZE（临时冻结，不是删除）：本窗口里「启动参数」的分词只服务两处 —— 传给 `ensureHarnessUi` 的
+// `args`，以及 `openSubjectTui` 的 `args`。两处都冻住了（各有一处 FREEZE 注释），所以这一行也随之
+// 冻住。`connect/launchArgs.ts` 本身一行都没动；原生侧 `args` 都是可选参数，不传就是空参数列表。
+// 怎么恢复：取消这一行，并取消那两处 `args:` 的注释。
+// ---------------------------------------------------------------------------
+// import { parseLaunchArgs } from '../connect/launchArgs.ts'
 import { SettingsPanel, backendModeLabel, type SettingsPanelHarnessStatus } from './SettingsPanel.tsx'
+import { autostartRefusalNotice } from './autostartCopy.ts'
+import { createAutostartQueue, type AutostartQueue } from './autostartQueue.ts'
 import {
   createProbeScheduler,
   createSettingsProbeController,
@@ -88,7 +101,18 @@ export function SettingsWindow() {
    * can say how old it is: a cached list must not look current.
    */
   const [catalogVerifiedAt, setCatalogVerifiedAt] = useState<number>()
-  const [managedDsh, setManagedDsh] = useState<ManagedDshStatus>({ managed: false, running: false })
+  const [managedDsh, setManagedDsh] = useState<ManagedDshStatus>({ instances: [], managed: false, running: false })
+  /**
+   * 停止/刷新是否在飞。
+   *
+   * 与 `managedDsh` 分开，因为按钮的可用性要跟**动作**走而不是跟状态走：停止一个实例要起
+   * taskkill 并等它结束，那几百毫秒里再点一次不该发出第二条命令。
+   *
+   * FREEZE（临时冻结，不是删除）：它原来只喂给标题右上角那个实例下拉，现在改喂卡片底部的
+   * 「停止本应用启动的 DSH」与它旁边的「刷新」（同一个 `stopManagedInstance`）。所以它没有跟着
+   * 下拉一起冻住 —— 底部那个按钮需要它来挡住重复点击。恢复办法：什么都不用做。
+   */
+  const [managedDshBusy, setManagedDshBusy] = useState(false)
   const [lockScreenDiagnostics, setLockScreenDiagnostics] = useState<LockScreenDiagnostics>()
   const [desktopDisplays, setDesktopDisplays] = useState<DesktopDisplayInfo[]>([])
   const [lockScreenBusy, setLockScreenBusy] = useState(false)
@@ -99,7 +123,10 @@ export function SettingsWindow() {
    * so the card needs the actual source (`none`, disabled by the user, disabled
    * by policy) to say whether a login-time start will really happen.
    */
-  const [autostartState, setAutostartState] = useState<AutostartStatus>({ enabled: false, source: 'none' })
+  // `reason: null` with source `none` is the state Rust never produces: it is
+  // this page's placeholder until the first read comes back, and the row says
+  // so instead of showing an unchecked switch as a fact.
+  const [autostartState, setAutostartState] = useState<AutostartStatus>({ enabled: false, source: 'none', reason: null })
   /**
    * Endpoint discovery result. `endpointScanDone` is deliberately separate from
    * an empty list: "not scanned yet" and "scanned and found nothing" need
@@ -128,6 +155,8 @@ export function SettingsWindow() {
   const [apiModelCatalogFetchedAt, setApiModelCatalogFetchedAt] = useState<string>()
   /** 「桌面会话」工作区路径（原生只读自检；系统页显示，方便核对）。 */
   const [desktopWorkspace, setDesktopWorkspace] = useState<DesktopWorkspaceStatus>()
+  /** 正在打开「项目记忆」：桌面会话里不贴路径，改它的入口只在这里。 */
+  const [openingMemory, setOpeningMemory] = useState(false)
   /**
    * 壁纸**此刻**在用的 chat 模式。
    *
@@ -142,6 +171,13 @@ export function SettingsWindow() {
   const settingsRef = useRef(settings)
   const lockScreenOperationRef = useRef(false)
   const autostartOperationRef = useRef(false)
+  /**
+   * What the autostart switch currently stands for: the user's latest request
+   * while one is on the wire, otherwise the state Windows last reported. A
+   * toggle only travels to Rust when it differs from this, so a refused or
+   * superseded change can always be asked for again.
+   */
+  const latestAutostartRef = useRef(settings.autostart)
   /**
    * The shape of the subject the reach action reaches.
    *
@@ -241,7 +277,20 @@ export function SettingsWindow() {
       setHarnessTargets(scan.targets)
       // The scan that just finished is the verification this list now carries.
       setCatalogVerifiedAt(Date.now())
-      if (announce) {
+      // 设置里存着的主体可能已经**不再受支持**（第三方客户端 2026-09-27 被移除）：那就落回官方
+      // 桌面客户端，并把原因当场说出来 —— 既不静默改设置，也不让用户对着一个永远点不亮的灯猜。
+      const fallback = unsupportedShellSubjectFallback(settingsRef.current.dshLaunch.subjectId)
+      if (fallback) {
+        change({ ...settingsRef.current, dshLaunch: { ...settingsRef.current.dshLaunch, subjectId: fallback.subjectId } })
+        setNotice(fallback.notice)
+      } else if (staleEndpointPort(settingsRef.current.dshLaunch) !== undefined) {
+        // 存量的自相矛盾：显式端点是**上一个主体的**端口。留着它，"用户 pin 优先"这条正确的规则
+        // 就会按旧主体的端口去开新主体的界面（实测：主体是只该用 3080 的已安装 CLI，pin 还是官方
+        // 客户端的 19387，点「打开」把官方客户端的窗口拉到了前台）。清掉并说出来。
+        const stale = staleEndpointPort(settingsRef.current.dshLaunch)!
+        change({ ...settingsRef.current, dshLaunch: { ...settingsRef.current.dshLaunch, endpointPort: undefined } })
+        setNotice(`设置里选定的端口 ${stale} 不属于当前主体，已清除；「打开」会按该主体自己的端口来。`)
+      } else if (announce) {
         setNotice(subjectChoicePrompt(scan.targets) ?? (scan.targets.length > 0
           ? `扫描完成，发现 ${scan.targets.length} 个可选执行主体。`
           : '未发现 DSH 项目或已安装的客户端；可手动填写 DSH 项目根目录后再扫描。'))
@@ -310,7 +359,7 @@ export function SettingsWindow() {
       await nativeRuntime.setHarnessEndpointScope(endpointScopeOf(settingsRef.current.dshLaunch)).catch(() => null)
       const bridges = found.filter((item) => item.bridgeFound)
       if (bridges.length === 0) {
-        setNotice('未发现可接入的 Harness。请先启动任一个客户端官官方桌面 / 第三方桌面 / 官方 Web）后重新扫描。')
+        setNotice('未发现可接入的 Harness。请先启动官方桌面客户端，或让本机的 DSH CLI 起来（dsh web）后重新扫描。')
       } else if (bridges.every((item) => item.status.availability !== 'bridge-ready')) {
         setNotice(`发现 ${bridges.length} 个 Harness，但当前都不可对话；详情见端点下拉。`)
       } else {
@@ -337,7 +386,9 @@ export function SettingsWindow() {
     const current = settingsRef.current.dshLaunch
     const subjectId = current.subjectId ?? current.rootPath
     // The subject's own ports, in its own order — never "whatever the scan found
-    // answering", which would reach a client the user did not choose.
+    // answering", which would reach a client the user did not choose. 「启动参数」里的
+    // `--port` **属于这个主体**（我们就是这样启动它的），所以它排在最前面：并行实例靠它让
+    // 浏览器走到 3081，而不是默认的 3080。
     const ports = subjectEndpointPorts(endpointScopeOf(current)) ?? []
     // The user's pin wins; otherwise native decides from the subject itself, which
     // prefers a port that is actually listening. Passing the subject's first port
@@ -353,8 +404,10 @@ export function SettingsWindow() {
       const ensured = await nativeRuntime.ensureHarnessUi({
         targetId: subjectId,
         port,
-        profile: current.profile,
-        command: current.command,
+        profile: profileForLaunch(),
+        // FREEZE（临时冻结，不是删除）：「打开界面」这条路不带任何启动参数。恢复办法：取消下面
+        // 这一行，并恢复本文件顶部的 `parseLaunchArgs` import。
+        // args: parseLaunchArgs(current.args),
       })
       // A start that failed is the actionable half: it names what to fix.
       if (ensured.started && ensured.outcome === 'not-running') {
@@ -374,7 +427,11 @@ export function SettingsWindow() {
           setNotice('没有可打开的界面：主体没有在本机监听任何端口。')
           return
         }
+        // 门票是**按端口**存的（`known_web_handoff(port)`）。
         await nativeRuntime.openClientInBrowser(live)
+        // FREEZE（临时冻结，不是删除）：这里原来刷新标题右上角那份实例清单（"刚才可能启动了一个
+        // 新实例，免得它还停在上一秒的样子"）。下拉冻住了，没有清单可刷。恢复办法：取消下面这一行。
+        // refreshManagedDsh()
         setNotice(`已在默认浏览器中打开 127.0.0.1:${live}。`)
         return
       }
@@ -389,12 +446,44 @@ export function SettingsWindow() {
     }
   }
 
-  const refreshAutostartStatus = async () => {    if (!nativeRuntime.isNative) return
+  /**
+   * 停掉本应用启动的实例。
+   *
+   * 一个动作、一个实现：`stop_managed_dsh` 只多了一个可选参数。这里刻意**不做**"先乐观地把
+   * 那一行藏起来"：停止成不成功由原生回答，界面只做它说的那一件事 —— 否则一次失败会留下
+   * "已经停掉了"的假象，而那个假象比一行红字更坏。
+   *
+   * FREEZE（临时冻结，不是删除）：`instanceKey` 那一条路（下拉里某一行的 ×）冻住了，但"不给
+   * instanceKey"这条路**正在用** —— 卡片底部恢复的「停止本应用启动的 DSH」走的就是它，语义与
+   * 从前逐字相同（停全部）。恢复办法：把 `onStopManagedInstance` 的传参加回来（取消注释下方
+   * 那一处 FREEZE），这个函数不用改。
+   */
+  const stopManagedInstance = async (instanceKey?: string) => {
+    setManagedDshBusy(true)
+    try {
+      await nativeRuntime.stopManagedDsh(instanceKey)
+      setNotice(instanceKey === undefined ? '已停止本应用启动的全部 DSH。' : '已停止该 DSH 实例。')
+    } catch (error) {
+      setNotice(String(error))
+    } finally {
+      if (mountedRef.current) setManagedDshBusy(false)
+      // 成功失败都刷一次：成功了那一行该消失，失败了清单也该说出**现在**的真相（也许它本来就
+      // 已经退了，或已经被别的程序接管）。
+      refreshManagedDsh()
+    }
+  }
+
+  const refreshAutostartStatus = async () => {
+    if (!nativeRuntime.isNative) return
     try {
       const status: AutostartStatus = await nativeRuntime.autostartStatus()
       const current = settingsRef.current
       if (!mountedRef.current) return
       setAutostartState(status)
+      // A toggle is on the wire: its read-back is newer than this probe's, so
+      // this one must not write the older value into the switch.
+      if (autostartOperationRef.current) return
+      latestAutostartRef.current = status.enabled
       if (current.autostart !== status.enabled) {
         const next = { ...current, autostart: status.enabled }
         settingsRef.current = next
@@ -421,6 +510,9 @@ export function SettingsWindow() {
       if (mountedRef.current) setTranslucentTb(status)
     },
     managedDsh: async () => {
+      // FREEZE（临时冻结，不是删除）：这里原来带上主体 id（`managedDshStatus(subjectId)`），
+      // 问的是"我这次启动的那个孩子还在不在"。不带主体问的是同一件事的单实例形态。
+      // 恢复办法：把那个实参加回去（一行）。
       const status = await nativeRuntime.managedDshStatus()
       if (mountedRef.current) setManagedDsh(status)
     },
@@ -751,9 +843,43 @@ export function SettingsWindow() {
   // A reload or a real teardown cancels every probe that has not started yet.
   useEffect(() => () => probeController.dispose(), [probeController])
 
+  /**
+   * The autostart switch, serialized (see `createAutostartQueue`). Built on
+   * first use: it captures the commit path, the notice channel and the mounted
+   * guard, all of which exist by the time a user can move the switch.
+   */
+  const autostartQueueRef = useRef<AutostartQueue>()
+  const autostartQueue = () => {
+    if (!autostartQueueRef.current) {
+      autostartQueueRef.current = createAutostartQueue({
+        send: (enabled) => nativeRuntime.setAutostart(enabled),
+        onBusy: (busy) => {
+          autostartOperationRef.current = busy
+          if (mountedRef.current) setAutostartBusy(busy)
+        },
+        onSettled: (status, requested) => {
+          if (!mountedRef.current) return
+          setAutostartState(status)
+          // A newer toggle is already queued: its own read-back decides the
+          // switch, and committing this older one would put the switch back
+          // where the user just moved it from.
+          if (latestAutostartRef.current !== requested) return
+          latestAutostartRef.current = status.enabled
+          commitSettings({ ...settingsRef.current, autostart: status.enabled })
+          const refusal = autostartRefusalNotice(status, requested)
+          if (refusal) setNotice(refusal)
+        },
+        onError: (error) => {
+          if (mountedRef.current) setNotice(`开机自启更新失败：${String(error)}`)
+        },
+      })
+    }
+    return autostartQueueRef.current
+  }
+
   const change = (next: WallpaperSettings) => {
     const previous = settingsRef.current
-    const autostartChanged = next.autostart !== previous.autostart
+    const autostartChanged = next.autostart !== latestAutostartRef.current
     // System lock-screen ownership is deliberately excluded from the normal
     // immediate-save path. The dedicated async operation above is the only
     // place allowed to persist or broadcast a change to this field.
@@ -761,21 +887,12 @@ export function SettingsWindow() {
       ? next
       : { ...next, lockScreenEnabled: previous.lockScreenEnabled }
     if (autostartChanged) {
-      if (autostartOperationRef.current) return
-      autostartOperationRef.current = true
-      setAutostartBusy(true)
-      void nativeRuntime.setAutostart(next.autostart)
-        .then((status) => {
-          const current = settingsRef.current
-          if (mountedRef.current) setAutostartState(status)
-          commitSettings({ ...current, autostart: status.enabled })
-          if (status.enabled !== next.autostart) setNotice('Windows 没有接受这次开机自启变更，请检查系统启动应用权限。')
-        })
-        .catch((error) => setNotice(`开机自启更新失败：${String(error)}`))
-        .finally(() => {
-          autostartOperationRef.current = false
-          setAutostartBusy(false)
-        })
+      // The switch follows the user at once; Windows' answer decides whether it
+      // stays there. A second toggle is queued instead of dropped, and the
+      // response of the request it replaces cannot move the switch back.
+      latestAutostartRef.current = next.autostart
+      commitSettings(normalNext)
+      autostartQueue().request(next.autostart)
       return
     }
     commitSettings(normalNext)
@@ -821,10 +938,22 @@ export function SettingsWindow() {
         dshLaunch: {
           ...settingsRef.current.dshLaunch,
           subjectId: targetId,
-          // A checkout's id *is* its path, so keeping the root-path field in step
-          // means the profile/launcher fields below still describe the same tree.
-          // A shell keeps whatever path is there, so switching back is lossless.
-          ...(targetId.startsWith('shell:') ? {} : { rootPath: targetId }),
+          // 显式端点属于**上一个主体**：它是"用户当年为那个主体选的那个端口"，换主体后就是一条
+          // 自相矛盾的选择（实测：主体是 3080 的已安装 CLI，pin 还是官方客户端的 19387，于是点
+          // 打开把官方客户端的窗口拉到了前台）。用户的 pin 优先这条规则不动，但换主体必须清掉它。
+          endpointPort: undefined,
+          // 已安装的 CLI 既不是源码树也不是壳：它没有根目录可填（id 里的 `cli:` 是身份命名空间，
+          // 不是路径），而它的档案是 dsh 自己那一个 —— web。沿用一个属于源码目录/官壳的 desktop
+          // 会让它启动后立刻退出（实测：日志里 `--profile desktop`，而同一命令换 web 一切正常）。
+          // 只在档案还是那个默认值时才替换；用户自己填过的档案一律不动。
+          ...(targetId.startsWith(CLI_SUBJECT_PREFIX)
+                  ? {
+                      rootPath: undefined,
+                    }
+            // A checkout's id *is* its path, so keeping the root-path field in step
+            // means the profile/launcher fields below still describe the same tree.
+            // A shell keeps whatever path is there, so switching back is lossless.
+            : targetId.startsWith('shell:') ? {} : { rootPath: targetId }),
         },
       })}
       endpointScan={endpointScan}
@@ -838,8 +967,63 @@ export function SettingsWindow() {
       onScanDsh={() => { void scanDsh(true) }}
       dshScanBusy={dshScanBusy}
       managedDsh={managedDsh}
+      managedDshBusy={managedDshBusy}
       onRefreshManagedDsh={refreshManagedDsh}
-      onStopManagedDsh={() => void nativeRuntime.stopManagedDsh().then(() => { setNotice('已停止本应用启动的 DSH。'); refreshManagedDsh() }).catch((error) => setNotice(String(error)))}
+      // FREEZE（临时冻结，不是删除）：标题右上角那个按实例停止的入口（下拉里某一行的 ×）。
+      // 它随下拉一起冻住；不丢动作 —— 没有 instanceKey 的那一条路由 `onStopAllManagedDsh` 承担，
+      // 也就是卡片底部恢复的「停止本应用启动的 DSH」。恢复办法：取消下面这一行。
+      // onStopManagedInstance={(instanceKey) => { void stopManagedInstance(instanceKey) }}
+      onStopAllManagedDsh={() => { void stopManagedInstance() }}
+      // FREEZE（临时冻结，不是删除）：「起别名」与「启动参数」两个 handler。它们的输入控件冻住了
+      // （`SettingsPanel.tsx` 里对应的 Field 都注释了），所以这里也一起冻 —— 留着就是两段永远
+      // 不会跑的回调，而"改了没反应"是比"没有这个入口"更难懂的状态。
+      // 这一段里的规则本身一行都没改，恢复办法就是取消这一整块的注释。
+      // onSelectSubjectAlias={(alias) => {
+      //   // 别名按主体 id 存：用户可能在两棵树之间来回切，名字必须跟着树走。空串表示"用目录名"，
+      //   // 所以它**删掉**那个键，而不是存一个空值 —— 让"没起别名"只有一种表示。
+      //   const subjectId = settingsRef.current.dshLaunch.subjectId
+      //   if (!subjectId) return
+      //   const aliases = { ...(settingsRef.current.dshLaunch.aliases ?? {}) }
+      //   const name = alias.trim()
+      //   if (name) aliases[subjectId] = name
+      //   else delete aliases[subjectId]
+      //   change({
+      //     ...settingsRef.current,
+      //     dshLaunch: {
+      //       ...settingsRef.current.dshLaunch,
+      //       ...(Object.keys(aliases).length > 0 ? { aliases } : { aliases: undefined }),
+      //     },
+      //   })
+      // }}
+      // onSelectLaunchArgs={(value) => {
+      //   const args = value.trim() ? value : undefined
+      //   change({
+      //     ...settingsRef.current,
+      //     dshLaunch: {
+      //       ...settingsRef.current.dshLaunch,
+      //       args,
+      //       // 换参数就清掉显式端口 pin：那条 pin 是"上一次启动选的那个端口"，参数已经把它推翻了。
+      //       // 留着它，「打开界面」会去敲上一代端口（与"换主体就清 pin"是同一条理由）。
+      //       endpointPort: undefined,
+      //     },
+      //   })
+      // }}
+      onOpenTui={() => void nativeRuntime.openSubjectTui().then((result) => {
+        // FREEZE（临时冻结，不是删除）：这里原来把「启动参数」分好词再交给 TUI（`openSubjectTui(
+        // parseLaunchArgs(settingsRef.current.dshLaunch.args))`）。这一版不带参数。恢复办法：把那个
+        // 实参加回去，并恢复本文件顶部的 `parseLaunchArgs` import。
+        // 契约：没装 TUI 时原生返回 `opened: false` 与一句"怎么办"。**把那句显示出来**，
+        // 绝不静默改成打开浏览器 —— 那等于替用户换了一条他没选的路。
+        if (!result.opened) {
+          setNotice(result.message ?? '本机没有找到 TUI（dst）。')
+          return
+        }
+        setNotice('已在新终端窗口中拉起 TUI。')
+      }).catch((error) => setNotice(`打开 TUI 失败：${String(error)}`))}
+      onSelectWindow={(value) => change({
+        ...settingsRef.current,
+        dshLaunch: { ...settingsRef.current.dshLaunch, window: value },
+      })}
       onChange={change}
       onRefreshTranslucentTb={refreshTranslucentTb}
       onLaunchTranslucentTb={() => void nativeRuntime.launchTranslucentTb().then(refreshTranslucentTb).catch((error) => setNotice(String(error)))}
@@ -883,6 +1067,20 @@ export function SettingsWindow() {
       interactionEnabled={interactionEnabled}
       onSetInteractionEnabled={(enabled) => void appCoreClient.setInteractionEnabled(enabled).then((snapshot) => setInteractionEnabled(snapshot.interaction.enabled)).catch((error) => setNotice(String(error)))}
       desktopWorkspace={desktopWorkspace}
+      onOpenProjectMemory={async () => {
+        // 打开的是**文件所在的位置**：文件在就选中它，不在就把工作区目录打开（原生实现）。
+        // 结果用那句 notice 如实回报，而不是让用户自己去猜窗口为什么没动。
+        setOpeningMemory(true)
+        try {
+          const opened = await nativeRuntime.openProjectMemory()
+          setNotice(opened.memoryExists ? '已在资源管理器中选中「项目记忆.md」。' : '还没有「项目记忆.md」：已打开桌面会话目录，你或助手第一次“记下来”时它会出现在这里。')
+        } catch (error) {
+          setNotice(String(error))
+        } finally {
+          setOpeningMemory(false)
+        }
+      }}
+      openingMemory={openingMemory}
       onClose={close}
     />
   </main>

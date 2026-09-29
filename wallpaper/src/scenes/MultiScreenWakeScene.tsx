@@ -9,7 +9,7 @@ import type { PersonaManifest } from '../persona/types.ts'
 import type { DesktopDisplayInfo } from '../native/runtime.ts'
 import { displayCssRect, virtualDesktopBounds } from '../runtime/displayLayout.ts'
 import { placeholderPortrait } from '../ui/whale.ts'
-import { WAKE_FRAME_DURATIONS, useWakeFramePreload, wakeFrameSources } from './WakeScene.tsx'
+import { WAKE_CURTAIN_IN_MS, WAKE_FRAME_DURATIONS, useWakeCurtain, useWakeFramePreload, wakeFrameSources } from './WakeScene.tsx'
 import { decodeImageSource } from '../native/bootstrapHandoff.ts'
 import './MultiScreenWakeScene.css'
 
@@ -43,6 +43,7 @@ export function MultiScreenWakeScene({
   const onFirstWakeFrameRef = useRef(onFirstWakeFrame)
   const reportedGenerationRef = useRef<number>()
   onWakeDoneRef.current = onWakeDone
+  const { curtain, dropCurtain } = useWakeCurtain(onWakeDone)
   onFirstWakeFrameRef.current = onFirstWakeFrame
 
   const virtualBounds = useMemo(() => virtualDesktopBounds(displays), [displays])
@@ -89,13 +90,13 @@ export function MultiScreenWakeScene({
       return () => clearTimeout(immediate)
     }
     if (!hasFrames) {
-      const timer = setTimeout(() => onWakeDoneRef.current(), 2400)
+      const timer = setTimeout(dropCurtain, 2400)
       return () => clearTimeout(timer)
     }
     const duration = WAKE_FRAME_DURATIONS[Math.min(frameIndexRef.current, WAKE_FRAME_DURATIONS.length - 1)] / Math.max(0.25, speed)
     const timer = setTimeout(() => {
       if (frameIndexRef.current >= frames.length - 1) {
-        onWakeDoneRef.current()
+        dropCurtain()
       } else {
         frameIndexRef.current += 1
         setIndex(frameIndexRef.current)
@@ -128,5 +129,6 @@ export function MultiScreenWakeScene({
         draggable={false}
       />) : <img className={`multi-screen-wake-art multi-screen-wake-art-${Math.min(index, 3)}`} src={image} alt="苏醒的鲸鱼娘" draggable={false} />}
     </div>}
+    {curtain && <div className="wake-curtain" style={{ animationDuration: `${WAKE_CURTAIN_IN_MS}ms` }} />}
   </div>
 }

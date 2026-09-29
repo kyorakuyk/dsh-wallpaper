@@ -49,18 +49,24 @@ jobs:
           toolchain: stable-x86_64-pc-windows-msvc
           targets: x86_64-pc-windows-msvc
 
-      - name: Cache Cargo dependencies
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: wallpaper/src-tauri
+          key: package
+          cache-on-failure: true
+
+      # MSIX 辅助脚本用**另一个** target 目录（`artifacts/msix-test/cargo-target`），上一行的
+      # action 不可能知道它，所以单独缓存。key 里带 run_id 是有意的：带 run_id 的 key 每次都是新
+      # 条目（所以能存），restore-keys 用 lock 哈希前缀去取最近的一份（所以能暖）。
+      - name: Cache the isolated MSIX build target
         uses: actions/cache@v4
         with:
-          path: |
-            ~\.cargo\registry
-            ~\.cargo\git
-            wallpaper\src-tauri\target
-            artifacts\msix-test\cargo-target
-          key: ${{ runner.os }}-cargo-package-${{ hashFiles('wallpaper/src-tauri/Cargo.lock') }}
+          path: artifacts\msix-test\cargo-target
+          key: ${{ runner.os }}-msix-target-${{ hashFiles('wallpaper/src-tauri/Cargo.lock') }}-${{ github.run_id }}
           restore-keys: |
-            ${{ runner.os }}-cargo-package-
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-msix-target-${{ hashFiles('wallpaper/src-tauri/Cargo.lock') }}-
+            ${{ runner.os }}-msix-target-
 
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile

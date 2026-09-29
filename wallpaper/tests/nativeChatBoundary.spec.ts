@@ -22,6 +22,27 @@ function permissions(capability: { permissions?: unknown }): string[] {
   return capability.permissions as string[]
 }
 
+/**
+ * The span from an opening tag to its closing tag.
+ *
+ * Nesting is the whole point of the assertion below, and a substring check
+ * cannot tell a misplaced element from a correctly nested one — which is how a
+ * missing `<Extensions>` container survived in both manifests.
+ */
+function span(source: string, open: string, close: string): string {
+  const from = source.indexOf(open)
+  expect(from, `${open} is missing`).toBeGreaterThanOrEqual(0)
+  const to = source.indexOf(close, from)
+  expect(to, `${close} never closes ${open}`).toBeGreaterThan(from)
+  return source.slice(from, to + close.length)
+}
+
+const manifestFiles = ['AppxManifest.xml', 'AppxManifest-Lite.xml'] as const
+
+async function readManifest(name: (typeof manifestFiles)[number]): Promise<string> {
+  return readFile(resolve(wallpaperRoot, '..', 'packaging', 'msix', name), 'utf8')
+}
+
 describe('native chat boundary', () => {
   const sensitiveChatCommands = [
     'allow-send-chat',
@@ -116,13 +137,16 @@ describe('native chat boundary', () => {
 
   it('declares an MSIX StartupTask while retaining the native autostart fallback', async () => {
     const [manifest, lib, windows] = await Promise.all([
-      readFile(resolve(wallpaperRoot, '..', 'packaging/msix/AppxManifest.xml'), 'utf8'),
+      readManifest('AppxManifest.xml'),
       readNative('src/lib.rs'),
       readNative('src/windows_integration.rs'),
     ])
     expect(manifest).toContain('windows.startupTask')
     expect(manifest).toContain('DshWallpaperStartup')
-    expect(lib).toContain('windows_integration::set_startup_task')
+    // The operation moved next to the Windows calls it makes, so the assertion
+    // follows it: the command wrapper only keeps it off the UI thread.
+    expect(lib).toContain('windows_integration::set_autostart(enabled)')
+    expect(windows).toContain('set_startup_task(enabled)')
     // The per-user Run entry remains the fallback for builds Windows will not
     // start through a StartupTask.
     expect(windows).toContain('Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run')
@@ -131,6 +155,26 @@ describe('native chat boundary', () => {
     // package update, which silently broke autostart across 0.2.0.71 → 0.2.0.74.
     expect(windows).toContain('shell:AppsFolder')
     expect(windows).toContain('GetCurrentPackageFamilyName')
+  })
+
+  it('nests the startup task where the schema puts it', async () => {
+    // Package → Applications → Application → Extensions → uap5:Extension →
+    // uap5:StartupTask. Without the `Extensions` container the package still
+    // installs, and Windows never registers the task: GetAsync answered
+    // 参数错误。 (0x80070057) for every build up to 0.2.0.180, while the thirteen
+    // other packages on this machine that declare windows.startupTask all have
+    // the container. The substring check above could not see the difference.
+    for (const name of manifestFiles) {
+      const manifest = await readManifest(name)
+      // A misspelled namespace is not a packaging error: IgnorableNamespaces
+      // exists so Windows can skip what it does not know, which is how
+      // windows.startupTask registered nothing for every release up to 0.2.0.181.
+      expect(manifest).toContain('xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"')
+      const application = span(manifest, '<Application ', '</Application>')
+      const extensions = span(application, '<Extensions>', '</Extensions>')
+      const extension = span(extensions, '<uap5:Extension Category="windows.startupTask"', '</uap5:Extension>')
+      expect(extension).toContain('<uap5:StartupTask TaskId="DshWallpaperStartup"')
+    }
   })
 
   it('keeps the DeepSeek web transport in a dedicated persistent WebView', async () => {

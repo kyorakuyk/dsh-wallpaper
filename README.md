@@ -248,11 +248,24 @@ pnpm -C bridge test
 cargo test --manifest-path wallpaper/src-tauri/Cargo.toml
 ```
 
+## 本机一键发布
+
+在 PowerShell 7 中运行：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\publish-local-msix.ps1
+```
+
+脚本默认运行类型检查、前端/Bridge 测试和 Rust 测试，然后构建 Release MSIX、自动递增清单修订号、签名、验证、安装并启动；版本号只写入本次构建用的临时清单，不修改项目清单。Lite 发布还会运行 Lite 原生检查/测试和与 CI 共用的 Lite 产物边界检查。签名从当前用户证书库按指纹使用私钥，不读取或传递 PFX 密码。MSIX 只安装给当前用户，不需要管理员权限；只有本机尚未信任匹配的公开 CER 时，才会为导入 `LocalMachine\TrustedPeople` 单独请求 UAC。拒绝 UAC 会在安装前停止。升级默认关闭正在运行的壁纸，`-NoForceApplicationShutdown` 可要求脚本发现旧进程时停止并提示手动退出。脚本会保留上一版签名包供人工回退；若新版本已安装但启动验证失败，不会自动降级。`-PlanOnly` 只显示计划，`-SkipChecks` 跳过类型检查和测试（Lite 产物边界、签名与安装完整性校验仍执行），`-NoLaunch` 安装后不启动。
+
+首次使用前需要匹配 MSIX `Publisher` 的公开 CER，以及 `Cert:\CurrentUser\My` 中对应的带私钥签名证书；脚本不会创建或导出 PFX。构建 Lite 包可传入 `-Edition lite`，安装前可用 `-PlanOnly` 查看版本递增、签名证书、UAC 需求和回滚包状态。
+
 ## 素材与版权
 
 - 立绘/动画帧/背景均为 **AI 生成或用户自备**，代码 MIT 许可
 - `assets/personas/abolished/` 保留全部历史迭代版本（留档）
-- 素材替换：`assets/personas/<id>/` 放图 + 写 manifest，或跑 `scripts/remove-bg.py` 抠白底
+- 四张默认立绘的源图位于 `assets/personas/`：`蓝幼.png`、`蓝熟.png`、`黑红幼.png`、`黑红熟.png`。运行 `python scripts/remove-bg.py` 会将它们分别准备到 `wallpaper/public/personas/portrait-blue-child.png`、`portrait-blue-adult.png`、`portrait-black-child.png`、`portrait-black-adult.png`；已有透明通道会原样保留，白底图才会抠图。
+- 单用户换装可在「设置中心 → 外观 → 素材库」导入图片并分配到 DeepSeek Flash/Pro 或 Harness Flash/Pro 槽位；要改项目默认图则替换上述源图并重新生成运行时资源，再构建安装包。
 
 ## 路线图
 

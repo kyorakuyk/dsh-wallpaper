@@ -71,7 +71,7 @@ describe('App chat lifecycle isolation', () => {
   })
 
   it('moves the switch back only when the wallpaper itself moved it away', async () => {
-    const { shouldReturnToHarness } = await import('../src/App.tsx')
+    const { shouldReturnToHarness, harnessResetClaimed } = await import('../src/App.tsx')
 
     // 主体退出后壁纸自己复位过：它回来时，滑槽要自己拨回去（用户原话：再次联通之后要以
     // harness 后端为准）。复位期间保留的那段转写属于同一个会话——会话按日期命名、转写留在
@@ -83,6 +83,33 @@ describe('App chat lifecycle isolation', () => {
     expect(shouldReturnToHarness('bridge-loading', 'deepseek-web', true)).toBe(false)
     expect(shouldReturnToHarness('offline', 'deepseek-web', true)).toBe(false)
     expect(shouldReturnToHarness('bridge-ready', 'harness', true)).toBe(false)
+
+    // 这次复位是**壁纸自己**做的，而壁纸装一次新版就重启一次：权利写进设置，活过重启。少了这
+    // 一半，桥回来了、灯是绿的，滑槽却停在左侧——用户以为还在跟 DSH 说话，输入进了另一个后端
+    // （用户实测报的"输入被吞"）。用户手动拨过一次就会清掉它，他选的那一侧永远优先。
+    expect(harnessResetClaimed(false, undefined)).toBe(false)
+    expect(harnessResetClaimed(true, undefined)).toBe(true)
+    expect(harnessResetClaimed(false, Date.now())).toBe(true)
+    expect(harnessResetClaimed(true, Date.now())).toBe(true)
+    // 坏值不算凭据。
+    expect(harnessResetClaimed(false, Number.NaN)).toBe(false)
+    expect(shouldReturnToHarness('bridge-ready', 'deepseek-web', harnessResetClaimed(false, 1))).toBe(true)
+    expect(shouldReturnToHarness('bridge-ready', 'deepseek-web', harnessResetClaimed(false, undefined))).toBe(false)
+  })
+
+  /**
+   * 聊天层的通知必须和原生宿主的 rror **分开存**：后者会被原生快照整体覆写，挤在一起时
+   * 通知刚写进去就被下一条快照擦掉（用户实测："顶上弹了一下，消失得极快"）。
+   */
+  it('keeps a chat-layer notice visible even though snapshots own the host error', async () => {
+    const { visibleNotice } = await import('../src/App.tsx')
+    const afterTurnBlocked = { chatNotice: 'DSH 拒绝了这一轮（这条会话已被归档）', error: undefined }
+    // 快照随后把宿主那句话写进来（或写空）：聊天层那句仍然在屏幕上。
+    expect(visibleNotice({ ...afterTurnBlocked, error: undefined })).toBe(afterTurnBlocked.chatNotice)
+    expect(visibleNotice({ ...afterTurnBlocked, error: 'Bridge 已断开' })).toBe(afterTurnBlocked.chatNotice)
+    // 没有聊天层通知时，宿主那句话照旧显示；两者都没有则不显示。
+    expect(visibleNotice({ error: 'Bridge 已断开' })).toBe('Bridge 已断开')
+    expect(visibleNotice({})).toBeUndefined()
   })
 
   it('treats connecting and reconnecting as the amber state', async () => {
@@ -105,7 +132,7 @@ describe('App chat lifecycle isolation', () => {
   })
 
   it('keeps an API adapter lifecycle stable while committing later request settings', async () => {
-    const { apiAdapterOptionsFromSettings, chatAdapterLifecycleKey, updateApiAdapterOptions } = await import('../src/App.tsx')
+    const { apiAdapterOptionsFromSettings, chatAdapterLifecycleKey, updateApiAdapterOptions, subjectScopeKey } = await import('../src/App.tsx')
     const first = {
       deepseekApi: {
         baseUrl: 'https://api.deepseek.com',
@@ -123,7 +150,8 @@ describe('App chat lifecycle isolation', () => {
       },
     }
     const stableOptions = apiAdapterOptionsFromSettings(first)
-    const mountedLifecycle = chatAdapterLifecycleKey('deepseek-api', 7)
+    const scope = subjectScopeKey({ subjectId: 'cli:C:/npm/dsh.cmd', endpointPort: 3080 })
+    const mountedLifecycle = chatAdapterLifecycleKey('deepseek-api', 7, scope)
 
     // The mounted adapter holds this exact object. Updating it for the next
     // request must not manufacture a new lifecycle/effect identity.
@@ -134,22 +162,55 @@ describe('App chat lifecycle isolation', () => {
       priceInputPerMillion: 3,
       priceOutputPerMillion: 4,
     })
-    expect(chatAdapterLifecycleKey('deepseek-api', 7)).toBe(mountedLifecycle)
-    expect(chatAdapterLifecycleKey('deepseek-api', 8)).not.toBe(mountedLifecycle)
+    expect(chatAdapterLifecycleKey('deepseek-api', 7, scope)).toBe(mountedLifecycle)
+    expect(chatAdapterLifecycleKey('deepseek-api', 8, scope)).not.toBe(mountedLifecycle)
+    // 主体（端点范围）也必须进这个键：切换主体不会重建适配器，而适配器持有的是"连着哪个端点、
+    // 哪条会话"—— 换了主体却留着旧端点的会话，就是"灯说已连接、一发却说会话尚未建立"。
+    const shellScope = subjectScopeKey({ subjectId: 'shell:com.deepseek.dsh', endpointPort: 19387 })
+    expect(chatAdapterLifecycleKey('deepseek-api', 7, shellScope)).not.toBe(mountedLifecycle)
+  })
+
+  it('keeps the amber light on for a fixed moment after a subject switch', async () => {
+    const { HARNESS_SWITCH_BUFFER_MS } = await import('../src/App.tsx')
+    // 用户要的是"固定 1–2s 的黄灯缓冲后立刻载入"：答案常常一次往返就回来，灯跟着一闪而过，
+    // 用户看不到"它在连"，只觉得界面抖了一下。所以这是**最短停留**，不是超时。
+    expect(HARNESS_SWITCH_BUFFER_MS).toBeGreaterThanOrEqual(1_000)
+    expect(HARNESS_SWITCH_BUFFER_MS).toBeLessThanOrEqual(2_000)
+  })
+
+  it('loads the minimal preset by default, and passes a chosen one through', async () => {
+    const { DEFAULT_HARNESS_PRESET, harnessAdapterOptionsFromSettings } = await import('../src/App.tsx')
+
+    // 端点**不在这里**：`connect_harness` 命令自己按主体范围解析端口（"不信任调用方"），渲染端
+    // 曾经算过一个端口交出去，命令根本不看它 —— 死参数已删，所以这里也不该再出现它。
+    const fallback = harnessAdapterOptionsFromSettings({}, 'deepseek-chat')
+    expect(fallback.preset).toBe('minimal')
+    expect(DEFAULT_HARNESS_PRESET).toBe('minimal')
+    expect(fallback.model).toBe('deepseek-chat')
+    expect('endpointPort' in fallback).toBe(false)
+
+    // 设置里写了就用写的那个（"设置里是什么就是什么"）。
+    expect(harnessAdapterOptionsFromSettings({ harnessPreset: 'standard' }, undefined).preset).toBe('standard')
   })
 
   it('applies daily policy only when unlocking after a local calendar rollover', async () => {
-    const { chatAdapterLifecycleKey, shouldIgnoreUnpairedResume, shouldStartNewConversationOnUnlock } = await import('../src/App.tsx')
+    const { chatAdapterLifecycleKey, shouldIgnoreUnpairedResume, shouldStartNewConversationOnUnlock, subjectScopeKey } = await import('../src/App.tsx')
+    const scope = subjectScopeKey({ subjectId: 'cli:C:/npm/dsh.cmd', endpointPort: 3080 })
     const beforeMidnight = new Date(2026, 7, 18, 23, 59, 0)
     const afterMidnight = new Date(2026, 7, 19, 0, 1, 0)
+    const afterBoundary = new Date(2026, 7, 19, 4, 1, 0)
 
     // Changing a policy in Settings changes neither adapter identity nor an
     // in-flight stream. The daily decision belongs to the later unlock event.
-    expect(chatAdapterLifecycleKey('deepseek-api', 7)).toBe(chatAdapterLifecycleKey('deepseek-api', 7))
+    expect(chatAdapterLifecycleKey('deepseek-api', 7, scope)).toBe(chatAdapterLifecycleKey('deepseek-api', 7, scope))
     expect(shouldStartNewConversationOnUnlock('daily', '2026-08-18', beforeMidnight)).toBe(false)
-    expect(shouldStartNewConversationOnUnlock('daily', '2026-08-18', afterMidnight)).toBe(true)
+    // 「助手日」的边界是 04:00（用户定的规则）：00:01 仍属**前一天** —— 深夜还在做的事不该被零点
+    // 从中间切走；到 04:01 才真的换新的一天 ✓。边界小时可配，0 = 退回"零点跨日"的旧行为。
+    expect(shouldStartNewConversationOnUnlock('daily', '2026-08-18', afterMidnight)).toBe(false)
+    expect(shouldStartNewConversationOnUnlock('daily', '2026-08-18', afterBoundary)).toBe(true)
+    expect(shouldStartNewConversationOnUnlock('daily', '2026-08-18', afterMidnight, 0)).toBe(true)
     expect(shouldStartNewConversationOnUnlock('new-on-unlock', '2026-08-19', afterMidnight)).toBe(true)
-    expect(shouldStartNewConversationOnUnlock('resume-last', '2026-08-18', afterMidnight)).toBe(false)
+    expect(shouldStartNewConversationOnUnlock('resume-last', '2026-08-18', afterBoundary)).toBe(false)
     expect(shouldIgnoreUnpairedResume(false, 'resume')).toBe(true)
     expect(shouldIgnoreUnpairedResume(false, 'unlocked')).toBe(false)
     expect(shouldIgnoreUnpairedResume(true, 'resume')).toBe(false)

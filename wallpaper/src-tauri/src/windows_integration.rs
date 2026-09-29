@@ -1,5 +1,9 @@
 use std::sync::{OnceLock, RwLock};
 
+// 本功能的判据与配对见 docs/evidence/desktop-blank-double-click.md：判据是 MSAA 三态
+// （Icon / Blank / Unknown，只有 Blank 允许切换），配对是两态状态机（严格两两匹配）。
+// 中途曾按用户要求把这一整块冻结并回退过一次，那一代实现仍在 git 历史里（c9a9665 到 dc49983），
+// 但其中的做法已被该文档判定为在 UIA 上原地调参的一类弯路，不要照它重走。
 use serde::{Deserialize, Serialize};
 
 #[cfg(windows)]
@@ -16,7 +20,8 @@ use crate::native_bootstrap;
 use crate::lock_screen_backup::{
     discard_backup_after_failed_takeover, discard_stale_backup, ensure_backup_for_takeover,
     has_stale_backup, inspect_backup, managed_image_is_active, managed_image_path,
-    managed_image_path_from_file, next_managed_image_file, remove_backup_after_verified_restore,
+    file_content_hash, managed_image_file_for_content, managed_image_path_from_file,
+    remove_backup_after_verified_restore,
     restore_snapshot_path, same_local_file_uri, LockScreenBackupLease, LockScreenBackupManifest,
     LockScreenBackupState, LEGACY_MANAGED_IMAGE_FILE,
 };
@@ -44,7 +49,22 @@ fn emit_to_background<S: serde::Serialize + Clone>(
     );
 }
 
+/// Tell the wallpaper host about a real session or power transition, and leave a
+/// line behind.
+///
+/// These four events decide whether the desktop leaves the sleeping portrait, and
+/// the log used to say nothing about them: a wake that did not take effect could
+/// not be told apart from Windows never telling us, so the only available answer
+/// was a guess. Silence in the log now means the event never arrived; a line
+/// means it did, and the renderer owned the outcome.
 #[cfg(windows)]
+fn emit_system_session(app: &tauri::AppHandle, transition: &'static str) {
+    log::info!("系统会话事件：{transition}");
+    emit_to_background(app, "system-session", transition);
+}
+
+#[cfg(windows)]
+use windows::core::Interface;
 use windows::{
     core::{w, BOOL, HSTRING, PCWSTR, PWSTR},
     ApplicationModel::{StartupTask, StartupTaskState},
@@ -100,10 +120,12 @@ use windows::{
             WS_POPUP, WS_SYSMENU, WS_THICKFRAME, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
         },
         UI::{
-            Accessibility::{CUIAutomation, IUIAutomation, UIA_ListItemControlTypeId},
+            Accessibility::{AccessibleObjectFromWindow, IAccessible, CUIAutomation, IUIAutomation, UIA_ListItemControlTypeId},
             Controls::MARGINS,
             HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI},
-            Input::KeyboardAndMouse::{GetAsyncKeyState, SetFocus, VK_LBUTTON},
+            Input::KeyboardAndMouse::{
+            GetAsyncKeyState, SetFocus, VK_CONTROL, VK_LBUTTON, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+        },
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         },
     },
@@ -258,6 +280,13 @@ struct InteractionRegionState {
     /// 在前面——否则球会在岛正上方冒出来。判定就放在发布热区这一步，避免为它再开
     /// 一条 IPC。
     island_visible: bool,
+    /// **输入岛自己**那块矩形（发布时按 id 挑出来单独留一份）。
+    ///
+    /// 为什么单独存：内部结构 `PhysicalInteractionRegion` 只保留四个坐标，id 在转换时就丢了，
+    /// 而"要不要做键盘交接"必须区分"命中的是岛"还是"命中的是立绘等其它热区"——两者都该归我们
+    /// 收点击，但只有前者该抢前台与焦点（实测：立绘若也抢，一次点击会因 `WM_NCHITTEST` 重复
+    /// 触发六次交接，表现为"点立绘闪一下"）。
+    island_rect: Option<PhysicalInteractionRegion>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -616,6 +645,16 @@ fn point_hits_interaction_region(regions: &[PhysicalInteractionRegion], x: i32, 
     regions.iter().any(|region| region.contains(x, y))
 }
 
+/// 这一点是否落在**输入岛自己**那块矩形里。
+///
+/// 与 `point_hits_interaction_region` 的分工：后者决定"点击归不归我们"（任何热区都算，立绘也算），
+/// 前者决定"要不要做键盘交接、把前台与焦点抢过来"——那件事只有输入岛该做。
+fn point_hits_island_rect(state: &InteractionRegionState, x: i32, y: i32) -> bool {
+    state
+        .island_rect
+        .is_some_and(|rect| rect.contains(x, y))
+}
+
 pub fn update_interaction_regions(
     regions: Vec<InteractionRegionInput>,
     scale_factor: f64,
@@ -632,6 +671,11 @@ pub fn update_interaction_regions(
     }
     // 判定要在 `into_iter()` 吃掉 regions 之前做。
     let island_visible = regions.iter().any(|region| region.id == ISLAND_REGION_ID);
+    let island_rect = regions
+        .iter()
+        .find(|region| region.id == ISLAND_REGION_ID)
+        .cloned()
+        .and_then(|region| scale_interaction_region(region, scale_factor));
     let physical_regions: Vec<_> = regions
         .into_iter()
         .enumerate()
@@ -653,6 +697,7 @@ pub fn update_interaction_regions(
     state.revision = revision;
     state.scale_factor = scale_factor;
     state.regions = physical_regions;
+    state.island_rect = island_rect;
     // 岛可见性的变化必须留痕：悬浮球「岛在前面就不弹」完全建立在这个标志上，
     // 而它只可能由前端发布热区改变——出问题时第一个要看的就是这条日志。
     if state.island_visible != island_visible {
@@ -1901,7 +1946,7 @@ unsafe extern "system" fn session_subclass_proc(
                     native_bootstrap::generation(),
                 );
                 dispatch_system_action(app, AppAction::Lock);
-                emit_to_background(app, "system-session", "locked");
+                emit_system_session(app, "locked");
             }
             WTS_SESSION_UNLOCK => {
                 let _ = native_bootstrap::start_wake();
@@ -1911,7 +1956,7 @@ unsafe extern "system" fn session_subclass_proc(
                     native_bootstrap::generation(),
                 );
                 dispatch_system_action(app, AppAction::Unlock { play_wake: true });
-                emit_to_background(app, "system-session", "unlocked");
+                emit_system_session(app, "unlocked");
             }
             _ => {}
         },
@@ -1924,7 +1969,7 @@ unsafe extern "system" fn session_subclass_proc(
                     native_bootstrap::generation(),
                 );
                 dispatch_system_action(app, AppAction::Lock);
-                emit_to_background(app, "system-session", "suspend");
+                emit_system_session(app, "suspend");
             }
             PBT_APMRESUMEAUTOMATIC => {
                 let _ = native_bootstrap::start_wake();
@@ -1934,7 +1979,7 @@ unsafe extern "system" fn session_subclass_proc(
                     native_bootstrap::generation(),
                 );
                 dispatch_system_action(app, AppAction::Unlock { play_wake: true });
-                emit_to_background(app, "system-session", "resume");
+                emit_system_session(app, "resume");
             }
             _ => {}
         },
@@ -2362,12 +2407,17 @@ unsafe extern "system" fn interaction_subclass_proc(
                 if !hit {
                     return LRESULT(HTTRANSPARENT as isize);
                 }
+                // 点击归属（`hit`）与"要不要抢焦点"是两件事：立绘等其它热区只需要前者。
+                let hit_is_island = interaction_regions()
+                    .read()
+                    .map(|state| point_hits_island_rect(&state, local_x, local_y))
+                    .unwrap_or(false);
                 // Inside the input island. `WM_NCHITTEST` reaches us where the mouse
                 // messages do not, so this is where a real click can be recognised: the
                 // point is in a declared region and the physical left button is down.
                 // Outside the island nothing here runs, so the wallpaper still never
                 // takes the keyboard without the user asking for it (plan 3.C).
-                if unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0 {
+                if hit_is_island && unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0 {
                     // Phase A still has one open question: whether this branch is reached at all on
                     // a real click. The WebView2 child belongs to another process, so hit-testing may
                     // not be ours to see. Traced so the answer is measured rather than assumed.
@@ -2533,45 +2583,102 @@ fn restore_desktop_keyboard_focus(app: &tauri::AppHandle) {
     }
 }
 
-/// Uses UI Automation, rather than ListView messages with a pointer owned by
-/// Explorer, to distinguish desktop icons from empty desktop space. This is a
-/// supported cross-process accessibility boundary and never consumes input.
-#[cfg(windows)]
-fn cursor_is_over_desktop_blank(automation: &IUIAutomation) -> bool {
-    let mut point = POINT::default();
-    unsafe {
-        if GetCursorPos(&mut point).is_err() {
-            return false;
-        }
-        let Ok(element) = automation.ElementFromPoint(point) else {
-            return false;
-        };
-        // ElementFromPoint can return an icon label/text child rather than the
-        // ListItem itself. Check the short parent chain before considering the
-        // point blank; no Explorer memory or window messages are involved.
-        let walker = automation.ControlViewWalker().ok();
-        let mut current = Some(element);
-        for _ in 0..4 {
-            let Some(element) = current else {
-                break;
-            };
-            if element.CurrentControlType().ok() == Some(UIA_ListItemControlTypeId) {
-                return false;
-            }
-            current = walker
-                .as_ref()
-                .and_then(|tree| tree.GetParentElement(&element).ok());
-        }
-        true
-    }
+/// 光标处到底是"桌面图标"、"桌面空白"，还是"无法确认"。
+///
+/// 判据来自**旧接口 MSAA**，不是 UI Automation。实测（2026-09-30，本机）：
+///   * UI Automation 从 Explorer 的 `FolderView` 读不到任何子节点（四种读法全为 0），所以那条路
+///     永远只会说"这里没有图标"，从而把图标位当成空白 —— 正是最初那个缺陷的根子；
+///   * MSAA 的 `AccessibleObjectFromWindow(OBJID_CLIENT)` 一次就给出 18 个子项（带名称与矩形），
+///     而在该对象上做 `accHitTest` 时：落在图标上返回子项编号（大于 0），落在空白返回 0。
+/// 实测七点零歧义：图标 1/2/3 号 -> 1/2/3，四个空白点 -> 0。
+///
+/// 三态是刻意的：读不到对象、子项数为 0、调用异常，一律是"无法确认"，绝不退化成"空白"。
+/// 判错的代价不对称 —— 把图标当空白会让"打开快捷方式"顺带翻掉桌面层。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DesktopPointVerdict {
+  /// 双击的语义是两拍：**第一下判定、第二下执行** —— 按下时取三态（这一点是图标、是空白、
+/// 还是无法确认），松开时若这次与上一次构成长度/位置都合格的配对，才真正切换。判定只在按下
+/// 那一刻取一次，因为点击的目标由按下决定；第一下不合格就直接作废，不会留到第二下去补。
+/// 落在某个桌面图标上（或图标标签上）。
+  Icon,
+  /// 确认是桌面空白处。
+  Blank,
+  /// 读不到、结构异常或调用失败；调用方必须当作"不切换"。
+  Unknown,
 }
 
-/// The wallpaper host is a child of Explorer's WorkerW. After click-through,
-/// Explorer does not reliably become the foreground window, so foreground
-/// state cannot decide whether a global double click belongs to the desktop.
-/// Walk the actual HWND below the cursor instead; normal top-level apps do
-/// not have WorkerW/Progman in their parent chain.
+/// 取 Explorer 的图标列表（`SHELLDLL_DefView` -> `SysListView32`），并拿到它的 MSAA 对象。
 #[cfg(windows)]
+fn desktop_icon_list_accessible() -> Option<IAccessible> {
+  let layer = desktop_icon_layer()?;
+  let list = desktop_icon_list_view_in_layer(layer)?;
+  let mut raw: *mut core::ffi::c_void = std::ptr::null_mut();
+  unsafe {
+    AccessibleObjectFromWindow(
+      list,
+      // OBJID_CLIENT = 0xFFFFFFFC（Windows 头文件里的定义；windows crate 把它放在
+      // WindowsAndMessaging 下，这里直接用字面量，避免多引入一个模块）。
+      OBJID_CLIENT_ID,
+      &IAccessible::IID,
+      &mut raw as *mut _ as *mut *mut core::ffi::c_void,
+    )
+    .ok()?;
+    if raw.is_null() {
+      return None;
+    }
+    Some(IAccessible::from_raw(raw))
+  }
+}
+
+/// 光标处的三态判定。只读，不注入 Explorer、不发鼠标消息。
+#[cfg(windows)]
+pub(crate) fn desktop_point_verdict() -> DesktopPointVerdict {
+  let mut point = POINT::default();
+  if unsafe { GetCursorPos(&mut point) }.is_err() {
+    return DesktopPointVerdict::Unknown;
+  }
+  let Some(accessible) = desktop_icon_list_accessible() else {
+    log::info!("桌面空白判定：取不到图标列表的辅助对象，判为无法确认");
+    return DesktopPointVerdict::Unknown;
+  };
+  let child_count = match unsafe { accessible.accChildCount() } {
+    Ok(count) => count,
+    Err(error) => {
+      log::info!("桌面空白判定：读取子项数失败（{error}），判为无法确认");
+      return DesktopPointVerdict::Unknown;
+    }
+  };
+  if child_count <= 0 {
+    log::info!("桌面空白判定：图标列表报告 0 个子项，判为无法确认");
+    return DesktopPointVerdict::Unknown;
+  }
+  let hit = match unsafe { accessible.accHitTest(point.x, point.y) } {
+    Ok(value) => value,
+    Err(error) => {
+      log::info!("桌面空白判定：accHitTest 失败（{error}），判为无法确认");
+      return DesktopPointVerdict::Unknown;
+    }
+  };
+  // accHitTest 的返回值是 VARIANT：本对象内的子项编号是整数，别的元素是对象。
+  let verdict = match unsafe { hit.Anonymous.Anonymous.vt } {
+    windows::Win32::System::Variant::VT_I4 => {
+      let child = unsafe { hit.Anonymous.Anonymous.Anonymous.lVal };
+      if child > 0 {
+        DesktopPointVerdict::Icon
+      } else {
+        DesktopPointVerdict::Blank
+      }
+    }
+    _ => DesktopPointVerdict::Unknown,
+  };
+  log::info!(
+    "桌面空白判定：cursor=({},{}) 子项数={child_count} 结论={:?}",
+    point.x,
+    point.y,
+    verdict
+  );
+  verdict
+}
 fn cursor_is_on_desktop_surface(background: HWND) -> bool {
     let mut point = POINT::default();
     unsafe {
@@ -2635,12 +2742,110 @@ fn cursor_hits_interaction_region(root_hwnd: HWND) -> bool {
         .unwrap_or(false)
 }
 
+/// 一次双击配对允许的最大间隔。用户实测节奏在 100 到 300 毫秒，900 毫秒留足余量。
+/// OBJID_CLIENT：Windows 头文件里的 0xFFFFFFFC（windows crate 把它放在 WindowsAndMessaging 下，
+/// 这里直接用字面量，避免为它多引入一个模块）。
+const OBJID_CLIENT_ID: u32 = 0xFFFF_FFFC;
+const PAIR_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
+/// 一次切换之后的冷却：这段时间内的点击一律不算数，免得快速连点把开关来回拨。
+const PAIR_COOLDOWN: std::time::Duration = std::time::Duration::from_millis(350);
+/// 两次点击的最大位置差（物理像素）。位置相近才是双击；两次无关单击通常不在一处。
+const PAIR_REACH_PX: i32 = 64;
+/// 一次"点击"按下的最长时长。更长即为拖动，不参与配对。
+const CLICK_MAX_MS: u128 = 400;
+/// 一次"点击"期间允许的位移。超过即视为拖动。
+const CLICK_MAX_MOVE_PX: i32 = 12;
+
+/// 两次点击的位置是否近到可以算作一次双击。
+fn within_double_click_reach(a: (i32, i32), b: (i32, i32), tolerance: i32) -> bool {
+  (a.0 - b.0).abs() <= tolerance && (a.1 - b.1).abs() <= tolerance
+}
+
+/// 这一次按下到松开是否算一次"干净点击"：够短、没怎么移动。
+///
+/// 排除拖动是刻意的：拖拽选图标、拖窗口都会产生"按下-移动-松开"，若把它算成一次点击，
+/// 两次这样的操作就可能凑成一对而翻掉桌面层。
+fn is_clean_click(duration_ms: u128, movement_px: i32, max_ms: u128, max_move_px: i32) -> bool {
+  duration_ms <= max_ms && movement_px <= max_move_px
+}
+
+/// 按下瞬间是否有组合键。带修饰键的点击是别的意图（例如 Ctrl 多选），不参与配对。
+fn modifiers_are_idle(states: [bool; 5]) -> bool {
+  !states.iter().any(|pressed| *pressed)
+}
+
+/// 两次点击是否构成一次"成立的双击"。四项缺一不可，且**不允许链式重配**：
+/// 第二下若不成立，这一对就作废（调用方据此清空状态），不能拿第二下当新的第一下 ——
+/// 否则快速连点会形成 1-2、2-3、3-4 这样的重叠配对，一次连点能拨动好几次。
+fn pair_is_complete(
+  has_previous: bool,
+  same_mode: bool,
+  within_window: bool,
+  within_reach: bool,
+) -> bool {
+  has_previous && same_mode && within_window && within_reach
+}
+
+/// 双击配对的状态机。**严格两两匹配**：一次点击要么上膛、要么与已上膛的那一下组成一次切换，
+/// 要么把状态清干净 —— 绝不允许"第二下没配上就当新的第一下"这种链式重配，否则快速连点会形成
+/// 1-2、2-3、3-4 这样的重叠配对，一次连点拨动好几次。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PairState {
+  Idle,
+  Armed {
+    at_ms: u128,
+    point: (i32, i32),
+    mode_inner: bool,
+  },
+}
+
+/// 一次合格点击之后，状态该走到哪里、以及是否执行切换。纯函数：不读时钟，时间以毫秒数传入。
+pub(crate) fn pair_transition(
+  state: PairState,
+  now_ms: u128,
+  point: (i32, i32),
+  mode_inner: bool,
+  cooling: bool,
+) -> (PairState, bool) {
+  if cooling {
+    // 冷却期内既不配对也不上膛：刚切过一次，紧接着的连点一律不算数。
+    return (PairState::Idle, false);
+  }
+  match state {
+    PairState::Idle => (
+      PairState::Armed {
+        at_ms: now_ms,
+        point,
+        mode_inner,
+      },
+      false,
+    ),
+    PairState::Armed {
+      at_ms,
+      point: armed_point,
+      mode_inner: armed_mode,
+    } => {
+      let same_mode = armed_mode == mode_inner;
+      let within_window = now_ms.saturating_sub(at_ms) <= PAIR_WINDOW.as_millis();
+      let within_reach = within_double_click_reach(armed_point, point, PAIR_REACH_PX);
+      if same_mode && within_window && within_reach {
+        (PairState::Idle, true)
+      } else {
+        // 关键：不成立就作废。第二下不会被当成新的第一下。
+        (PairState::Idle, false)
+      }
+    }
+  }
+}
+
 fn should_toggle_desktop_workspace(
     cursor_on_desktop_surface: bool,
     cursor_hits_interaction: bool,
-    automation_reports_blank: bool,
+    blank_is_confirmed: bool,
 ) -> bool {
-    cursor_on_desktop_surface && !cursor_hits_interaction && automation_reports_blank
+    // 第三项必须是**确认**空白（MSAA 三态里的 Blank）：无法确认在调用方就折成 false。
+    // 判错的方向不对称 —— 把图标当空白会让"打开快捷方式"顺带翻掉桌面层。
+    cursor_on_desktop_surface && !cursor_hits_interaction && blank_is_confirmed
 }
 
 /// 「点功能组件却切回表桌面」只可能是三个输入里有一个不成立，而热区是前端按元素 rect
@@ -2682,69 +2887,122 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
         // UIA requires COM initialization on the monitor thread. A prior COM
         // mode is harmless: UIA can still be created on that thread.
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        let automation = unsafe {
-            CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
-        };
-        let Ok(automation) = automation else {
-            log::warn!("无法初始化 Windows UI Automation；表/里桌面双击切换暂不可用");
-            return;
-        };
-        log::info!("表/里桌面双击监控已启动（UI Automation）");
+        // 判据改走 MSAA（旧接口）：UI Automation 从 Explorer 的 FolderView 读不到任何子节点，
+        // 因此不必再初始化它。MSAA 按需取用，不注入 Explorer。
+        log::info!("表/里桌面双击监控已启动（判据：MSAA accHitTest 三态）");
+
 
         let mut was_down = false;
-        let mut last_blank_click: Option<std::time::Instant> = None;
+        // 上一次合格且干净的点击：时刻、位置、当时的表/里桌面模式。
+        // 配对状态机的当前位置，以及本次监控的时间原点（纯函数用毫秒数，便于单测）。
+        let mut pair_state = PairState::Idle;
+        let started_at = std::time::Instant::now();
+        let mut last_toggle_at: Option<u128> = None;
+        // 上一次真正切换的时刻：决定冷却，避免快速连点把桌面层来回拨。
+        // 本次按下的现场：时刻、位置、按下时是否合格、按下时有无组合键。
+        let mut press: Option<(std::time::Instant, (i32, i32), bool, bool)> = None;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(16));
             if app.get_webview_window("background").is_none() {
                 break;
             }
             let down = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0;
-            if down && !was_down {
-                let background = app
-                    .get_webview_window(BACKGROUND_WINDOW_LABEL)
-                    .and_then(|window| window.hwnd().ok())
-                    .map(|window| HWND(window.0));
-                let can_toggle = background.is_some_and(|background| {
-                    should_toggle_desktop_workspace(
-                        cursor_is_on_desktop_surface(background),
-                        cursor_hits_interaction_region(background),
-                        cursor_is_over_desktop_blank(&automation),
-                    )
-                });
-                if can_toggle {
-                    log_workspace_toggle_decision(false, true);
-                    let now = std::time::Instant::now();
-                    if last_blank_click.is_some_and(|previous| {
-                        now.duration_since(previous) <= std::time::Duration::from_millis(500)
-                    }) {
-                        last_blank_click = None;
-                        // The transition itself lives in enter/leave_inner_workspace so the
-                        // double click and the floating ball cannot drift apart.
-                        let result = if INNER_WORKSPACE_ACTIVE.load(Ordering::Acquire) {
-                            leave_inner_workspace(&app)
-                        } else {
-                            enter_inner_workspace(&app)
-                        };
-                        if let Err(error) = result {
-                            // If Explorer has restarted or the icon view cannot
-                            // be found, preserve a truthful state and do not
-                            // enter a half-working inner desktop.
-                            log::warn!("无法切换表/里桌面图标层：{error}");
-                            continue;
-                        }
-                        log::info!(
-                            "桌面空白双击：切换至{}桌面",
-                            if INNER_WORKSPACE_ACTIVE.load(Ordering::Acquire) {
-                                "里"
-                            } else {
-                                "表"
-                            }
-                        );
+            // 松开时成形：拖动（按下-移动-松开）天然被排除，不需要额外判断。
+if !down && was_down {
+                // 松开时成形：拖动（按下-移动-松开）天然被排除，不需要额外判断。
+                if let Some((pressed_at, pressed_point, eligible, keys_idle)) = press.take() {
+                    let mut released = POINT::default();
+                    let released_point = if unsafe { GetCursorPos(&mut released) }.is_err() {
+                        pressed_point
                     } else {
-                        last_blank_click = Some(now);
+                        (released.x, released.y)
+                    };
+                    let held_ms = pressed_at.elapsed().as_millis();
+                    let movement = (released_point.0 - pressed_point.0)
+                        .abs()
+                        .max((released_point.1 - pressed_point.1).abs());
+                    let clean = is_clean_click(held_ms, movement, CLICK_MAX_MS, CLICK_MAX_MOVE_PX);
+                    let now_ms = started_at.elapsed().as_millis();
+                    let mode_inner = INNER_WORKSPACE_ACTIVE.load(Ordering::Acquire);
+                    if !eligible || !keys_idle || !clean {
+                        // 不合格的一下把状态清干净：围栏要求点击两两匹配，任何杂音都重新开始。
+                        log::info!(
+                            "点击不计入配对：合格={eligible} 无组合键={keys_idle} 干净={clean}（时长 {held_ms}ms，位移 {movement}px）"
+                        );
+                        pair_state = PairState::Idle;
+                    } else {
+                        let cooling = last_toggle_at
+                            .is_some_and(|at| now_ms.saturating_sub(at) < PAIR_COOLDOWN.as_millis());
+                        let (next, toggle) =
+                            pair_transition(pair_state, now_ms, pressed_point, mode_inner, cooling);
+                        pair_state = next;
+                        if toggle {
+                            last_toggle_at = Some(now_ms);
+                            log::info!(
+                                "桌面空白双击成立：当前为{}桌面（围栏：两两匹配）",
+                                if mode_inner { "里" } else { "表" }
+                            );
+                            let result = if mode_inner {
+                                leave_inner_workspace(&app)
+                            } else {
+                                enter_inner_workspace(&app)
+                            };
+                            match result {
+                                Err(error) => log::warn!("无法切换表/里桌面图标层：{error}"),
+                                Ok(()) => log::info!(
+                                    "桌面空白双击：切换至{}桌面",
+                                    if INNER_WORKSPACE_ACTIVE.load(Ordering::Acquire) {
+                                        "里"
+                                    } else {
+                                        "表"
+                                    }
+                                ),
+                            }
+                        } else if cooling {
+                            log::info!("点击不计入配对：距上次切换不足 {}ms", PAIR_COOLDOWN.as_millis());
+                        }
                     }
+                }
+            }
+            if down && !was_down {
+                // 按下的现场：三条判据 + 组合键状态，全部**在这一刻**取，因为点击的目标由按下决定。
+                let keys = unsafe {
+                    [
+                        GetAsyncKeyState(VK_CONTROL.0 as i32) < 0,
+                        GetAsyncKeyState(VK_MENU.0 as i32) < 0,
+                        GetAsyncKeyState(VK_SHIFT.0 as i32) < 0,
+                        GetAsyncKeyState(VK_LWIN.0 as i32) < 0,
+                        GetAsyncKeyState(VK_RWIN.0 as i32) < 0,
+                    ]
+                };
+                let mut pressed = POINT::default();
+                let pressed_point = if unsafe { GetCursorPos(&mut pressed) }.is_err() {
+                    (i32::MIN, i32::MIN)
                 } else {
-                    last_blank_click = None;
+                    (pressed.x, pressed.y)
+                };
+                let verdict = desktop_point_verdict();
+                // 三条判据在**任何模式下都要成立**。此前这里为"里桌面交给 WebView"留过一条短路，
+                // 等于在里桌面下旁路了输入岛等区域的判据 —— 实测表现为"点击穿透被覆盖"与乱配对。
+                let eligible = app
+                        .get_webview_window(BACKGROUND_WINDOW_LABEL)
+                        .and_then(|window| window.hwnd().ok())
+                        .map(|window| HWND(window.0))
+                        .is_some_and(|background| {
+                            should_toggle_desktop_workspace(
+                                cursor_is_on_desktop_surface(background),
+                                cursor_hits_interaction_region(background),
+                                verdict == DesktopPointVerdict::Blank,
+                            )
+                        });
+                press = Some((
+                    std::time::Instant::now(),
+                    pressed_point,
+                    eligible,
+                    modifiers_are_idle(keys),
+                ));
+                if !eligible {
+                    log::info!("按下即不合格（verdict={verdict:?}）");
                 }
             }
             was_down = down;
@@ -2841,7 +3099,10 @@ pub async fn set_lock_screen(app: &tauri::AppHandle, enabled: bool) -> Result<St
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| "系统时间无效，已取消锁屏接管。".to_string())?
             .as_millis() as u64;
-        let managed_image_file = next_managed_image_file(captured_at, "png")?;
+        // 名字由**内容**决定（同一张素材永远同一个文件名）：Windows 把每个不同的文件名都记成
+        // "最近使用的图像"里的一条，按次生成名字会让同一张图占掉多个栏位（用户实测三个）。
+        let content_hash = file_content_hash(&bundled_sleep_image)?;
+        let managed_image_file = managed_image_file_for_content(&content_hash, "png")?;
         let managed_path = managed_image_path_from_file(&config_dir, &managed_image_file)?;
         copy_sleep_image_without_overwrite(&bundled_sleep_image, &managed_path)?;
         let lease = match ensure_backup_for_takeover(
@@ -3187,10 +3448,17 @@ const RUN_KEY_PATH: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 const RUN_KEY_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(windows)]
 const RUN_VALUE_NAME: &str = "dsh-wallpaper";
-/// The `<Application Id>` declared by `packaging/msix/AppxManifest.xml`. The
+/// The `<Application Id>` declared by this edition's `AppxManifest.xml`. The
 /// shell needs it, together with the package family name, to address the
 /// packaged app's launch alias.
-#[cfg(windows)]
+///
+/// The two editions ship different manifests *and* different packages
+/// (`com.dsh.wallpaper` / `com.dsh.wallpaper.lite`), so one shared value made
+/// the Lite package record an alias for an application its manifest does not
+/// declare — an entry that resolves to nothing at logon.
+#[cfg(all(windows, feature = "lite"))]
+const PACKAGE_APPLICATION_ID: &str = "WallpaperLite";
+#[cfg(all(windows, not(feature = "lite")))]
 const PACKAGE_APPLICATION_ID: &str = "Wallpaper";
 
 /// The per-user autostart value a packaged build must record.
@@ -3344,18 +3612,166 @@ fn run_entry_command() -> Result<Option<String>, String> {
     Ok(Some(value.trim_end_matches('\0').to_string()))
 }
 
+/// The value line `reg query` prints, pulled out of its report.
+///
+/// The output is a blank line, the key path in brackets and the value itself,
+/// with name, type and data separated by runs of spaces:
+///
+/// ```text
+///
+/// HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
+///     dsh-wallpaper    REG_SZ    explorer.exe shell:AppsFolder\...!Wallpaper
+/// ```
+///
+/// Only the type token is used as a delimiter, because the data contains spaces
+/// of its own.
+#[cfg(windows)]
+fn parse_reg_query_value(output: &str, value_name: &str) -> Option<String> {
+    for line in output.lines() {
+        let Some(rest) = line.trim().strip_prefix(value_name) else {
+            continue;
+        };
+        // The name has to be a whole token: `dsh-wallpaper-old` is another value.
+        if !rest.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let rest = rest.trim_start();
+        let Some(type_end) = rest.find(char::is_whitespace) else {
+            continue;
+        };
+        if !rest[..type_end].starts_with("REG_") {
+            continue;
+        }
+        return Some(rest[type_end..].trim_start().to_string());
+    }
+    None
+}
+
+/// What a child `reg.exe` — and therefore the shell at logon — sees in the same
+/// key.
+///
+/// MSIX redirects a packaged app's HKCU writes into a private per-user hive
+/// which is *merged over* the real key when the app reads it. An in-process
+/// delete therefore leaves a tombstone that hides the real value from the app
+/// only, while Windows keeps launching the app at logon: the app reported
+/// 「当前用户启动项里没有 DSH Wallpaper」 for a value that was sitting in the
+/// real key the whole time. The manifest declares this key unvirtualized, and
+/// this read is the cross-check that says whether that declaration is in force.
+#[cfg(windows)]
+fn run_entry_command_via_child() -> Result<Option<String>, String> {
+    use std::process::Command;
+    let mut cmd = Command::new("reg");
+    std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x08000000);
+    cmd.args(["query", RUN_KEY_PATH, "/v", RUN_VALUE_NAME]);
+    let output = cmd.output().map_err(|error| error.to_string())?;
+    match output.status.code() {
+        Some(0) => Ok(parse_reg_query_value(
+            &String::from_utf8_lossy(&output.stdout),
+            RUN_VALUE_NAME,
+        )),
+        // `reg.exe` answers 1 for "no such key or value", which is the same state
+        // the in-process read reports as "nothing recorded".
+        Some(1) => Ok(None),
+        other => Err(format!(
+            "无法读取当前用户开机启动项（reg.exe 退出码 {}）",
+            other.unwrap_or(-1)
+        )),
+    }
+}
+
+/// What the compatibility Run entry says now, together with the two values
+/// that produced the answer.
+///
+/// The read-back decides what the settings page shows, so it must not guess:
+/// "nothing is recorded", "another build is recorded" and "the registry could
+/// not be read" used to collapse into one silent `false`, and a log line could
+/// then contradict the switch without either side saying which value it saw.
+/// Errors are folded in rather than propagated for the same reason — the
+/// caller has to be able to name which of the three states it is in.
+#[cfg(windows)]
+#[derive(Debug)]
+pub(crate) struct RunEntryCheck {
+    pub(crate) matches: bool,
+    /// The recorded value, when the registry read succeeded.
+    pub(crate) recorded: Option<String>,
+    /// The value this build needs, when it could be computed.
+    pub(crate) expected: Option<String>,
+    /// Why the check could not be completed, when it could not.
+    pub(crate) error: Option<String>,
+}
+
+#[cfg(windows)]
+pub(crate) fn check_run_entry() -> RunEntryCheck {
+    let expected = match current_run_entry_command() {
+        Ok(command) => command,
+        Err(error) => {
+            return RunEntryCheck {
+                matches: false,
+                recorded: None,
+                expected: None,
+                error: Some(error),
+            }
+        }
+    };
+    let recorded = match run_entry_command() {
+        Ok(value) => value,
+        Err(error) => {
+            return RunEntryCheck {
+                matches: false,
+                recorded: None,
+                expected: Some(expected),
+                error: Some(error),
+            }
+        }
+    };
+    let matches = match recorded.as_deref() {
+        Some(value) => autostart_commands_match(value, &expected),
+        None => false,
+    };
+    // The two views are supposed to be the same key, and they silently were not:
+    // the app read its own private tombstone while the real value stayed exactly
+    // where the app had just written it. The manifest declares this key
+    // unvirtualized; this is where a regression of that declaration becomes a
+    // line in the log instead of a settings page that contradicts Windows.
+    match run_entry_command_via_child() {
+        Ok(child) if child == recorded => {}
+        Ok(child) => log::warn!(
+            "开机自启回读：包内视图与 reg.exe 视图不一致（包内={recorded:?} reg={child:?}）；写入虚拟化又对 Run 键生效了，开关显示的将不是登录时真正执行的那个值"
+        ),
+        Err(error) => log::warn!("开机自启回读：reg.exe 交叉检查失败：{error}"),
+    }
+    RunEntryCheck {
+        matches,
+        recorded,
+        expected: Some(expected),
+        error: None,
+    }
+}
+
+/// Why the compatibility entry does not carry autostart, in the words the
+/// settings page shows. Deliberately shorter than the log line: the page names
+/// the state, the log names the values.
+#[cfg(windows)]
+fn run_entry_refusal(check: &RunEntryCheck) -> String {
+    if let Some(error) = check.error.as_deref() {
+        return error.to_string();
+    }
+    match check.recorded.as_deref() {
+        None => "当前用户启动项里没有 DSH Wallpaper。".into(),
+        Some(_) => "当前用户启动项指向的不是本次安装的版本。".into(),
+    }
+}
+
 /// Whether the per-user Run entry launches this exact build. A recorded path
 /// is not evidence of working autostart by itself: it may name a `WindowsApps`
 /// directory that a package update has already deleted.
 #[cfg(windows)]
 pub(crate) fn run_entry_matches_current_build() -> Result<bool, String> {
-    let Some(recorded) = run_entry_command()? else {
-        return Ok(false);
-    };
-    Ok(autostart_commands_match(
-        &recorded,
-        &current_run_entry_command()?,
-    ))
+    let check = check_run_entry();
+    match check.error {
+        Some(error) => Err(error),
+        None => Ok(check.matches),
+    }
 }
 
 /// The exact `reg.exe` invocation that records the entry. Kept apart from the
@@ -3414,7 +3830,17 @@ pub(crate) fn set_startup_task(enabled: bool) -> Result<Option<bool>, String> {
         Ok(task) => task,
         // A package built before the StartupTask manifest extension is still
         // supported through the Run-key compatibility path.
-        Err(_) => return Ok(None),
+        //
+        // **但这条降级必须留痕**：另一位 agent 报告"注册表键从 09-22 到今始终不存在，manifest 与
+        // TaskId 一致、系统策略正常，Windows 就是从未实例化这个任务，现在自启全靠 Run 键在扛"——
+        // 而这里原本把 GetAsync 的 HRESULT 用 `Err(_)` 直接吞掉，于是"主路径为什么失效"在日志里
+        // 一个字都没有，只能靠猜。降级行为不变（仍然返回 Ok(None) 走兼容路径），只是把原因说出来。
+        Err(error) => {
+            log::warn!(
+                "启动任务不可用（GetAsync({task_id:?}) 失败：{error}）；本次改走 Run 键兼容路径"
+            );
+            return Ok(None);
+        }
     };
     if !enabled {
         task.Disable()
@@ -3448,6 +3874,15 @@ pub(crate) fn set_startup_task(enabled: bool) -> Result<Option<bool>, String> {
 pub(crate) struct AutostartStatus {
     pub(crate) enabled: bool,
     pub(crate) source: String,
+    /// Why the state is what it is, in the words the settings page shows.
+    ///
+    /// The renderer used to guess: every refusal produced the same sentence
+    /// about "系统启动应用权限", which sends the user to a Windows setting that
+    /// on this machine was never the problem. The cause is known here — Windows
+    /// refused the startup task with a specific code, the recorded entry names
+    /// another build, or the registry could not be read — so it travels out
+    /// instead of a canned sentence.
+    pub(crate) reason: Option<String>,
 }
 
 #[cfg(windows)]
@@ -3485,49 +3920,126 @@ pub(crate) fn remove_legacy_run_entry() -> Result<(), String> {
 
 #[cfg(windows)]
 pub(crate) fn autostart_status() -> Result<AutostartStatus, String> {
+    // One read-back, one log line, one set of values for every branch below:
+    // when the switch and the log disagree about autostart, this is the line
+    // that says which value each side was looking at.
+    let check = check_run_entry();
+    log::info!(
+        "开机自启回读：matches={} recorded={:?} expected={:?} error={:?}",
+        check.matches,
+        check.recorded,
+        check.expected,
+        check.error
+    );
+
     if has_package_identity()? {
         let task_id = HSTRING::from("DshWallpaperStartup");
-        if let Ok(task) = StartupTask::GetAsync(&task_id).and_then(|operation| operation.get()) {
-            let state = task
-                .State()
-                .map_err(|error| format!("无法读取 DSH Wallpaper 启动任务状态：{error}"))?;
-            let (enabled, source) = match state {
-                StartupTaskState::Enabled | StartupTaskState::EnabledByPolicy => {
-                    (true, "startup-task")
-                }
-                StartupTaskState::DisabledByUser => (false, "disabled-by-user"),
-                StartupTaskState::DisabledByPolicy => (false, "disabled-by-policy"),
-                // A package update can add StartupTask to an app that was
-                // previously using the HKCU Run compatibility path. Keep the
-                // effective preference enabled until the user explicitly
-                // changes it; otherwise the new package would appear to have
-                // silently turned autostart off during an update. A Run entry
-                // only counts while it still launches this build: an entry left
-                // by a superseded version names a deleted `WindowsApps`
-                // directory and would otherwise report working autostart that
-                // no longer exists.
-                StartupTaskState::Disabled => {
-                    if run_entry_matches_current_build()? {
-                        (true, "run")
-                    } else {
-                        (false, "startup-task")
+        match StartupTask::GetAsync(&task_id).and_then(|operation| operation.get()) {
+            Ok(task) => {
+                let state = task
+                    .State()
+                    .map_err(|error| format!("无法读取 DSH Wallpaper 启动任务状态：{error}"))?;
+                let status = match state {
+                    StartupTaskState::Enabled | StartupTaskState::EnabledByPolicy => {
+                        AutostartStatus {
+                            enabled: true,
+                            source: "startup-task".into(),
+                            reason: None,
+                        }
                     }
+                    StartupTaskState::DisabledByUser => AutostartStatus {
+                        enabled: false,
+                        source: "disabled-by-user".into(),
+                        reason: Some(
+                            "Windows 已禁用本应用的开机启动任务；可在系统设置的「启动应用」里重新允许。"
+                                .into(),
+                        ),
+                    },
+                    StartupTaskState::DisabledByPolicy => AutostartStatus {
+                        enabled: false,
+                        source: "disabled-by-policy".into(),
+                        reason: Some("Windows 策略禁止本应用开机启动。".into()),
+                    },
+                    // A package update can add StartupTask to an app that was
+                    // previously using the HKCU Run compatibility path. Keep the
+                    // effective preference enabled until the user explicitly
+                    // changes it; otherwise the new package would appear to have
+                    // silently turned autostart off during an update. A Run entry
+                    // only counts while it still launches this build: an entry left
+                    // by a superseded version names a deleted `WindowsApps`
+                    // directory and would otherwise report working autostart that
+                    // no longer exists.
+                    StartupTaskState::Disabled => {
+                        if check.matches {
+                            AutostartStatus {
+                                enabled: true,
+                                source: "run".into(),
+                                reason: Some(
+                                    "Windows 启动任务处于关闭状态，当前由当前用户启动项承载。".into(),
+                                ),
+                            }
+                        } else {
+                            AutostartStatus {
+                                enabled: false,
+                                source: "startup-task".into(),
+                                // Now that the task registers on this machine this
+                                // branch is reachable, and it must name the task
+                                // rather than the fallback: the Run entry is not
+                                // what decides whether logon starts the app.
+                                reason: Some(
+                                    "Windows 启动任务处于关闭状态，登录时不会启动本应用。".into(),
+                                ),
+                            }
+                        }
+                    }
+                    other => AutostartStatus {
+                        enabled: false,
+                        source: "startup-task".into(),
+                        reason: Some(format!(
+                            "Windows 启动任务未启用（状态码 {}）；当前用户启动项里没有本应用。",
+                            other.0
+                        )),
+                    },
+                };
+                return Ok(status);
+            }
+            // A package installed before the StartupTask extension was added is
+            // still readable through the compatibility Run entry — and so is an
+            // install where Windows refuses to instantiate the task at all,
+            // which is what happens on the machine this was diagnosed on:
+            // `GetAsync` answers E_INVALIDARG while the Run entry works. The
+            // refusal is carried out as the reason, because "Windows 启动任务
+            // 不可用" and "没有开启自启" were previously the same silent `false`.
+            Err(error) => {
+                log::warn!(
+                    "启动任务不可用（GetAsync({task_id:?}) 失败：{error}）；本次改走 Run 键兼容路径"
+                );
+                if check.matches {
+                    return Ok(AutostartStatus {
+                        enabled: true,
+                        source: "run".into(),
+                        reason: Some(format!(
+                            "Windows 启动任务不可用（{error}）；当前由当前用户启动项承载。"
+                        )),
+                    });
                 }
-                _ => (false, "startup-task"),
-            };
-            return Ok(AutostartStatus {
-                enabled,
-                source: source.into(),
-            });
+                return Ok(AutostartStatus {
+                    enabled: false,
+                    source: "none".into(),
+                    reason: Some(format!(
+                        "Windows 启动任务不可用（{error}）；{}",
+                        run_entry_refusal(&check)
+                    )),
+                });
+            }
         }
-        // A package installed before the StartupTask extension was added is
-        // still readable through the compatibility Run entry.
     }
 
-    if run_entry_matches_current_build()? {
+    if check.matches {
         return Ok(AutostartStatus {
             enabled: true,
             source: "run".into(),
+            reason: None,
         });
     }
     // An entry recorded by a superseded version is deliberately not reported
@@ -3536,7 +4048,53 @@ pub(crate) fn autostart_status() -> Result<AutostartStatus, String> {
     Ok(AutostartStatus {
         enabled: false,
         source: "none".into(),
+        reason: Some(run_entry_refusal(&check)),
     })
+}
+
+/// Apply the user's autostart choice and report the state Windows ends up in.
+///
+/// The result is read back from the system in every case: `reg.exe` can report
+/// success for a value Windows then ignores, and a settings page that shows the
+/// requested state instead of the real one is how "关掉之后打不开" survived
+/// three releases. The change is logged together with its outcome, so a refusal
+/// that never reaches the log cannot happen again.
+#[cfg(windows)]
+pub(crate) fn set_autostart(enabled: bool) -> Result<AutostartStatus, String> {
+    let outcome = if set_startup_task(enabled)?.is_some() {
+        // A package StartupTask is the authoritative autostart path. Drop any
+        // legacy Run value left by an older build so the single-instance guard
+        // does not needlessly process a second launch attempt.
+        let _ = remove_legacy_run_entry();
+        autostart_status()
+    } else {
+        // 注册表 Run 键：开机自启 dsh-wallpaper
+        //  开启: 写入当前构建需要的启动命令
+        //  关闭: 删除该值
+        // An MSIX install must record the shell's version-stable launch alias
+        // rather than its own versioned `WindowsApps` path, which the next
+        // package update deletes.
+        let write = if enabled {
+            current_run_entry_command().and_then(|command| write_run_entry(&command))
+        } else {
+            remove_legacy_run_entry()
+        };
+        match write {
+            Ok(()) => autostart_status(),
+            Err(error) => Err(error),
+        }
+    };
+    match &outcome {
+        Ok(status) => log::info!(
+            "开机自启变更：requested={} enabled={} source={} reason={:?}",
+            enabled,
+            status.enabled,
+            status.source,
+            status.reason
+        ),
+        Err(error) => log::warn!("开机自启变更失败：requested={enabled} error={error}"),
+    }
+    outcome
 }
 
 /// Carry an enabled autostart preference across a package update.
@@ -3593,7 +4151,13 @@ pub(crate) fn autostart_status() -> Result<AutostartStatus, String> {
     Ok(AutostartStatus {
         enabled: false,
         source: "unsupported".into(),
+        reason: Some("当前系统不支持本应用的开机自启。".into()),
     })
+}
+
+#[cfg(not(windows))]
+pub(crate) fn set_autostart(_: bool) -> Result<AutostartStatus, String> {
+    autostart_status()
 }
 
 #[cfg(not(windows))]
@@ -3759,15 +4323,29 @@ fn managed_image_path_for_state(
     }
 }
 
-/// Copies a bundled lock-screen image without overwriting any existing file.
-/// The generated name is a one-time personalization input, so replacement
-/// would both violate Windows' filename rule and make a concurrent/corrupt
-/// ownership state harder to reason about.
+/// Copies a bundled lock-screen image to its content-addressed destination.
+///
+/// The destination **must** already hold identical bytes when it exists: the name is derived from
+/// the content, so a same-named file with different bytes can only mean a corrupted or hostile
+/// asset directory.  That case fails closed instead of overwriting, and the identical case is a
+/// reuse (the common one — every later takeover of the same art lands on the same file, which is
+/// what keeps Windows' "recent images" list at one entry per distinct image).
 #[cfg(windows)]
 fn copy_sleep_image_without_overwrite(
     source: &std::path::Path,
     destination: &std::path::Path,
 ) -> Result<(), String> {
+    if destination.exists() {
+        let existing = crate::lock_screen_backup::file_content_hash(destination)?;
+        let wanted = crate::lock_screen_backup::file_content_hash(source)?;
+        if existing == wanted {
+            return Ok(());
+        }
+        return Err(format!(
+            "锁屏托管图片的既有副本内容与素材不一致，已拒绝覆盖：{}",
+            destination.display()
+        ));
+    }
     use std::io::{Read, Write};
 
     let parent = destination
@@ -3966,9 +4544,11 @@ mod tests {
     #[test]
     fn packaged_autostart_records_the_version_stable_shell_alias() {
         let command = packaged_run_entry_command("com.dsh.wallpaper_pdxj8y3r6rm5g");
+        // The application half is this edition's own `<Application Id>`; the
+        // test below checks it against the manifest that edition ships.
         assert_eq!(
             command,
-            r"explorer.exe shell:AppsFolder\com.dsh.wallpaper_pdxj8y3r6rm5g!Wallpaper"
+            format!(r"explorer.exe shell:AppsFolder\com.dsh.wallpaper_pdxj8y3r6rm5g!{PACKAGE_APPLICATION_ID}")
         );
         // Whatever identifies the release must stay out of the autostart value:
         // a package update deletes the directory that carries it.
@@ -4002,6 +4582,190 @@ mod tests {
     fn a_missing_expected_command_never_matches() {
         assert!(!autostart_commands_match("anything", ""));
         assert!(!autostart_commands_match("", ""));
+    }
+
+    #[test]
+    fn the_autostart_alias_names_the_edition_it_was_installed_from() {
+        // Two editions, two manifests, two `<Application Id>`s. The alias half
+        // has to come from the manifest of the edition that recorded it: the
+        // shell resolves `family!id`, and an id the package does not declare
+        // launches nothing at logon.
+        let (manifest, id) = if cfg!(feature = "lite") {
+            (
+                include_str!("../../../packaging/msix/AppxManifest-Lite.xml"),
+                "WallpaperLite",
+            )
+        } else {
+            (
+                include_str!("../../../packaging/msix/AppxManifest.xml"),
+                "Wallpaper",
+            )
+        };
+        assert_eq!(id, PACKAGE_APPLICATION_ID);
+        assert!(
+            manifest.contains(&format!(r#"<Application Id="{id}""#)),
+            "{id} is not the application this edition's manifest declares"
+        );
+        let command = packaged_run_entry_command("com.dsh.wallpaper_pdxj8y3r6rm5g");
+        assert!(command.ends_with(&format!("!{id}")), "{command}");
+    }
+
+    #[test]
+    fn a_working_run_entry_is_recognised_as_this_build() {
+        // The value this machine's Run key holds for 0.2.0.178: the toggle
+        // reported it as "not applied" while the status read for the same value
+        // logged `source=run enabled=true`. Both halves of the alias are pinned
+        // by the test above, so this one fails if either drifts.
+        let expected = packaged_run_entry_command("com.dsh.wallpaper_pdxj8y3r6rm5g");
+        let recorded = format!(
+            r"explorer.exe shell:AppsFolder\com.dsh.wallpaper_pdxj8y3r6rm5g!{PACKAGE_APPLICATION_ID}"
+        );
+        assert!(autostart_commands_match(&recorded, &expected));
+        // `reg.exe add /D` stores quoting when the value arrives quoted from a
+        // shell, and a quoted value still launches the same application.
+        assert!(autostart_commands_match(&format!("\"{recorded}\""), &expected));
+    }
+
+    #[test]
+    fn a_reg_query_report_is_read_as_the_recorded_value() {
+        // Captured on this machine: `reg query <Run key> /v dsh-wallpaper`.
+        let report = "\r\nHKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\r\n    dsh-wallpaper    REG_SZ    explorer.exe shell:AppsFolder\\com.dsh.wallpaper_pdxj8y3r6rm5g!Wallpaper\r\n\r\n";
+        assert_eq!(
+            parse_reg_query_value(report, RUN_VALUE_NAME).as_deref(),
+            Some(r"explorer.exe shell:AppsFolder\com.dsh.wallpaper_pdxj8y3r6rm5g!Wallpaper")
+        );
+        // A different value whose name merely starts the same is not ours.
+        assert_eq!(
+            parse_reg_query_value("    dsh-wallpaper-old    REG_SZ    x", RUN_VALUE_NAME),
+            None
+        );
+        // A line that is not a typed value must not be handed out as data.
+        assert_eq!(
+            parse_reg_query_value("    dsh-wallpaper    NOT_A_TYPE    x", RUN_VALUE_NAME),
+            None
+        );
+    }
+
+    /// The span from an opening tag to its closing tag, so a test can assert
+    /// nesting instead of a substring that a misplaced element satisfies too.
+    fn span<'a>(source: &'a str, open: &str, close: &str) -> &'a str {
+        let from = source
+            .find(open)
+            .unwrap_or_else(|| panic!("{open} is missing"));
+        let to = source[from..]
+            .find(close)
+            .unwrap_or_else(|| panic!("{close} never closes {open}"));
+        &source[from..from + to + close.len()]
+    }
+
+    fn edition_manifest() -> &'static str {
+        if cfg!(feature = "lite") {
+            include_str!("../../../packaging/msix/AppxManifest-Lite.xml")
+        } else {
+            include_str!("../../../packaging/msix/AppxManifest.xml")
+        }
+    }
+
+    #[test]
+    fn the_manifest_declares_only_namespaces_windows_knows() {
+        // An unknown namespace is not a packaging error — `IgnorableNamespaces`
+        // exists precisely so Windows can skip what it does not know. That is how
+        // `windows.startupTask` sat in every release while registering nothing:
+        // the URI said `…/uap/windows/10/5` instead of `…/uap/windows10/5`, so the
+        // extension was ignored, `GetAsync` answered 参数错误。 (0x80070057) and no
+        // AppModel SystemAppData key was ever created. `makeappx` was happy.
+        let manifest = edition_manifest();
+        let known = [
+            "http://schemas.microsoft.com/appx/manifest/foundation/windows10",
+            "http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities",
+            "http://schemas.microsoft.com/appx/manifest/uap/windows10",
+            "http://schemas.microsoft.com/appx/manifest/uap/windows10/5",
+            "http://schemas.microsoft.com/appx/manifest/uap/windows10/10",
+            "http://schemas.microsoft.com/appx/manifest/virtualization/windows10",
+        ];
+        let mut declared = 0;
+        for (index, _) in manifest.match_indices("xmlns:") {
+            let rest = &manifest[index..];
+            let Some(open) = rest.find('"') else { continue };
+            let Some(close) = rest[open + 1..].find('"') else {
+                continue;
+            };
+            let uri = &rest[open + 1..open + 1 + close];
+            declared += 1;
+            assert!(
+                known.contains(&uri),
+                "{uri} is not a manifest namespace Windows knows"
+            );
+        }
+        assert!(declared >= 5, "manifest declared only {declared} namespaces");
+    }
+
+    #[test]
+    fn the_startup_task_sits_where_the_schema_puts_it() {
+        // Package → Applications → Application → Extensions → uap5:Extension →
+        // uap5:StartupTask. Without the `Extensions` container the package still
+        // installs and Windows never registers the task: `GetAsync` answered
+        // 参数错误。 (0x80070057) for every build up to 0.2.0.180, and the AppModel
+        // SystemAppData key was never created. Thirteen other packages on this
+        // machine declare windows.startupTask, and all thirteen have the
+        // container — a substring check cannot tell the two shapes apart.
+        let manifest = edition_manifest();
+        let application = span(manifest, "<Application ", "</Application>");
+        let extensions = span(application, "<Extensions>", "</Extensions>");
+        let extension = span(
+            extensions,
+            r#"<uap5:Extension Category="windows.startupTask""#,
+            "</uap5:Extension>",
+        );
+        assert!(extension.contains(r#"<uap5:StartupTask TaskId="DshWallpaperStartup""#));
+    }
+
+    #[test]
+    fn the_run_key_is_declared_unvirtualized_by_the_manifest_this_edition_ships() {
+        // MSIX redirects a packaged app's HKCU writes into a private per-user
+        // hive that is merged over the real key when it reads. For the Run key
+        // that means an in-process delete leaves a tombstone which hides the
+        // real value from the app while Windows keeps launching it at logon —
+        // 「当前用户启动项里没有 DSH Wallpaper」 for a value sitting right there.
+        let manifest = edition_manifest();
+        let excluded = format!(
+            "<virtualization:ExcludedKey>HKEY_CURRENT_USER\\{RUN_KEY_SUBKEY}</virtualization:ExcludedKey>"
+        );
+        assert!(
+            manifest.contains(&excluded),
+            "the manifest this edition ships does not declare {excluded}"
+        );
+        assert!(manifest.contains(r#"<rescap:Capability Name="unvirtualizedResources" />"#));
+    }
+
+    #[test]
+    fn a_refused_autostart_names_its_own_state() {
+        let absent = RunEntryCheck {
+            matches: false,
+            recorded: None,
+            expected: Some("expected".into()),
+            error: None,
+        };
+        let stale = RunEntryCheck {
+            matches: false,
+            recorded: Some("old".into()),
+            expected: Some("expected".into()),
+            error: None,
+        };
+        let unreadable = RunEntryCheck {
+            matches: false,
+            recorded: None,
+            expected: None,
+            error: Some("无法读取当前用户开机启动项（错误码 5）。".into()),
+        };
+        assert!(run_entry_refusal(&absent).contains("没有"));
+        assert_ne!(run_entry_refusal(&absent), run_entry_refusal(&stale));
+        // A read failure is reported as itself, never as "nothing is recorded":
+        // those two states need different fixes.
+        assert_eq!(
+            run_entry_refusal(&unreadable),
+            "无法读取当前用户开机启动项（错误码 5）。"
+        );
     }
 
     #[test]
@@ -4159,7 +4923,80 @@ mod tests {
     }
 
     #[test]
-    fn workspace_toggle_requires_a_blank_desktop_and_never_a_chat_region() {
+    /// 围栏的四条转移：上膛、成立、作废、冷却。重点是**作废之后不重新上膛**。
+#[test]
+fn the_fence_pairs_clicks_two_by_two_and_never_chains() {
+  let p = (100, 100);
+  // 第一下：上膛，不切换。
+  let (s1, t1) = pair_transition(PairState::Idle, 1_000, p, false, false);
+  assert!(!t1);
+  assert!(matches!(s1, PairState::Armed { .. }));
+  // 第二下在窗内、同位、同模式：切换，并回到 Idle。
+  let (s2, t2) = pair_transition(s1, 1_200, p, false, false);
+  assert!(t2);
+  assert_eq!(s2, PairState::Idle);
+  // 第二下超出时间窗：作废，不切换；而且**第三下只能算新的第一下**（这正是围栏要的效果）。
+  let (s3, t3) = pair_transition(s1, 2_000, p, false, false);
+  assert!(!t3);
+  assert_eq!(s3, PairState::Idle);
+  let (s4, t4) = pair_transition(s3, 2_400, p, false, false);
+  assert!(!t4, "作废之后的那一下只能上膛，不能直接成对");
+  assert!(matches!(s4, PairState::Armed { .. }));
+  // 位置太远：作废。
+  let (s5, t5) = pair_transition(s1, 1_200, (900, 900), false, false);
+  assert!(!t5);
+  assert_eq!(s5, PairState::Idle);
+  // 模式不同：作废（表桌面的第一下不该和里桌面的第二下凑对）。
+  let (s6, t6) = pair_transition(s1, 1_200, p, true, false);
+  assert!(!t6);
+  assert_eq!(s6, PairState::Idle);
+  // 冷却期内：连上膛都不做。
+  let (s7, t7) = pair_transition(PairState::Idle, 1_000, p, false, true);
+  assert!(!t7);
+  assert_eq!(s7, PairState::Idle);
+}
+
+/// 围栏：四项缺一不可，而且不允许链式重配（第二下不成立就作废，不能当新的第一下）。
+#[test]
+fn a_pair_needs_all_four_conditions_and_never_chains() {
+  assert!(pair_is_complete(true, true, true, true));
+  assert!(!pair_is_complete(false, true, true, true));
+  assert!(!pair_is_complete(true, false, true, true));
+  assert!(!pair_is_complete(true, true, false, true));
+  assert!(!pair_is_complete(true, true, true, false));
+}
+
+/// 配对的两条几何规则：位置相近才算同一次双击。
+#[test]
+fn a_pair_must_land_in_nearly_the_same_place() {
+  assert!(within_double_click_reach((100, 200), (104, 197), PAIR_REACH_PX));
+  assert!(within_double_click_reach((100, 200), (100, 200), PAIR_REACH_PX));
+  // 相隔很远的两次单击：不算。时间窗口宽松之后，这一条是防止两次无关单击凑成一对的关键。
+  assert!(!within_double_click_reach((100, 200), (800, 900), PAIR_REACH_PX));
+  assert!(!within_double_click_reach((100, 200), (100, 300), PAIR_REACH_PX));
+}
+
+/// 一次点击必须够短、没怎么移动；拖动（按下-移动-松开）不算。
+#[test]
+fn a_click_that_was_really_a_drag_does_not_count() {
+  assert!(is_clean_click(120, 0, CLICK_MAX_MS, CLICK_MAX_MOVE_PX));
+  assert!(is_clean_click(399, 12, CLICK_MAX_MS, CLICK_MAX_MOVE_PX));
+  // 按住太久：是拖动或长按，不是点击。
+  assert!(!is_clean_click(401, 0, CLICK_MAX_MS, CLICK_MAX_MOVE_PX));
+  // 按位移出：拖拽选图标、拖窗口都属于这一类。
+  assert!(!is_clean_click(120, 13, CLICK_MAX_MS, CLICK_MAX_MOVE_PX));
+}
+
+/// 带组合键的点击是别的意图（Ctrl 多选之类），不参与配对。
+#[test]
+fn a_click_with_a_modifier_never_pairs() {
+  assert!(modifiers_are_idle([false, false, false, false, false]));
+  assert!(!modifiers_are_idle([true, false, false, false, false]));
+  assert!(!modifiers_are_idle([false, false, false, false, true]));
+}
+
+#[test]
+fn workspace_toggle_requires_a_blank_desktop_and_never_a_chat_region() {
         assert!(should_toggle_desktop_workspace(true, false, true));
         assert!(!should_toggle_desktop_workspace(false, false, true));
         assert!(!should_toggle_desktop_workspace(true, true, true));
@@ -4292,7 +5129,42 @@ mod tests {
     }
 
     /// 悬浮球「岛可见时不弹出」的判据就挂在这条映射上：发布的热区里出现
-    /// `ISLAND_REGION_ID` ⇔ 展开态输入岛正在前面。
+    /// 交接只对岛那块矩形做：立绘等其它热区命中时，点击仍归我们，但不该抢前台与焦点。
+#[test]
+fn only_the_island_rect_asks_for_the_keyboard() {
+  let island = PhysicalInteractionRegion {
+    left: 100,
+    top: 100,
+    right: 300,
+    bottom: 300,
+  };
+  let persona = PhysicalInteractionRegion {
+    left: 500,
+    top: 500,
+    right: 800,
+    bottom: 800,
+  };
+  let state = InteractionRegionState {
+    regions: vec![island, persona],
+    island_rect: Some(island),
+    island_visible: true,
+    ..Default::default()
+  };
+  // 岛内：归属成立，且**该**做交接。
+  assert!(point_hits_interaction_region(&state.regions, 150, 150));
+  assert!(point_hits_island_rect(&state, 150, 150));
+  // 立绘内：归属仍成立（点击归我们），但**不该**做交接 —— 这就是"点立绘闪一下"的修复点。
+  assert!(point_hits_interaction_region(&state.regions, 600, 600));
+  assert!(!point_hits_island_rect(&state, 600, 600));
+  // 两者之外：都不成立。
+  assert!(!point_hits_interaction_region(&state.regions, 1000, 1000));
+  assert!(!point_hits_island_rect(&state, 1000, 1000));
+  // 岛不可见（未发布）时：任何一点都不做交接。
+  let empty = InteractionRegionState::default();
+  assert!(!point_hits_island_rect(&empty, 150, 150));
+}
+
+/// `ISLAND_REGION_ID` ⇔ 展开态输入岛正在前面。
     #[test]
     fn island_visibility_follows_the_published_island_region() {
         let _guard = REGION_TEST_LOCK.lock().expect("region test lock");

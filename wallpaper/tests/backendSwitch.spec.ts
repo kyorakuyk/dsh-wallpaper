@@ -17,17 +17,15 @@ const source = async (relative: string): Promise<string> =>
  * 而且**只管两种聊天后端**：Harness 由桌面上的那个开关负责（用户要求从这个下拉里删掉它）。
  */
 describe('the chat-mode switch in the settings centre', () => {
-  it('lists the two chat backends, and Harness only when that is what is running', () => {
-    // 下拉里只有两种聊天后端。
+  it('lists exactly the two chat backends, and never Harness', () => {
+    // 下拉里只有两种聊天后端：它回答的是"滑槽在左边时聊天走哪个通道"。滑槽在右端时一定是
+    // Harness —— 那是**滑槽自己的含义**，不由这里描述，也不留任何"不可选但可见"的项。
     expect(CHAT_MODE_OPTIONS.map((option) => option.value)).toEqual(['deepseek-web', 'deepseek-api'])
-    expect(chatModeOptions('deepseek-api').map((option) => option.value)).toEqual(['deepseek-web', 'deepseek-api'])
-    // 当前值是 Harness 时**必须**留下它并标注来源：否则控件会退回第一个候选，显示成"网页入口"
-    // 而壁纸其实在 Harness 上——一个会骗人的开关。
-    expect(chatModeOptions('harness')).toEqual([
+    expect(chatModeOptions()).toEqual([
       { value: 'deepseek-web', label: BACKEND_MODE_LABELS['deepseek-web'] },
       { value: 'deepseek-api', label: BACKEND_MODE_LABELS['deepseek-api'] },
-      { value: 'harness', label: 'DeepSeek Harness（由桌面开关切换）' },
     ])
+    expect(chatModeOptions().some((option) => option.value === 'harness')).toBe(false)
     // 标签表仍然覆盖三种（提示语里会遇到 Harness）。
     expect(backendModeLabel('harness')).toBe('DeepSeek Harness')
     expect(backendModeLabel('deepseek-api')).toBe(BACKEND_MODE_LABELS['deepseek-api'])
@@ -43,15 +41,25 @@ describe('the chat-mode switch in the settings centre', () => {
     expect(settings).toMatch(/const selectBackend = async \(backend: BackendMode\) => \{[\s\S]*?appCoreClient\.selectBackend\(backend\)/)
     // 同时写进 defaultBackend：它是"下次启动"的默认值，两件事本来就是一件事的两面。
     expect(settings).toMatch(/const selectBackend = async \(backend: BackendMode\) => \{[\s\S]*?defaultBackend: backend/)
-    // 面板把这一栏接到那个 handler 上，并且**显示运行中的值**（不是启动默认值）。
+    // 面板把这一栏接到那个 handler 上，显示并编辑**启动默认值**（不是运行中的值：这一栏给
+    // "滑槽在左边"赋予含义，此刻在不在 Harness 由滑槽表达）。
     expect(panel).toContain('onChange={(value) => props.onSelectBackend(value as BackendMode)}')
-    expect(panel).toContain('value={props.liveBackend ?? settings.defaultBackend}')
-    // 候选来自 `chatModeOptions`（两种聊天后端 + 必要时标注的当前值），不是写死的三项。
-    expect(panel).toContain('chatModeOptions(props.liveBackend ?? settings.defaultBackend)')
-    // 文案要直说"立即生效"，不能再写"启动时使用"，而且要说明 Harness 不在这里切。
-    expect(panel).toContain('立即切换正在运行的壁纸')
-    expect(panel).toContain('Harness 由桌面上的那个开关切换')
+    expect(panel).toContain('value={settings.defaultBackend}')
+    // 候选恒为两项，且调用时不传"当前值"——没有"必要时追加一项"这回事了。
+    expect(panel).toContain('chatModeOptions()')
+    // 文案只说这一栏自己管什么，不再解释滑槽（那句解释会制造一个用户本来没有的问题）。
+    expect(panel).toContain('滑槽在左边时，聊天走这里选的通道')
+    expect(panel).not.toContain('Harness 由桌面上的那个开关切换')
+    expect(panel).not.toContain('Harness 不在这里切换')
     expect(panel).not.toContain('title="启动时使用"')
+  })
+
+  it('drops the old subject\u2019s explicit endpoint when the subject changes', async () => {
+    const settings = await source('src/settings/SettingsWindow.tsx')
+    // 那条显式端点是"用户当年为上一个主体选的端口"，换主体后它就是一条自相矛盾的选择：
+    // 实测过——主体是 3080 的已安装 CLI，pin 还停在官方客户端的 19387，于是「打开」把官方
+    // 客户端的窗口拉到了前台。用户的 pin 优先这条规则不变，但换主体必须把它清掉。
+    expect(settings).toMatch(/onSelectSubject=\{\(targetId\) => change\(\{[\s\S]{0,900}?endpointPort: undefined/)
   })
 
   it('is allowed for the settings surface in the native gate and the capability', async () => {

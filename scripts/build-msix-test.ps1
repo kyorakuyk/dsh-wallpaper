@@ -21,6 +21,7 @@ param(
   [switch]$Release,
   [ValidateSet('full', 'lite')]
   [string]$Edition = 'full',
+  [string]$ManifestOverridePath,
   [switch]$CreateTestCertificate,
   [string]$CertificatePath,
   [securestring]$CertificatePassword,
@@ -186,6 +187,10 @@ function Get-MsixManifestMetadata([string]$ManifestPath) {
     throw "无法读取 MSIX 清单：$($_.Exception.Message)"
   }
   $identity = $manifest.Package.Identity
+  $name = [string]$identity.Name
+  if ([string]::IsNullOrWhiteSpace($name)) {
+    throw 'MSIX 清单缺少 Identity Name。'
+  }
   $publisher = [string]$identity.Publisher
   if ([string]::IsNullOrWhiteSpace($publisher)) {
     throw 'MSIX 清单缺少 Identity Publisher。'
@@ -208,6 +213,7 @@ function Get-MsixManifestMetadata([string]$ManifestPath) {
     throw "锁屏测试包的支持边界是 Windows 11；Windows.Desktop MinVersion 不能低于 10.0.22000.0，实际为：$minimumVersion"
   }
   return [PSCustomObject]@{
+    Name = $name.Trim()
     Publisher = $publisher.Trim()
     ProcessorArchitecture = $architecture
     MinVersion = $minimumVersion
@@ -260,7 +266,11 @@ $isLite = $Edition -eq 'lite'
 $binaryName = if ($isLite) { 'dsh-wallpaper-lite' } else { 'dsh-wallpaper' }
 $frontendDistName = if ($isLite) { 'dist-lite' } else { 'dist' }
 $manifestName = if ($isLite) { 'AppxManifest-Lite.xml' } else { 'AppxManifest.xml' }
-$manifestTemplate = Join-Path $projectRoot "packaging\msix\$manifestName"
+$manifestTemplate = if ($ManifestOverridePath) {
+  [IO.Path]::GetFullPath($ManifestOverridePath)
+} else {
+  Join-Path $projectRoot "packaging\msix\$manifestName"
+}
 $tauriConfigName = if ($isLite) { 'tauri.lite.conf.json' } else { 'tauri.conf.json' }
 $tauriConfigPath = Join-Path $tauriRoot $tauriConfigName
 $rustTarget = 'x86_64-pc-windows-msvc'
@@ -272,6 +282,10 @@ Require-Path $tauriConfigPath '缺少对应版本的 Tauri 配置。'
 Require-Path (Join-Path $tauriRoot 'icons\icon.png') '缺少应用图标。'
 Require-Path (Join-Path $projectRoot 'wallpaper\public\personas\wake-frames\variant-anima\sleep.png') '缺少锁屏睡眠图。'
 $manifest = Get-MsixManifestMetadata $manifestTemplate
+$expectedPackageName = if ($isLite) { 'com.dsh.wallpaper.lite' } else { 'com.dsh.wallpaper' }
+if ($manifest.Name -cne $expectedPackageName) {
+  throw "MSIX 清单与 $Edition 版不匹配；期望 Identity Name '$expectedPackageName'，实际为 '$($manifest.Name)'。"
+}
 $manifestPublisher = $manifest.Publisher
 
 if ($InstallCertificate -and -not $CreateTestCertificate -and -not $CertificatePath) {

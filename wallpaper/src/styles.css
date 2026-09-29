@@ -197,6 +197,9 @@
   z-index: 3;
 }
 
+/* 苏醒收尾（帷幕、层级、立绘虚影）在 scenes/wakeTransition.css：那份样式跟着 WakeScene 走，
+   因为 Lite 版不加载本文件。 */
+
 /* ===== 苏醒场景 ===== */
 .scene-wake {
   background: linear-gradient(180deg, #0b1026 0%, #1c2a52 45%, #2a3d6b 100%);

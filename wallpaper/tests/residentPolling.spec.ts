@@ -64,9 +64,27 @@ describe('native exit lifecycle', () => {
     expect(shutdown).toContain('restore_desktop_icons()')
     expect(shutdown).toContain('native_bootstrap::destroy()')
     expect(shutdown).toContain('unregister_session_events(app)')
-    // Only the DSH child this process launched is stopped.
-    expect(shutdown).toContain('taskkill.exe')
-    expect(shutdown).toContain('managed.take()')
+    // Only the DSH instances this process launched are stopped — and now that means
+    // **every one of them**: parallel instances put more than one child in the map, and
+    // leaving one behind would leave a host nobody owns after the wallpaper exits.
+    expect(shutdown).toContain('stop_process_tree(')
+    expect(shutdown).toContain('std::mem::take(&mut *managed)')
+    expect(shutdown).toMatch(/for \(_, mut process\) in std::mem::take\(&mut \*managed\)/)
+    // 而且要**安静地**停：taskkill 是控制台程序，从 GUI 进程起它时若不带 CREATE_NO_WINDOW，
+    // 退出时会闪一个黑框；用 `.output()` 还会为它建管道并一直等到它结束。
+    const clientWindow = await readNative('src/client_window.rs')
+    const stopHelper = clientWindow.slice(
+      clientWindow.indexOf('pub(crate) fn stop_process_tree'),
+      clientWindow.indexOf('/// Exposed within the crate'),
+    )
+    expect(stopHelper).toContain('CREATE_NO_WINDOW')
+    expect(stopHelper).toContain('.status()')
+    expect(stopHelper).not.toContain('.output()')
+    // 换了主体，"连接"这个词说的就是另一个对象：探测器必须把上一条连接的历史作废，否则界面会
+    // 一直写着"已连接"（实测症状：呼吸灯 + bridge 已连接，而一发消息就说会话尚未建立）。
+    const monitorLoop = lib.slice(lib.indexOf('fn start_harness_monitor'))
+    expect(monitorLoop).toContain('harness_scope_key()')
+    expect(monitorLoop).toContain('monitor = HarnessMonitorState::default()')
     // Every step is inside a `Once`, because ExitRequested can precede Exit.
     expect(shutdown).toContain('SHUTDOWN.call_once')
     // The tray "hide" item is an action dispatch, not an exit.

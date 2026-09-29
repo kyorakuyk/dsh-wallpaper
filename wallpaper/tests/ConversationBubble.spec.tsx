@@ -195,6 +195,34 @@ describe('ConversationBubble', () => {
     expect(empty).not.toContain('dsh-chat__history-note')
   })
 
+  it('renders the assistant as markdown but never rewrites what the user typed', () => {
+    const base = {
+      activity: 'idle' as const,
+      modelLabel: 'deepseek-chat',
+      streamingText: '',
+      // 转写只在展开时渲染 —— 不展开的话这条测试什么都没测到（第一版就是这么假绿的）。
+      historyExpanded: true,
+      ...callbacks,
+    }
+    const assistant = renderToStaticMarkup(<ConversationBubble
+      {...base}
+      backend="deepseek-web"
+      messages={[{ id: 'a', role: 'assistant', content: '看这段：\n```ts\nconst a = 1\n```\n- 一\n- 二', createdAt: 0 }]}
+    />)
+    expect(assistant).toContain('dsh-chat__code')
+    expect(assistant).toContain('dsh-chat__list')
+
+    // 用户自己的字原样显示：他敲的反引号和星号往往**正是字面意思**，"我打的字被它改了"比排版问题
+    // 严重得多，所以这条规则由结构保证（用户消息根本不走 MarkdownBody）。
+    const user = renderToStaticMarkup(<ConversationBubble
+      {...base}
+      backend="deepseek-web"
+      messages={[{ id: 'u', role: 'user', content: '```ts\nconst a = 1\n```', createdAt: 0 }]}
+    />)
+    expect(user).not.toContain('dsh-chat__code')
+    expect(user).toContain('```ts')
+  })
+
   it('shows the amber light while connecting, and the dark one only when it is gone', () => {
     // 三段语义：连上（绿）／正在连（黄呼吸）／不在了（熄灭）。"正在连"时 `harnessReady`
     // 是 false，所以黄灯必须优先于熄灭态——否则"启动中"与"已经死了"看起来一模一样，而这两件
@@ -212,7 +240,10 @@ describe('ConversationBubble', () => {
       {...callbacks}
     />)
     expect(connecting).toContain('data-ready="suspect"')
-    expect(connecting).toContain('DSH Bridge 正在装载')
+    // 黄灯一律说"连接中"（用户定的规则）：它在呼吸就说明"还没定"，此时再写别的状态说明
+    // （"已连接""正在装载"）都是把不确定性说成了结论。给用户看到的只有一句话：还在连。
+    expect(connecting).toContain('连接中')
+    expect(connecting).not.toContain('已连接')
 
     const gone = renderToStaticMarkup(<ConversationBubble
       backend="deepseek-web"
@@ -227,6 +258,44 @@ describe('ConversationBubble', () => {
     />)
     expect(gone).toContain('data-ready="false"')
     expect(gone).not.toContain('data-ready="suspect"')
+
+    // 红灯：**试过、没成**。与黄灯（还没定）必须分开：黄灯下用户只需等，红灯下点滑槽就要立刻
+    // 再试一次（拉起对应 harness 进程 + 发握手申请），所以它不能长得跟黄灯一样。
+    const failed = renderToStaticMarkup(<ConversationBubble
+      backend="deepseek-web"
+      activity="idle"
+      modelLabel="deepseek-chat"
+      messages={[]}
+      streamingText=""
+      historyExpanded={false}
+      harnessAvailability="offline"
+      harnessReady={false}
+      harnessFailed
+      {...callbacks}
+    />)
+    expect(failed).toContain('data-ready="failed"')
+    expect(failed).not.toContain('data-ready="suspect"')
+    expect(failed).toContain('连接失败')
+  })
+
+  it('never says 连接失败 while the Bridge is ready', () => {
+    // 实测症状：上一次启动尝试失败后标记粘住，常驻监视器后来把桥连上了，界面上就成了
+    // "绿灯 + 连接失败"。绿的事实来自当下，失败标记只是对上一次尝试的记录，不能盖过它。
+    const html = renderToStaticMarkup(<ConversationBubble
+      backend="deepseek-web"
+      activity="idle"
+      modelLabel="deepseek-chat"
+      messages={[]}
+      streamingText=""
+      historyExpanded={false}
+      harnessAvailability="bridge-ready"
+      harnessReady
+      harnessFailed
+      {...callbacks}
+    />)
+    expect(html).not.toContain('连接失败')
+    expect(html).toContain('DSH Bridge 已连接')
+    expect(html).not.toContain('data-ready="failed"')
   })
 
   it('keeps the switch usable while a start is still in flight', () => {

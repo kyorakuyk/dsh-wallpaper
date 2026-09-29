@@ -80,8 +80,12 @@
 .dsh-chat__history-wrap {
   position: relative;
   z-index: -1;
-  width: calc(100% - clamp(12px, 4vw, 58px));
-  margin: 0 auto -1px;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0 0 -1px;
+  /* 轨道**不**吃 gutter：它的内容盒直接等于输入框那个盒子的内容盒（用户要求"粉色对齐黄色"）。
+     盒子内部那几行（输入框 / 顶栏 / 底栏 / 工具条）仍然吃 gutter，所以框里的文字照旧有内边距 ——
+     一个文本框的内边距和"文字列与盒子同宽"是两件事，之前把它们混成一个数，才改错了对象。 */
   padding: 0;
   overflow: hidden;
   border: 0;
@@ -118,7 +122,9 @@
   gap: 10px;
   width: 100%;
   max-height: calc(100vh - 236px);
-  padding: 10px 6px 20px;
+  /* 左右内缩由 .dsh-chat__history-wrap 的 `--dsh-chat-gutter` 统一给：轨道、输入框、顶栏、底栏
+     因此共用同一条边线（用户要求"相切"）。这里只剩上下。 */
+  padding: 10px 0 20px;
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
@@ -189,8 +195,128 @@
   border-radius: 0;
   background: transparent;
   color: var(--dsh-text-strong);
+  /* 用户的话比助手的更大更重（用户要求）：一是他刚说过的那句最该一眼找到，二是让"我说的话"
+     与"它回的话"在视觉上分开，而不是靠左对齐/右对齐这种要停下来辨认的线索。 */
+  font-size: 15px;
+  font-weight: 650;
 }
+/* 助手回答与用户那句话之间多留一段（用户要求）：一行挨着一行时，回答读起来像用户话的续行。 */
+.dsh-chat__message--user + .dsh-chat__message--assistant { margin-top: 16px; }
 .dsh-chat__message-usage { padding: 0 5px; color: var(--dsh-text-faint); font-size: 10px; }
+/*
+ * 最小 Markdown 的三样（代码围栏、行内代码、列表）。
+ *
+ * 段落之间原来靠 `pre-wrap` 里的空行撑开，现在空行被解析吃掉了，所以由下面这几条规则补上间距 ——
+ * 否则解析之后两段会贴在一起，看起来比不解析更糟。
+ */
+.dsh-chat__message-body + .dsh-chat__message-body,
+.dsh-chat__message-body + .dsh-chat__list,
+.dsh-chat__message-body + .dsh-chat__code,
+.dsh-chat__message-body + .dsh-chat__heading,
+.dsh-chat__list + .dsh-chat__message-body,
+.dsh-chat__list + .dsh-chat__list,
+.dsh-chat__code + .dsh-chat__message-body,
+.dsh-chat__code + .dsh-chat__code,
+.dsh-chat__heading + .dsh-chat__message-body { margin-top: 9px; }
+
+/* 链接：markdown 本来没有下划线，所以下划线在这里专指"这是个链接"；再加一点粗，和正文分开。
+   打开的手势是中键或回车 —— 光标因此**不是**手型：左键在这里只做"不导航"，不是"打开"。 */
+.dsh-chat__link {
+  color: inherit;
+  font-weight: 650;
+  text-decoration: underline;
+  text-decoration-color: rgba(139, 196, 235, .5);
+  text-underline-offset: 2px;
+  cursor: default;
+}
+.dsh-chat__link:hover,
+.dsh-chat__link:focus-visible { text-decoration-color: currentColor; }
+.dsh-chat__link:focus-visible { outline: 2px solid rgba(139, 196, 235, .55); outline-offset: 2px; border-radius: 4px; }
+
+/* 悬停/聚焦时在文字**下方**浮出真实地址。换掉文字会让整段重排（长地址还可能把岛撑高再缩回），
+   所以这里只是多一行；它是真元素，可以选中、复制。 */
+.dsh-chat__link-url {
+  display: none;
+  margin-top: 2px;
+  color: rgba(190, 214, 234, .7);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.dsh-chat__link:hover .dsh-chat__link-url,
+.dsh-chat__link:focus-visible .dsh-chat__link-url { display: block; }
+
+/* 标题：字号从 17px 收到 13.5px。这是岛里的转写，不是文档 —— h1 按浏览器默认的 2em 会把
+   一段十几行的回答撑成海报，所以每一级都自己定尺寸，级差只有 1px 左右。 */
+.dsh-chat__heading {
+  margin: 14px 0 0;
+  font-weight: 650;
+  line-height: 1.35;
+  color: var(--dsh-text-strong, #eaf4ff);
+}
+.dsh-chat__heading:first-child { margin-top: 0; }
+.dsh-chat__heading[data-level='1'] { font-size: 17px; }
+.dsh-chat__heading[data-level='2'] { font-size: 16px; }
+.dsh-chat__heading[data-level='3'] { font-size: 15px; }
+.dsh-chat__heading[data-level='4'] { font-size: 14.5px; }
+.dsh-chat__heading[data-level='5'] { font-size: 14px; }
+.dsh-chat__heading[data-level='6'] { font-size: 13.5px; }
+/* 标题后面紧跟正文时节间距要比"标题压标题"小一点，读起来才是一组。 */
+.dsh-chat__heading + .dsh-chat__message-body,
+.dsh-chat__heading + .dsh-chat__list,
+.dsh-chat__heading + .dsh-chat__code { margin-top: 6px; }
+.dsh-chat__code {
+  overflow-x: auto;
+  margin: 9px 0 0;
+  padding: 9px 11px;
+  border: 1px solid rgba(139, 196, 235, .16);
+  border-radius: 9px;
+  background: rgba(4, 13, 25, .55);
+  color: #d7e8f5;
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Cascadia Mono', monospace;
+  font-size: 12px;
+  /* 代码块里**不折行**：横向滚动比"任意位置断行"诚实得多（断行会把一行代码切成语义不明的碎片）。 */
+  white-space: pre;
+}
+.dsh-chat__inline-code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(139, 196, 235, .14);
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Cascadia Mono', monospace;
+  font-size: .92em;
+}
+.dsh-chat__list { margin: 9px 0 0; padding-left: 20px; }
+.dsh-chat__list li { margin-top: 3px; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* 任务项：没有圆点/编号，靠一个只读方框说话（模型写的待办，不是能点的清单）。 */
+.dsh-chat__list li.dsh-chat__task { list-style: none; margin-left: -18px; }
+.dsh-chat__task > input[type='checkbox'] { margin: 0 6px 0 0; vertical-align: -1px; accent-color: var(--dsh-accent, #4cb9ff); }
+/* 嵌套列表：向内再缩进一档（父项的行内内容已经缩进过，这里只补子列表自己的缩进）。 */
+.dsh-chat__list .dsh-chat__list { margin-top: 3px; padding-left: 18px; }
+/* 表格：外层滚动、内层真表格。表格自己保证列对齐 —— 这正是"靠空格对齐"做不到的那件事。 */
+.dsh-chat__table-scroll { overflow-x: auto; margin: 9px 0 0; }
+.dsh-chat__table { border-collapse: collapse; font-size: 12px; }
+.dsh-chat__table th,
+.dsh-chat__table td {
+  padding: 5px 9px;
+  border: 1px solid rgba(139, 196, 235, .16);
+  /* 单元格内按词折行：`overflow-wrap: anywhere` 会把长串切成语义无关的碎片，那正是截图里的坏法。 */
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+.dsh-chat__table th { background: rgba(139, 196, 235, .1); color: var(--dsh-text-strong); font-weight: 600; }
+/* 引用：左侧一道竖线，像一个被引住的段落。 */
+.dsh-chat__quote {
+  margin: 9px 0 0;
+  padding: 2px 0 2px 11px;
+  border-left: 2px solid rgba(139, 196, 235, .35);
+  color: var(--dsh-text-muted, #c3d6e4);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* 分割线：一条细线，不抢视线。 */
+.dsh-chat__rule { height: 0; margin: 11px 0 0; border: 0; border-top: 1px solid rgba(139, 196, 235, .22); }
 .dsh-chat__caret { display: inline-block; width: 2px; height: 1em; margin-left: 4px; vertical-align: -2px; background: var(--dsh-accent-soft); animation: dsh-chat-caret 900ms steps(1) infinite; }
 
 .dsh-chat__card {
@@ -206,7 +332,12 @@
   backdrop-filter: blur(34px) saturate(132%);
   transition: transform var(--dsh-duration-normal) var(--dsh-ease-standard), box-shadow var(--dsh-duration-normal) ease;
 }
+/* 盒子内部那几行（输入框、顶栏、底栏、用量行、岛上工具条）共用**同一条**左右内缩。
+   以前它们各写一个数字，于是必然漂移：输入框自己写 21px，顶栏写 22px，底栏写 18px。
+   轨道（.dsh-chat__history-wrap）**不**用这个数：它的文字列等于盒子的宽度。 */
+.dsh-chat { --dsh-chat-gutter: 18px; }
 .dsh-chat[data-persistent='true'] {
+  --dsh-chat-gutter: 22px;
   width: min(810px, calc(100vw - 60px));
 }
 
@@ -265,11 +396,11 @@
   pointer-events: none;
 }
 
-.dsh-chat__topbar { display: flex; min-height: 42px; align-items: center; gap: 9px; padding: 3px 12px 0 18px; border-bottom: 0; }
-.dsh-chat[data-persistent='true'] .dsh-chat__topbar { min-height: 48px; padding: 7px 22px 0; }
-.dsh-chat[data-persistent='true'] .dsh-chat__composer { min-height: 112px; padding: 8px 22px 15px; }
+.dsh-chat__topbar { display: flex; min-height: 42px; align-items: center; gap: 9px; padding: 3px var(--dsh-chat-gutter) 0; border-bottom: 0; }
+.dsh-chat[data-persistent='true'] .dsh-chat__topbar { min-height: 48px; padding: 7px var(--dsh-chat-gutter) 0; }
+.dsh-chat[data-persistent='true'] .dsh-chat__composer { min-height: 112px; padding: 8px var(--dsh-chat-gutter) 15px; }
 .dsh-chat[data-persistent='true'] .dsh-chat__textarea { min-height: 88px; font-size: 15px; }
-.dsh-chat[data-persistent='true'] .dsh-chat__footer { padding: 0 22px 13px; }
+.dsh-chat[data-persistent='true'] .dsh-chat__footer { padding: 0 var(--dsh-chat-gutter) 13px; }
 .dsh-chat[data-persistent='true'] .dsh-chat__backend-detail { display: none; }
 .dsh-chat[data-persistent='true'] .dsh-chat__status {
   padding: 0;
@@ -299,13 +430,11 @@
 .dsh-chat__mode-switch.is-harness .dsh-chat__mode-switch-knob { transform: translateX(14px); }
 .dsh-chat__mode-switch-label { font-size: 9px; font-weight: 750; letter-spacing: .06em; }
 .dsh-chat[data-persistent='true'] .dsh-chat__composer {
-  margin: 0 14px;
-  padding-right: 9px;
-  padding-left: 9px;
+  /* 左右内缩由 --dsh-chat-gutter 给（下面那条规则），这里只管分隔线。 */
+  margin: 0;
   border-top: 1px solid color-mix(in srgb, var(--dsh-text-strong) 8%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--dsh-text-strong) 7%, transparent);
 }
-.dsh-chat[data-persistent='true'] .dsh-chat__textarea { padding-left: 10px; }
 .dsh-chat[data-persistent='true'] .dsh-chat__send {
   border: 1px solid color-mix(in srgb, var(--dsh-accent-soft) 28%, transparent);
   background: color-mix(in srgb, var(--dsh-accent) 16%, transparent);
@@ -355,6 +484,15 @@
   box-shadow: 0 0 9px rgba(232, 176, 72, .7);
   animation: dsh-chat-status-breathing 1.9s ease-in-out infinite;
 }
+/*
+ * 红灯：**试过、没成**。与黄灯同一条呼吸曲线（用户要的正是"呼吸灯改成红色"），但颜色是告警性的
+ * ——它表示"我刚才替你连过了，没连上"，所以点滑槽＝立刻再试一次（拉起进程 + 握手申请）。
+ */
+.dsh-chat__status-dot[data-ready='failed'] {
+  background: #ef5f6b;
+  box-shadow: 0 0 9px rgba(239, 95, 107, .7);
+  animation: dsh-chat-status-breathing 1.9s ease-in-out infinite;
+}
 @keyframes dsh-chat-status-breathing {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: .42; transform: scale(.7); }
@@ -377,7 +515,7 @@
 .dsh-chat--busy .dsh-chat__status { color: var(--dsh-accent-soft); }
 .dsh-chat--busy .dsh-chat__status-dot { background: var(--dsh-accent-soft); animation: dsh-chat-breathe 1.8s ease-in-out infinite; }
 
-.dsh-chat__composer { display: grid; min-height: 86px; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; padding: 2px 15px 12px 20px; }
+.dsh-chat__composer { display: grid; min-height: 86px; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; padding: 2px var(--dsh-chat-gutter) 12px; }
 .dsh-chat__command-menu { position: relative; flex: 0 0 auto; }
 .dsh-chat__command-menu-button { display: inline-flex; min-height: 28px; align-items: center; gap: 5px; padding: 4px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--dsh-text-muted); font: inherit; font-size: 11px; cursor: pointer; }
 .dsh-chat__command-menu-button:hover, .dsh-chat__command-menu-button[aria-expanded='true'] { background: rgba(255,255,255,.07); color: var(--dsh-text); }
@@ -406,7 +544,7 @@
 .dsh-chat__send { width: 46px; height: 46px; min-height: 46px; padding: 0; border-radius: 50%; }
 .dsh-chat__stop { border-radius: 14px; color: var(--dsh-warning); }
 
-.dsh-chat__footer { display: flex; min-height: 32px; align-items: center; gap: 7px; padding: 0 16px 9px 19px; color: var(--dsh-text-faint); font-size: 10px; flex-wrap: wrap; }
+.dsh-chat__footer { display: flex; min-height: 32px; align-items: center; gap: 7px; padding: 0 var(--dsh-chat-gutter) 9px; color: var(--dsh-text-faint); font-size: 10px; flex-wrap: wrap; }
 .dsh-chat__footer .dsh-chat__model-picker { margin-left: auto; }
 .dsh-chat__meta { display: inline-flex; min-width: 0; align-items: center; gap: 5px; }
 .dsh-chat__model { max-width: 210px; overflow: hidden; color: var(--dsh-text-muted); text-overflow: ellipsis; white-space: nowrap; }
@@ -432,7 +570,7 @@
 .dsh-chat__model-option:hover { background: rgba(255,255,255,.07); color: var(--dsh-text); }
 .dsh-chat__model-option.is-current { color: var(--dsh-accent-soft); }
 .dsh-chat__model-option.is-current::after { content: ' ✓'; }
-.dsh-chat__usage-rail { display: flex; min-height: 20px; align-items: center; justify-content: center; gap: 9px; padding: 4px 18px 0; color: var(--dsh-text-faint); font-size: 10px; pointer-events: none; }
+.dsh-chat__usage-rail { display: flex; min-height: 20px; align-items: center; justify-content: center; gap: 9px; padding: 4px var(--dsh-chat-gutter) 0; color: var(--dsh-text-faint); font-size: 10px; pointer-events: none; }
 .dsh-chat__usage-rail .dsh-chat__turn-usage,
 .dsh-chat__usage-rail .dsh-chat__session-cost { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
 .dsh-chat__usage-rail .dsh-chat__turn-usage[data-usage-available='false'] { color: var(--dsh-text-faint); }
@@ -445,7 +583,7 @@
 .dsh-chat__history-button { margin-left: auto; min-height: 28px; padding: 4px 9px; color: var(--dsh-text-muted); font-size: 11px; }
 .dsh-chat__history-button svg { transition: transform var(--dsh-duration-normal) var(--dsh-ease-standard); }
 .dsh-chat.expanded .dsh-chat__history-button svg { transform: rotate(180deg); }
-.dsh-chat__island-toolbar { display: flex; min-height: 31px; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 18px 0; }
+.dsh-chat__island-toolbar { display: flex; min-height: 31px; align-items: center; justify-content: space-between; gap: 12px; padding: 10px var(--dsh-chat-gutter) 0; }
 .dsh-chat__island-toolbar-left { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .dsh-chat__island-toolbar .dsh-chat__mode-switch { flex: 0 0 auto; }
 .dsh-chat__island-toolbar .dsh-chat__preset { overflow: hidden; text-overflow: ellipsis; }
@@ -455,7 +593,7 @@
 .dsh-chat[data-persistent='true'] { bottom: clamp(22vh, 29vh, 34vh); width: min(760px, calc(100vw - clamp(32px, 7vw, 120px))); transition: bottom var(--dsh-duration-slow) var(--dsh-ease-expressive); }
 .dsh-chat[data-persistent='true'].expanded { bottom: var(--dsh-chat-expanded-bottom, clamp(112px, 16vh, 248px)); }
 .dsh-chat[data-persistent='true']::before { display: none; }
-.dsh-chat[data-persistent='true'] .dsh-chat__topbar { order: 2; min-height: 34px; padding: 0 14px 10px; color: var(--dsh-text-muted); flex-wrap: wrap; column-gap: 10px; row-gap: 4px; }
+.dsh-chat[data-persistent='true'] .dsh-chat__topbar { order: 2; min-height: 34px; padding: 0 var(--dsh-chat-gutter) 10px; color: var(--dsh-text-muted); flex-wrap: wrap; column-gap: 10px; row-gap: 4px; }
 .dsh-chat[data-persistent='true'] .dsh-chat__topbar .dsh-chat__usage-rail { flex: 1 1 300px; min-width: 0; justify-content: center; flex-wrap: wrap; white-space: normal; }
 .dsh-chat[data-persistent='true'] .dsh-chat__topbar .dsh-chat__topbar-spacer { flex: 1 1 12px; min-width: 8px; }
 .dsh-chat[data-persistent='true'] .dsh-chat__identity { gap: 7px; }
@@ -473,7 +611,7 @@
 .dsh-chat[data-persistent='true'].expanded .dsh-chat__card,
 .dsh-chat[data-persistent='true'].dsh-chat--busy .dsh-chat__card { transform: translateY(-3px); border-color: color-mix(in srgb, var(--dsh-text-strong) 22%, transparent); background: color-mix(in srgb, var(--dsh-glass-fill-strong) calc(var(--dsh-chat-acrylic-opacity, .74) * 76%), transparent); box-shadow: inset 0 1px 0 rgba(255,255,255,.14), 0 22px 58px rgba(0,0,0,.22), 0 0 32px color-mix(in srgb, var(--dsh-accent) 9%, transparent); backdrop-filter: blur(var(--dsh-chat-acrylic-blur, 19px)) saturate(124%); }
 .dsh-chat[data-persistent='true'].expanded .dsh-chat__card { transform: none; }
-.dsh-chat[data-persistent='true'] .dsh-chat__composer { min-height: 104px; margin: 0; padding: 12px 21px 6px; border: 0; }
+.dsh-chat[data-persistent='true'] .dsh-chat__composer { min-height: 104px; margin: 0; padding: 12px var(--dsh-chat-gutter) 6px; border: 0; }
 .dsh-chat[data-persistent='true'] .dsh-chat__island-toolbar {
   position: absolute;
   z-index: 4;
@@ -482,11 +620,11 @@
   left: 0;
   box-sizing: border-box;
   min-height: 31px;
-  padding: 0 14px 8px;
+  padding: 0 var(--dsh-chat-gutter) 8px;
   pointer-events: auto;
 }
 .dsh-chat[data-persistent='true'] .dsh-chat__textarea { min-height: 78px; padding: 8px 0; font-size: clamp(14px, 1vw, 16px); }
-.dsh-chat[data-persistent='true'] .dsh-chat__footer { min-height: 35px; padding: 0 18px 12px; opacity: .9; }
+.dsh-chat[data-persistent='true'] .dsh-chat__footer { min-height: 35px; padding: 0 var(--dsh-chat-gutter) 12px; opacity: .9; }
 /* 悬浮布局只需要把轨道抬到卡片之上（它自己的层级关系不同）；材质与几何由上面那一份定义。 */
 .dsh-chat[data-persistent='true'] .dsh-chat__history-wrap { z-index: 1; }
 .dsh-chat[data-persistent='true'] .dsh-chat__message { max-width: 92%; gap: 3px; padding: 8px 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
@@ -500,11 +638,11 @@
 @keyframes dsh-chat-shimmer { 0%, 100% { opacity: 0.25; transform: scaleX(0.35); } 50% { opacity: 0.9; transform: scaleX(1); } }
 
 @media (max-width: 700px) {
-  .conversation-shell.dsh-chat { bottom: 14px; width: calc(100vw - 24px); }
+  .conversation-shell.dsh-chat { --dsh-chat-gutter: 12px; bottom: 14px; width: calc(100vw - 24px); }
   .dsh-chat__backend-detail, .dsh-chat__separator, .dsh-chat__session-cost { display: none; }
   .dsh-chat__topbar .dsh-chat__usage-rail { display: none; }
   .dsh-chat__footer .dsh-chat__model-picker { margin-left: 0; }
-  .dsh-chat__history { max-height: 52vh; padding-inline: 15px; }
+  .dsh-chat__history { max-height: 52vh; }
   .dsh-chat__message { max-width: 92%; }
 }
 

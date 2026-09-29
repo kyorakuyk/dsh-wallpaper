@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import type { BackendMode, ModelTierRule } from '../domain/types.ts'
+// `ModelTierRule` 随「模型与形态映射」卡片一起被冻结，解冻时连同上面那行 `updateRule` 一起加回来。
+import type { BackendMode } from '../domain/types.ts'
 import { BACKGROUND_OPTIONS, MAX_PRICE_PER_MILLION, normalizedPrice, type WallpaperSettings } from './store.ts'
 import { type SettingsPage } from './settingsProbes.ts'
 import type { AppearanceAssetSummary } from '../features/appearance/appearanceViewModel.ts'
@@ -9,7 +10,17 @@ import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, DesktopWorkspa
 import { preferredDisplayId } from '../runtime/displayLayout.ts'
 import { harnessStateLabel } from '../connect/harnessLabels.ts'
 import type { AutostartStatus, HarnessEndpointScan, HarnessTarget } from '../native/runtime.ts'
+import { autostartDetail, autostartKnown } from './autostartCopy.ts'
+// ---------------------------------------------------------------------------
+// FREEZE（临时冻结，不是删除）：「起别名」与实例下拉被冻在这个 build 之外，所以它们要的两样东西
+// 也一起冻住 —— `instanceLabel` 只给实例下拉的行文字用，`subjectAlias` 只给「起别名」输入框回显用，
+// `launchArgsIssue` 只给「启动参数」那行的校验提示用。三个函数本身一行都没动（
+// `connect/harnessSubjects.ts` / `connect/launchArgs.ts` 里的纯逻辑与它们的测试照常跑）。
+// 怎么恢复：取消注释下面两个 import，再去掉本文件里对应的三处 FREEZE 注释。
+// ---------------------------------------------------------------------------
+// import { catalogAgeLabel, displaySubjectPath, instanceLabel, sameSubject, subjectAlias, subjectOptionLabel } from '../connect/harnessSubjects.ts'
 import { catalogAgeLabel, displaySubjectPath, sameSubject, subjectOptionLabel } from '../connect/harnessSubjects.ts'
+// import { launchArgsIssue } from '../connect/launchArgs.ts'
 import { OfficialPersonaCards } from '../persona/OfficialPersonaCards.tsx'
 import './SettingsPanel.css'
 
@@ -54,6 +65,9 @@ export interface SettingsPanelProps {
    * 安装目录每次升级被整体替换（写那里的必丢），数据目录则升级保留、卸载也留得下。
    */
   desktopWorkspace?: DesktopWorkspaceStatus
+  /** 在资源管理器里打开「项目记忆」；桌面会话里不贴路径，入口只在这里。 */
+  onOpenProjectMemory?: () => Promise<void>
+  openingMemory?: boolean
   /**
    * 壁纸此刻在用的 chat 模式（`undefined` = 还没读到快照）。
    *
@@ -95,7 +109,7 @@ export interface SettingsPanelProps {
   /**
    * Endpoint discovery. The wallpaper used to probe one hardcoded port (3080),
    * which silently meant "only ever connect to the CLI shape" — the official
-   * desktop shell listens on 19387 and the community desktop on 43120. The card
+   * desktop shell listens on 19387 and the CLI/webui shape on 3080. The card
    * reports how many Bridges the scan found and lets the user pin one.
    */
   endpointScan: HarnessEndpointScan[]
@@ -109,13 +123,42 @@ export interface SettingsPanelProps {
    */
   /** Idempotent 「打开界面」: start it if needed, then show it. */
   onOpenClient: () => void
-  /** Which action the current selection takes, for the button label. */
+  /**
+   * 「打开」的另一条路线：在一个**新的终端窗口**里拉起 TUI。
+   *
+   * 只有**没有自己窗口**的主体才会用到它（官方桌面客户端自带窗口 ⇒ 这个问题对它不成立）。
+   */
+  onOpenTui: () => void
+  /** 用户选的路线。存进 `dshLaunch.window`；缺省按浏览器（与旧档案行为一致）。 */
+  onSelectWindow: (value: 'browser' | 'tui') => void
+  /**
+   * FREEZE（临时冻结，不是删除）：「启动参数」的输入框不在这一版里，所以它的三个 prop 与
+   * 「起别名」的那一个也一起冻住。
+   *
+   * 为什么关：本 build 有意回到 a8e2e91 之前的行为 —— 界面上没有「启动参数」行、没有「起别名」
+   * 行，也没有标题右上角的实例下拉，启动链不接受任何参数（`App.tsx` / `SettingsWindow.tsx` 里
+   * 三个入口都冻结了）。留着一个改了没用的输入框，比它不在更坏。
+   *
+   * 为什么标成可选而不是删掉：这样 `SettingsWindow` 给不给都不算类型错误，而恢复时两边一起取消
+   * 注释就行 —— 这也是 `LayoutProbe` 那套"冻结就注释掉、复活就打开"的做法。
+   *
+   * 怎么恢复：取消注释这四个 prop，并在 `SettingsWindow.tsx` 里恢复对应的两个 handler 与两处传参。
+   */
+  // onSelectLaunchArgs: (args: string) => void
+  // onSelectSubjectAlias: (alias: string) => void
+  // onStopManagedInstance: (instanceKey: string) => void
+  /**
+   * Which action the current selection takes, for the button label.
+   */
   reachAction: 'browser' | 'window'
   /** Opening waits for the client to answer, so the button reports that wait. */
   openBusy: boolean
   managedDsh: ManagedDshStatus
+  /** 刷新/停止是否在飞（下拉冻结之后，它仍然钉着底部「停止本应用启动的 DSH」那个按钮）。 */
+  managedDshBusy: boolean
   onRefreshManagedDsh: () => void
-  onStopManagedDsh: () => void
+  /** 停掉本应用启动的**全部**实例（原「停止本应用启动的 DSH」那个动作）。 */
+  onStopAllManagedDsh: () => void
   deepseekWebAdapterConfig?: DeepSeekWebAdapterConfigStatus
   onRefreshDeepSeekWebAdapterConfig: () => void
   onOpenDeepSeekWebAdapterConfig: () => void
@@ -194,8 +237,8 @@ export function historyPressure(totalBytes: number, budgetBytes: number): number
   return Math.max(0, Math.min(100, Math.round(totalBytes / budgetBytes * 100)))
 }
 
-function Card({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
-  return <section className="settings-card"><header><h2>{title}</h2>{description && <p>{description}</p>}</header><div className="settings-card__body">{children}</div></section>
+function Card({ title, description, action, children }: { title: string; description?: string; action?: ReactNode; children: ReactNode }) {
+  return <section className="settings-card"><header><div className="settings-card__heading"><h2>{title}</h2>{description && <p>{description}</p>}</div>{action && <div className="settings-card__action">{action}</div>}</header><div className="settings-card__body">{children}</div></section>
 }
 
 function Field({ title, detail, children }: { title: string; detail?: string; children: ReactNode }) {
@@ -227,10 +270,96 @@ function Choice({ value, options, onChange, label, disabled = false, emptyMessag
 export function harnessEndpointKindLabel(kind: HarnessEndpointScan['kind']): string {
   switch (kind) {
     case 'official-desktop': return '桌面客户端'
-    case 'community-desktop': return '第三方桌面客户端'
     default: return 'Web / CLI'
   }
 }
+
+// ---------------------------------------------------------------------------
+// FREEZE（临时冻结，不是删除）：「当前已启动实例」下拉（`RunningInstances`）。
+//
+// 为什么关：本 build 回到 `a8e2e91` 之前的行为 —— 停止入口只有一个，就是卡片底部那行
+// 「本应用启动的 DSH」+「停止本应用启动的 DSH」（那个按钮已经恢复了，见连接卡片底部）。标题
+// 右上角的下拉在这个世界里没有第二个实例可列，留着它只会与底部那个按钮做同一件事。
+//
+// 怎么恢复：把下面这个组件取消注释，恢复连接卡片上的 `action={<RunningInstances … />}`，并在
+// `SettingsWindow.tsx` 里恢复 `onStopManagedInstance` 的传参（三处传参各有自己的 FREEZE 注释）；
+// 再把底部那行改回注释（它就在那里留档）。原生侧一行都不用动：`managed_dsh_status` 仍然返回
+// 列表、`stop_managed_dsh` 仍然接受 instanceKey、`managedDshBusy` 这个 prop 现在钉着底部那个
+// 按钮的可用性。
+//
+// 卡片标题右上角的「当前已启动实例」。
+//
+// 每一行读作 `别名 · 端口`，行尾的 × 停掉**那一个**实例。同一个源码目录起了两个端口时，这是
+// 唯一能分清"我要停的是哪一个"的地方 —— 所以行文字必须带端口，而不是只写一个名字。
+//
+// 行**不是**可选项：这里的下拉是一个清单，不是单选。点行不做任何事（没有"选中"这个状态），
+// 要动就动行尾那个 ×。做成"可选"会让人以为选中它就会改掉「打开界面」的目标，而那条路由
+// 「启动参数」里的端口决定（`endpoints.ts`），两个真相来源只会互相打架。
+//
+// 它复用了 `Choice` 的那套样式类，因为外观该与同一个窗口里的其他下拉一致。
+//
+// function RunningInstances({ instances, targets, aliases, busy, onStopInstance, onStopAll, onRefresh }: {
+//   instances: readonly ManagedDshInstance[]
+//   targets: readonly HarnessTarget[]
+//   aliases: Readonly<Record<string, string>> | undefined
+//   busy: boolean
+//   onStopInstance: (instanceKey: string) => void
+//   onStopAll: () => void
+//   onRefresh: () => void
+// }) {
+//   const [open, setOpen] = useState(false)
+//   const root = useRef<HTMLDivElement>(null)
+//   useEffect(() => {
+//     const close = (event: MouseEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false) }
+//     window.addEventListener('mousedown', close)
+//     return () => window.removeEventListener('mousedown', close)
+//   }, [])
+//   const labelFor = (instance: ManagedDshInstance) => instanceLabel(instance.subjectId, instance.port, targets, aliases)
+//   // 只有一行时直接把那一行写在按钮上：用户不必为了读到一个名字而先点开一次。
+//   const triggerText = instances.length === 0
+//     ? '当前已启动实例（无）'
+//     : instances.length === 1
+//       ? labelFor(instances[0]!)
+//       : `当前已启动实例（${instances.length} 个）`
+//   return <div className={`settings-choice settings-instances ${open ? 'is-open' : ''}`} ref={root}>
+//     <button
+//       type="button"
+//       className="settings-choice__trigger"
+//       aria-label="当前已启动实例"
+//       aria-expanded={open}
+//       onClick={() => setOpen((shown) => !shown)}
+//     >
+//       <span>{triggerText}</span><i>⌄</i>
+//     </button>
+//     {open && <div className="settings-choice__menu settings-instances__menu" role="list" aria-label="当前已启动实例">
+//       {instances.length === 0
+//         ? <span className="settings-choice__empty">本应用没有启动 DSH；其他人启动的实例不会被列在这里，也不会被停止。</span>
+//         : instances.map((instance) => {
+//             const label = labelFor(instance)
+//             return <div className="settings-instances__row" role="listitem" key={instance.instanceKey}>
+//               <span className="settings-instances__name" title={instance.subjectId}>{label}</span>
+//               <button
+//                 type="button"
+//                 className="settings-instances__stop"
+//                 aria-label={`停止实例 ${label}`}
+//                 disabled={busy}
+//                 onClick={() => onStopInstance(instance.instanceKey)}
+//               >
+//                 ×
+//               </button>
+//             </div>
+//           })}
+//       <div className="settings-instances__footer">
+//         <button type="button" className="settings-action secondary" disabled={busy} onClick={onRefresh}>刷新</button>
+//       </div>
+//     </div>}
+//     // 「全部停止」紧挨着下拉，因为它们是同一个动作的两个范围：一个是"停这一个"，一个是"都停"。
+//     // 原来卡片底部那个「停止本应用启动的 DSH」按钮已经被它取代 —— 两个控件做同一件事，
+//     // 用户就得猜它们有什么区别（而答案曾经是"没有区别"）。
+//     <button className="settings-action secondary" disabled={busy || instances.length === 0} onClick={onStopAll}>全部停止</button>
+//   </div>
+// }
+// ---------------------------------------------------------------------------
 
 function displayLabel(display: DesktopDisplayInfo, index: number): string {  const number = /DISPLAY(\d+)/i.exec(display.id)?.[1]
   return number ? `显示器 ${number}` : display.name.trim() || `显示器 ${index + 1}`
@@ -264,9 +393,10 @@ export const CHAT_MODE_OPTIONS: Array<{ value: BackendMode; label: string }> = [
  * 当前值可能是 Harness：那时它必须留在候选里并标出来源，否则 `Choice` 会退回第一个候选，
  * 控件显示成"网页入口"而壁纸其实在 Harness 上——一个会骗人的开关。
  */
-export function chatModeOptions(current: BackendMode): Array<{ value: BackendMode; label: string }> {
-  if (CHAT_MODE_OPTIONS.some((option) => option.value === current)) return [...CHAT_MODE_OPTIONS]
-  return [...CHAT_MODE_OPTIONS, { value: current, label: `${BACKEND_MODE_LABELS[current]}（由桌面开关切换）` }]
+export function chatModeOptions(): Array<{ value: BackendMode; label: string }> {
+  // 这个下拉只回答一件事：**滑槽在左边时，聊天连接哪个通道**。滑槽在右端时一定是 Harness，
+  // 而那是滑槽自己的含义 —— 与这里无关，所以候选**恒为两项**，不为运行中的后端追加任何项。
+  return [...CHAT_MODE_OPTIONS]
 }
 
 export function backendModeLabel(backend: BackendMode): string {
@@ -391,13 +521,40 @@ export function SettingsPanel(props: SettingsPanelProps) {
    */
   const selectedSubject = props.harnessTargets.find((target) => target.id === settings.dshLaunch.subjectId)
   const shellSelected = selectedSubject?.kind === 'embedded-shell'
+  // 已安装的 CLI 没有"源码目录"这回事：它拿的是别人装好的东西，路径只有它的启动器有意义，
+  // 而启动器由扫描决定、不由用户填写。所以给这一类别单独收起那一行，而不是让它显示一个空框。
+  const cliSelected = selectedSubject?.kind === 'installed-cli'
+  /**
+   * FREEZE（临时冻结，不是删除）：「启动参数」那一串现在能不能用。
+   *
+   * 判据是"启动器会不会收到一个它理解不了的词"，而不是"这串字好不好看"：条数、长度、控制字符。
+   * 有意见时那句话**顶掉**用法说明 —— 一行同时说两件事，用户只会读到第一件。
+   *
+   * 为什么关：这一版没有「启动参数」输入框（见下面那条 Field 的 FREEZE 注释），所以没有东西
+   * 可以把校验结果显示出来；一个算了没人看的变量在本项目里会被 `noUnusedLocals` 拦下。
+   * 恢复办法：取消注释这一行，并把下面的 Field 一起打开（`launchArgsIssue` 的规则一行都没动）。
+   */
+  // const argsIssue = launchArgsIssue(settings.dshLaunch.args)
+  // 「打开」能做什么，由主体决定：官壳只有自己的窗口，源码树只有浏览器，只有"已安装的 CLI"真的有
+  // 两条路可选。**单项不做成下拉** —— 那是一个点了没反应、也无法改变的控件。
+  const openRoutes: Array<{ value: 'browser' | 'tui'; label: string }> = !settings.dshLaunch.subjectId
+    ? []
+    : shellSelected
+      ? [{ value: 'browser', label: '官方客户端窗口' }]
+      : selectedSubject?.kind === 'installed-cli'
+        ? [{ value: 'browser', label: '浏览器' }, { value: 'tui', label: '终端里的 TUI' }]
+        : [{ value: 'browser', label: '浏览器' }]
+  // 存着的路线只有在**真的有两条路**时才作数：官壳/源码树即便档案里写着 tui，也仍然走它们唯一的路。
+  const openRoute: 'browser' | 'tui' =
+    openRoutes.length > 1 && settings.dshLaunch.window === 'tui' ? 'tui' : 'browser'
   /**
    * Clients that are actually running. The endpoint picker is only a *choice* when
    * there is more than one: with zero or one, ports and Bridge states are internal
    * bookkeeping the user cannot act on, so showing them would be disclosure without
    * a decision attached to it.
    */
-  const updateRule = (index: number, patch: Partial<ModelTierRule>) => set({ modelTierRules: settings.modelTierRules.map((rule, i) => i === index ? { ...rule, ...patch } : rule) })
+  // 与被冻结的「模型与形态映射」卡片同进退：它唯一的用途就是在那张卡片里改规则。
+  // const updateRule = (index: number, patch: Partial<ModelTierRule>) => set({ modelTierRules: settings.modelTierRules.map((rule, i) => i === index ? { ...rule, ...patch } : rule) })
   const pageMeta = pages.find((item) => item.id === page)!
   const displayOptions = props.desktopDisplays.map((display, index) => ({ value: display.id, label: displayLabel(display, index) }))
   const setDisplayBackground = (displayId: string, value: string) => {
@@ -412,7 +569,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
       <div className="settings-titlebar__drag" aria-hidden="true" onMouseDown={(event) => {
         if (event.button === 0) void invoke('start_settings_drag')
       }} />
-      <div className="settings-brand"><span className="settings-brand__mark">DSH</span><div><strong>Wallpaper</strong><small>个性化控制中心</small></div></div>
+      <div className="settings-brand"><img className="settings-brand__mark" src="/brand/persona-mark.png" alt="" draggable={false} /><div><strong>Wallpaper</strong><small>个性化控制中心</small></div></div>
       <button className="settings-window-close" aria-label="关闭设置" onClick={onClose}>×</button>
     </header>
 
@@ -429,10 +586,10 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
       {page === 'general' && <>
         <Card title="交互方式" description="决定会话气泡如何出现在桌面上。">
-          <Field title="中央会话窗" detail="关闭后仅可通过托盘右键或此处重新显示；不会因失焦、切换应用或按 Esc 自动消失。"><Toggle label="显示中央会话窗" checked={props.interactionEnabled} onChange={props.onSetInteractionEnabled} /></Field>
+          <Field title="中央会话窗" detail="关闭后仅可通过托盘右键或此处重新打开"><Toggle label="显示中央会话窗" checked={props.interactionEnabled} onChange={props.onSetInteractionEnabled} /></Field>
           <Field title="气泡布局" detail="中央悬浮始终展开；任务栏停靠以胶囊按钮唤起。"><Choice label="气泡布局" value={settings.interactionLayout} onChange={(value) => set({ interactionLayout: value as WallpaperSettings['interactionLayout'] })} options={[{ value: 'floating', label: '中央玻璃悬浮' }, { value: 'taskbar-docked', label: '任务栏停靠胶囊' }]} /></Field>
           <Field title="历史抽屉默认展开" detail="启动或解锁后直接显示最近的对话。"><Toggle label="历史抽屉默认展开" checked={settings.historyStartsExpanded} onChange={(value) => set({ historyStartsExpanded: value })} /></Field>
-          <Field title="发送消息快捷键" detail="习惯回车换行的开发者可切换为 Ctrl+Enter 发送。"><Choice label="发送消息快捷键" value={settings.sendShortcut} onChange={(value) => set({ sendShortcut: value as WallpaperSettings['sendShortcut'] })} options={[{ value: 'Enter', label: 'Enter 发送，Ctrl+Enter 换行' }, { value: 'Ctrl+Enter', label: 'Ctrl+Enter 发送，Enter 换行' }]} /></Field>
+          <Field title="发送消息快捷键" detail="想防止误触发送的开发者可切换为 Ctrl+Enter 发送。"><Choice label="发送消息快捷键" value={settings.sendShortcut} onChange={(value) => set({ sendShortcut: value as WallpaperSettings['sendShortcut'] })} options={[{ value: 'Enter', label: 'Enter 发送，Ctrl+Enter 换行' }, { value: 'Ctrl+Enter', label: 'Ctrl+Enter 发送，Enter 换行' }]} /></Field>
         </Card>
         {props.desktopDisplays.length > 1 && <Card title={`多屏桌面 · 已检测 ${props.desktopDisplays.length} 个屏幕`} description="每块屏幕独立铺满自己的背景；对话窗和立绘可以分别指定目标屏幕。未单独指定的屏幕跟随全局背景。">
           <Field title="启用独立多屏背景" detail={settings.multiScreen.enabled ? '已按屏幕分别渲染；修改某一屏不会改变其他屏幕的背景选择。' : '关闭时保持现有跨虚拟桌面的单一场景；开启后才显示逐屏选择。'}><Toggle label="启用独立多屏背景" checked={settings.multiScreen.enabled} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, enabled: value } })} /></Field>
@@ -444,7 +601,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <div className="integration-actions"><button className="settings-action secondary" onClick={() => void props.onRefreshDesktopDisplays()}>刷新显示器检测</button></div>
         </Card>}
         <Card title="会话生命周期"><Field title="新会话策略" detail="网页模式会固定到同一个 DeepSeek 会话地址；其他后端分别保留自己的最近会话。"><Choice label="新会话策略" value={settings.conversationPolicy} onChange={(value) => set({ conversationPolicy: value as WallpaperSettings['conversationPolicy'] })} options={[{ value: 'resume-last', label: '恢复最近会话' }, { value: 'new-on-unlock', label: '每次解锁新建' }, { value: 'daily', label: '每日新建' }]} /></Field></Card>
-        <Card title="高级外观" description="环境渐变只作用于立绘；会话窗使用独立的亚克力透明度。">
+        <Card title="高级外观（测试中）" description="环境渐变只作用于立绘；会话窗使用独立的亚克力透明度。">
           <Field title="环境渐变长度" detail={`从暗侧向亮侧延伸至 ${settings.portraitAmbientLength}%`}><input type="range" min="35" max="100" step="1" value={settings.portraitAmbientLength} onChange={(event) => set({ portraitAmbientLength: Number(event.target.value) })} /></Field>
           <Field title="环境渐变强度" detail={`${Math.round(settings.portraitAmbientStrength * 100)}%`}><input type="range" min="0" max="1" step="0.01" value={settings.portraitAmbientStrength} onChange={(event) => set({ portraitAmbientStrength: Number(event.target.value) })} /></Field>
           <Field title="中央会话窗透明度" detail={`${Math.round(settings.conversationOpacity * 100)}% · 仅影响亚克力底色，不影响文字可读性`}><input type="range" min="0.2" max="0.96" step="0.01" value={settings.conversationOpacity} onChange={(event) => set({ conversationOpacity: Number(event.target.value) })} /></Field>
@@ -453,15 +610,13 @@ export function SettingsPanel(props: SettingsPanelProps) {
       </>}
 
       {page === 'connections' && <>
-        <Card title="聊天模式" description="三选一。改的是**正在运行**的那个壁纸，同时也记作下次启动的默认值；网页桥接不会在失败时自动切到付费 API。">
-          <Field title="当前使用" detail={props.liveBackend && props.liveBackend !== settings.defaultBackend ? `壁纸此刻在用：${backendModeLabel(props.liveBackend)}（与默认值不同，可能刚被托盘或自动切换改过；此窗口打开时读取）。Harness 不在这里切换。` : '立即切换正在运行的壁纸；此窗口打开时读取它现在用哪一种。Harness 由桌面上的那个开关切换。'}>
-            {/* 值是**运行中**的那个后端，不是启动默认值：两者会分叉（托盘换后端、
-                `autoSwitchHarness` 自动切到 Harness、主体退出后壁纸自己复位），显示事实而不是意图。
-                当前值是 Harness 时它也留在候选里（标注"由桌面开关切换"），否则这个控件会显示成
-                网页入口而壁纸其实在 Harness 上。 */}
-            <Choice label="当前使用" value={props.liveBackend ?? settings.defaultBackend} onChange={(value) => props.onSelectBackend(value as BackendMode)} options={chatModeOptions(props.liveBackend ?? settings.defaultBackend)} />
+        <Card title="聊天模式" description="二选一。更改会话的通道，会记作下次启动的默认值；网页桥接不会在失败时自动切到付费 API。">
+          <Field title="当前使用" detail="滑槽在左边时，聊天走这里选的通道；改动会记作下次启动的默认值。">
+            {/* 值是**启动默认值**：这个控件给"滑槽在左边"这个位置赋予含义。滑槽在右端时一定是
+                Harness，那由滑槽自己表达，这里不描述、也不需要一个不可选但可见的 Harness 项。 */}
+            <Choice label="当前使用" value={settings.defaultBackend} onChange={(value) => props.onSelectBackend(value as BackendMode)} options={chatModeOptions()} />
           </Field>
-          <Field title="DSH 就绪时自动切换" detail="仅检测到兼容的壁纸 Bridge 才会切换。"><Toggle label="DSH 自动切换" checked={settings.autoSwitchHarness} onChange={(value) => set({ autoSwitchHarness: value })} /></Field>
+          <Field title="DSH 就绪时自动切换" detail="当 harness 就绪时自动切换到 harness 模式。"><Toggle label="DSH 自动切换" checked={settings.autoSwitchHarness} onChange={(value) => set({ autoSwitchHarness: value })} /></Field>
         </Card>
                 {/*
           Wording rules for this card, applied to every sentence in it:
@@ -477,7 +632,25 @@ export function SettingsPanel(props: SettingsPanelProps) {
             "壁纸自身开机自启" and "你的系统自启设置"; the page has one name for it, so
             the toggle points at that page instead of introducing a second.
         */}
-        <Card title="DeepSeek Harness 启动" description="选择由谁来跑 DeepSeek Harness：客户端自带运行环境，源码目录由本应用启动。已经在运行的实例不会被接管或关闭。">
+        <Card
+          title="DeepSeek Harness 连接"
+          description="当第一次使用与本机含有多个不同dsh时使用"
+          // FREEZE（临时冻结，不是删除）：卡片标题右上角的「当前已启动实例」下拉。它随
+          // 「启动参数」一起冻住（本 build 回到单实例行为，停止入口只有下面那行）。恢复办法：
+          // 取消注释下面这个 `action`，并恢复 `RunningInstances` 组件（本文件内，注释里留着）
+          // 与 `SettingsWindow.tsx` 里那两处传参。
+          // action={<RunningInstances
+          //   instances={props.managedDsh.instances}
+          //   targets={props.harnessTargets}
+          //   aliases={settings.dshLaunch.aliases}
+          //   busy={props.managedDshBusy}
+          //   onStopInstance={props.onStopManagedInstance}
+          //   onStopAll={props.onStopAllManagedDsh}
+          //   onRefresh={props.onRefreshManagedDsh}
+          // />}
+        >
+          {/* 旧的卡片描述留档（不再显示）：选择由谁来接管复杂工作：客户端自带运行环境，源码目录由本应用启动。
+              已经在运行的实例不会被接管或关闭。 */}
           {/*
             One control for "who runs it", because that is one question. The scanned
             subjects used to be a row each with its own 采用 button, plus a separate row
@@ -491,29 +664,32 @@ export function SettingsPanel(props: SettingsPanelProps) {
             detail={props.dshScanBusy
               ? '正在后台搜索可识别的运行方式，请稍候。'
               : props.harnessTargets.length === 0
-                ? '点「扫描」找出本机可以运行的 DeepSeek Harness；扫描不会阻塞设置中心。'
+                ? '点「扫描」找出本机可以运行的 DSH。'
                 : [props.subjectChoice, `已发现 ${props.harnessTargets.length} 个可选项${props.subjectCatalogVerifiedAt ? `（${catalogAgeLabel(props.subjectCatalogVerifiedAt)}）` : ''}。`].filter(Boolean).join(' ')}
           >
             <span className="integration-actions">
               {props.harnessTargets.length > 0 && (
-                <select
-                  className="settings-select"
-                  aria-label="运行方式"
+                <Choice
+                  label="运行方式"
                   value={settings.dshLaunch.subjectId ?? ''}
-                  onChange={(event) => props.onSelectSubject(event.target.value)}
-                >
-                  {/*
-                    A subject stored before this list was rescanned stays visible:
-                    dropping the user's choice because a scan has not run yet is the
-                    "looks empty" failure the catalogue exists to prevent.
-                  */}
-                  {settings.dshLaunch.subjectId && !props.harnessTargets.some((target) => sameSubject(target.id, settings.dshLaunch.subjectId)) && (
-                    <option value={settings.dshLaunch.subjectId}>{`当前：${displaySubjectPath(settings.dshLaunch.subjectId)}`}</option>
-                  )}
-                  {props.harnessTargets.map((target) => (
-                    <option key={target.id} value={target.id}>{subjectOptionLabel(target, props.harnessTargets)}</option>
-                  ))}
-                </select>
+                  onChange={props.onSelectSubject}
+                  options={[
+                    /*
+                      A subject stored before this list was rescanned stays visible:
+                      dropping the user's choice because a scan has not run yet is the
+                      "looks empty" failure the catalogue exists to prevent.
+                    */
+                    ...(settings.dshLaunch.subjectId && !props.harnessTargets.some((target) => sameSubject(target.id, settings.dshLaunch.subjectId))
+                      ? [{ value: settings.dshLaunch.subjectId, label: `当前：${displaySubjectPath(settings.dshLaunch.subjectId)}` }]
+                      : []),
+                    // FREEZE（临时冻结，不是删除）：这一行原来把别名表传进去（`subjectOptionLabel(
+                    // target, props.harnessTargets, settings.dshLaunch.aliases)`）。不传就是"用目录名
+                    // 区分两个同名克隆"——也就是这个功能之前的行文字（`源码目录 · DeepSeekHarness.old
+                    // · 0.1.0-rc.5`）。恢复办法：把第三个实参加回去（`subjectOptionLabel` 的别名规则
+                    // 一行都没动，`subjectOptionVersion.spec.ts` 仍然钉着它）。
+                    ...props.harnessTargets.map((target) => ({ value: target.id, label: subjectOptionLabel(target, props.harnessTargets) })),
+                  ]}
+                />
               )}
               <button className="settings-action secondary" disabled={props.dshScanBusy} onClick={props.onScanDsh}>
                 {props.dshScanBusy ? '扫描中…' : props.harnessTargets.length > 0 ? '重新扫描' : '扫描'}
@@ -522,14 +698,60 @@ export function SettingsPanel(props: SettingsPanelProps) {
           </Field>
           {!shellSelected && <>
             {/*
-              These three belong to a source directory only, which is why the block
-              disappears for a client. The directory itself is read-only: with no manual
-              entry the scan is what fills the list, so an editable field would be an
-              input with no effect.
+              这几项属于**源码目录**，所以选中客户端时整块消失；选中已安装的 CLI 时只有"源码目录"
+              一行消失（其余几项对它仍然有意义：档案名、启动参数）。目录本身是只读的：没有手工
+              填写的地方，列表由扫描填，可编辑的字段会是一个改了也没用的输入框。
+              关于「启动参数」：它取代了原来的「启动命令」——不是换了措辞，而是**收掉了一项能力**
+              （原来的框里可以填任意一个程序、由壁纸去执行它；「启动参数」只能往我们自己选定的那个
+              启动器后面加词，于是"自动启动要不要用这个自定义命令"那一次授权也不再需要）。本 build
+              把这一项整个冻住，见下面那个输入框上的 FREEZE 注释。
             */}
-            <Field title="源码目录" detail="这份源码的位置；扫描会用它作为下一次查找的提示路径。"><span>{displaySubjectPath(selectedSubject?.identity.rootPath ?? settings.dshLaunch.rootPath)}</span></Field>
-            <Field title="数据档案（Profile）" detail="这份源码使用的档案名；不同档案的会话互不相通。"><input value={settings.dshLaunch.profile} placeholder="desktop" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, profile: e.target.value || 'desktop' } })} /></Field>
-            <Field title="启动命令" detail="一般留空即可。只有在需要用别的程序启动它时，才填写那个程序的完整路径（不能带参数）。"><input value={settings.dshLaunch.command ?? ''} placeholder="留空时使用内置的启动方式" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, command: e.target.value || undefined, trustedCommandForAutoStart: e.target.value ? settings.dshLaunch.trustedCommandForAutoStart : false } })} /></Field>
+            {!cliSelected && <Field title="源码目录" detail="这份源码的位置；扫描会用它作为下一次查找的提示路径。"><span className="settings-static">{displaySubjectPath(selectedSubject?.identity.rootPath ?? settings.dshLaunch.rootPath)}</span></Field>}
+            {/* FREEZE（临时冻结，不是删除）：「起别名」输入框。
+                为什么关：别名唯一的作用就是顶替「运行方式」和实例下拉里的"上级目录名"那一段，而
+                那个下拉现在按目录名走、实例下拉整个冻住了 —— 留着这个框就是多一个改了也不影响
+                任何显示的输入框。别名表本身没删：`dshLaunch.aliases` 与它的归一化测试照常跑，
+                写进设置里的值只是暂时不显示。
+                怎么恢复：取消下面这个 Field 的注释，并恢复 `props.onSelectSubjectAlias` 那个 prop
+                与它在本文件顶部的 `subjectAlias` import。 */}
+            {/*
+            {!cliSelected && <Field
+              title="起别名"
+              detail={`只在「运行方式」和实例下拉里显示，留空就用目录名（${selectedSubject?.label ?? '目录名'}）。两个同名目录原本靠上一级目录区分，别名会顶替那一段。`}
+            >
+              <input
+                value={subjectAlias(settings.dshLaunch.subjectId, settings.dshLaunch.aliases)}
+                placeholder="留空时使用目录名"
+                aria-label="起别名"
+                maxLength={64}
+                onChange={(e) => props.onSelectSubjectAlias(e.target.value)}
+              />
+            </Field>}
+            */}
+            {/* 由用户决定隐藏（2026-09-30）：它不是偏好，而是我们走哪条启动链的结果 —— 官壳用自己独占的 desktop、TUI 用它自己的 dsh-tui、CLI 与检出只认能提供 HTTP 的 web。理由见 connect/harnessProfiles.ts。 */}
+            {/* FREEZE（临时冻结，不是删除）：「启动参数」行。
+                为什么关：本 build 有意回到这个功能之前的行为 —— 没有参数这一项，启动链也不接受
+                参数（`App.tsx` 里三个入口、`SettingsWindow.tsx` 里两个入口都冻结了）。界面上留着
+                一个改了没用的框，比它不在更坏；而它旁边的说明还在讲端口与并行实例，那些话在
+                单实例的世界里只会让人以为改得动。
+                怎么恢复：取消下面这个 Field 的注释，并恢复 `props.onSelectLaunchArgs` 那个 prop、
+                本文件顶部的 `launchArgsIssue` import，以及下面那条 `argsIssue` 计算
+                （`connect/launchArgs.ts` 本身一行都没动，分词与读端口的测试照常跑）。
+                校验逻辑的落点也留档在这里：`launchArgsIssue(settings.dshLaunch.args)`。 */}
+            {/*
+            <Field
+              title="启动参数"
+              detail={launchArgsIssue(settings.dshLaunch.args) ?? `追加到启动器后面的参数，例如 --port 3081。留空就用默认端口；参数按你写的原样传递，不经过命令行解释器（引号只在这里解释一次）。TUI 没有端口概念。目前支持的组合是官方桌面客户端加一个实例；换端口不隔离会话与工作区（隔离单位是 DSH_HOME，不是端口），再起第二个实例会与它共用同一份会话与工作区记录。`}
+            >
+              <input
+                value={settings.dshLaunch.args ?? ''}
+                placeholder="留空时使用默认启动方式"
+                aria-label="启动参数"
+                maxLength={512}
+                onChange={(e) => props.onSelectLaunchArgs(e.target.value)}
+              />
+            </Field>
+            */}
           </>}
           {/*
             One action, named for what the user wants (see it), not for the two things it
@@ -543,9 +765,24 @@ export function SettingsPanel(props: SettingsPanelProps) {
               ? '先在上面选定运行方式。'
               : shellSelected
                 ? '会把它自己的窗口调到前台；如果它没在运行，会先把它启动起来。'
-                : '会用它自己的界面（默认浏览器）；如果它没在运行，会先把它启动起来。'}
+                : openRoutes.length > 1
+                  ? '浏览器用它的网页界面；TUI 会在一个新的终端窗口里打开。没在运行时都会先把它启动起来。'
+                  : '会用它的网页界面（默认浏览器）；如果它没在运行，会先把它启动起来。'}
           >
-            <button className="settings-action" disabled={!settings.dshLaunch.subjectId || props.openBusy} onClick={props.onOpenClient}>
+            {/* 两条路才给下拉；只有一条路就写一行字，而不是做一个改不动、点了也没反应的控件。 */}
+            {openRoutes.length > 1
+              ? (
+                  <Choice
+                    label="拉起的窗口"
+                    value={openRoute}
+                    onChange={(value) => props.onSelectWindow(value === 'tui' ? 'tui' : 'browser')}
+                    options={openRoutes}
+                  />
+                )
+              : openRoutes.length === 1
+                ? <span className="settings-static">{openRoutes[0]!.label}</span>
+                : null}
+            <button className="settings-action" disabled={!settings.dshLaunch.subjectId || props.openBusy} onClick={openRoute === 'tui' ? props.onOpenTui : props.onOpenClient}>
               {props.openBusy ? '处理中…' : '打开'}
             </button>
           </Field>
@@ -561,7 +798,9 @@ export function SettingsPanel(props: SettingsPanelProps) {
               onChange={(value) => set({ dshLaunch: { ...settings.dshLaunch, autoStartWithWallpaper: value } })}
             />
           </Field>
-          {settings.dshLaunch.autoStartWithWallpaper && !props.autostart.enabled && (
+          {/* 未读到不等于没开：状态由「系统」页的 probe 读取，占位值的 enabled 也是 false，
+              所以这条警告只在确实读到是关的时候出现，否则它会为开着的自启报错。 */}
+          {settings.dshLaunch.autoStartWithWallpaper && autostartKnown(props.autostart) && !props.autostart.enabled && (
             <Field title="壁纸开机自启未生效" detail="开机后自动启动 DSH 依赖壁纸自身的开机自启。">{
               props.autostart.source === 'disabled-by-user'
                 ? 'Windows 任务管理器已禁用本应用的自启项，因此「随壁纸启动 DSH」只会在你手动打开壁纸后生效。'
@@ -570,27 +809,33 @@ export function SettingsPanel(props: SettingsPanelProps) {
                   : '壁纸自身尚未设置开机自启，因此「随壁纸启动 DSH」只会在你手动打开壁纸后生效。请在「常规」中开启壁纸自启。'
             }</Field>
           )}
-          {settings.dshLaunch.command && settings.dshLaunch.autoStartWithWallpaper && (
-            <Field
-              title="自动启动不使用自定义启动命令"
-              detail="node.exe / pnpm 以外的启动器在无人值守时自动执行需要你明确同意。手动「启动」始终使用该命令。"
-            >
-              <Toggle
-                label="允许自动启动使用该命令"
-                checked={settings.dshLaunch.trustedCommandForAutoStart}
-                onChange={(value) => set({ dshLaunch: { ...settings.dshLaunch, trustedCommandForAutoStart: value } })}
-              />
-            </Field>
-          )}
-                    <Field title="受管进程" detail={props.managedDsh.managed ? '该 DSH 由本应用启动，可以在这里停止它。' : '本应用没有启动 DSH；其他人启动的实例不会被停止。'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshManagedDsh}>刷新</button><button className="settings-action secondary" disabled={!props.managedDsh.running} onClick={props.onStopManagedDsh}>停止本应用启动的 DSH</button></span></Field>
+          {/* 官壳不显示这一项（用户要求）：它的退出方式是托盘菜单，用户手里本来就有；
+              而停它会当场关掉用户自己的客户端、并弹一条"宿主意外退出"的报错框 —— 与其预告这个
+              后果，不如不给这个入口。另外两类（源码目录、已安装的 CLI）没有托盘也没有窗口，
+              要停只能开终端敲命令，摩擦大得多，所以它们照常显示。
+              这一行是**恢复**回来的：`a8e2e91` 把它换成了标题右上角的下拉 +「全部停止」，而那个
+              下拉（以及并行实例本身）在这个 build 里冻住了 —— 不恢复它，就再没有任何地方能停掉
+              本应用启动的实例。动作与从前逐字相同：`stop_managed_dsh` 不给 instanceKey 就是
+              "停全部"，也就是 `App.tsx` / `SettingsWindow.tsx` 里 `onStopAllManagedDsh` 那一个。
+              用 `managedDshBusy` 挡住重复点击（停止要起 taskkill 并等它结束）。 */}
+          {!shellSelected && <Field title="本应用启动的 DSH" detail={props.managedDsh.managed
+            ? '该 DSH 由本应用启动，可以在这里停止它。'
+            : '本应用没有启动 DSH；其他人启动的实例不会被停止。'}><span className="integration-actions"><button className="settings-action secondary" disabled={props.managedDshBusy} onClick={props.onRefreshManagedDsh}>刷新</button>{/* 启用条件跟**是不是本应用启动的**走，不跟"有没有在跑"走：只要 3080 上有别的东西在跑，
+              旧写法就会点亮一个点了没反应的按钮（实测：装机重启后壁纸丢了"这是我的孩子"的记录）。 */}
+            <button className="settings-action secondary" disabled={!props.managedDsh.managed || props.managedDshBusy} onClick={props.onStopAllManagedDsh}>停止本应用启动的 DSH</button></span></Field>}
         </Card>
-        <Card title="DeepSeek 网页入口（实验）" description="在应用内持久 WebView2 中打开 DeepSeek 页面，登录后可从桌面会话窗发送消息。"><Field title="页面" detail="页面和登录状态由独立 WebView2 配置目录保存；本应用不读取、复制或记录 Cookie。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开应用内页面</button></Field><Field title="网页适配器配置" detail={props.deepseekWebAdapterConfig ? `${props.deepseekWebAdapterConfig.source === 'local' ? '本地 override' : '内置默认'} · ${props.deepseekWebAdapterConfig.adapterVersion} · ${props.deepseekWebAdapterConfig.path}${props.deepseekWebAdapterConfig.warning ? ` · ${props.deepseekWebAdapterConfig.warning}` : ''}` : '正在读取配置状态…'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshDeepSeekWebAdapterConfig}>刷新</button><button className="settings-action secondary" onClick={props.onOpenDeepSeekWebAdapterConfig}>打开配置</button><button className="settings-action secondary" onClick={props.onResetDeepSeekWebAdapterConfig}>恢复默认</button></span></Field></Card>
+        <Card title="DeepSeek 网页入口（实验）" description="在壁纸里用你的网页版账号对话；登录后直连。"><Field title="页面" detail="页面和登录状态由独立 WebView2 配置目录保存；本应用不读取、复制或记录 Cookie。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开应用内页面</button></Field>{/* 适配器那行的说明里**不再显示本地 override 的文件路径**（用户要求）：那是一串
+            `%APPDATA%\com.dsh.wallpaper\deepseek-web-adapter.override.json`，对"网页结构变了才需要动它"
+            这件事没有任何帮助，只会把一行说明压成三行。路径仍然在原生侧读得到
+            （`deepseekWebAdapterConfig.path`），「打开配置」按钮就是照着它打开文件的 —— 需要它的人
+            按那个按钮，不需要它的人不必看见。 */}
+        <Field title="网页适配（高级）" detail={props.deepseekWebAdapterConfig ? `网页结构变化时才需要动它，平常不用管。${props.deepseekWebAdapterConfig.source === 'local' ? '本地 override' : '内置默认'} · ${props.deepseekWebAdapterConfig.adapterVersion}${props.deepseekWebAdapterConfig.warning ? ` · ${props.deepseekWebAdapterConfig.warning}` : ''}` : '正在读取配置状态…'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshDeepSeekWebAdapterConfig}>刷新</button><button className="settings-action secondary" onClick={props.onOpenDeepSeekWebAdapterConfig}>打开配置</button><button className="settings-action secondary" onClick={props.onResetDeepSeekWebAdapterConfig}>恢复默认</button></span></Field></Card>
         <Card title="DeepSeek API" description="API 模式会产生实际费用，密钥只保存在 Windows 凭据管理器。">
           {/* 只深耕 DeepSeek：地址不再暴露成设置项（值仍是默认的官方地址），少一个能填错的地方。
               用户的原话是"API 网址可以省略"。 */}
           <Field
             title="访问密钥"
-            detail="在这里填入 DeepSeek API Key，按「测试」确认可用并保存到 Windows 凭据管理器；测试会同时拉取可用模型列表。密钥不支持读回，下面显示的是脱敏后的形态。"
+            detail="在这里填入 DeepSeek API Key，按测试确认连通性，自动拉取可用模型。"
           >
             <span className="api-key-actions">
               <input
@@ -632,21 +877,24 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
       {page === 'appearance' && <>
         <Card title="桌面背景" description="内置背景与你的素材将保持独立。"><div className="background-grid">{BACKGROUND_OPTIONS.map((background) => <button key={background.id} data-background={background.id} className={settings.background === background.id ? 'is-active' : ''} onClick={() => set({ background: background.id })}><span style={background.path ? { backgroundImage: `url(${background.path})` } : undefined} /><strong>{background.name}</strong>{settings.background === background.id && <i>当前</i>}</button>)}</div></Card>
-        <Card title="素材库" description="导入的单张素材先选择用途，再出现在对应组件的枚举菜单中。主题包和插件将在后续版本单独处理。">
+        <Card title="素材库（导入功能测试中）" description="导入的单张素材先选择用途，再出现在对应组件的枚举菜单中。主题包和插件将在后续版本单独处理。">
           <div className="asset-library-toolbar"><button className="settings-action" onClick={props.onImportAppearance} disabled={props.appearanceBusy}>导入图片素材</button><span>{props.appearanceAssets.filter((asset) => asset.status === 'inbox').length} 项待分类 · {props.appearanceAssets.filter((asset) => asset.status === 'classified').length} 项可用</span></div>
           {props.appearanceAssets.filter((asset) => asset.status === 'inbox').length > 0 && <div className="asset-inbox">{props.appearanceAssets.filter((asset) => asset.status === 'inbox').map((asset) => <div className="asset-inbox-row" key={asset.id}><span><strong>{asset.originalName}</strong><small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : '图片'}{asset.hasAlpha ? ' · 透明背景' : ''}</small></span><Choice label={`${asset.originalName} 的用途`} value="" onChange={(slot) => props.onClassifyAppearance(asset.id, slot as AppearanceSlot)} disabled={props.appearanceBusy} options={[{ value: '', label: '选择用途…' }, ...componentSlots.map(({ slot, label }) => ({ value: slot, label }))]} /></div>)}</div>}
           <div className="asset-component-list">{componentSlots.map(({ slot, label, detail }) => {
             const candidates = props.appearanceAssets.filter((asset) => asset.status === 'classified' && asset.slots.includes(slot))
             const selected = props.appearanceOverrides[slot] ?? ''
-            return <div className="asset-component-row" key={slot}><span><strong>{label}</strong><small>{detail} · {candidates.length} 项可选</small></span><Choice label={label} value={selected} onChange={(id) => { if (id) props.onSelectAppearance(slot, id); else props.onClearAppearance(slot) }} disabled={props.appearanceBusy} emptyMessage={candidates.length === 0 ? '暂无此类素材，请先导入并指定用途' : undefined} options={[{ value: '', label: '使用官方默认' }, ...candidates.map((asset) => ({ value: asset.id, label: `${asset.originalName}${asset.width && asset.height ? ` (${asset.width} × ${asset.height})` : ''}` }))]} /></div>
+            return <div className="asset-component-row" key={slot}><span><strong>{label}</strong><small>{detail} · {candidates.length} 项可选</small></span><Choice label={label} value={selected} onChange={(id) => { if (id) props.onSelectAppearance(slot, id); else props.onClearAppearance(slot) }} disabled={props.appearanceBusy} emptyMessage={candidates.length === 0 ? '暂无此类素材，请先导入并指定用途' : undefined} options={[{ value: '', label: '使用默认' }, ...candidates.map((asset) => ({ value: asset.id, label: `${asset.originalName}${asset.width && asset.height ? ` (${asset.width} × ${asset.height})` : ''}` }))]} /></div>
           })}</div>
         </Card>
-        <Card title="苏醒动画">
+        <Card title="苏醒动画（开发中）">
           <Field title="启用动画"><Toggle label="启用苏醒动画" checked={settings.animationsEnabled} onChange={(value) => set({ animationsEnabled: value })} /></Field>
           <Field title="每次解锁播放"><Toggle label="每次解锁播放" checked={settings.playWakeOnEveryUnlock} onChange={(value) => set({ playWakeOnEveryUnlock: value })} /></Field>
           <Field title="跳过苏醒过程"><Toggle label="跳过苏醒过程" checked={settings.skipWakeAnimation} onChange={(value) => set({ skipWakeAnimation: value })} /></Field>
-          <Field title="动画速度" detail={`${settings.animationSpeed.toFixed(1)}×`}><input type="range" min="0.5" max="2" step="0.1" value={settings.animationSpeed} onChange={(e) => set({ animationSpeed: Number(e.target.value) })} /></Field>
-          <Field title="氛围强度"><Choice label="氛围强度" value={settings.animationIntensity} onChange={(value) => set({ animationIntensity: value as WallpaperSettings['animationIntensity'] })} options={[{ value: 'low', label: '克制' }, { value: 'normal', label: '标准' }, { value: 'high', label: '鲜明' }]} /></Field>
+          {/* 动画速度与氛围强度先冻结前端（用户要求）：这两项还在开发中，暴露出来只会让设置显得
+              比实际能用的多。设置字段与后端行为都保留着（见 store.ts 的 animationSpeed /
+              animationIntensity），将来解冻时把这两行还原即可，不需要重新接线。 */}
+          {/* <Field title="动画速度" detail={`${settings.animationSpeed.toFixed(1)}×`}><input type="range" min="0.5" max="2" step="0.1" value={settings.animationSpeed} onChange={(e) => set({ animationSpeed: Number(e.target.value) })} /></Field> */}
+          {/* <Field title="氛围强度"><Choice label="氛围强度" value={settings.animationIntensity} onChange={(value) => set({ animationIntensity: value as WallpaperSettings['animationIntensity'] })} options={[{ value: 'low', label: '克制' }, { value: 'normal', label: '标准' }, { value: 'high', label: '鲜明' }]} /></Field> */}
         </Card>
       </>}
 
@@ -654,10 +902,13 @@ export function SettingsPanel(props: SettingsPanelProps) {
         <Card title="人物列表" description="四张正式立绘是固定的后端／模型层级映射。此处只用于审阅；如需替换某张图，请到“外观 → 素材库”为对应槽位指定素材。">
           <OfficialPersonaCards assets={props.appearanceAssets} overrides={props.appearanceOverrides} />
         </Card>
-        <Card title="模型与形态映射" description="模型层级决定年龄，思考强度只改变氛围。">
+        {/* 模型与形态映射：前端先冻结（用户要求）。规则的**存储与应用都保留**（settings.modelTierRules
+            仍会被人物形态使用），冻结的只是这张编辑卡片 —— 它在形状确定前暴露出来，用户会先学会一个
+            将来会变的界面。解冻时把下面这段还原即可。 */}
+        {/* <Card title="模型与形态映射" description="模型层级决定年龄，思考强度只改变氛围。">
           <div className="rule-list">{settings.modelTierRules.length === 0 && <div className="settings-empty"><strong>尚未创建自定义规则</strong><span>未识别模型会保持当前形态，冷启动默认为 Flash。</span></div>}{settings.modelTierRules.map((rule, index) => <div className="rule-row" key={index}><select aria-label="后端" value={rule.backend} onChange={(e) => updateRule(index, { backend: e.target.value as ModelTierRule['backend'] })}><option value="*">全部后端</option><option value="deepseek-web">DeepSeek Web</option><option value="deepseek-api">DeepSeek API</option><option value="harness">Harness</option></select><select aria-label="匹配方式" value={rule.match} onChange={(e) => updateRule(index, { match: e.target.value as ModelTierRule['match'] })}><option value="exact">精确</option><option value="contains">包含</option><option value="regex">正则</option></select><input aria-label="模型名称" value={rule.pattern} placeholder="模型名称或表达式" onChange={(e) => updateRule(index, { pattern: e.target.value })} /><select aria-label="形态" value={rule.tier} onChange={(e) => updateRule(index, { tier: e.target.value as ModelTierRule['tier'] })}><option value="flash">Flash · 幼年</option><option value="pro">Pro · 成年</option></select><button aria-label="删除规则" onClick={() => set({ modelTierRules: settings.modelTierRules.filter((_, i) => i !== index) })}>×</button></div>)}</div>
           <button className="settings-action secondary add-rule" onClick={() => set({ modelTierRules: [...settings.modelTierRules, { backend: '*', pattern: '', match: 'contains', tier: 'flash' }] })}>＋ 新增映射规则</button>
-        </Card>
+        </Card> */}
       </>}
 
       {page === 'history' && <>
@@ -728,11 +979,18 @@ export function SettingsPanel(props: SettingsPanelProps) {
       </>}
 
       {page === 'system' && <>
-        <Card title="数据与目录" description="「桌面会话」的工作区落在壁纸自己的数据目录里：升级安装会保留，卸载之后也留得下（它不是安装目录，MSIX 不会替换它）。">
+        <Card title="数据与目录" description="「桌面会话」的工作区落在壁纸自己的数据目录里：升级安装会保留，卸载之后也留得下。若想彻底删除数据，在卸载前请先点击下面的“清除全部用户数据”。">
           <Field title="工作区" detail={props.desktopWorkspace ? (props.desktopWorkspace.workspaceExists ? props.desktopWorkspace.workspaceDirectory : props.desktopWorkspace.workspaceDirectory + '（还没创建；桥第一次用到时会在这里建出来）') : '正在读取…'}><span /></Field>
           {/* 卸载时问不了（MSIX 没有自定义卸载界面），所以"想清干净的时候能清干净"这个入口放在这里。
               原生只做它能证明做完的两件：工作区目录 + 凭据管理器里那条 Key；WebView2 配置目录正被
               运行中的进程占用，删不干净，所以如实回报路径让用户退出后自己删。 */}
+          <Field title="项目记忆" detail={props.desktopWorkspace ? props.desktopWorkspace.memoryFile + (props.desktopWorkspace.memoryExists ? '（助手维护；说话人格等长期要求就写在这里）' : '（还没有：你或助手第一次「记下来」时会出现）') : '正在读取…'}>
+            <button
+              className="settings-action secondary"
+              disabled={props.openingMemory}
+              onClick={() => { void props.onOpenProjectMemory?.() }}
+            >{props.openingMemory ? '正在打开…' : '打开项目记忆'}</button>
+          </Field>
           <Field title="清除全部用户数据" detail={clearDetail ?? '删除本应用的桌面会话工作区，以及凭据管理器里保存的 API Key。设置与网页登录态在 WebView2 配置目录里，需要退出应用后手动删除（下面会给出路径）。'}>
             <button
               className="settings-action secondary"
@@ -742,14 +1000,13 @@ export function SettingsPanel(props: SettingsPanelProps) {
           </Field>
         </Card>
         <Card title="Windows 集成">
-          <Field title="登录后自动启动" detail={props.autostartBusy ? '正在更新 Windows 启动任务，请稍候；设置中心仍可继续使用。' : 'MSIX 优先使用 Windows StartupTask，旧版/开发版回退到当前用户启动项；版本更新会保留此状态。'}><Toggle label="登录后自动启动" checked={settings.autostart} onChange={(value) => set({ autostart: value })} disabled={props.autostartBusy} /></Field>
+          <Field title="登录后自动启动" detail={props.autostartBusy ? '正在更新 Windows 启动任务，请稍候；设置中心仍可继续使用。' : autostartDetail(props.autostart)}><Toggle label="登录后自动启动" checked={settings.autostart} onChange={(value) => set({ autostart: value })} disabled={props.autostartBusy} /></Field>
           <Field title="接管锁屏图片" detail={props.lockScreenBusy ? '正在应用系统锁屏设置，请稍候。' : '使用内置且已审计的熟睡画面；密码界面仍由 Windows 原生安全桌面处理。正式版需要 MSIX 包身份。'}><Toggle label="接管锁屏图片" checked={settings.lockScreenEnabled} onChange={props.onSetLockScreenEnabled} disabled={props.lockScreenBusy} /></Field>
           <div className="lockscreen-diagnostics">
             <div className="lockscreen-diagnostics__row"><div><strong>接管状态</strong><small>{props.lockScreenDiagnostics?.managedImageActive ? '正在使用大肥鱼的熟睡画面' : '未检测到本应用的锁屏图片'}</small></div>{props.lockScreenDiagnostics?.managedImageActive ? <button className="settings-action secondary" disabled={props.lockScreenBusy} onClick={props.onRestoreLockScreen}>打开 Windows 锁屏设置</button> : props.lockScreenDiagnostics?.staleBackup ? <button className="settings-action secondary" disabled={props.lockScreenBusy} onClick={props.onClearStaleLockScreenBackup}>{props.lockScreenBusy ? '正在清理…' : '清理旧恢复点（删除原图副本）'}</button> : null}</div>
             <div className="lockscreen-diagnostics__row"><div><strong>接管前检查</strong><small>{props.lockScreenDiagnostics ? props.lockScreenDiagnostics.takeoverAvailable ? 'Windows 与当前应用身份允许尝试设置锁屏图片' : props.lockScreenDiagnostics.supported ? 'Windows 允许，但当前正式版需要 MSIX 包身份' : '当前系统不允许应用修改锁屏图片' : '正在读取系统状态…'}</small></div><button className="settings-action secondary" disabled={props.lockScreenBusy} onClick={props.onRefreshLockScreenDiagnostics}>{props.lockScreenBusy ? '正在应用…' : '刷新检查'}</button></div>
             {props.lockScreenDiagnostics && <ul><li>备份：{props.lockScreenDiagnostics.staleBackup ? '已保留，但当前锁屏已被外部更改' : props.lockScreenDiagnostics.backupValid ? '原静态图片可恢复' : props.lockScreenDiagnostics.backupExists ? '备份失效' : '尚未创建（首次接管时保存）'}</li><li>托管睡眠图：{props.lockScreenDiagnostics.managedImageReady ? '已准备' : '首次接管时准备'}</li>{props.lockScreenDiagnostics.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
           </div>
-          <Field title="睡眠快捷键"><input className="short-input" value={settings.sleepHotkey} onChange={(e) => set({ sleepHotkey: e.target.value })} /></Field>
         </Card>
         <Card title="透明任务栏" description="通过松耦合方式连接独立安装的 TranslucentTB，本应用不会修改其配置。">
           <div className="integration-status"><div><i className={translucentTb.running ? 'is-online' : ''} /><span><strong>{translucentTb.running ? 'TranslucentTB 正在运行' : translucentTb.installed ? 'TranslucentTB 已安装' : 'TranslucentTB 未安装'}</strong><small>{translucentTb.source ?? '由用户独立安装和管理'}</small></span></div><div className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshTranslucentTb}>刷新</button><button className="settings-action" onClick={translucentTb.installed ? props.onLaunchTranslucentTb : props.onInstallTranslucentTb}>{translucentTb.installed ? '启动' : '前往商店'}</button></div></div>

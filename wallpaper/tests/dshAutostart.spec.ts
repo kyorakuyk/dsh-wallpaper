@@ -38,7 +38,7 @@ describe('DSH autostart outcome reporting', () => {
       ['root-path-invalid', '不是可识别的 DSH 项目'],
       ['launcher-missing', '未找到 Node.js 或 pnpm'],
       ['profile-invalid', 'profile 名称无效'],
-      ['command-not-confirmed', '不会在无人值守时执行自定义启动命令'],
+      ['launch-args-invalid', '「启动参数」无效'],
       ['spawn-failed', '进程启动失败'],
     ]
     for (const [outcome, expected] of cases) {
@@ -51,7 +51,7 @@ describe('DSH autostart outcome reporting', () => {
   it('never leaks a path, a token, or an exception body', async () => {
     const { dshAutostartNotice } = await appModule()
     const outcomes = ['started', 'already-attempted', 'root-path-missing', 'root-path-invalid',
-      'launcher-missing', 'profile-invalid', 'port-occupied-external', 'command-not-confirmed', 'spawn-failed'] as const
+      'launcher-missing', 'profile-invalid', 'port-occupied-external', 'launch-args-invalid', 'spawn-failed'] as const
     for (const outcome of outcomes) {
       const notice = dshAutostartNotice({ outcome, external: false }) ?? ''
       expect(notice, outcome).not.toMatch(/[A-Za-z]:\\/)
@@ -69,13 +69,33 @@ describe('launch supervision', () => {
     expect(harnessLaunchOutcome({ availability: 'bridge-ready' }, 999_999, { managed: true, running: true })).toBeNull()
   })
 
-  it('reports an immediate exit as soon as the managed process is gone', async () => {
+  it('does not call a slow start an immediate exit', async () => {
     const { harnessLaunchOutcome } = await appModule()
-    // This must not wait for the timeout: a process that died is already known.
-    expect(harnessLaunchOutcome({ availability: 'offline' }, 500, { managed: true, running: false })?.message)
-      .toContain('立即退出')
-    expect(harnessLaunchOutcome({ availability: 'offline' }, 500, { managed: false, running: false })?.message)
-      .toContain('立即退出')
+    // 实测：CLI 宿主起来要两三秒（启动 22:27:54、端口与门票 22:27:56），而这条判定原先**立刻**
+    // 就下结论 ⇒ 用户先看到"启动后立即退出"，两秒后指示灯又变绿 —— 一次假警报，比不说更糟。
+    expect(harnessLaunchOutcome({ availability: 'offline' }, 500, { managed: false, running: false })).toBeNull()
+    expect(harnessLaunchOutcome({ availability: 'offline' }, 7_999, { managed: true, running: false })).toBeNull()
+    // 过了宽限期仍然没有受管进程，才说"很快退出"（措辞也改成不夸大：8 秒不是"立即"）。
+    expect(harnessLaunchOutcome({ availability: 'offline' }, 8_001, { managed: true, running: false })?.message)
+      .toContain('很快退出')
+    expect(harnessLaunchOutcome({ availability: 'offline' }, 8_001, { managed: false, running: false })?.message)
+      .toContain('很快退出')
+  })
+
+  it('waits longer for the installed CLI, which boots through a shell first', async () => {
+    const { harnessLaunchOutcome } = await appModule()
+    const cli = 'installed-cli' as const
+    // 源码目录 8 秒就说"很快退出"，而这个时间点上 CLI 还可能在启动：它要先经 npm 批处理（cmd）
+    // 再拉起 node。同一条时限套在所有人身上，用户就会看到"刚报错就连上"—— 报错早于事实。
+    expect(harnessLaunchOutcome({ availability: 'offline' }, 8_001, { managed: false, running: false }, 45_000, cli))
+      .toBeNull()
+    expect(harnessLaunchOutcome({ availability: 'offline' }, 19_999, { managed: false, running: false }, 45_000, cli))
+      .toBeNull()
+    expect(harnessLaunchOutcome({ availability: 'offline' }, 20_001, { managed: false, running: false }, 45_000, cli)?.message)
+      .toContain('很快退出')
+    // 壳没有"退出"可观察，任何时刻都不该由这条判定发言。
+    expect(harnessLaunchOutcome({ availability: 'offline' }, 60_000, { managed: false, running: false }, 45_000, 'embedded-shell'))
+      .not.toBeNull()
   })
 
   it('prefers the most specific cause once the deadline passes', async () => {
@@ -125,7 +145,7 @@ describe('every condition the plan requires an actionable message for', () => {
     const { dshAutostartNotice } = await appModule()
     // One code per named condition, and no two share wording.
     const codes = ['root-path-missing', 'root-path-invalid', 'launcher-missing', 'profile-invalid',
-      'spawn-failed', 'command-not-confirmed'] as const
+      'spawn-failed', 'launch-args-invalid'] as const
     const notices = codes.map((outcome) => dshAutostartNotice({ outcome, external: false }))
     expect(new Set(notices).size, 'each failure needs its own wording').toBe(codes.length)
     for (const notice of notices) expect(notice).toBeTruthy()
@@ -148,34 +168,70 @@ describe('DSH autostart wiring', () => {  it('starts DSH from the background hos
     expect(settingsWindow).not.toContain('autostartManagedDsh')
   })
 
-  it('keeps the automatic path off a custom launcher until the user confirms it', async () => {
+  // 冻结（与「启动参数」一起）：它钉的是"自动启动这条路上带着参数"（`App.tsx` 里那行
+  // `args: parseLaunchArgs(settings.dshLaunch.args)`）以及界面上「启动参数」那个控件 —— 两者都
+  // 随这次冻结被注释掉了（参数不再上路，"控件在不在"由注释决定）。`launch-args-invalid` 那句话
+  // 本身仍然钉在上面那两条报告类测试里；"启动参数不再上路"改由 launchArgsAndInstances.spec.ts
+  // 里那一组「启动参数冻结之后：没有参数流出去」钉住。
+  it.skip('gives the automatic path the same launcher and the same args as the button', async () => {
     const app = await source('src/App.tsx')
-    expect(app).toContain('trustedCommand: settings.dshLaunch.trustedCommandForAutoStart')
-    // The confirmation is a separate, explicit choice in the settings card.
+    // 「启动参数」在两条路上一视同仁：加的是参数，跑的是谁由本应用决定，所以这里不再需要
+    // 任何"要不要授权"的字段。
+    expect(app).toContain('args: parseLaunchArgs(settings.dshLaunch.args)')
     const panel = await source('src/settings/SettingsPanel.tsx')
-    expect(panel).toContain('trustedCommandForAutoStart')
-    expect(panel).toContain('允许自动启动使用该命令')
-    // ...and it is dropped when the user clears the command, so a stale
-    // confirmation cannot outlive the command it applied to.
-    expect(panel).toMatch(/command: e\.target\.value \|\| undefined, trustedCommandForAutoStart: e\.target\.value \?/)
+    // 那个授权复选框与它那一行随「启动命令」一起消失；界面上不该再留一个不生效的开关。
+    expect(panel).not.toContain('trustedCommandForAutoStart')
+    expect(panel).not.toContain('自动启动不使用自定义启动命令')
+    expect(panel).not.toContain('允许自动启动使用该命令')
+    // 而**控件本身**也换了：没有「启动命令」这个输入框了，只有「启动参数」。
+    // （注释里还会出现"启动命令"三个字，那是说明为什么它没了 —— 所以这里钉的是字段标题。）
+    expect(panel).not.toContain('title="启动命令"')
+    expect(panel).toContain('title="启动参数"')
+    expect(panel).toContain('aria-label="启动参数"')
   })
 
-  it('allows only node/pnpm launchers without confirmation, and never a shell', async () => {
+  it('decides the profile itself instead of asking the user', async () => {
+    // 用户 2026-09-30 的决定：把「数据档案（Profile）」这一行藏掉。理由不是"太复杂"，而是它**没有第二个
+    // 正确答案**：官壳用自己独占的 desktop、TUI 用它自己的 dsh-tui（两者都不看这个值），而 CLI 与源码
+    // 检出实测**必须**显式给一个档案（不写就是 `--profile <name> is required`），能提供 HTTP 的只有 web
+    // （desktop 被壳独占：`profile "desktop" is managed exclusively by the Electron application`）。
+    const panel = await source('src/settings/SettingsPanel.tsx')
+    expect(panel).not.toContain('数据档案')
+    expect(panel).not.toContain('title="数据档案（Profile）"')
+
+    // 两条启动路都不再读存下来的值：要么读派生值，要么什么都别读。
+    for (const file of ['src/App.tsx', 'src/settings/SettingsWindow.tsx']) {
+      const text = await source(file)
+      expect(text, file).toContain('profileForLaunch()')
+      expect(text, file).not.toContain('settings.dshLaunch.profile')
+    }
+
+    // 派生值写在一个地方，且它的理由也写在那里（将来要改的人先读到为什么）。
+    const profiles = await source('src/connect/harnessProfiles.ts')
+    expect(profiles).toContain("'web'")
+  })
+
+  it('never runs a program the user typed: only args are appended, and never through a shell', async () => {
     const lib = await source('src-tauri/src/lib.rs')
     const autostart = lib.slice(lib.indexOf('fn autostart_managed_dsh'), lib.indexOf('fn managed_dsh_autostart_status'))
-    // The trust boundary is stated at the automatic entry point, not left
-    // implicit in a file lookup failing.
-    expect(autostart).toMatch(/if !is_allowlisted_auto_start_launcher\(configured\) && trusted_command != Some\(true\)/)
-    expect(lib).toContain('AUTO_START_LAUNCHER_ALLOWLIST')
-    expect(lib).toMatch(/\["node\.exe", "node", "pnpm\.cmd", "pnpm"\]/)
-    // The configured command must be one executable path. A shell would turn a
-    // stored string into an arbitrary command line.
+    // The trust boundary moved: it is no longer "is this launcher allowlisted", because there is no
+    // user-supplied launcher at all. What must hold now is that nothing on this path *chooses* a
+    // program from configuration — the managed chain picks node/pnpm itself.
+    expect(lib).not.toContain('AUTO_START_LAUNCHER_ALLOWLIST')
+    expect(lib).not.toContain('is_allowlisted_auto_start_launcher')
+    expect(lib).not.toMatch(/configured_launcher/)
+    expect(lib).toContain('let launcher = if use_bundled_cli { "node.exe" } else { "pnpm.cmd" };')
+    // 参数是 argv 数组，永远不拼成一条命令行；而且原生**再分一次词**才是注入的成因。
+    expect(lib).toContain('harness_launch::normalize_launch_args')
     expect(lib).not.toMatch(/Command::new\("cmd(\.exe)?"\)/)
     expect(lib).not.toMatch(/\/C\s/)
     expect(lib).not.toMatch(/split_whitespace/)
     // Arguments are always passed as an array, never concatenated into a line.
     expect(lib).toContain('launch.args(["dsh", "--profile", profile])')
     expect(lib).toContain('launch.arg(bundled_cli).args(["--profile", profile])')
+    // 而那一行之后紧接着就是「启动参数」的追加：**顺序**是功能的一部分（DSH 的启动器只解析
+    // 自己那几个旗标，第一个不认识的词之后整段交给被 boot 的档案）。
+    expect(lib).toMatch(/launch\.arg\(bundled_cli\)\.args\(\["--profile", profile\]\);\n\s*\} else \{\n\s*launch\.args\(\["dsh", "--profile", profile\]\);\n\s*\}\n[\s\S]{0,400}?launch\.args\(&args\);/)
   })
 
   it('tells the user that login-time start needs the wallpaper to autostart', async () => {
@@ -193,14 +249,18 @@ describe('DSH autostart wiring', () => {  it('starts DSH from the background hos
   it('does not take over or stop an external DSH', async () => {
     const lib = await source('src-tauri/src/lib.rs')
     // The external check runs before any spawn, and the outcome is remembered
-    // instead of retried.
+    // instead of retried. 现在读的是**这一次要用的那个端口**：并行实例的第二、三个各在自己的
+    // 端口上，写死 3080 会让它们被自己的第一个实例挡住。
     const autostart = lib.slice(lib.indexOf('fn autostart_managed_dsh'), lib.indexOf('fn managed_dsh_autostart_status'))
-    expect(autostart).toContain('dsh_port_is_occupied()')
-    expect(autostart.indexOf('dsh_port_is_occupied()')).toBeLessThan(autostart.indexOf('spawn_managed_dsh'))
+    expect(autostart).toContain('dsh_port_is_occupied(port)')
+    expect(autostart.indexOf('dsh_port_is_occupied(port)')).toBeLessThan(autostart.indexOf('spawn_managed_dsh'))
     expect(autostart).toContain('port-occupied-external')
     // Nothing on this path may stop or claim a process it did not start.
     expect(autostart).not.toContain('stop_managed_dsh')
     expect(autostart).not.toContain('kill')
+    // 端口本身由「启动参数」读出，不由一个常量决定。
+    expect(autostart).toContain('harness_launch::instance_port(&args)')
+    expect(lib).not.toContain('SocketAddr::from(([127, 0, 0, 1], 3080))')
   })
 
   it('records the attempt on every exit path, so a failure cannot become a retry loop', async () => {
@@ -231,10 +291,13 @@ describe('DSH autostart wiring', () => {  it('starts DSH from the background hos
 describe('autoStartWithWallpaper defaults', () => {
   it('is off by default and off for an upgraded profile', () => {
     expect(DEFAULT_SETTINGS.dshLaunch.autoStartWithWallpaper).toBe(false)
-    expect(DEFAULT_SETTINGS.dshLaunch.trustedCommandForAutoStart).toBe(false)
-    const upgraded = normalizeSettings({ dshLaunch: { profile: 'work', rootPath: 'D:\\DSH' } })
+    // 那两项（自定义启动命令、以及它为自动启动要的那次授权）已经不在了：字段本身不该再出现，
+    // 否则"改回默认"会留下一个读不到也写不出的残迹。
+    expect('command' in DEFAULT_SETTINGS.dshLaunch).toBe(false)
+    expect('trustedCommandForAutoStart' in DEFAULT_SETTINGS.dshLaunch).toBe(false)
+    const upgraded = normalizeSettings({ dshLaunch: { profile: 'work', rootPath: 'D:\\DSH', trustedCommandForAutoStart: true } })
     expect(upgraded.dshLaunch.autoStartWithWallpaper).toBe(false)
-    expect(upgraded.dshLaunch.trustedCommandForAutoStart).toBe(false)
+    expect('trustedCommandForAutoStart' in upgraded.dshLaunch).toBe(false)
     expect(upgraded.dshLaunch.profile).toBe('work')
     expect(upgraded.dshLaunch.rootPath).toBe('D:\\DSH')
   })

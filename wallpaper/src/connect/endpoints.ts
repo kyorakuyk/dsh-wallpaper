@@ -9,8 +9,11 @@
  * | client                | default port | configurable |
  * | --------------------- | ------------ | ------------ |
  * | official desktop shell| 19387        | no — compiled into its asar |
- * | third-party desktop   | 43120        | yes (its own settings) |
  * | DSH CLI / core        | 3080         | yes (`--port`) |
+ *
+ * （第三方桌面客户端曾经也在这张表里，2026-09-27 按用户要求移除：实测它把整台本地
+ * HTTP 服务放在自己的授权之后，壁纸用 bridge token 打过去一律 403，连 `/` 都进不去 ——
+ * 留着只会让"可选择的主体"里有一个永远点不亮的东西。）
  *
  * So "connect to 3080" silently means "connect only to the CLI shape", and a user
  * running the official shell sees `offline` while a perfectly ready wallpaper
@@ -29,9 +32,10 @@
  * never chose.
  */
 import { interpretHarnessBridgeStatus, type HarnessStatus } from './harness.ts'
+import { launchSettingsPort } from './launchArgs.ts'
 
-/** The three client shapes, in the priority order the wallpaper defaults to. */
-export type HarnessClientKind = 'official-desktop' | 'community-desktop' | 'official-web'
+/** The client shapes, in the priority order the wallpaper defaults to. */
+export type HarnessClientKind = 'official-desktop' | 'official-web'
 
 export interface HarnessEndpointCandidate {
   /** TCP port on 127.0.0.1. */
@@ -50,21 +54,18 @@ export interface HarnessEndpointCandidate {
 export function endpointKindLabel(kind: HarnessClientKind): string {
   switch (kind) {
     case 'official-desktop': return '桌面客户端'
-    case 'community-desktop': return '第三方桌面客户端'
     default: return 'Web / CLI'
   }
 }
 
 /**
  * Priority used whenever several endpoints are usable. The user's stated order:
- * official desktop, then the community desktop, then plain official web/CLI.
- * Lower sorts first.
+ * the official desktop client first, then plain official web/CLI. Lower sorts first.
  */
 export function endpointPriority(kind: HarnessClientKind): number {
   switch (kind) {
     case 'official-desktop': return 0
-    case 'community-desktop': return 1
-    default: return 2
+    default: return 1
   }
 }
 
@@ -76,7 +77,6 @@ export function endpointPriority(kind: HarnessClientKind): number {
  */
 export const DEFAULT_ENDPOINT_PORTS: ReadonlyArray<{ port: number; kind: HarnessClientKind }> = [
   { port: 19387, kind: 'official-desktop' },
-  { port: 43120, kind: 'community-desktop' },
   { port: 3080, kind: 'official-web' },
 ]
 
@@ -94,7 +94,31 @@ export const DEFAULT_ENDPOINT_PORTS: ReadonlyArray<{ port: number; kind: Harness
  */
 const SHELL_SUBJECTS: Readonly<Record<string, { kind: HarnessClientKind; ports: readonly number[] }>> = {
   'com.deepseek.dsh': { kind: 'official-desktop', ports: [19387] },
-  'ai.deepseek.dsh.desktop': { kind: 'community-desktop', ports: [43120] },
+}
+
+/**
+ * The subject a stored choice must fall back to when this build no longer supports it.
+ *
+ * 2026-09-27：第三方桌面客户端被移除（它把本地接口锁在自己的授权后面，壁纸一律 403 ✓）。
+ * 可是**用户设置里可能还存着它的 AUMID** —— 如果就这么放着，主体下拉里没有它、端点卡片
+ * 只显示"已配置但无处可看"，用户看到的是一个永远点不亮的灯，而且没有任何解释 ✗。
+ *
+ * 所以：一个**壳形态、但本 build 认不出**的存储值，落回官方桌面客户端 ✓，并把原因说出来 ✓。
+ * 返回 `null` 表示"不用动"：没有存值、存的是源码目录（路径永远是合法的身份 ✓）、
+ * 或者存的是本 build 认识的主体 ✓。
+ */
+export function unsupportedShellSubjectFallback(
+  subjectId: string | undefined,
+): { subjectId: string; notice: string } | null {
+  const subject = (subjectId ?? '').trim()
+  if (subject === '' || !subject.startsWith(SHELL_SUBJECT_PREFIX)) return null
+  if (subjectClientKind(subject) !== undefined) return null
+  return {
+    subjectId: OFFICIAL_SHELL_SUBJECT_ID,
+    notice:
+      '原先选定的桌面客户端已不再受支持：它把本地接口锁在自己的授权后面，壁纸请求一律被拒绝；'
+      + '已切回官方桌面客户端。',
+  }
 }
 
 /**
@@ -105,6 +129,47 @@ const SHELL_SUBJECTS: Readonly<Record<string, { kind: HarnessClientKind; ports: 
  * a source tree and hand it a checkout's port.
  */
 export const SHELL_SUBJECT_PREFIX = 'shell:'
+
+/**
+ * The official desktop client's subject id — the one subject this build always knows.
+ *
+ * Spelled here rather than at each call site because the fallback above *stores* it:
+ * a typo would persist a subject no scan ever produces. `endpoints.spec.ts` pins it
+ * against `SHELL_SUBJECTS`, so the two cannot drift apart.
+ */
+export const OFFICIAL_SHELL_SUBJECT_ID = `${SHELL_SUBJECT_PREFIX}com.deepseek.dsh`
+
+/**
+ * 一条**不属于当前主体**的显式端点（存量的自相矛盾）。
+ *
+ * "用户的 pin 优先"是刻意的规则，不动它。但那条 pin 是**用户当年为那个主体选的端口**：换主体后
+ * 它继续生效，就变成"按旧主体的端口去开新主体的界面"——实测过一次：主体是只该用 3080 的已安装
+ * CLI，pin 还停在官方客户端的 19387，于是点「打开」把官方客户端的窗口拉到了前台。
+ *
+ * 这里只做判定，不修改任何东西：改正该由调用方**说出来**再做（与"已不受支持的主体"同一套做法）。
+ * 返回 `undefined` 表示不算矛盾——没有存值、没有主体（这条 pin 无所属）、或 pin 就在本主体自己的
+ * 端口里。
+ */
+export function staleEndpointPort(launch: {
+  subjectId?: string
+  rootPath?: string
+  endpointPort?: number
+}): number | undefined {
+  const pinned = launch.endpointPort
+  if (pinned === undefined) return undefined
+  const allowed = subjectEndpointPorts({ ...endpointScopeOf(launch), endpointPort: undefined })
+  if (!allowed) return undefined
+  return allowed.includes(pinned) ? undefined : pinned
+}
+
+/**
+ * The subject-id namespace for a **globally installed** DSH CLI (`npm i -g @deepseek-ai/dsh`).
+ *
+ * A third class, not a second spelling of a checkout: it has no source tree to name, so
+ * its id names the launcher on `PATH` instead. The native side spells this prefix in
+ * `harness_targets.rs::CLI_ID_PREFIX`, and `endpoints.spec.ts` pins the two together.
+ */
+export const CLI_SUBJECT_PREFIX = 'cli:'
 
 /**
  * DSH's own web default: the port a source checkout listens on unless the user
@@ -129,6 +194,14 @@ export interface EndpointScope {
   endpointPort?: number
   /** Ports the user added for a checkout that does not listen on the default. */
   extraPorts?: readonly number[]
+  /**
+   * 「启动参数」的原文，用来读出这个主体被要求在哪个端口上服务。
+   *
+   * 它属于**主体自己**，和"用户额外加的端口"不是一回事：额外端口是"它可能听在别的端口上"，
+   * 而这里的 `--port 3081` 是"我们就是这样启动它的"。这也是并行实例能被「打开界面」正确
+   * 找到的原因 —— 端口从设置一路流到浏览器地址，中间不需要任何猜测。
+   */
+  args?: string
 }
 
 function usablePorts(ports: readonly number[]): number[] {
@@ -150,10 +223,15 @@ function usablePorts(ports: readonly number[]): number[] {
  * * an explicit pin is one port, the user's own statement about where their DSH is;
  * * a shell owns the port compiled into it, and nothing else — a shell cannot be
  *   moved to another port, so a second port for it would mean another client;
- * * a source tree listens on DSH's default, plus any port the user added for it by
+ * * a source tree or installed CLI listens on the port its own 「启动参数」 names
+ *   (`--port 3081`), else on DSH's default, plus any port the user added for it by
  *   hand. An added port is admissible because adding it *is* the user telling the
  *   wallpaper which subject answers there; anything a scan merely found answering
  *   is not, which is why discovery can never widen this set.
+ *
+ * `args` is read from the settings, never from what a scan found — that distinction is
+ * the whole "no substitution" rule, and it is why the dropdown can show a running
+ * instance on 3081 the wallpaper started while a scan-found 3080 stays invisible.
  *
  * `undefined` (nothing chosen yet) is not the same as `[]` (chosen, but this build
  * cannot say where it answers): the first keeps the shipped priority order, the
@@ -172,7 +250,12 @@ export function subjectEndpointPorts(scope: EndpointScope): number[] | undefined
     // i.e. on a client the user did not choose.
     return usablePorts(SHELL_SUBJECTS[aumid]?.ports ?? [])
   }
-  return usablePorts([CHECKOUT_ENDPOINT_PORT, ...(scope.extraPorts ?? [])])
+  // 「启动参数」里点名的端口排在最前面：它是这个主体**被要求**服务的地方，比默认端口更具体。
+  // 已安装的 CLI 与源码检出同形状（都 boot 一个 profile、都在 DSH 自己的默认端口上服务 ✓）：
+  // 它只是没有树可指 ✗。所以端口规则与检出一致。
+  const declared = launchSettingsPort(scope.args)
+  const base = declared === undefined ? [CHECKOUT_ENDPOINT_PORT] : [declared, CHECKOUT_ENDPOINT_PORT]
+  return usablePorts([...base, ...(scope.extraPorts ?? [])])
 }
 
 /** True when the settings name the subject whose endpoints may be used. */
@@ -195,11 +278,13 @@ export function endpointScopeOf(launch: {
   rootPath?: string
   endpointPort?: number
   extraEndpointPorts?: readonly number[]
+  args?: string
 }): EndpointScope {
   return {
     subjectId: launch.subjectId ?? launch.rootPath,
     endpointPort: launch.endpointPort,
     extraPorts: launch.extraEndpointPorts,
+    args: launch.args,
   }
 }
 
@@ -216,6 +301,9 @@ export function endpointScopeOf(launch: {
 export function subjectClientKind(subjectId: string | undefined): HarnessClientKind | undefined {
   const subject = (subjectId ?? '').trim()
   if (!subject) return undefined
+  // 已安装的 CLI 明确按 `official-web` 处理（它没有自己的窗口 ✓，界面在浏览器 ✓）—— 与检出差
+  // 的只是"没有源码树" ✓，所以这里分开写，让"这是有意为之"看得见。
+  if (subject.toLowerCase().startsWith(CLI_SUBJECT_PREFIX)) return 'official-web'
   if (!subject.toLowerCase().startsWith(SHELL_SUBJECT_PREFIX)) return 'official-web'
   const aumid = subject.slice(SHELL_SUBJECT_PREFIX.length).trim().toLowerCase()
   return SHELL_SUBJECTS[aumid]?.kind

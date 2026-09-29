@@ -1,5 +1,6 @@
 import type { BackendMode, ChatMessage, ScopedChatEvent } from '../domain/types.ts'
 import type { HarnessStatus } from '../connect/harness.ts'
+import { parseLaunchArgs } from '../connect/launchArgs.ts'
 
 export interface NativeSendOptions {
   conversationId?: string
@@ -7,6 +8,13 @@ export interface NativeSendOptions {
   newConversation?: boolean
   baseUrl?: string
   model?: string
+  /**
+   * Harness 专用：新建会话时装载哪个 agent 预设（`minimal` / `standard` / …）。
+   *
+   * 壁纸默认给 `minimal`（用户要求："工作区的预设先默认为'极简模式'试试，应该能省不少上下文"）
+   * ——预设决定这条会话装载多少指令与工具，而壁纸是每轮都要重建上下文的常驻场景，装得少就是省。
+   */
+  preset?: string
   /** CNY per million input tokens. Omitted means pricing is not configured. */
   priceInputPerMillion?: number
   /** CNY per million output tokens. Omitted means pricing is not configured. */
@@ -15,7 +23,35 @@ export interface NativeSendOptions {
 
 export interface TranslucentTbStatus { installed: boolean; running: boolean; source?: string }
 export interface LockScreenDiagnostics { supported: boolean; packageIdentity: boolean; takeoverAvailable: boolean; originalImageUri?: string; backupExists: boolean; backupValid: boolean; staleBackup: boolean; managedImageReady: boolean; managedImageActive: boolean; developmentBuild: boolean; warnings: string[] }
-export interface ManagedDshStatus { managed: boolean; running: boolean; pid?: number; rootPath?: string; profile?: string }
+/**
+ * 本应用启动的**一个** DSH 实例。
+ *
+ * `instanceKey` 是它的地址（主体 id + 「启动参数」），也是停止时要指名的那一个：同一个主体可以
+ * 在 3080 与 3081 上各起一个，只有键能分清"停哪一个"。
+ */
+export interface ManagedDshInstance {
+  instanceKey: string
+  subjectId: string
+  /** 它在哪个端口服务。读不到时为 undefined —— 界面写「端口未确认」，不写 0。 */
+  port?: number
+  pid: number
+  /** 只有本进程启动的实例知道这两项；落盘记录（壁纸重启过）里没有。 */
+  rootPath?: string
+  profile?: string
+  /** 启动它时用的「启动参数」。 */
+  args: string[]
+}
+/**
+ * 本应用启动的全部实例，外加两个给启动监督用的汇总字段。
+ *
+ * `instances` 是权威答案；`managed` / `running` 留着，因为启动监督问的是另一个问题
+ * ——"我这次启动的那个孩子还在不在"。传了 `subjectId` 时它们只看那个主体的实例。
+ */
+export interface ManagedDshStatus {
+  instances: ManagedDshInstance[]
+  managed: boolean
+  running: boolean
+}
 /**
  * 凭据管理器愿意交代的全部内容：有没有 Key，以及脱敏形态（`sk-••••••••abcd`）。
  *
@@ -36,22 +72,45 @@ export interface DesktopWorkspaceStatus {
   dataDirectory: string
   workspaceDirectory: string
   workspaceExists: boolean
+  /** 助手维护的「项目记忆」（说话人格等长期要求落在这里）；桌面会话里不贴路径，设置里给入口。 */
+  memoryFile: string
+  memoryExists: boolean
   /** 「清除全部用户数据」时要一并删掉的那条凭据（在凭据管理器里，不在文件系统上）。 */
   credentialTarget: string
 }
 /**
  * Outcome of the one automatic DSH start this process is allowed to attempt.
- * `outcome` is a closed, non-sensitive code; `external` means port 3080 was
- * already owned by someone else's DSH and was deliberately left alone.
+ * `outcome` is a closed, non-sensitive code; `external` means the instance's port
+ * was already owned by someone else's DSH and was deliberately left alone.
+ *
+ * `command-not-confirmed` 已经不在这张表里了：它存在的前提（用户填一个自定义启动命令、自动
+ * 启动要不要执行它）随那个设置一起消失。现在自动启动与手动启动跑的是同一个启动器。
  */
 export interface ManagedDshAutostart {
   outcome: 'started' | 'started-unconfirmed' | 'already-attempted' | 'already-running' | 'root-path-missing'
     | 'root-path-invalid' | 'launcher-missing' | 'profile-invalid' | 'port-occupied-external'
-    | 'command-not-confirmed' | 'unknown-target' | 'spawn-failed'
+    | 'launch-args-invalid' | 'unknown-target' | 'spawn-failed'
   pid?: number
   external: boolean
 }
-export interface AutostartStatus { enabled: boolean; source: 'startup-task' | 'run' | 'none' | 'disabled-by-user' | 'disabled-by-policy' | 'unsupported' }
+export interface AutostartStatus {
+  enabled: boolean
+  source: 'startup-task' | 'run' | 'none' | 'disabled-by-user' | 'disabled-by-policy' | 'unsupported'
+  /**
+   * Why the state is what it is, from the side that knows (Windows refused the
+   * startup task, the recorded entry names another build, the registry could
+   * not be read). `null` when nothing needs explaining — for example when a
+   * packaged build's startup task is simply on.
+   */
+  reason: string | null
+}
+/**
+ * The state a browser preview reports: there is no Windows process to ask, so
+ * the page must say that instead of showing an unchecked switch as "off".
+ */
+export function unsupportedAutostart(): AutostartStatus {
+  return { enabled: false, source: 'unsupported', reason: '当前系统不支持本应用的开机自启。' }
+}
 /**
  * One endpoint from the native scan. `kind` is the expected client shape for a
  * known port; `bridgeFound` is true only when a wallpaper Bridge answered, so a
@@ -59,7 +118,7 @@ export interface AutostartStatus { enabled: boolean; source: 'startup-task' | 'r
  */
 export interface HarnessEndpointScan {
   port: number
-  kind: 'official-desktop' | 'community-desktop' | 'official-web'
+  kind: 'official-desktop' | 'official-web'
   source: 'default' | 'user'
   bridgeFound: boolean
   status: HarnessStatus
@@ -79,6 +138,15 @@ export interface HarnessEndpointScope {
   port?: number | null
   subjectId?: string
   extraPorts?: readonly number[]
+  /**
+   * 「启动参数」的原文。
+   *
+   * 原生用它读出这个主体被要求在哪个端口上服务（`--port 3081`），于是**探针**与「打开界面」
+   * 盯着同一个端口。少了它，并行实例的第二个会永远显示成离线 —— 桥明明在隔壁一个端口上应答。
+   * 这里传原文而不是解析后的端口，是因为分词与"怎么读 `--port`"的规则只有一份（`launchArgs.ts`），
+   * 原生只做它自己那一份形状检查。
+   */
+  args?: string
 }
 
 /** What native made of that scope, for logging and for the settings card. */
@@ -100,7 +168,7 @@ export interface HarnessEndpointScopeResult {
 export interface HarnessLaunchOutcome {
   outcome: 'started' | 'started-unconfirmed' | 'already-running' | 'unknown-target'
     | 'root-path-invalid' | 'launcher-missing' | 'profile-invalid'
-    | 'port-occupied-external' | 'command-not-confirmed' | 'spawn-failed'
+    | 'port-occupied-external' | 'launch-args-invalid' | 'spawn-failed'
   kind: 'embedded-shell' | 'checkout'
   /** Present only when this application started and owns a child (a checkout). */
   pid?: number
@@ -153,10 +221,32 @@ export interface HarnessTargetCatalog {
 export interface HarnessTarget {
   /** Stable key to store and later resolve back to a subject. */
   id: string
-  kind: 'embedded-shell' | 'checkout'
+  /**
+   * `embedded-shell` 自带检出、按 AUMID 寻址；`checkout` 是一棵源码树、路径就是身份；
+   * `installed-cli` 是本机**全局安装**的 DSH CLI（npm 全局装的那种）—— 它没有 AUMID、也没有
+   * 源码树，所以它与 checkout 的差别只有"没有树"：命令从 `node <tree>/apps/cli/lib/bin.js`
+   * 换成 `dsh`，服务仍是它自举的 profile（默认 `web`，端口 3080）。
+   */
+  kind: 'embedded-shell' | 'checkout' | 'installed-cli'
   /** Which client shape this subject answers as, reusing the endpoint scan's vocabulary. */
-  client: 'official-desktop' | 'community-desktop' | 'official-web'
+  client: 'official-desktop' | 'official-web'
   label: string
+  /**
+   * 该主体自己声明的版本号，由扫描读出；读不到就没有这个字段。
+   *
+   * 三种来源不同（客户端读 exe 的 VERSIONINFO、源码目录读它自己的 package.json、已安装 CLI 读
+   * npm 全局包清单），但含义只有一个：**那个东西自己说自己是什么版本**。缺失时前缀一条都不加，
+   * 而不是写"未知"：我们没读到和我们读到了"未知"是两件事，占位符抹掉了这个区别，还会让用户以为
+   * 这一条被检查过。
+   */
+  version?: string
+  /**
+   * 自带检出的壳，它的窗口属于哪个可执行文件 —— 扫描从注册它的那个快捷方式读到。
+   *
+   * 只在原生侧使用（后台启动后藏窗口、显式动作里把窗口找回来），渲染层不拿它做判断。缺失就是
+   * "这次扫描没读到"：原生那时改问正在应答的那台客户端的可执行文件，而不是猜一条路径。
+   */
+  executable?: string
   /** Where the scan found it: a checkout's scan origin, or a shell's shortcut directory. */
   source: string
   identity: {
@@ -279,6 +369,17 @@ export interface NativeRuntime {
   apiKeyStatus(): Promise<ApiKeyStatus>
   /** 桌面会话工作区落在哪儿（只读自检）——与桥用的是同一条规则。 */
   desktopWorkspaceStatus(): Promise<DesktopWorkspaceStatus>
+  openProjectMemory(): Promise<{ opened: string; memoryFile: string; memoryExists: boolean }>
+  /**
+   * 「打开 TUI」：在一个**新的终端窗口**里拉起本机的 TUI 命令（`dst`）。
+   *
+   * 契约与原生一致，而且调用方必须遵守：找不到 TUI 时返回 `opened: false` 与一句 `message`
+   * 说明**怎么办** —— 那句话要显示出来，**不得**静默改成打开浏览器（那等于替用户换了一条
+   * 他没选的路，而这正是这次改动要根除的失败模式）。
+   *
+   * 「启动参数」照常带上：它加的是启动器后面的话，而这条路的启动器就是 TUI 自己。
+   */
+  openSubjectTui(args?: string[]): Promise<{ opened: boolean; reason?: string; message?: string; launcher?: string }>
   requestDeepSeekLogin(): Promise<void>
   nativeBootstrapGeneration(): Promise<number>
   releaseNativeBootstrap(generation: number): Promise<boolean>
@@ -293,7 +394,14 @@ export interface NativeRuntime {
   listenChat(listener: (event: ScopedChatEvent) => void): Promise<() => void>
   sendChat(mode: BackendMode, text: string, options?: NativeSendOptions): Promise<string | undefined>
   cancelChat(mode: BackendMode): Promise<void>
-  connectHarness(resumeSessionId: string | undefined, connectionId: string, model?: string): Promise<string>
+  /**
+   * 建立 Harness 会话。
+   *
+   * **端点端口不由调用方给**：`connect_harness` 命令自己按主体范围解析（源码里的原话是
+   * "resolved here rather than trusted from the caller"——渲染端不许指定任意端口，而监视器读
+   * 同一个值，于是状态与会话不可能指着两个不同的客户端）。这里只传模型与预设。
+   */
+  connectHarness(resumeSessionId: string | undefined, connectionId: string, model?: string, preset?: string): Promise<string>
   harnessHistory(): Promise<ChatMessage[]>
   harnessPresets(): Promise<Array<{ id: string; name?: string; description?: string; trust: 'system' | 'user'; broken?: string; isDefault: boolean }>>
   setHarnessPreset(preset: string): Promise<void>
@@ -358,6 +466,14 @@ export interface NativeRuntime {
    * endpoint is accepted, so this cannot open an arbitrary destination.
    */
   openClientInBrowser(port: number, path?: string): Promise<void>
+  /**
+   * Open a link from the transcript in the default browser.
+   *
+   * The address comes from model output, so the native side validates it again
+   * (`external_link::validate`): http/https only, ASCII only, no `user@` in the
+   * authority. The renderer refuses to even style anything else as a link.
+   */
+  openExternalLink(url: string): Promise<void>
   /** Whether anything is listening, without raising it. */
   harnessEndpointListening(port: number): Promise<boolean>
   desktopDisplays(): Promise<DesktopDisplayInfo[]>
@@ -375,23 +491,26 @@ export interface NativeRuntime {
    * Start the chosen execution subject. The class decides the mechanism — a shell
    * alias, or the managed checkout chain — so the caller passes an id and reads a
    * closed outcome code back.
+   *
+   * `args` is 「启动参数」, already tokenized: native appends it to whichever launcher this
+   * build picked, so the runnable identity stays ours. It is honoured identically by this
+   * path and the unattended one.
    */
   launchHarnessTarget(options: {
     targetId: string
     profile?: string
-    command?: string
+    args?: string[]
   }): Promise<HarnessLaunchOutcome>
   /**
    * The unattended counterpart, at most once per wallpaper process (native state
-   * is the single-flight authority, exactly as for `autostartManagedDsh`). The
-   * differences are real: only this path may keep a window out of sight, and only
-   * this path needs explicit consent for a custom launcher.
+   * is the single-flight authority, exactly as for `autostartManagedDsh`). The one
+   * difference that remains is real: only this path may keep a shell's window out of
+   * sight. 「启动参数」跟着一起走 —— 自动启动与手动启动跑的是同一个启动器。
    */
   autostartHarnessTarget(options: {
     targetId?: string
     profile: string
-    command?: string
-    trustedCommand?: boolean
+    args?: string[]
   }): Promise<ManagedDshAutostart>
   /**
    * Make the chosen subject's interface available and foreground, whatever state it
@@ -403,9 +522,9 @@ export interface NativeRuntime {
     targetId?: string
     port: number
     profile?: string
-    command?: string
+    args?: string[]
   }): Promise<HarnessUiOutcome>
-  launchDsh(rootPath: string, profile: string, command?: string): Promise<number>
+  launchDsh(rootPath: string, profile: string, args?: string[]): Promise<number>
   /**
    * One automatic start attempt per process, with the outcome remembered even
    * when it fails so a bad configuration cannot become a retry loop.
@@ -413,12 +532,24 @@ export interface NativeRuntime {
   autostartManagedDsh(options: {
     rootPath?: string
     profile: string
-    command?: string
-    trustedCommand?: boolean
+    args?: string[]
   }): Promise<ManagedDshAutostart>
   managedDshAutostartStatus(): Promise<ManagedDshAutostart | null>
-  managedDshStatus(): Promise<ManagedDshStatus>
-  stopManagedDsh(): Promise<void>
+  /**
+   * 本应用启动着哪些 DSH。
+   *
+   * 传 `subjectId` 只影响 `managed` / `running` 两个汇总字段（"我这次启动的孩子还在不在"）；
+   * `instances` 永远是全部，而且**官壳永远不在里面** —— 它不是本应用的实例，停它会当场关掉
+   * 用户自己的客户端、并弹一条"宿主意外退出"的报错框。停止清单与这个列表是同一处，所以
+   * 界面显示什么就能停什么。
+   */
+  managedDshStatus(subjectId?: string): Promise<ManagedDshStatus>
+  /**
+   * 停止本应用启动的 DSH：`instanceKey` 指名一个实例，不给就停**全部**。
+   *
+   * 一个实现、一个动作：「实例下拉里某一行的 ×」与「全部停止」走的是同一条命令，只是参数不同。
+   */
+  stopManagedDsh(instanceKey?: string): Promise<void>
 }
 
 async function tauriAvailable(): Promise<boolean> {
@@ -445,12 +576,12 @@ export const nativeRuntime: NativeRuntime = {
     return invoke<LockScreenDiagnostics>('get_lock_screen_diagnostics')
   },
   async setAutostart(enabled) {
-    if (!await tauriAvailable()) return { enabled: false, source: 'unsupported' }
+    if (!await tauriAvailable()) return unsupportedAutostart()
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<AutostartStatus>('set_autostart', { enabled })
   },
   async autostartStatus() {
-    if (!await tauriAvailable()) return { enabled: false, source: 'unsupported' }
+    if (!await tauriAvailable()) return unsupportedAutostart()
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<AutostartStatus>('autostart_status')
   },
@@ -487,6 +618,16 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) throw new Error('仅桌面版支持桌面会话工作区自检')
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<DesktopWorkspaceStatus>('desktop_workspace_status')
+  },
+  async openProjectMemory() {
+    if (!await tauriAvailable()) throw new Error('仅桌面版支持打开项目记忆')
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<{ opened: string; memoryFile: string; memoryExists: boolean }>('open_project_memory')
+  },
+  async openSubjectTui(args?: string[]) {
+    if (!await tauriAvailable()) throw new Error('仅桌面版支持打开 TUI')
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<{ opened: boolean; reason?: string; message?: string; launcher?: string }>('open_subject_tui', { args })
   },  async requestDeepSeekLogin() {
     if (!await tauriAvailable()) return
     const { invoke } = await import('@tauri-apps/api/core')
@@ -566,9 +707,9 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('cancel_chat', { mode })
   },
-  async connectHarness(resumeSessionId, connectionId, model) {
+  async connectHarness(resumeSessionId, connectionId, model, preset) {
     const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<string>('connect_harness', { resumeSessionId, connectionId, model })
+    return invoke<string>('connect_harness', { resumeSessionId, connectionId, model, preset })
   },
   async harnessHistory() {
     const { invoke } = await import('@tauri-apps/api/core')
@@ -691,6 +832,8 @@ export const nativeRuntime: NativeRuntime = {
       port: scope.port ?? null,
       subjectId: scope.subjectId ?? null,
       extraPorts: scope.extraPorts ? [...scope.extraPorts] : [],
+      // 已分好词的 argv：原生只做形状检查，不再分一次词（两次解释就是注入）。
+      args: parseLaunchArgs(scope.args),
     })
   },
   /**
@@ -730,6 +873,11 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) return
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('open_client_in_browser', { port, path })
+  },
+  async openExternalLink(url: string) {
+    // 这里**不吞错误**：打开失败要能浮到界面上（调用方负责显示），静默失败等于"点了没反应"。
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('open_external_link', { url })
   },
   async harnessEndpointListening(port: number) {
     if (!await tauriAvailable()) return false
@@ -780,7 +928,7 @@ export const nativeRuntime: NativeRuntime = {
     return invoke<HarnessLaunchOutcome>('launch_harness_target', {
       targetId: options.targetId,
       profile: options.profile,
-      command: options.command,
+      args: options.args,
     })
   },
   async autostartHarnessTarget(options) {
@@ -793,8 +941,7 @@ export const nativeRuntime: NativeRuntime = {
     return invoke<ManagedDshAutostart>('autostart_harness_target', {
       targetId: options.targetId,
       profile: options.profile,
-      command: options.command,
-      trustedCommand: options.trustedCommand,
+      args: options.args,
     })
   },
   async ensureHarnessUi(options) {
@@ -806,12 +953,12 @@ export const nativeRuntime: NativeRuntime = {
       targetId: options.targetId,
       port: options.port,
       profile: options.profile,
-      command: options.command,
+      args: options.args,
     })
   },
-  async launchDsh(rootPath, profile, command) {
+  async launchDsh(rootPath, profile, args) {
     const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<number>('launch_dsh', { rootPath, profile, command })
+    return invoke<number>('launch_dsh', { rootPath, profile, args })
   },
   /**
    * Ask the native side to start the configured DSH once per process.
@@ -831,8 +978,7 @@ export const nativeRuntime: NativeRuntime = {
     return invoke<ManagedDshAutostart>('autostart_managed_dsh', {
       rootPath: options.rootPath,
       profile: options.profile,
-      command: options.command,
-      trustedCommand: options.trustedCommand,
+      args: options.args,
     })
   },
   async managedDshAutostartStatus() {
@@ -840,12 +986,12 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<ManagedDshAutostart | null>('managed_dsh_autostart_status')
   },
-  async managedDshStatus() {
+  async managedDshStatus(subjectId?: string) {
     const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<ManagedDshStatus>('managed_dsh_status')
+    return invoke<ManagedDshStatus>('managed_dsh_status', { subjectId })
   },
-  async stopManagedDsh() {
+  async stopManagedDsh(instanceKey?: string) {
     const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('stop_managed_dsh')
+    await invoke('stop_managed_dsh', { instanceKey })
   },
 }

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
-import { API_PREFIX } from '../src/protocol.ts'
+import { API_PREFIX, BRIDGE_VERSION } from '../src/protocol.ts'
 import { apply, desktopEntryPrompt, historyOf, isLoopbackWebServerHost, tokenFileForRoot, windowsTokenAclCommands, windowsTokenDirectoryAclCommands, LIVE_SESSION_IDLE_TTL_MS, LIVE_SESSION_SWEEP_INTERVAL_MS, MAX_HISTORY_BYTES, MAX_HISTORY_MESSAGES, MAX_LIVE_SESSIONS, MAX_PENDING_CREATIONS, MAX_SSE_CLIENTS_PER_SESSION } from '../src/index.ts'
 
 /**
@@ -326,10 +326,14 @@ async function provisionToken(
 describe('wallpaper bridge HTTP routes', () => {
   it('describes the desktop entry and its default capability boundary to DSH', () => {
     const prompt = desktopEntryPrompt('C:\\workspace\\dsh-wallpaper-desktop', '桌面会话', 'workspace-write')
-    expect(prompt).toContain('dsh-wallpaper desktop interaction entry')
+    // 简报是说给助手听的产品事实：工作区、权限、以及"用户看不到 Harness 界面"这个场景。
     expect(prompt).toContain('桌面会话')
+    expect(prompt).toContain('C:\\workspace\\dsh-wallpaper-desktop')
     expect(prompt).toContain('workspace-write')
-    expect(prompt).toContain('not the full Harness Web UI')
+    expect(prompt).toContain('他看不到 Harness 的完整界面')
+    // 能力边界只说真话：读放行、写只在工作区内、越界被拒时不要重试。
+    expect(prompt).toContain('越界写会被沙箱直接拒绝')
+    expect(prompt).toContain('不要反复重试')
   })
 
   it('declares both agent lifecycle and web-server dependencies for HTTP routes', async () => {
@@ -489,7 +493,7 @@ describe('wallpaper bridge HTTP routes', () => {
       // The Bridge's own release version, taken from package.json rather than a
       // second hardcoded contract number. `protocolVersion` below is the stable
       // v1 boundary.
-      bridgeVersion: '0.1.1',
+      bridgeVersion: BRIDGE_VERSION,
       protocolVersion: 1,
       // DSH exposes no runtime version, so this is the only version claim the
       // Bridge can prove: the API range it was compiled against.

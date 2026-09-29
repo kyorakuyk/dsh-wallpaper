@@ -5,6 +5,8 @@ import type { AutostartStatus, LockScreenDiagnostics, TranslucentTbStatus } from
 import * as liteNative from './native.ts'
 import { assetUrl, DEFAULT_LITE_SETTINGS, LITE_BACKGROUND_OPTIONS, LITE_PORTRAIT_OPTIONS, loadLiteSettings, saveLiteSettings } from './settings.ts'
 import { listenUntilDisposed } from '../runtime/lifecycle.ts'
+import { autostartDetail, autostartRefusalNotice } from '../settings/autostartCopy.ts'
+import { createAutostartQueue, type AutostartQueue } from '../settings/autostartQueue.ts'
 import type { LiteSettings } from './types.ts'
 import './LiteSettingsWindow.css'
 
@@ -30,6 +32,15 @@ export function LiteSettingsWindow() {
   const [desktopFallbackBusy, setDesktopFallbackBusy] = useState(false)
   const lockOperationRef = useRef(false)
   const autostartOperationRef = useRef(false)
+  // The state Windows reported, not the state that was requested: the row says
+  // which path carries autostart and why, and Lite's page had no such state.
+  const [autostartState, setAutostartState] = useState<AutostartStatus>({ enabled: false, source: 'none', reason: null })
+  /**
+   * What the switch stands for: the user's latest request while one is on the
+   * wire, otherwise the state Windows last reported. See `createAutostartQueue`
+   * for why a toggle is queued instead of dropped.
+   */
+  const latestAutostartRef = useRef(DEFAULT_LITE_SETTINGS.autostart)
 
   settingsRef.current = settings
 
@@ -62,6 +73,10 @@ export function LiteSettingsWindow() {
     try {
       const status: AutostartStatus = await liteNative.autostartStatus()
       const current = settingsRef.current
+      setAutostartState(status)
+      // A toggle is on the wire: its read-back is newer than this probe's.
+      if (autostartOperationRef.current) return
+      latestAutostartRef.current = status.enabled
       if (status.enabled !== current.autostart) commit({ ...current, autostart: status.enabled })
     } catch (error) {
       setNotice(`读取开机自启状态失败：${String(error)}`)
@@ -138,20 +153,37 @@ export function LiteSettingsWindow() {
     return () => window.clearTimeout(timer)
   }, [notice])
 
-  const setAutostart = async (enabled: boolean) => {
-    if (autostartOperationRef.current) return
-    autostartOperationRef.current = true
-    setAutostartBusy(true)
-    try {
-      const status = await liteNative.setAutostart(enabled)
-      commit({ ...settingsRef.current, autostart: status.enabled })
-      if (status.enabled !== enabled) setNotice('Windows 没有接受这次开机自启变更，请检查系统启动应用权限。')
-    } catch (error) {
-      setNotice(`开机自启更新失败：${String(error)}`)
-    } finally {
-      autostartOperationRef.current = false
-      setAutostartBusy(false)
+  const autostartQueueRef = useRef<AutostartQueue>()
+  const autostartQueue = () => {
+    if (!autostartQueueRef.current) {
+      autostartQueueRef.current = createAutostartQueue({
+        send: (enabled) => liteNative.setAutostart(enabled),
+        onBusy: (busy) => {
+          autostartOperationRef.current = busy
+          setAutostartBusy(busy)
+        },
+        onSettled: (status, requested) => {
+          setAutostartState(status)
+          // A newer toggle is already queued: its own read-back decides the
+          // switch, and this older answer must not move it back.
+          if (latestAutostartRef.current !== requested) return
+          latestAutostartRef.current = status.enabled
+          commit({ ...settingsRef.current, autostart: status.enabled })
+          const refusal = autostartRefusalNotice(status, requested)
+          if (refusal) setNotice(refusal)
+        },
+        onError: (error) => setNotice(`开机自启更新失败：${String(error)}`),
+      })
     }
+    return autostartQueueRef.current
+  }
+
+  const setAutostart = (enabled: boolean) => {
+    latestAutostartRef.current = enabled
+    // The switch follows the user at once; Windows' answer decides whether it
+    // stays there. A second toggle is queued, not dropped.
+    commit({ ...settingsRef.current, autostart: enabled })
+    autostartQueue().request(enabled)
   }
 
   const setLockScreen = async (enabled: boolean) => {
@@ -249,7 +281,7 @@ export function LiteSettingsWindow() {
         <div className="lite-card-heading"><div><span className="lite-kicker">01 · SYSTEM</span><h2>锁屏与启动</h2></div><span className={`lite-status-dot ${lockScreenDiagnostics?.managedImageActive ? 'is-active' : ''}`} /></div>
         <SettingRow title="接管 Windows 锁屏图片" detail={lockScreenBusy ? '正在应用系统设置，请稍候。' : '密码输入页仍由 Windows 原生处理。'}><Toggle label="接管 Windows 锁屏图片" checked={settings.lockScreenEnabled} disabled={lockScreenBusy} onChange={(value) => void setLockScreen(value)} /></SettingRow>
         <SettingRow title="登录过渡底图" detail={desktopFallbackBusy ? '正在更新 Explorer 桌面底图。' : desktopFallbackStatus?.managedActive ? '已确认 Explorer 正在使用睡眠画面；重启后可减少解锁空档。' : desktopFallbackStatus?.warning ?? '让 Explorer 在应用启动前先显示睡眠画面，减少解锁后的原壁纸空档。'}><Toggle label="登录过渡底图" checked={settings.desktopWallpaperFallback} disabled={desktopFallbackBusy} onChange={(value) => void setDesktopFallback(value)} /></SettingRow>
-        <SettingRow title="登录后自动启动" detail={autostartBusy ? '正在更新启动任务。' : '使用当前用户的 Windows 启动任务。'}><Toggle label="登录后自动启动" checked={settings.autostart} disabled={autostartBusy} onChange={(value) => void setAutostart(value)} /></SettingRow>
+        <SettingRow title="登录后自动启动" detail={autostartBusy ? '正在更新启动任务。' : autostartDetail(autostartState)}><Toggle label="登录后自动启动" checked={settings.autostart} disabled={autostartBusy} onChange={(value) => setAutostart(value)} /></SettingRow>
         <div className="lite-actions"><button type="button" onClick={() => void openLockScreenSettings()}>打开 Windows 锁屏设置</button><button type="button" onClick={() => void refreshDiagnostics()}>刷新诊断</button></div>
         {lockScreenDiagnostics && <div className="lite-diagnostics"><strong>{lockScreenDiagnostics.takeoverAvailable ? '锁屏接管可用' : '当前暂不可接管锁屏'}</strong>{lockScreenDiagnostics.warnings.slice(0, 2).map((warning) => <span key={warning}>{warning}</span>)}{desktopFallbackStatus?.backupExists && desktopFallbackStatus.warning && <span>{desktopFallbackStatus.warning}</span>}{lockScreenDiagnostics.staleBackup && <button type="button" className="lite-diagnostics-action" disabled={lockScreenBusy} onClick={() => void clearStaleLockScreenBackup()}>清理过期恢复点（删除原图副本）</button>}</div>}
       </section>

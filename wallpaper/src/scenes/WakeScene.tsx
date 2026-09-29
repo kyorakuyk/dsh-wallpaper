@@ -1,10 +1,11 @@
-/** 苏醒场景：帧序列动画（睡脸→睁眼→起身→打哈欠），构图连贯 */
+/** 苏醒场景：帧序列动画（睡脸→睁眼→打哈欠→醒来），构图连贯 */
 
 import { useEffect, useRef, useState } from 'react'
 import type { PersonaManifest } from '../persona/types.ts'
 import { placeholderPortrait } from '../ui/whale.ts'
 import { assetUrl } from '../runtime/assets.ts'
 import { decodeImageSource } from '../native/bootstrapHandoff.ts'
+import './wakeTransition.css'
 
 export interface WakeSceneProps {
   persona: PersonaManifest
@@ -21,14 +22,48 @@ export interface WakeSceneProps {
 
 /** 帧序列（按播放顺序）。若用户素材提供 animations.wake.frames 则优先使用。 */
 export const DEFAULT_WAKE_FRAMES = [
+  // 前两帧保持 PNG：它们同时被原生层解码（启动遮盖层与锁屏图走 WIC/Windows），
+  // 换成 WebP 会把这条链路押在系统是否装了 WebP 解码器上。
   assetUrl('personas/wake-frames/variant-anima/sleep.png'),
   assetUrl('personas/wake-frames/variant-anima/frame-2-eyes.png'),
-  assetUrl('personas/wake-frames/variant-anima/frame-3-situp.png'),
-  assetUrl('personas/wake-frames/variant-anima/frame-4-yawn.png'),
+  // 后两帧只由 WebView 解码：同样画面存 PNG 要 3 MB 以上，WebP 只要 0.3 MB。
+  assetUrl('personas/wake-frames/variant-anima/frame-3-yawn.webp'),
+  assetUrl('personas/wake-frames/variant-anima/frame-4-awake.webp'),
 ]
 
 /** 每帧停留时长（ms）：睡脸稍久，中间过渡稍快 */
 export const WAKE_FRAME_DURATIONS = [2200, 1400, 1600, 2000]
+
+/** 帷幕压下（画面渐黑）用时。 */
+export const WAKE_CURTAIN_IN_MS = 420
+/** 桌面从黑里淡出用时；与 styles.css 的 `.wake-curtain-out` 是同一个节奏。 */
+export const WAKE_CURTAIN_OUT_MS = 720
+/**
+ * 这一幕的总时长：帷幕淡出 + 立绘从虚影浮出（styles.css 里是 700ms 延迟 + 1100ms 动画）。
+ * 调用方用它决定 `.wake-enter` 这类只在收尾期间存在的状态活多久。
+ */
+export const WAKE_ENTER_MS = 1800
+
+/**
+ * 苏醒收尾的帷幕。
+ *
+ * 动画最后一帧要先压黑，**再**把画面交给桌面：交接如果发生在画面还亮着的时候，桌面就是
+ * 从苏醒帧上直接跳出来的，谈不上"淡入"。所以序列播完后调用方只落帷幕，等 `WAKE_CURTAIN_IN_MS`
+ * 才回调 `onDone`，那段时间正好是屏幕变黑。
+ */
+export function useWakeCurtain(onDone: () => void) {
+  const [curtain, setCurtain] = useState(false)
+  const onDoneRef = useRef(onDone)
+  onDoneRef.current = onDone
+
+  useEffect(() => {
+    if (!curtain) return
+    const timer = setTimeout(() => onDoneRef.current(), WAKE_CURTAIN_IN_MS)
+    return () => clearTimeout(timer)
+  }, [curtain])
+
+  return { curtain, dropCurtain: () => setCurtain(true) }
+}
 
 export function wakeFrameSources(persona: PersonaManifest): string[] {
   return persona.animations?.wake?.frames?.length
@@ -69,6 +104,7 @@ export function WakeScene({ persona, onWakeDone, onFirstWakeFrame, handoffGenera
   const reportedGenerationRef = useRef<number>()
   onWakeDoneRef.current = onWakeDone
   onFirstWakeFrameRef.current = onFirstWakeFrame
+  const { curtain, dropCurtain } = useWakeCurtain(onWakeDone)
 
   useWakeFramePreload(frames, enabled && hasFrames)
 
@@ -108,15 +144,15 @@ export function WakeScene({ persona, onWakeDone, onFirstWakeFrame, handoffGenera
       return () => clearTimeout(immediate)
     }
     if (!hasFrames) {
-      // 无帧序列：单图渐显模式，播完回调
-      const t = setTimeout(() => onWakeDoneRef.current(), 2400)
+      // 无帧序列：单图渐显模式，播完落帷幕
+      const t = setTimeout(dropCurtain, 2400)
       return () => clearTimeout(t)
     }
-    // 帧序列模式：按 FRAME_DURATIONS 逐帧切换，播完回调
+    // 帧序列模式：按 FRAME_DURATIONS 逐帧切换，最后一帧之后落帷幕
     const duration = WAKE_FRAME_DURATIONS[Math.min(frameIndexRef.current, WAKE_FRAME_DURATIONS.length - 1)] / Math.max(0.25, speed)
     const t = setTimeout(() => {
       if (frameIndexRef.current >= frames.length - 1) {
-        onWakeDoneRef.current()
+        dropCurtain()
       } else {
         frameIndexRef.current += 1
         setIndex(frameIndexRef.current)
@@ -153,6 +189,7 @@ export function WakeScene({ persona, onWakeDone, onFirstWakeFrame, handoffGenera
           />
         </>
       )}
+      {curtain && <div className="wake-curtain" style={{ animationDuration: `${WAKE_CURTAIN_IN_MS}ms` }} />}
     </div>
   )
 }

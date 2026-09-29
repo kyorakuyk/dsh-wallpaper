@@ -77,7 +77,30 @@ export interface HarnessModelSettings {
 export interface DshLaunchSettings {
   rootPath?: string
   profile: string
-  command?: string
+  /**
+   * 「启动参数」：追加到启动器后面的额外参数，一个字符串（如 `--port 3081`）。
+   *
+   * 它取代了原来的 `command`（一个可执行的程序路径），这是一次**能力上的收缩**：任选一个程序
+   * 让壁纸去跑，是项目决定不要的能力；而把词追加到启动器后面，启动器的身份仍然由扫描决定、
+   * 由原生侧保管。原生收到的是一份 `argv` 数组（渲染层已经分好词，见 `connect/launchArgs.ts`），
+   * 所以这一段永远不经过命令行解释器 —— 没有变量展开、没有 `;`、没有管道。
+   *
+   * 与 `command` 的另一处不同：它**对手动启动与开机自启一视同仁**。原来那条"自动启动不使用
+   * 自定义启动命令"的警示与它那个复选框因此一并消失 —— 参数不改变"跑的是谁"，需要用户额外
+   * 授权的那个问题也随之不成立。
+   */
+  args?: string
+  /**
+   * 每个主体一个别名（键是主体 id）。
+   *
+   * 只影响**它怎么被称呼**，不影响它怎么被启动：源码目录在「运行方式」里原本只显示一份上级
+   * 目录名（两个同名克隆时用来区分），别名把这最后一段也交给用户。为空表示"用目录名" ——
+   * 也就是今天的行为，一个字符都不变。
+   *
+   * 按主体 id 存，而不是按"当前主体"存一个值：用户可能在两棵树之间来回切，别名的归属必须
+   * 跟着树走，否则切回去就会发现名字换了人。
+   */
+  aliases?: Record<string, string>
   /**
    * The chosen harness execution subject, as an id from the target scan.
    *
@@ -101,19 +124,11 @@ export interface DshLaunchSettings {
    */
   autoStartWithWallpaper: boolean
   /**
-   * Explicit confirmation that `command` may be used by the *automatic* path.
-   *
-   * The manual "启动" button always honours `command`. Executing an arbitrary
-   * configured program unattended at every wallpaper start is a different
-   * trust decision, so it stays off until the user confirms it in settings.
-   */
-  trustedCommandForAutoStart: boolean
-  /**
    * The port of the DSH endpoint to talk to, or undefined for "auto".
    *
-   * The three client shapes listen on different ports and only some are
-   * configurable (official desktop shell 19387, community desktop 43120,
-   * CLI/core 3080, and the official web app's own default is 3080 via
+   * The client shapes listen on different ports and only some are
+   * configurable (official desktop shell 19387, CLI/core 3080, and the official
+   * web app's own default is 3080 via
    * `ctx.webStartup.port`). Before this setting existed the wallpaper probed
    * 3080 unconditionally, so a user running the official shell saw `offline`
    * while a ready Bridge listened one port away.
@@ -126,6 +141,19 @@ export interface DshLaunchSettings {
   endpointPort?: number
   /** Extra ports the user added to the scan, beyond the three known shapes. */
   extraEndpointPorts?: number[]
+  /**
+   * Which interface 「打开」 raises when the subject has no window of its own.
+   *
+   * Only meaningful for a subject this build reaches through a *browser*: the official
+   * desktop client owns a Windows window, so the question does not arise for it. For an
+   * installed DSH CLI the user picks between the same web UI in a browser and the same
+   * host under the TUI (`dst`), which is a real choice — the two show the same sessions
+   * and differ in where the conversation is typed.
+   *
+   * Absent means `browser`: the route that has always been there, so a stored or older
+   * profile keeps behaving exactly as it did.
+   */
+  window?: 'browser' | 'tui'
 }
 
 export interface WallpaperSettings {
@@ -133,6 +161,11 @@ export interface WallpaperSettings {
   defaultBackend: BackendMode
   autoSwitchHarness: boolean
   conversationPolicy: ConversationPolicy
+  /**
+   * 「助手日」的边界小时（0–23，默认 4）。跨日重置、日会话命名、会话指针的"哪一天"都以它为准：
+   * 4 表示一条助手日从本地 04:00 开始 —— 深夜还在做的事不会被零点切走。
+   */
+  dayBoundaryHour: number
   modelTierRules: ModelTierRule[]
   /** 气泡文案覆盖（key: 文案） */
   bubbleOverrides: Record<string, string>
@@ -144,8 +177,6 @@ export interface WallpaperSettings {
   skipWakeAnimation: boolean
   lockScreenEnabled: boolean
   autostart: boolean
-  /** 应用内睡眠模式快捷键 */
-  sleepHotkey: string
   /** 发送消息快捷键 */
   sendShortcut: 'Enter' | 'Ctrl+Enter'
   background: BackgroundId
@@ -163,14 +194,42 @@ export interface WallpaperSettings {
   deepseekApi: ApiSettings
   /** 壁纸端记住的 Harness 模型选择（用于重启后回显）。 */
   harnessModel: HarnessModelSettings
+  /**
+   * 新建 Harness 会话时装载哪个 agent 预设（`minimal` / `standard` / …）。
+   *
+   * 缺省（没写过）时由 `DEFAULT_HARNESS_PRESET` 兜底为 `minimal`（用户要求："工作区的预设先默认为
+   * '极简模式'试试，应该能省不少上下文"）。留成可选是为了不把默认值抄进每个存档点：只有一个地方
+   * 说"默认是什么"，替换时也只改那一处。
+   */
+  harnessPreset?: string
   dshLaunch: DshLaunchSettings
+  /**
+   * 壁纸**自己**把滑槽拨离 harness 的那一次（主体掉线时的自动复位），记的是时间戳。
+   *
+   * 这件事必须跨进程存活。它决定两件用户能看见的东西：主体回来后壁纸是否有权自己拨回去
+   * （用户定死的规则：再次联通之后要以 harness 后端为准），以及轨道里那段保留下来的转写要不要
+   * 标明"这不是当前会话"。只放在内存里的后果实测过：升级安装重启了壁纸，这条规则悄悄失效，
+   * 滑槽停在左侧、桥的灯却是绿的，用户以为还在跟 DSH 说话——输入其实进了另一个后端（"输入被吞"）。
+   */
+  harnessAutoResetAt?: number
 }
+
+/**
+ * 「助手日」的默认边界：本地 **04:00**。
+ *
+ * 用户定的规则（2026-09-27）：跨日不在零点，而在凌晨四点 —— 深夜还在做的事，在他心里"今天"
+ * 还没过去；00:30 开始的一件事到 04:00 之前都算前一天，日重置才会落在真正"新的一天开始"的
+ * 时刻，而不是把他正在做的事从中间切断（游戏里的跨日缓冲是同一个道理）。
+ * 声明在 `DEFAULT_SETTINGS` **之前**，因为默认值要引用它。
+ */
+export const DEFAULT_DAY_BOUNDARY_HOUR = 4
 
 export const DEFAULT_SETTINGS: WallpaperSettings = {
   version: SETTINGS_VERSION,
   defaultBackend: 'deepseek-web',
   autoSwitchHarness: false,
   conversationPolicy: 'resume-last',
+  dayBoundaryHour: DEFAULT_DAY_BOUNDARY_HOUR,
   modelTierRules: [],
   bubbleOverrides: {},
   animationsEnabled: true,
@@ -179,7 +238,6 @@ export const DEFAULT_SETTINGS: WallpaperSettings = {
   skipWakeAnimation: false,
   lockScreenEnabled: false,
   autostart: false,
-  sleepHotkey: 'Alt+W',
   sendShortcut: 'Enter',
   background: 'workspace',
   historyStartsExpanded: false,
@@ -193,7 +251,7 @@ export const DEFAULT_SETTINGS: WallpaperSettings = {
   multiScreen: { enabled: false, backgrounds: {} },
   deepseekApi: { baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
   harnessModel: {},
-  dshLaunch: { profile: 'desktop', autoStartWithWallpaper: false, trustedCommandForAutoStart: false },
+  dshLaunch: { profile: 'desktop', autoStartWithWallpaper: false },
 }
 
 const KEY = 'dsh-wallpaper:settings:v10'
@@ -257,6 +315,12 @@ function boundedNumber(candidate: unknown, fallback: number, min: number, max: n
   return candidate === undefined ? fallback : Math.min(max, Math.max(min, finiteNumber(candidate, fallback)))
 }
 
+/** An optional record of when something happened. Anything that is not a real
+ * timestamp means "no record", never a guessed one. */
+function optionalTimestamp(candidate: unknown): number | undefined {
+  return typeof candidate === 'number' && Number.isFinite(candidate) && candidate > 0 ? candidate : undefined
+}
+
 function settingsText(candidate: unknown, fallback: string, maxLength = MAX_SETTINGS_STRING): string {
   if (typeof candidate !== 'string') return fallback
   const trimmed = candidate.trim()
@@ -298,6 +362,8 @@ export function normalizeSettings(raw: unknown): WallpaperSettings {
     defaultBackend: oneOf(value.defaultBackend, BACKEND_MODES, DEFAULT_SETTINGS.defaultBackend),
     autoSwitchHarness: settingsBool(value.autoSwitchHarness, settingsBool(value.autoSwitchPersona, DEFAULT_SETTINGS.autoSwitchHarness)),
     conversationPolicy: oneOf(value.conversationPolicy, CONVERSATION_POLICIES, DEFAULT_SETTINGS.conversationPolicy),
+    // 0 是合法的（退回旧行为：零点跨日），所以用 boundedNumber 而不是"非零才算"。
+    dayBoundaryHour: Math.round(boundedNumber(value.dayBoundaryHour, DEFAULT_SETTINGS.dayBoundaryHour, 0, 23)),
     modelTierRules: normalizeModelTierRules(value.modelTierRules),
     bubbleOverrides: normalizeBubbleOverrides(value.bubbleOverrides),
     animationsEnabled: settingsBool(value.animationsEnabled, DEFAULT_SETTINGS.animationsEnabled),
@@ -306,7 +372,6 @@ export function normalizeSettings(raw: unknown): WallpaperSettings {
     skipWakeAnimation: settingsBool(value.skipWakeAnimation, DEFAULT_SETTINGS.skipWakeAnimation),
     lockScreenEnabled: settingsBool(value.lockScreenEnabled, DEFAULT_SETTINGS.lockScreenEnabled),
     autostart: settingsBool(value.autostart, DEFAULT_SETTINGS.autostart),
-    sleepHotkey: settingsText(value.sleepHotkey, DEFAULT_SETTINGS.sleepHotkey, MAX_SETTINGS_SHORT_STRING),
     sendShortcut: oneOf(value.sendShortcut, ['Enter', 'Ctrl+Enter'] as const, DEFAULT_SETTINGS.sendShortcut),
     background: oneOf(value.background, BACKGROUND_IDS, DEFAULT_SETTINGS.background) as BackgroundId,
     historyStartsExpanded: settingsBool(value.historyStartsExpanded, DEFAULT_SETTINGS.historyStartsExpanded),
@@ -321,6 +386,9 @@ export function normalizeSettings(raw: unknown): WallpaperSettings {
     deepseekApi: normalizeApiSettings(value.deepseekApi),
     harnessModel: normalizeHarnessModelSettings(value.harnessModel),
     dshLaunch: normalizeDshLaunchSettings(value.dshLaunch),
+    // 只在它是个真实时间戳时才算数：这个字段是"壁纸自己复位过"的证据，值不可信就等于没有
+    // ——宁可不自动拨回去，也不要拿一个坏值当凭据把用户从他自己选的滑槽那边搬走。
+    harnessAutoResetAt: optionalTimestamp(value.harnessAutoResetAt),
   }
 }
 
@@ -397,15 +465,20 @@ function normalizeDshLaunchSettings(raw: unknown): DshLaunchSettings {
   if (raw === null || typeof raw !== 'object') return structuredClone(DEFAULT_SETTINGS.dshLaunch)
   const value = raw as Record<string, unknown>
   const profile = typeof value.profile === 'string' ? value.profile.trim() : ''
+  const aliases = normalizeSubjectAliases(value.aliases)
   return {
     profile: profile.length > 0 && profile.length <= MAX_SETTINGS_SHORT_STRING ? profile : DEFAULT_SETTINGS.dshLaunch.profile,
     rootPath: optionalText(value.rootPath),
-    command: optionalText(value.command),
+    /*
+      旧档案里的 `command`（一个可执行程序路径）与 `trustedCommandForAutoStart`（它那次授权）
+      在这里被**丢掉**，而不是被改写成「启动参数」：一个程序路径与一串参数不是同一种东西，
+      把 `C:\tools\dsh.exe` 当成参数追加到我们自己的启动器后面，只会让启动器收到一个它不认识的
+      词、然后启动失败 —— 那比"这一项没了"更难懂。设置界面也不再有这两个键，写回一次就清干净。
+    */
+    args: optionalText(value.args),
     subjectId: optionalText(value.subjectId),
-    // Both new flags default to `false` for an upgraded profile. Auto-starting a
-    // resident service is opt-in, and so is trusting a custom launcher with it.
+    // 开机自动启动一个常驻服务是选择性加入的；只有字面的 true 才算开了。
     autoStartWithWallpaper: value.autoStartWithWallpaper === true,
-    trustedCommandForAutoStart: value.trustedCommandForAutoStart === true,
     // Only a usable TCP port is accepted; anything else falls back to "auto",
     // which keeps the shipped priority order rather than pinning a bad port and
     // reporting `offline` forever.
@@ -413,7 +486,32 @@ function normalizeDshLaunchSettings(raw: unknown): DshLaunchSettings {
     ...(normalizeExtraPorts(value.extraEndpointPorts).length > 0
       ? { extraEndpointPorts: normalizeExtraPorts(value.extraEndpointPorts) }
       : {}),
+    ...(Object.keys(aliases).length > 0 ? { aliases } : {}),
+    // 只认这两个值；缺省不写入，读的时候按 `browser` 处理（与旧档案行为一致 ✓）。
+    ...(value.window === 'tui' ? { window: 'tui' as const } : {}),
   }
+}
+
+/**
+ * 别名表：键是主体 id、值是要显示的名字。
+ *
+ * 键与值都按"用户会看到的字符串"收紧：控制字符会让同一行文字在标签里换行或错位，空值等价于
+ * "没起别名"（所以在写回时也被丢掉，而不是存一个空串）。上限沿用设置短串那一档 —— 别名是一行
+ * 标签的一部分，不是一段说明。
+ */
+function normalizeSubjectAliases(raw: unknown): Record<string, string> {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const aliases: Record<string, string> = {}
+  for (const [subjectId, alias] of Object.entries(raw as Record<string, unknown>)) {
+    if (subjectId.trim().length === 0 || subjectId.length > MAX_SETTINGS_STRING) continue
+    if (typeof alias !== 'string') continue
+    const name = alias.trim()
+    if (name.length === 0 || name.length > MAX_SETTINGS_SHORT_STRING) continue
+    // eslint-disable-next-line no-control-regex
+    if (/[\u0000-\u001f\u007f]/.test(name)) continue
+    aliases[subjectId] = name
+  }
+  return aliases
 }
 
 function validPort(value: unknown): boolean {
@@ -599,6 +697,21 @@ export function localCalendarDay(now: Date = new Date()): string {
   return `${year}-${month}-${day}`
 }
 
+/**
+ * 「助手日」：把 `now` 往前挪 `boundaryHour` 小时，再取那个日历日。
+ *
+ * **一条规则、两侧同值**：桥用它给日会话命名（`wallpaper-<助手日>`），前端用它决定"要不要换
+ * 新会话"、以及会话指针属于哪一天。任何一边单独改动都会让"同一段对话"在两侧变成两天，所以
+ * 两侧都必须调用各自实现的同一个函数、取同一个边界小时（前端取设置 `dayBoundaryHour`，
+ * 桥取配置 `dayBoundaryHour`；P1 会加一条启动自检，不一致就报警而不是静默）。
+ */
+export function assistantDay(now: Date = new Date(), boundaryHour: number = DEFAULT_DAY_BOUNDARY_HOUR): string {
+  const boundary = Number.isFinite(boundaryHour)
+    ? Math.min(23, Math.max(0, Math.floor(boundaryHour)))
+    : DEFAULT_DAY_BOUNDARY_HOUR
+  return localCalendarDay(new Date(now.getTime() - boundary * 3_600_000))
+}
+
 export function loadConversationPointers(): ConversationPointers {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(CONVERSATION_KEY) ?? '{}')
@@ -606,27 +719,38 @@ export function loadConversationPointers(): ConversationPointers {
   } catch { return {} }
 }
 
-export function saveConversationPointer(backend: BackendMode, id: string, now: Date = new Date()): void {
+export function saveConversationPointer(
+  backend: BackendMode,
+  id: string,
+  now: Date = new Date(),
+  boundaryHour: number = DEFAULT_DAY_BOUNDARY_HOUR,
+): void {
   if (backend === 'deepseek-web' && !isValidConversationId(id)) return
   try {
     const pointers = loadConversationPointers()
     pointers[backend] = {
       id,
       updatedAt: now.getTime(),
-      day: localCalendarDay(now),
+      // 助手日而不是日历日：指针属于哪一天，要与"要不要换新会话"用的是同一条规则。
+      day: assistantDay(now, boundaryHour),
       ...(backend === 'harness' ? { bridgeRevision: HARNESS_POINTER_REVISION } : {}),
     }
     localStorage.setItem(CONVERSATION_KEY, JSON.stringify(pointers))
   } catch { /* unavailable storage: start a fresh conversation next time */ }
 }
 
-export function resumeConversationId(backend: BackendMode, policy: ConversationPolicy, now: Date = new Date()): string | undefined {
+export function resumeConversationId(
+  backend: BackendMode,
+  policy: ConversationPolicy,
+  now: Date = new Date(),
+  boundaryHour: number = DEFAULT_DAY_BOUNDARY_HOUR,
+): string | undefined {
   if (policy === 'new-on-unlock') return undefined
   const pointer = loadConversationPointers()[backend]
   if (!pointer) return undefined
   if (backend === 'harness'
     && (pointer as ConversationPointers['harness'])?.bridgeRevision !== HARNESS_POINTER_REVISION) return undefined
-  if (policy === 'daily' && pointer.day !== localCalendarDay(now)) return undefined
+  if (policy === 'daily' && pointer.day !== assistantDay(now, boundaryHour)) return undefined
   return backend === 'deepseek-web'
     ? isValidConversationId(pointer.id) ? pointer.id : undefined
     : pointer.id

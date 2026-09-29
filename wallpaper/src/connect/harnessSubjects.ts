@@ -12,16 +12,19 @@
  */
 import type { HarnessLaunchOutcome, HarnessTarget } from '../native/runtime.ts'
 
-/** The user-facing class name, which is also the reason the two classes behave
- * differently: one carries its own checkout, the other does not. */
+/** The user-facing class name, which is also the reason the classes behave
+ * differently: one carries its own checkout, another is a tree of your own, and the
+ * third is a CLI installed on this machine. */
 export function subjectKindLabel(kind: HarnessTarget['kind']): string {
-  // The design's own terms are 自带检出 / 源码检出, and they are exact: the two
-  // classes differ in whether the client carries its *own* checkout. Measured
-  // against what a user can see, though, "检出" names an implementation detail —
-  // what they are choosing between is a client that brings its own runtime and a
-  // source directory of their own. The labels therefore say that, and the two words
-  // never appear in the settings surface.
-  return kind === 'embedded-shell' ? '客户端' : '源码目录'
+  // The design's own terms are 自带检出 / 源码检出, and they are exact: the classes
+  // differ in whether the client carries its *own* checkout. Measured against what a
+  // user can see, though, "检出" names an implementation detail — what they are
+  // choosing between is a client that brings its own runtime, a source directory of
+  // their own, and (2026-09-27) a DSH CLI installed on this machine with npm. The
+  // labels say that, and the word 检出 never appears in the settings surface.
+  if (kind === 'embedded-shell') return '客户端'
+  if (kind === 'installed-cli') return '已安装的 CLI'
+  return '源码目录'
 }
 
 /**
@@ -33,6 +36,17 @@ export function subjectKindLabel(kind: HarnessTarget['kind']): string {
  */
 export function isEmbeddedShellSubject(subjectId: string | undefined): boolean {
   return (subjectId ?? '').startsWith('shell:')
+}
+
+/**
+ * Whether a stored subject id names the globally installed CLI.
+ *
+ * 这一类不是"另一种源码目录"：它启动时要经过一层 npm 的批处理外壳再拉起 node，冷启动明显比
+ * 直接跑二进制慢，所以等待它的时间不该和别的类别一样长（见 `harnessLaunchOutcome` 的宽限）。
+ * 前缀同样属于原生模型（`cli:<启动器路径>`），沿用上面那条"只在这里读一次"的规矩。
+ */
+export function isInstalledCliSubject(subjectId: string | undefined): boolean {
+  return (subjectId ?? '').startsWith('cli:')
 }
 
 /**
@@ -142,19 +156,119 @@ function parentName(path: string): string {
   return parts.length >= 2 ? parts[parts.length - 2] : ''
 }
 
+/** The last path segment — a directory's own name, which is what 起别名 defaults to. */
+function baseName(path: string): string {
+  const parts = withoutVerbatimPrefix(path).split(/[\\/]+/).filter(Boolean)
+  return parts.length > 0 ? parts[parts.length - 1]! : ''
+}
+
+/**
+ * 用户给这个主体起的别名，或空串。
+ *
+ * 只看存下来的那一条：**不做任何"猜一个更好听的名字"**。别名要么是用户写的，要么就是空 ——
+ * 空的时候显示什么，由调用处按它知道的上下文决定（下拉里是上级目录名或仓库名）。
+ */
+export function subjectAlias(
+  subjectId: string | undefined,
+  aliases: Readonly<Record<string, string>> | undefined,
+): string {
+  const id = (subjectId ?? '').trim()
+  if (id.length === 0) return ''
+  return (aliases?.[id] ?? '').trim()
+}
+
+/** 主体 id 用来显示时的那一段名字（不含类别词、不含版本）。 */
+function subjectName(
+  target: HarnessTarget,
+  all: readonly HarnessTarget[],
+  aliases: Readonly<Record<string, string>> | undefined,
+): string {
+  if (target.kind !== 'checkout') return target.label
+  // 别名的位置就是原来那一段"上级目录名"的位置：**顶掉**它，而不是加在它后面。两个同名克隆
+  // 靠这一段区分，所以别名的作用正是"用我认得出来的名字来区分"，多留一段反而更长、更难认。
+  const alias = subjectAlias(target.id, aliases)
+  if (alias.length > 0) return alias
+  // 同名是常态而不是边角：那时用上一级目录区分，并省掉恒定的仓库名，
+  // 于是"源码目录 · deepseek-harness（DeepSeekHarness.old）"缩成"源码目录 · DeepSeekHarness.old"。
+  const duplicated = all.filter((other) => other.label === target.label).length > 1
+  const parent = duplicated && target.identity.rootPath ? parentName(target.identity.rootPath) : ''
+  return parent || target.label
+}
+
+/**
+ * The name segment of a subject's option label.
+ *
+ * Exported because the running-instance dropdown shows the *same* name: one subject must not read as
+ * two different things depending on which control is looking at it.
+ */
+export function subjectDisplayName(
+  target: HarnessTarget,
+  all: readonly HarnessTarget[],
+  aliases?: Readonly<Record<string, string>>,
+): string {
+  return subjectName(target, all, aliases)
+}
+
 /**
  * One option's text in the subject select.
  *
  * Two clones of the same project share their last path segment, which is the normal
  * case rather than an edge case — so a name that appears twice is qualified with its
  * parent directory. Without that, a user cannot tell the entries apart, which is what
- * a select is for.
+ * a select is for. A stored 别名 sits in exactly that position (`源码目录 · <别名> · <版本>`),
+ * so the *shape* of the line is unchanged: one name segment, then the version.
  */
-export function subjectOptionLabel(target: HarnessTarget, all: readonly HarnessTarget[]): string {
-  const duplicated = all.filter((other) => other.label === target.label).length > 1
-  const parent = duplicated && target.identity.rootPath ? parentName(target.identity.rootPath) : ''
-  const name = parent ? `${target.label}（${parent}）` : target.label
-  return `${subjectKindLabel(target.kind)} · ${name}`
+export function subjectOptionLabel(
+  target: HarnessTarget,
+  all: readonly HarnessTarget[],
+  aliases?: Readonly<Record<string, string>>,
+): string {
+  // 版本号跟在名字后面，因为它回答的是同一类问题 —— "这一条是谁"：0.2.0-rc.1 的客户端与
+  // 0.1.0-rc.5 的源码树能不能接上同一个 bridge，答案并不相同。读不到版本时**一个字都不加**：
+  // 写"未知"会让用户以为我们查过这一条（见 `HarnessTarget.version`）。
+  const version = target.version?.trim()
+  const suffix = version ? ` · ${version}` : ''
+  // 客户端与 CLI 的名字本身已经说清自己是什么（"官方桌面客户端"/"DSH CLI"），再冠一次类别词就是
+  // 同一件事说两遍 —— 用户实测点名了这一点。只有源码目录的名字是个仓库名，必须带类别词。
+  if (target.kind !== 'checkout') return `${target.label}${suffix}`
+  return `源码目录 · ${subjectName(target, all, aliases)}${suffix}`
+}
+
+/**
+ * 一个**正在运行的实例**在下拉里那一段名字。
+ *
+ * 与「运行方式」用同一套名字规则（`subjectDisplayName`），差别只在兜底：这里的实例可能来自上一次
+ * 扫描之后就已经消失的目录，那时没有任何 `HarnessTarget` 可以问，只能用 id 自己最后一段 ——
+ * "叫得出名字"是这一行的全部用途，而一个读不出名字的实例对用户毫无帮助。
+ */
+export function instanceDisplayName(
+  subjectId: string,
+  targets: readonly HarnessTarget[],
+  aliases?: Readonly<Record<string, string>>,
+): string {
+  const id = subjectId.trim()
+  const target = targets.find((candidate) => sameSubject(candidate.id, id))
+  if (target) return subjectDisplayName(target, targets, aliases)
+  const alias = subjectAlias(id, aliases)
+  if (alias.length > 0) return alias
+  if (isInstalledCliSubject(id)) return 'DSH CLI'
+  return baseName(id) || id
+}
+
+/**
+ * 实例下拉里的一整行：`别名 · 端口`。
+ *
+ * 端口那一段读不出来时写「端口未确认」，而不是写 0 或干脆省掉：省掉会让这一行看起来像"这个实例
+ * 没有端口"（`--port 0` 让系统挑一个，真的是这样），而大多数时候只是**还没确认到**（宿主起得比
+ * 端口登记早）。两种情况的下一步并不相同，所以它们不能长得一样。
+ */
+export function instanceLabel(
+  subjectId: string,
+  port: number | undefined,
+  targets: readonly HarnessTarget[],
+  aliases?: Readonly<Record<string, string>>,
+): string {
+  return `${instanceDisplayName(subjectId, targets, aliases)} · ${port ?? '端口未确认'}`
 }
 export function launchOutcomeNotice(outcome: {
   outcome: string
@@ -188,17 +302,20 @@ export function launchOutcomeNotice(outcome: {
     case 'launcher-missing':
       // The only entry that cannot avoid a system name: the fix is to install one of
       // two programs or point at their location, so naming them is the actionable
-      // half, while PATH stays out of the sentence.
-      return '找不到用来启动它的程序：请安装 Node.js，或在「启动命令」里填写启动器的完整路径。'
+      // half, while PATH stays out of the sentence. 这一项**不再**把用户引向「启动命令」——
+      // 那个设置已经不在了（现在只有「启动参数」，而它加不了参数以外的任何东西），
+      // 指向一个不存在的入口比不说更坏。
+      return '找不到用来启动它的程序：请确认 Node.js 或 pnpm 已安装，并能在命令提示符里直接运行。'
     case 'profile-invalid':
       return 'profile 无效：只能包含字母、数字、连字符或下划线。'
     case 'port-occupied-external':
       // The port number is an implementation fact; the user's situation is that
       // something is already running and this application is leaving it alone.
-      return '本机已有一个 DSH 在运行（不是本应用启动的），因此没有重复启动，也不会去接管或停止它。'
-    case 'command-not-confirmed':
-      // Says which switch is off, not which flag failed.
-      return '自动启动不使用自定义启动命令（未获得授权），因此这次没有执行它。'
+      // FREEZE（临时冻结，不是删除）：这句话原来还有半句"在「启动参数」里换一个端口可以并行再起
+      // 一个实例"。本 build 里「启动参数」不在界面上（它随这次冻结一起关掉了），把用户指向一个
+      // 不存在的入口比不说更坏 —— 指向不存在的入口正是这个项目一直在修的那种失败。恢复办法：
+      // 把原来那半句加回来（它随「启动参数」一起复活）。
+      return '本机已有别的程序占用该端口（不是本应用启动的），因此没有重复启动，也不会去接管或停止它。'
     default:
       // No code, no path: the log does name both, and that is where a bug report
       // should come from rather than from a dialog.

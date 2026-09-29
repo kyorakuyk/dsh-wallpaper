@@ -48,6 +48,9 @@ fn main() {
             // 设置中心直接输入 API Key（取代了原来的系统凭据对话框）。
             "save_api_key",
             "desktop_workspace_status",
+            "open_project_memory",
+            // 「打开 TUI」：在一个新终端窗口里拉起本机的 dst（设置中心专属）。
+            "open_subject_tui",
             "clear_user_data",
             "api_key_status",
             "show_deepseek_login",
@@ -98,6 +101,7 @@ fn main() {
             "set_harness_endpoint",
             "raise_client_window",
             "open_client_in_browser",
+            "open_external_link",
             "harness_endpoint_listening",
             "harness_endpoint_window",
             "appearance_get_state",
