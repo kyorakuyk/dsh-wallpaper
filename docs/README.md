@@ -38,6 +38,7 @@
 | 文档 | 主题 |
 | --- | --- |
 | `build-and-publish-timings.md` | 构建与发布耗时实测：本地发布 103.5s→65.5s 的做法、CI 缓存的坑、以及量耗时的方法 |
+| `desktop-blank-double-click.md` | 桌面空白双击：MSAA 三态判据、配对围栏与探针证据 |
 | `shell-background-start-window.md` | 官壳后台启动的窗口为什么总会露一帧：七种做法的实测结论 |
 | `dsh-profiles-in-this-app.md` | 档案在本应用里怎么用：谁看它、什么时候自动改、与桥安装的绑定 |
 | `dsh-plugin-host-compat.md` | 桥插件与 DSH 宿主 0.2.0-rc.1 的兼容实测：判词、范围覆盖表、验证命令、部署坑与升级流程 |
