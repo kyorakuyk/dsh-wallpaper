@@ -1837,6 +1837,11 @@ const enterInnerWorkspace = () => {
   //
   // **静默**：版本相符时 CLI 那边是空操作；失败也不在这里打扰用户 —— 报告由设置窗口承担
   // （那里有一句话的总结），而"桥不在"这件事聊天区本来就会显示出来。
+  // FREEZE（临时冻结，不是删除）：这条"每次启动"的对齐**做不到**，已由原生接手。
+  // 为什么关：壁纸窗口的 settings 是异步快照来的，而且原生根本不建模 dshLaunch —— 实测四次，
+  // 这条 effect 连一次请求都发不出来（日志里没有"装桥请求"）。真正能拿到主体的是原生：
+  // harness_launch 在起宿主之前对齐（见那里的注释）。界面这条留作记录，恢复它没有意义。
+  /*
   const bridgedAtStartupRef = useRef(false)
   useEffect(() => {
     const subjectId = settings.dshLaunch.subjectId ?? settings.dshLaunch.rootPath
@@ -1857,6 +1862,7 @@ const enterInnerWorkspace = () => {
       })
     // 守卫保证"每个主体只对齐一次"，所以依赖变化不会变成重复跑。
   }, [settings.dshLaunch.subjectId, settings.dshLaunch.rootPath])
+  */
 
   const scene = useMemo(() => {
     if (runtime.phase === 'booting' || runtime.phase === 'locked') return <SleepScene persona={persona} mode="system" />

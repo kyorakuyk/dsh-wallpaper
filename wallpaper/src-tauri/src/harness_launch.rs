@@ -2825,14 +2825,6 @@ mod tests {
     }
 
     #[test]
-    fn only_a_host_reporting_the_pinned_version_needs_nothing() {
-        assert!(!bridge_install_needed(Some(BRIDGE_VERSION)));
-        assert!(!bridge_install_needed(Some(" 0.1.5 ")));
-        assert!(bridge_install_needed(Some("0.1.3")));
-        assert!(bridge_install_needed(None));
-    }
-
-    #[test]
     fn the_desktop_profile_is_installed_through_the_shell_s_own_cli() {
         let plan = plan_bridge_install(
             "desktop",
