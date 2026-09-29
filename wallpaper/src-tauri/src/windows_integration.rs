@@ -119,7 +119,7 @@ use windows::{
             Accessibility::{CUIAutomation, IUIAutomation, UIA_ControlTypePropertyId, UIA_ListItemControlTypeId, UIA_PaneControlTypeId, TreeScope_Descendants},
             Controls::MARGINS,
             HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI},
-            Input::KeyboardAndMouse::{GetAsyncKeyState, SetFocus, VK_LBUTTON},
+            Input::KeyboardAndMouse::{GetAsyncKeyState, GetDoubleClickTime, SetFocus, VK_LBUTTON},
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         },
     },
@@ -2567,6 +2567,16 @@ fn restore_desktop_keyboard_focus(app: &tauri::AppHandle) {
 /// 只在前台**从某个值变成了另一个值**、且新值既不是桌面家族也不是我们自己时才为真：
 /// - 空白桌面双击可能让 Progman 变成前台（那是桌面本身），仍然允许翻；
 /// - 前台没变（点空白时常见，因为点击穿透让前台留在原处）也仍然允许翻。
+/// 这一次双击配对允许的间隔：**用系统设置**，不要写死。
+///
+/// 写死过一个 500ms，结果是"时好时坏"：点击稍慢的用户，系统认为那是双击（图标照常打开），
+/// 而我们的判据认为不是，于是每一次点击都被当成"第一击"，功能静默失效（2026-09-30 实测，
+/// 日志里连续三次 armed 却一次都没切换）。Windows 把这个间隔作为用户设置暴露给程序，
+/// 就应该按它来；上限夹到 2 秒，防止被设成极端值时误配对。
+fn double_click_pairing_window_ms(system_ms: u32) -> u64 {
+    u64::from(system_ms).clamp(200, 2000)
+}
+
 fn double_click_became_someone_elses(
     foreground_at_first_click: Option<isize>,
     foreground_now: Option<isize>,
@@ -2929,6 +2939,13 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
         };
         log::info!("表/里桌面双击监控已启动（UI Automation）");
 
+        let double_click_window = std::time::Duration::from_millis(double_click_pairing_window_ms(
+            unsafe { GetDoubleClickTime() },
+        ));
+        log::info!(
+            "表/里桌面双击配对窗口 = {}ms（取自系统设置，不再写死）",
+            double_click_window.as_millis()
+        );
         let mut was_down = false;
         let mut last_blank_click: Option<std::time::Instant> = None;
         // 记录首次点击时前台的**窗口句柄**。句柄比进程号细一档：双击壁纸自己的快捷方式时进程号
@@ -2966,8 +2983,16 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                 }
                 if can_toggle {
                     log::info!("workspace toggle accepted: over_icon={over_icon} on_surface_win={on_surface_by_window} on_surface_uia={on_surface_by_tree} uia_seen={blank_saw}");
-                    log_workspace_toggle_decision(false, true);
+                                            log_workspace_toggle_decision(false, true);
                     let now = std::time::Instant::now();
+                    // 配对是否成立，取决于这一次点击与上一次的间隔 —— 把它记下来，节奏问题一眼可见。
+                    log::info!(
+                        "双击配对：间隔 {}ms（窗口 {}ms）",
+                        last_blank_click
+                            .map(|previous| now.duration_since(previous).as_millis())
+                            .unwrap_or(u128::MAX),
+                        double_click_window.as_millis()
+                    );
                     let foreground_now = unsafe {
                         let window = GetForegroundWindow();
                         if window.0.is_null() { None } else { Some(window.0 as isize) }
@@ -3008,7 +3033,7 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                         continue;
                     }
                     if last_blank_click.is_some_and(|previous| {
-                        now.duration_since(previous) <= std::time::Duration::from_millis(500)
+                        now.duration_since(previous) <= double_click_window
                     }) {
                         last_blank_click = None;
                         // The transition itself lives in enter/leave_inner_workspace so the
@@ -4975,6 +5000,18 @@ fn a_double_click_that_activated_something_else_never_toggles_the_workspace() {
     assert!(!double_click_became_someone_elses(Some(101), Some(101), false));
     // 首次点击没记到前台：不因此阻止（宁可保留原行为，也不要让功能静默失效）。
     assert!(!double_click_became_someone_elses(None, Some(202), false));
+}
+
+#[test]
+fn the_pairing_window_follows_the_system_setting_within_sane_bounds() {
+    // 系统默认 500ms 原样使用。
+    assert_eq!(double_click_pairing_window_ms(500), 500);
+    // 用户把双击速度调慢（Windows 允许到 900ms 以上）：必须跟着放宽，否则系统认双击、我们不认 ——
+    // 那正是"时好时坏"的来源。
+    assert_eq!(double_click_pairing_window_ms(900), 900);
+    // 极端值夹住，避免误配对。
+    assert_eq!(double_click_pairing_window_ms(50), 200);
+    assert_eq!(double_click_pairing_window_ms(10_000), 2000);
 }
 
 #[test]
