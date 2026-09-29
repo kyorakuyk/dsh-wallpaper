@@ -20,7 +20,8 @@ export type SettingsPage = (typeof SETTINGS_PAGES)[number]
 export const DISPLAY_LIST_FALLBACK_INTERVAL_MS = 30_000
 
 export const SETTINGS_PROBES = [
-  'translucentTb',
+  // FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30），这条探针退出。恢复办法：取消注释。
+  // 'translucentTb',
   'managedDsh',
   'deepseekWebAdapterConfig',
   // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
@@ -38,7 +39,9 @@ export type SettingsProbe = (typeof SETTINGS_PROBES)[number]
  */
 export const PAGE_PROBES: Record<SettingsPage, readonly SettingsProbe[]> = {
   general: ['desktopDisplays'],
-  connections: ['managedDsh', 'translucentTb', 'deepseekWebAdapterConfig'],
+    // FREEZE(1B)：
+  // connections: ['managedDsh', 'translucentTb', 'deepseekWebAdapterConfig'],
+  connections: ['managedDsh', 'deepseekWebAdapterConfig'],
   appearance: [],
   personas: [],
   history: ['apiHistory'],
@@ -54,7 +57,8 @@ export const PAGE_PROBES: Record<SettingsPage, readonly SettingsProbe[]> = {
  * "启动 DSH" button, so it belongs to the required group.
  */
 export const LOW_PRIORITY_PROBES: ReadonlySet<SettingsProbe> = new Set<SettingsProbe>([
-  'translucentTb',
+  // FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30），这条探针退出。恢复办法：取消注释。
+  // 'translucentTb',
   'deepseekWebAdapterConfig',
 ])
 
@@ -186,7 +190,8 @@ export function createSettingsProbeController(options: {
 }
 
 const PROBE_ERROR_MESSAGES: Record<SettingsProbe, string> = {
-  translucentTb: '读取 TranslucentTB 状态失败',
+  // FREEZE(1B)：
+  // translucentTb: '读取 TranslucentTB 状态失败',
   managedDsh: '读取受管 DSH 状态失败',
   deepseekWebAdapterConfig: '网页适配器配置读取失败',
   // FREEZE(1A)：同上。

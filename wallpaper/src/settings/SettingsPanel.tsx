@@ -81,10 +81,11 @@ export interface SettingsPanelProps {
   onClose: () => void
   interactionEnabled: boolean
   onSetInteractionEnabled: (enabled: boolean) => void
-  translucentTb: { installed: boolean; running: boolean; source?: string }
-  onRefreshTranslucentTb: () => void
-  onLaunchTranslucentTb: () => void
-  onInstallTranslucentTb: () => void
+  // FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30），透明任务栏这块随之冻结。恢复办法：取消注释。
+  // translucentTb: { installed: boolean; running: boolean; source?: string }
+  // onRefreshTranslucentTb: () => void
+  // onLaunchTranslucentTb: () => void
+  // onInstallTranslucentTb: () => void
   /**
    * The execution subjects the shim found: shells that carry their own checkout,
    * and source trees (§3). Choosing one fixes which service the wallpaper starts;
@@ -476,7 +477,9 @@ export function PriceInput({
 }
 
 export function SettingsPanel(props: SettingsPanelProps) {
-  const { settings, harnessStatus, onChange, onClose, translucentTb, page } = props
+  // FREEZE(1B)：解构里去掉已冻结的 translucentTb。
+  // const { settings, harnessStatus, onChange, onClose, translucentTb, page } = props
+  const { settings, harnessStatus, onChange, onClose, page } = props
   const set = (patch: Partial<WallpaperSettings>) => onChange({ ...settings, ...patch })
   /** 「清除全部用户数据」的结果（成功后把"删了什么、还剩什么要你手动删"写在这一行里）。 */
   const [clearDetail, setClearDetail] = useState<string>()
@@ -1013,9 +1016,11 @@ export function SettingsPanel(props: SettingsPanelProps) {
           </div>
           */}
         </Card>
+        {/* FREEZE(1B)：透明任务栏卡片随系统集成一起冻结。恢复办法：去掉这对注释，并恢复接口与传参。
         <Card title="透明任务栏" description="通过松耦合方式连接独立安装的 TranslucentTB，本应用不会修改其配置。">
           <div className="integration-status"><div><i className={translucentTb.running ? 'is-online' : ''} /><span><strong>{translucentTb.running ? 'TranslucentTB 正在运行' : translucentTb.installed ? 'TranslucentTB 已安装' : 'TranslucentTB 未安装'}</strong><small>{translucentTb.source ?? '由用户独立安装和管理'}</small></span></div><div className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshTranslucentTb}>刷新</button><button className="settings-action" onClick={translucentTb.installed ? props.onLaunchTranslucentTb : props.onInstallTranslucentTb}>{translucentTb.installed ? '启动' : '前往商店'}</button></div></div>
         </Card>
+        */}
       </>}
     </main>
 

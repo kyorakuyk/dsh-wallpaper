@@ -83,7 +83,8 @@ describe('settings probe plan', () => {
 
   it('assigns each probe to exactly the pages that display it', () => {
     expect([...PAGE_PROBES.general]).toEqual(['desktopDisplays'])
-    expect([...PAGE_PROBES.connections].sort()).toEqual(['deepseekWebAdapterConfig', 'managedDsh', 'translucentTb'])
+    // FREEZE(1B)：TranslucentTB 探针已退出。
+  expect([...PAGE_PROBES.connections].sort()).toEqual(['deepseekWebAdapterConfig', 'managedDsh'])
     expect(PAGE_PROBES.appearance).toEqual([])
     expect(PAGE_PROBES.personas).toEqual([])
     // The history page reads the durable API archive; nothing else needs it.
@@ -116,7 +117,8 @@ describe('settings probe scheduling', () => {
       test.scheduler.flush()
     }
     expect(test.calls.filter((probe) => probe === 'managedDsh')).toHaveLength(1)
-    expect(test.calls.filter((probe) => probe === 'translucentTb')).toHaveLength(1)
+    // FREEZE(1B)：这条探针已不再调度。
+    // expect(test.calls.filter((probe) => probe === 'translucentTb')).toHaveLength(1)
     expect(test.calls.filter((probe) => probe === 'desktopDisplays')).toHaveLength(1)
   })
 
@@ -126,10 +128,12 @@ describe('settings probe scheduling', () => {
     // The probe that gates the "启动 DSH" button is already running, while the
     // decorative probes are still waiting for their own idle slot.
     expect(test.calls).toEqual(['managedDsh'])
-    expect(test.scheduler.pending).toBe(2)
+    // FREEZE(1B)：低优先探针少了一条（TranslucentTB 退出），待调度数从 2 变 1。
+    // expect(test.scheduler.pending).toBe(2)
+    expect(test.scheduler.pending).toBe(1)
 
     test.scheduler.flush()
-    expect(test.calls).toEqual(expect.arrayContaining(['translucentTb', 'deepseekWebAdapterConfig']))
+    expect(test.calls).toEqual(expect.arrayContaining(['deepseekWebAdapterConfig']))
     for (const probe of LOW_PRIORITY_PROBES) expect(PAGE_PROBES.connections).toContain(probe)
   })
 
@@ -141,7 +145,9 @@ describe('settings probe scheduling', () => {
 
     // A manual refresh while the first run is still pending must be ignored.
     void test.controller.refresh('managedDsh')
-    expect(test.scheduler.pending).toBe(2)
+    // FREEZE(1B)：低优先探针少了一条（TranslucentTB 退出），待调度数从 2 变 1。
+    // expect(test.scheduler.pending).toBe(2)
+    expect(test.scheduler.pending).toBe(1)
     expect(test.calls).toEqual(['managedDsh'])
   })
 

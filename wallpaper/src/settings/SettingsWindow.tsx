@@ -5,7 +5,9 @@ import type { BackendMode } from '../domain/types.ts'
 import { appCoreClient } from '../runtime/appCoreClient.ts'
 // FREEZE(1A)：锁屏退出，这个类型随之冻结（单行 import 列表里不能用 // 注释单项，所以整行注释、旁边写出不含它的版本）。
 // import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type ApiKeyStatus, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type DesktopWorkspaceStatus, type HarnessEndpointScan, type HarnessTarget, type LockScreenDiagnostics, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
-import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type ApiKeyStatus, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type DesktopWorkspaceStatus, type HarnessEndpointScan, type HarnessTarget, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
+// FREEZE(1B)：透明任务栏退出，这个类型随之冻结（单行 import 列表里不能用 // 注释单项）。
+// import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type ApiKeyStatus, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type DesktopWorkspaceStatus, type HarnessEndpointScan, type HarnessTarget, type ManagedDshStatus, type TranslucentTbStatus } from '../native/runtime.ts'
+import { nativeRuntime, type AutostartStatus, type ApiConversationListing, type ApiKeyStatus, type DeepSeekWebAdapterConfigStatus, type DesktopDisplayInfo, type DesktopWorkspaceStatus, type HarnessEndpointScan, type HarnessTarget, type ManagedDshStatus } from '../native/runtime.ts'
 import { loadSettings, saveSettings, type WallpaperSettings } from './store.ts'
 import {
   CLI_SUBJECT_PREFIX,
@@ -96,7 +98,8 @@ export function SettingsWindow() {
   const [page, setPage] = useState<SettingsPage>('general')
   const [harness, setHarness] = useState<SettingsPanelHarnessStatus>('offline')
   const [interactionEnabled, setInteractionEnabled] = useState(true)
-  const [translucentTb, setTranslucentTb] = useState<TranslucentTbStatus>({ installed: false, running: false })
+  // FREEZE(1B)：探针冻结后没人再写它，界面也不再读它（卡片已冻结），保留初始值不动。
+  // const [translucentTb, setTranslucentTb] = useState<TranslucentTbStatus>({ installed: false, running: false })
   const [harnessTargets, setHarnessTargets] = useState<HarnessTarget[]>([])
   /**
    * When the shown subject list was last confirmed by a real scan. Kept so the card
@@ -512,10 +515,11 @@ export function SettingsWindow() {
    */
   const probeControllerHolder = useRef<{ refresh: (probe: SettingsProbe) => Promise<void> }>()
   const probeRunners = useMemo<Record<SettingsProbe, () => Promise<unknown>>>(() => ({
-    translucentTb: async () => {
-      const status = await nativeRuntime.translucentTbStatus()
-      if (mountedRef.current) setTranslucentTb(status)
-    },
+    // FREEZE(1B)：TranslucentTB 探针冻结（状态仍可由用户点「刷新」手动读取）。
+    // translucentTb: async () => {
+    //   const status = await nativeRuntime.translucentTbStatus()
+    //   if (mountedRef.current) setTranslucentTb(status)
+    // },
     managedDsh: async () => {
       // FREEZE（临时冻结，不是删除）：这里原来带上主体 id（`managedDshStatus(subjectId)`），
       // 问的是"我这次启动的那个孩子还在不在"。不带主体问的是同一件事的单实例形态。
@@ -553,7 +557,8 @@ export function SettingsWindow() {
    * second run while the first one is still in flight.
    */
   const refreshProbe = (probe: SettingsProbe) => void probeControllerHolder.current?.refresh(probe)
-  const refreshTranslucentTb = () => refreshProbe('translucentTb')
+  // FREEZE(1B)：这条探针已退出。
+  // const refreshTranslucentTb = () => refreshProbe('translucentTb')
   const refreshManagedDsh = () => refreshProbe('managedDsh')
   const refreshDeepSeekWebAdapterConfig = () => refreshProbe('deepseekWebAdapterConfig')
   const openDeepSeekWebAdapterConfig = async () => {
@@ -942,7 +947,8 @@ export function SettingsWindow() {
       page={page}
       onPageChange={(next) => { setPage(next); if (next === 'appearance') refreshAppearance() }}
       harnessStatus={harness}
-      translucentTb={translucentTb}
+      /* FREEZE(1B)：透明任务栏退出，这几个 prop 随之冻结。
+      translucentTb={translucentTb} */
       harnessTargets={harnessTargets}
       subjectCatalogVerifiedAt={catalogVerifiedAt}
       subjectChoice={subjectChoicePrompt(harnessTargets) ?? undefined}
@@ -1038,9 +1044,10 @@ export function SettingsWindow() {
         dshLaunch: { ...settingsRef.current.dshLaunch, window: value },
       })}
       onChange={change}
+      /* FREEZE(1B)：同上。
       onRefreshTranslucentTb={refreshTranslucentTb}
       onLaunchTranslucentTb={() => void nativeRuntime.launchTranslucentTb().then(refreshTranslucentTb).catch((error) => setNotice(String(error)))}
-      onInstallTranslucentTb={() => void nativeRuntime.openTranslucentTbInstall().catch((error) => setNotice(String(error)))}
+      onInstallTranslucentTb={() => void nativeRuntime.openTranslucentTbInstall().catch((error) => setNotice(String(error)))} */
       appearanceAssets={appearanceAssets}
       appearanceOverrides={appearanceOverrides}
       appearanceBusy={appearanceBusy}
