@@ -20,6 +20,7 @@ import { endpointScopeOf, subjectEndpointPorts } from './connect/endpoints.ts'
 // import { parseLaunchArgs } from './connect/launchArgs.ts'
 import { HARNESS_STATE_DETAILS } from './connect/harnessLabels.ts'
 import { isEmbeddedShellSubject, isInstalledCliSubject, reachNeedsBrowser } from './connect/harnessSubjects.ts'
+import { profileForLaunch } from './connect/harnessProfiles.ts'
 import {
   apiModelDirectory,
   bridgeModelDirectory,
@@ -1327,7 +1328,7 @@ export function App({ surface = 'combined' }: AppProps) {
         const subjectId = settings.dshLaunch.subjectId ?? settings.dshLaunch.rootPath
         const result = await nativeRuntime.autostartHarnessTarget({
           targetId: subjectId,
-          profile: settings.dshLaunch.profile,
+          profile: profileForLaunch(),
           // FREEZE（临时冻结，不是删除）：随壁纸自动启动这条路上也不带任何参数 —— 它和手动
           // 「启动」跑的是同一个启动器，所以两条路一起冻结。恢复办法：取消注释这一行。
           // args: parseLaunchArgs(settings.dshLaunch.args),
@@ -1888,7 +1889,7 @@ export function App({ surface = 'combined' }: AppProps) {
               : 'checkout'
           await nativeRuntime.launchHarnessTarget({
             targetId: subjectId,
-            profile: settings.dshLaunch.profile,
+            profile: profileForLaunch(),
             // FREEZE（临时冻结，不是删除）：手动「启动」这条路同样不带参数。恢复办法：取消
             // 注释这一行。原生侧 `args?` 是可选参数，缺省就是空参数列表。
             // args: parseLaunchArgs(settings.dshLaunch.args),

@@ -190,6 +190,27 @@ describe('DSH autostart wiring', () => {  it('starts DSH from the background hos
     expect(panel).toContain('aria-label="启动参数"')
   })
 
+  it('decides the profile itself instead of asking the user', async () => {
+    // 用户 2026-09-30 的决定：把「数据档案（Profile）」这一行藏掉。理由不是"太复杂"，而是它**没有第二个
+    // 正确答案**：官壳用自己独占的 desktop、TUI 用它自己的 dsh-tui（两者都不看这个值），而 CLI 与源码
+    // 检出实测**必须**显式给一个档案（不写就是 `--profile <name> is required`），能提供 HTTP 的只有 web
+    // （desktop 被壳独占：`profile "desktop" is managed exclusively by the Electron application`）。
+    const panel = await source('src/settings/SettingsPanel.tsx')
+    expect(panel).not.toContain('数据档案')
+    expect(panel).not.toContain('title="数据档案（Profile）"')
+
+    // 两条启动路都不再读存下来的值：要么读派生值，要么什么都别读。
+    for (const file of ['src/App.tsx', 'src/settings/SettingsWindow.tsx']) {
+      const text = await source(file)
+      expect(text, file).toContain('profileForLaunch()')
+      expect(text, file).not.toContain('settings.dshLaunch.profile')
+    }
+
+    // 派生值写在一个地方，且它的理由也写在那里（将来要改的人先读到为什么）。
+    const profiles = await source('src/connect/harnessProfiles.ts')
+    expect(profiles).toContain("'web'")
+  })
+
   it('never runs a program the user typed: only args are appended, and never through a shell', async () => {
     const lib = await source('src-tauri/src/lib.rs')
     const autostart = lib.slice(lib.indexOf('fn autostart_managed_dsh'), lib.indexOf('fn managed_dsh_autostart_status'))

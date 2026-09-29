@@ -18,6 +18,7 @@ import {
   type HarnessClientKind,
 } from '../connect/endpoints.ts'
 import { launchOutcomeNotice, reachNeedsBrowser, subjectChoicePrompt } from '../connect/harnessSubjects.ts'
+import { profileForLaunch } from '../connect/harnessProfiles.ts'
 // ---------------------------------------------------------------------------
 // FREEZE（临时冻结，不是删除）：本窗口里「启动参数」的分词只服务两处 —— 传给 `ensureHarnessUi` 的
 // `args`，以及 `openSubjectTui` 的 `args`。两处都冻住了（各有一处 FREEZE 注释），所以这一行也随之
@@ -282,12 +283,6 @@ export function SettingsWindow() {
       if (fallback) {
         change({ ...settingsRef.current, dshLaunch: { ...settingsRef.current.dshLaunch, subjectId: fallback.subjectId } })
         setNotice(fallback.notice)
-      } else if (settingsRef.current.dshLaunch.subjectId?.startsWith(CLI_SUBJECT_PREFIX)
-        && settingsRef.current.dshLaunch.profile === 'desktop') {
-        // 已安装的 CLI 沿用了源码目录/官壳的默认档案：它启动后**立刻退出**（实测日志里是
-        // `--profile desktop`，同一命令换 web 一切正常）。改正它，并且说出来 —— 不静默改设置。
-        change({ ...settingsRef.current, dshLaunch: { ...settingsRef.current.dshLaunch, profile: 'web' } })
-        setNotice('已安装的 DSH CLI 用 web 这个档案（它自己那一个）；原来的 desktop 属于桌面客户端，会让它启动后立刻退出 —— 已改正。')
       } else if (staleEndpointPort(settingsRef.current.dshLaunch) !== undefined) {
         // 存量的自相矛盾：显式端点是**上一个主体的**端口。留着它，"用户 pin 优先"这条正确的规则
         // 就会按旧主体的端口去开新主体的界面（实测：主体是只该用 3080 的已安装 CLI，pin 还是官方
@@ -409,7 +404,7 @@ export function SettingsWindow() {
       const ensured = await nativeRuntime.ensureHarnessUi({
         targetId: subjectId,
         port,
-        profile: current.profile,
+        profile: profileForLaunch(),
         // FREEZE（临时冻结，不是删除）：「打开界面」这条路不带任何启动参数。恢复办法：取消下面
         // 这一行，并恢复本文件顶部的 `parseLaunchArgs` import。
         // args: parseLaunchArgs(current.args),
@@ -952,10 +947,9 @@ export function SettingsWindow() {
           // 会让它启动后立刻退出（实测：日志里 `--profile desktop`，而同一命令换 web 一切正常）。
           // 只在档案还是那个默认值时才替换；用户自己填过的档案一律不动。
           ...(targetId.startsWith(CLI_SUBJECT_PREFIX)
-            ? {
-                rootPath: undefined,
-                ...(settingsRef.current.dshLaunch.profile === 'desktop' ? { profile: 'web' } : {}),
-              }
+                  ? {
+                      rootPath: undefined,
+                    }
             // A checkout's id *is* its path, so keeping the root-path field in step
             // means the profile/launcher fields below still describe the same tree.
             // A shell keeps whatever path is there, so switching back is lossless.
