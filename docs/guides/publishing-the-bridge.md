@@ -46,12 +46,34 @@ LICENSE               .gitignore  (node_modules/、lib/)
 
 另外给新仓库加上 GitHub 话题 **`dsh-plugin`** —— DSH 的 `CONTRIBUTING.md` 明确说插件通过这个话题被发现。
 
-## 二、一次性准备
+## 二、一次性准备（2026-09-30 实测过的路径）
 
-1. 在 npm 生成一个 **Automation** 类型的 token（Classic token 里选 Automation，或 Granular 里给
-   目标包 Read and write）；
-2. 在新仓库的 Settings → Secrets and variables → Actions 里加一个 secret：`NPM_TOKEN`；
-3. 本机**不需要**登录 npm —— 发布由 Action 完成。
+**先看结论**：npm 对新账号/新界面**已经不提供 Classic token**（点 "Generate New Token" 直接进
+Granular 表单）。所以要走的是 **Granular + 勾 Bypass 2FA + `publish and stage`**：
+
+1. npm → Access Tokens → Generate New Token（Granular）：
+   * 勾 **`Bypass two-factor authentication (2FA)`** —— 不勾的话 CI 会以
+     `ERR_PNPM_OTP_NON_INTERACTIVE` 失败（发布要求一次性验证码，而 CI 里没人能输）；
+   * Packages and scopes → Permissions 选 **`Read and write (publish and stage)`** ——
+     选成 `stage only` 会以 `403 … This token can only publish to a staging area` 失败（那一档只能发到
+     暂存区，要走 `npm stage publish` 的人工晋级流程）；
+   * Organizations → `No access`（发的是无 scope 的公开包）；期限按需；
+2. 把 token 写进新仓库的 secret：`gh secret set NPM_TOKEN -R <owner>/<repo>`（粘贴时隐藏）；
+   本机**不需要**登录 npm —— 发布由 Action 完成。
+
+失败信息是递进的，认准这三条就能自己排：
+
+| 报错 | 含义 |
+| --- | --- |
+| `[E404] 404 Not Found - PUT …` | 没带 token 或 token 无权限（npm 对"无权创建新包"故意返回 404） |
+| `ERR_PNPM_OTP_NON_INTERACTIVE` | token 有效但没勾 Bypass 2FA |
+| `[E403] … This token can only publish to a staging area` | 权限档位选成了 `stage only` |
+
+**将来的事**：npm 已公告从 **2027 年 1 月**起限制"绕过 2FA 的 token 用于直接发布"（登录页横幅也写着）。
+包建起来之后应切到 **Trusted Publishing（OIDC，免 token）**：在 npm 该包的设置里登记
+"GitHub 仓库 + 工作流文件名（`publish.yml`）"，然后从工作流里删掉 `NODE_AUTH_TOKEN` —— pnpm 会自己走
+OIDC（日志里那条 `Skipped OIDC: ERR_PNPM_AUTH_TOKEN_EXCHANGE` 就是这条路，只是它**要求包已存在**，
+所以首发必须先靠 token）。
 
 ## 三、Action（`.github/workflows/publish.yml`）
 
@@ -119,12 +141,26 @@ jobs:
 git tag v0.1.4 && git push origin v0.1.4      # 标签名 = v + package.json 里的版本
 ```
 
-发布后核对：
+发布后核对（2026-09-30 首次发布实际跑过的四步）：
 
 ```bash
-npm view dsh-wallpaper-bridge version         # 应当等于刚推的标签
-npm view dsh-wallpaper-bridge dist.tarball    # 可以下载下来确认里面有 lib/index.js
+npm view dsh-wallpaper-bridge version                    # 等于刚推的标签
+npm view dsh-wallpaper-bridge dist.attestations --json   # 有内容 = provenance 生效
+npm pack dsh-wallpaper-bridge                            # 下 tarball
+tar -tzf dsh-wallpaper-bridge-*.tgz                      # 里面必须有 package/lib/index.js
 ```
+
+最后一条是**唯一**能证明"发布物自带构建结果"的证据：`lib/` 不入库，安装过程也不会编译，所以
+tarball 里没有 `lib/` 的包装上去就是加载不起来的插件。
+
+装一次（用户的姿势，建议用隔离 home 试）：
+
+```bash
+DSH_HOME=<临时目录> dsh plugin --profile web add dsh-wallpaper-bridge
+```
+
+预期：依赖写成 `dsh-wallpaper-bridge=^0.1.3`、`dsh.profile.bundles` 里出现它、部署副本里有 `lib/`。
+（pnpm 会对刚发布的包记一条 `minimumReleaseAgeExclude` —— 那是它的"新版本冷却期"安全机制，正常现象。）
 
 ## 五、用户怎么装（写进 README 与壁纸的提示文案）
 
