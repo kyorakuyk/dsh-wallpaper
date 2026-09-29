@@ -2614,6 +2614,40 @@ fn looks_like_a_desktop_icon(
     (4..=400).contains(&width) && (4..=400).contains(&height)
 }
 
+/// 光标这一点在 UIA 的父链上是否属于**桌面表面**。
+///
+/// 这是 `cursor_is_on_desktop_surface` 的补充信号，而不是替代品。那条判据只看 Win32 的窗口父链，
+/// 实测会漏：光标下可能是一个覆盖层窗口（例如 `NVIDIA GeForce Overlay`，覆盖桌面且点击穿透），
+/// 它的父链不落到桌面上，于是双击的第二下被判成"不在桌面"，功能静默失效（2026-09-30 实测）。
+/// 而 UIA 的父链能看出它挂在"桌面 N"这个 Pane 之下。
+///
+/// 用类名判断，和 Win32 那条用的是同一套桌面类定义，所以两者不会互相矛盾。
+#[cfg(windows)]
+fn uia_point_belongs_to_desktop(automation: &IUIAutomation) -> bool {
+    let mut point = POINT::default();
+    unsafe {
+        if GetCursorPos(&mut point).is_err() {
+            return false;
+        }
+        let Ok(element) = automation.ElementFromPoint(point) else {
+            return false;
+        };
+        let walker = automation.ControlViewWalker().ok();
+        let mut current = Some(element);
+        for _ in 0..10 {
+            let Some(element) = current else { break };
+            let class = element.CurrentClassName().map(|value| value.to_string()).ok();
+            if is_desktop_surface_class(class.as_deref()) {
+                return true;
+            }
+            current = walker
+                .as_ref()
+                .and_then(|tree| tree.GetParentElement(&element).ok());
+        }
+        false
+    }
+}
+
 /// 光标是否落在某个**桌面图标**的范围内。
 ///
 /// 为什么不用命中测试：实测（2026-09-30）光标下最上层的 UIA 元素可能是盖在桌面上的覆盖层
@@ -2911,8 +2945,11 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                     .get_webview_window(BACKGROUND_WINDOW_LABEL)
                     .and_then(|window| window.hwnd().ok())
                     .map(|window| HWND(window.0));
-                let on_surface =
+                let on_surface_by_window =
                     background.is_some_and(|background| cursor_is_on_desktop_surface(background));
+                let on_surface_by_tree = uia_point_belongs_to_desktop(&automation);
+                // 两条独立信号取或：窗口父链（Win32）与自动化父链（UIA）各能看出对方漏掉的归属。
+                let on_surface = on_surface_by_window || on_surface_by_tree;
                 let hits_interaction =
                     background.is_some_and(|background| cursor_hits_interaction_region(background));
                 let over_icon = cursor_is_over_a_desktop_icon(&automation);
@@ -2924,11 +2961,11 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                     // 三条判据分开记：这个功能两侧都栽过（图标处被当成空白、空白处被兜底挡掉），
                     // 只有分开写，下一次失灵才不必靠猜。
                     log::info!(
-                        "workspace toggle declined: on_surface={on_surface} hits_interaction={hits_interaction} blank={blank} over_icon={over_icon} uia={blank_saw}"
+                        "workspace toggle declined: on_surface={on_surface}(win={on_surface_by_window} uia={on_surface_by_tree}) hits_interaction={hits_interaction} blank={blank} over_icon={over_icon} uia_seen={blank_saw}"
                     );
                 }
                 if can_toggle {
-                    log::info!("workspace toggle accepted: over_icon={over_icon} uia={blank_saw}");
+                    log::info!("workspace toggle accepted: over_icon={over_icon} on_surface_win={on_surface_by_window} on_surface_uia={on_surface_by_tree} uia_seen={blank_saw}");
                     log_workspace_toggle_decision(false, true);
                     let now = std::time::Instant::now();
                     let foreground_now = unsafe {
