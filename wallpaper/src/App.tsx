@@ -812,7 +812,10 @@ export function App({ surface = 'combined' }: AppProps) {
   const dispatchCore = (action: Parameters<typeof appCoreClient.dispatch>[0], options?: Parameters<typeof appCoreClient.dispatch>[1]) => {
     if (!appCoreClient.native) return
     coreDispatchQueueRef.current = coreDispatchQueueRef.current
-      .catch(() => undefined)
+      .catch((error) => {
+        // 不弹提示（启动检查是家务活），但**不许消失**：这里曾经连吞两次真失败。
+        console.warn('bridge alignment failed', error)
+      })
       .then(() => appCoreClient.dispatch(action, options))
       .catch((error) => patchRuntime({ error: String(error) }))
   }
@@ -1426,7 +1429,10 @@ const enterInnerWorkspace = () => {
         if (disposed) return
         void nativeRuntime.desktopLayoutMetrics(conversationDisplayId)
           .then((metrics) => { if (!disposed) setExpandedBottomInset(metrics.expandedBottomInset) })
-          .catch(() => undefined)
+          .catch((error) => {
+        // 不弹提示（启动检查是家务活），但**不许消失**：这里曾经连吞两次真失败。
+        console.warn('bridge alignment failed', error)
+      })
       })
     }
     refresh()
@@ -1842,7 +1848,10 @@ const enterInnerWorkspace = () => {
       // 钉着"App 里不许出现那个档案字段"）。传空串，由原生侧按主体类别决定 ——
       // 壳要 web 与 desktop 两份，其余主体用 web。
       .ensureProfileBridge(subjectId, '')
-      .catch(() => undefined)
+      .catch((error) => {
+        // 不弹提示（启动检查是家务活），但**不许消失**：这里曾经连吞两次真失败。
+        console.warn('bridge alignment failed', error)
+      })
     // 只做一次：subjectId 变化由设置窗口那条 effect 负责。
   }, [])
 

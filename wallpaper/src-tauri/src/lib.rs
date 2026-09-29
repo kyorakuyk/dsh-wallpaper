@@ -369,12 +369,26 @@ async fn ensure_profile_bridge(
     // 所以这里不能只认设置窗口 —— 早先那样写，启动那一路被拒绝、又被前端的 catch 吞掉，
     // 实测表现为"删掉桥、重启应用后桥没有回来"（2026-09-30 06:30）。
     let label = caller.label();
+    // 先记请求本身：三次"什么都没发生"的实测（2026-09-30）都是因为没有这条记录 —— 拒绝、
+    // spawn 失败、CLI 报错在前端都被同一句话吞掉了，日志里什么都看不到。
+    log::info!("装桥请求：caller={label} subject={subject_id} profile={profile}");
     if label != SETTINGS_WINDOW_LABEL && label != BACKGROUND_WINDOW_LABEL {
+        log::warn!("装桥被拒：caller={label} 不是应用自己的窗口");
         return Err("该命令只允许壁纸宿主与设置中心调用。".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
         let kind = harness_launch::subject_kind_from_id(&subject_id);
-        harness_launch::install_bridge_for_subject(&subject_id, &profile, kind)
+        let outcomes = harness_launch::install_bridge_for_subject(&subject_id, &profile, kind);
+        for outcome in &outcomes {
+            log::info!(
+                "装桥结果：profile={} status={} command={} detail={}",
+                outcome.profile,
+                outcome.status,
+                outcome.command,
+                outcome.detail
+            );
+        }
+        outcomes
     })
     .await
     .map_err(|error| format!("装桥任务未完成：{error}"))
