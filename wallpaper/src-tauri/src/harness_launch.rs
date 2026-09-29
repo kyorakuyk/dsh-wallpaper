@@ -1004,6 +1004,29 @@ pub(crate) fn plan_bridge_install(
     })
 }
 
+/// 桥的版本号（`BRIDGE_PACKAGE` 里的那一段）。与包名分开写，是为了让"校验宿主回报的版本"
+/// 有东西可比；两者是否一致由一个测试钉住，免得改一处忘另一处。
+pub(crate) const BRIDGE_VERSION: &str = "0.1.5";
+
+/// 一个主体需要装桥的档案。
+///
+/// 壳主体要**两份**：客户端在跑时壁纸连的是它的 `desktop` 档案宿主，客户端不在跑时才用壁纸
+/// 自己起的 `web` 档案宿主（§7.6 走法 B′）。少装哪一份，对应的那半段路就是"灯亮着但建不了会话"。
+/// 其余主体只有一份，就是设置里选的那个档案。
+pub(crate) fn bridge_profiles_for(kind: HarnessTargetKind, profile: &str) -> Vec<String> {
+    let profile = if profile.trim().is_empty() { "web" } else { profile.trim() };
+    match kind {
+        HarnessTargetKind::EmbeddedShell => vec!["web".to_string(), "desktop".to_string()],
+        _ => vec![profile.to_string()],
+    }
+}
+
+/// 要不要动手装：宿主回报的桥版本与我们钉的不是同一个（含"根本没有桥"）就该对齐。
+/// 版本相符时**什么都不做**——这是"每次启动检查"不至于变成"每次启动跑一遍包管理"的关键。
+pub(crate) fn bridge_install_needed(reported: Option<&str>) -> bool {
+    reported.map(str::trim) != Some(BRIDGE_VERSION)
+}
+
 /// 后台启动（滑槽、随壁纸自启）该怎么跑 —— §7.6 走法 A 之后，壳与别的类走的路不同了。
 ///
 /// * 壳：能解析出它自带的 CLI 就跑那个（`web` 档案、**绑壁纸自己的端口**、没有窗口），
@@ -2437,6 +2460,44 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn the_package_string_and_the_pinned_version_cannot_drift() {
+        assert!(BRIDGE_PACKAGE.starts_with("dsh-wallpaper-bridge@"));
+        assert!(
+            BRIDGE_PACKAGE.ends_with(BRIDGE_VERSION),
+            "包名里的版本与 BRIDGE_VERSION 不一致：{BRIDGE_PACKAGE} vs {BRIDGE_VERSION}"
+        );
+    }
+
+    #[test]
+    fn a_shell_needs_both_profiles_and_other_subjects_need_one() {
+        assert_eq!(
+            bridge_profiles_for(HarnessTargetKind::EmbeddedShell, "web"),
+            vec!["web".to_string(), "desktop".to_string()]
+        );
+        assert_eq!(
+            bridge_profiles_for(HarnessTargetKind::InstalledCli, "web"),
+            vec!["web".to_string()]
+        );
+        assert_eq!(
+            bridge_profiles_for(HarnessTargetKind::Checkout, "dsh-tui"),
+            vec!["dsh-tui".to_string()]
+        );
+        // 档案留空时按 web 处理，与设置里的默认值一致。
+        assert_eq!(
+            bridge_profiles_for(HarnessTargetKind::InstalledCli, "   "),
+            vec!["web".to_string()]
+        );
+    }
+
+    #[test]
+    fn only_a_host_reporting_the_pinned_version_needs_nothing() {
+        assert!(!bridge_install_needed(Some(BRIDGE_VERSION)));
+        assert!(!bridge_install_needed(Some(" 0.1.5 ")));
+        assert!(bridge_install_needed(Some("0.1.3")));
+        assert!(bridge_install_needed(None));
+    }
+
     #[test]
     fn the_desktop_profile_is_installed_through_the_shell_s_own_cli() {
         let plan = plan_bridge_install(
