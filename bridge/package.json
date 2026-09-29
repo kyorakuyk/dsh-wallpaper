@@ -25,7 +25,7 @@
     "cordis.patch.yml",
     "README.md"
   ],
-  "license": "AGPL-3.0-only",
+  "license": "MIT",
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/schemastery": "^3.18.1",
