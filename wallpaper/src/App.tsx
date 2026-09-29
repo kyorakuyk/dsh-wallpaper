@@ -1827,6 +1827,25 @@ const enterInnerWorkspace = () => {
     return () => window.clearTimeout(timer)
   }, [wakeEnter])
 
+  // 每次启动检查一次：把当前主体的桥对齐到我们钉住的那一版。
+  //
+  // **静默**：版本相符时 CLI 那边是空操作；失败也不在这里打扰用户 —— 报告由设置窗口承担
+  // （那里有一句话的总结），而"桥不在"这件事聊天区本来就会显示出来。
+  const bridgedAtStartupRef = useRef(false)
+  useEffect(() => {
+    if (bridgedAtStartupRef.current) return
+    const subjectId = settings.dshLaunch.subjectId ?? settings.dshLaunch.rootPath
+    if (!subjectId) return
+    bridgedAtStartupRef.current = true
+    void nativeRuntime
+      // 档案刻意不从这里读：启动 DSH 时"档案由应用自己决定"是既有规矩（`dshAutostart.spec.ts`
+      // 钉着"App 里不许出现那个档案字段"）。传空串，由原生侧按主体类别决定 ——
+      // 壳要 web 与 desktop 两份，其余主体用 web。
+      .ensureProfileBridge(subjectId, '')
+      .catch(() => undefined)
+    // 只做一次：subjectId 变化由设置窗口那条 effect 负责。
+  }, [])
+
   const scene = useMemo(() => {
     if (runtime.phase === 'booting' || runtime.phase === 'locked') return <SleepScene persona={persona} mode="system" />
     if (runtime.phase === 'waking') {
