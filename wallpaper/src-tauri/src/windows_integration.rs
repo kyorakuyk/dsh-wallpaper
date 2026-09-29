@@ -2762,6 +2762,58 @@ fn pair_is_complete(
   has_previous && same_mode && within_window && within_reach
 }
 
+/// 双击配对的状态机。**严格两两匹配**：一次点击要么上膛、要么与已上膛的那一下组成一次切换，
+/// 要么把状态清干净 —— 绝不允许"第二下没配上就当新的第一下"这种链式重配，否则快速连点会形成
+/// 1-2、2-3、3-4 这样的重叠配对，一次连点拨动好几次。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PairState {
+  Idle,
+  Armed {
+    at_ms: u128,
+    point: (i32, i32),
+    mode_inner: bool,
+  },
+}
+
+/// 一次合格点击之后，状态该走到哪里、以及是否执行切换。纯函数：不读时钟，时间以毫秒数传入。
+pub(crate) fn pair_transition(
+  state: PairState,
+  now_ms: u128,
+  point: (i32, i32),
+  mode_inner: bool,
+  cooling: bool,
+) -> (PairState, bool) {
+  if cooling {
+    // 冷却期内既不配对也不上膛：刚切过一次，紧接着的连点一律不算数。
+    return (PairState::Idle, false);
+  }
+  match state {
+    PairState::Idle => (
+      PairState::Armed {
+        at_ms: now_ms,
+        point,
+        mode_inner,
+      },
+      false,
+    ),
+    PairState::Armed {
+      at_ms,
+      point: armed_point,
+      mode_inner: armed_mode,
+    } => {
+      let same_mode = armed_mode == mode_inner;
+      let within_window = now_ms.saturating_sub(at_ms) <= PAIR_WINDOW.as_millis();
+      let within_reach = within_double_click_reach(armed_point, point, PAIR_REACH_PX);
+      if same_mode && within_window && within_reach {
+        (PairState::Idle, true)
+      } else {
+        // 关键：不成立就作废。第二下不会被当成新的第一下。
+        (PairState::Idle, false)
+      }
+    }
+  }
+}
+
 fn should_toggle_desktop_workspace(
     cursor_on_desktop_surface: bool,
     cursor_hits_interaction: bool,
@@ -2818,9 +2870,11 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
 
         let mut was_down = false;
         // 上一次合格且干净的点击：时刻、位置、当时的表/里桌面模式。
-        let mut last_click: Option<(std::time::Instant, (i32, i32), bool)> = None;
+        // 配对状态机的当前位置，以及本次监控的时间原点（纯函数用毫秒数，便于单测）。
+        let mut pair_state = PairState::Idle;
+        let started_at = std::time::Instant::now();
+        let mut last_toggle_at: Option<u128> = None;
         // 上一次真正切换的时刻：决定冷却，避免快速连点把桌面层来回拨。
-        let mut last_toggle_at: Option<std::time::Instant> = None;
         // 本次按下的现场：时刻、位置、按下时是否合格、按下时有无组合键。
         let mut press: Option<(std::time::Instant, (i32, i32), bool, bool)> = None;
         loop {
@@ -2830,7 +2884,8 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
             }
             let down = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0;
             // 松开时成形：拖动（按下-移动-松开）天然被排除，不需要额外判断。
-            if !down && was_down {
+if !down && was_down {
+                // 松开时成形：拖动（按下-移动-松开）天然被排除，不需要额外判断。
                 if let Some((pressed_at, pressed_point, eligible, keys_idle)) = press.take() {
                     let mut released = POINT::default();
                     let released_point = if unsafe { GetCursorPos(&mut released) }.is_err() {
@@ -2843,54 +2898,44 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                         .abs()
                         .max((released_point.1 - pressed_point.1).abs());
                     let clean = is_clean_click(held_ms, movement, CLICK_MAX_MS, CLICK_MAX_MOVE_PX);
+                    let now_ms = started_at.elapsed().as_millis();
+                    let mode_inner = INNER_WORKSPACE_ACTIVE.load(Ordering::Acquire);
                     if !eligible || !keys_idle || !clean {
+                        // 不合格的一下把状态清干净：围栏要求点击两两匹配，任何杂音都重新开始。
                         log::info!(
                             "点击不计入配对：合格={eligible} 无组合键={keys_idle} 干净={clean}（时长 {held_ms}ms，位移 {movement}px）"
                         );
-                        last_click = None;
+                        pair_state = PairState::Idle;
                     } else {
-                        let now = std::time::Instant::now();
-                        let mode_inner = INNER_WORKSPACE_ACTIVE.load(Ordering::Acquire);
-                        let pair = last_click.filter(|(previous_at, previous_point, previous_mode)| {
-                            *previous_mode == mode_inner
-                                && now.duration_since(*previous_at) <= PAIR_WINDOW
-                                && within_double_click_reach(
-                                    *previous_point,
-                                    pressed_point,
-                                    PAIR_REACH_PX,
-                                )
-                        });
-                        match pair {
-                            Some((previous_at, previous_point, _)) => {
-                                last_click = None;
-                                log::info!(
-                                    "桌面空白双击成立：间隔 {}ms，位移 {}px，当前为{}桌面",
-                                    now.duration_since(previous_at).as_millis(),
-                                    (previous_point.0 - pressed_point.0)
-                                        .abs()
-                                        .max((previous_point.1 - pressed_point.1).abs()),
-                                    if mode_inner { "里" } else { "表" }
-                                );
-                                let result = if mode_inner {
-                                    leave_inner_workspace(&app)
-                                } else {
-                                    enter_inner_workspace(&app)
-                                };
-                                match result {
-                                    Err(error) => log::warn!("无法切换表/里桌面图标层：{error}"),
-                                    Ok(()) => log::info!(
-                                        "桌面空白双击：切换至{}桌面",
-                                        if INNER_WORKSPACE_ACTIVE.load(Ordering::Acquire) {
-                                            "里"
-                                        } else {
-                                            "表"
-                                        }
-                                    ),
-                                }
+                        let cooling = last_toggle_at
+                            .is_some_and(|at| now_ms.saturating_sub(at) < PAIR_COOLDOWN.as_millis());
+                        let (next, toggle) =
+                            pair_transition(pair_state, now_ms, pressed_point, mode_inner, cooling);
+                        pair_state = next;
+                        if toggle {
+                            last_toggle_at = Some(now_ms);
+                            log::info!(
+                                "桌面空白双击成立：当前为{}桌面（围栏：两两匹配）",
+                                if mode_inner { "里" } else { "表" }
+                            );
+                            let result = if mode_inner {
+                                leave_inner_workspace(&app)
+                            } else {
+                                enter_inner_workspace(&app)
+                            };
+                            match result {
+                                Err(error) => log::warn!("无法切换表/里桌面图标层：{error}"),
+                                Ok(()) => log::info!(
+                                    "桌面空白双击：切换至{}桌面",
+                                    if INNER_WORKSPACE_ACTIVE.load(Ordering::Acquire) {
+                                        "里"
+                                    } else {
+                                        "表"
+                                    }
+                                ),
                             }
-                            None => {
-                                last_click = Some((now, pressed_point, mode_inner));
-                            }
+                        } else if cooling {
+                            log::info!("点击不计入配对：距上次切换不足 {}ms", PAIR_COOLDOWN.as_millis());
                         }
                     }
                 }
@@ -4854,7 +4899,40 @@ mod tests {
     }
 
     #[test]
-    /// 围栏：四项缺一不可，而且不允许链式重配（第二下不成立就作废，不能当新的第一下）。
+    /// 围栏的四条转移：上膛、成立、作废、冷却。重点是**作废之后不重新上膛**。
+#[test]
+fn the_fence_pairs_clicks_two_by_two_and_never_chains() {
+  let p = (100, 100);
+  // 第一下：上膛，不切换。
+  let (s1, t1) = pair_transition(PairState::Idle, 1_000, p, false, false);
+  assert!(!t1);
+  assert!(matches!(s1, PairState::Armed { .. }));
+  // 第二下在窗内、同位、同模式：切换，并回到 Idle。
+  let (s2, t2) = pair_transition(s1, 1_200, p, false, false);
+  assert!(t2);
+  assert_eq!(s2, PairState::Idle);
+  // 第二下超出时间窗：作废，不切换；而且**第三下只能算新的第一下**（这正是围栏要的效果）。
+  let (s3, t3) = pair_transition(s1, 2_000, p, false, false);
+  assert!(!t3);
+  assert_eq!(s3, PairState::Idle);
+  let (s4, t4) = pair_transition(s3, 2_400, p, false, false);
+  assert!(!t4, "作废之后的那一下只能上膛，不能直接成对");
+  assert!(matches!(s4, PairState::Armed { .. }));
+  // 位置太远：作废。
+  let (s5, t5) = pair_transition(s1, 1_200, (900, 900), false, false);
+  assert!(!t5);
+  assert_eq!(s5, PairState::Idle);
+  // 模式不同：作废（表桌面的第一下不该和里桌面的第二下凑对）。
+  let (s6, t6) = pair_transition(s1, 1_200, p, true, false);
+  assert!(!t6);
+  assert_eq!(s6, PairState::Idle);
+  // 冷却期内：连上膛都不做。
+  let (s7, t7) = pair_transition(PairState::Idle, 1_000, p, false, true);
+  assert!(!t7);
+  assert_eq!(s7, PairState::Idle);
+}
+
+/// 围栏：四项缺一不可，而且不允许链式重配（第二下不成立就作废，不能当新的第一下）。
 #[test]
 fn a_pair_needs_all_four_conditions_and_never_chains() {
   assert!(pair_is_complete(true, true, true, true));
