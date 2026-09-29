@@ -69,7 +69,7 @@ permissions:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest      # 见下方说明：桥是 Windows 专属的
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -105,6 +105,11 @@ jobs:
   害过我们一次），宁可让发布失败，也不要发出一个版本号说不清的包；
 * `--no-git-checks`：Actions 的检出是游离头，pnpm 默认会因此拒绝发布；
 * `--provenance`：让 npm 页面上出现"由哪个仓库的哪次构建产出"的证明（这就是 `id-token: write` 的用途）；
+* **runner 必须是 Windows**：第一版工作流用了 `ubuntu-latest`，结果是真实失败 —— 桥用
+  `whoami.exe`/`icacls.exe` 收紧令牌目录的 ACL，测试也断言这些调用与 Windows 路径（`C:\Users\…`）。
+  这不是可移植性缺陷，而是"桥服务于 Windows 壁纸"这一事实，所以 runner 与目标平台一致（与壁纸仓库的
+  CI 相同）。另外那段"标签必须等于版本"的脚本是 bash 语法，在 Windows runner 上要显式写 `shell: bash`
+  （默认是 pwsh）；
 * 先 `build` 再 `publish`：**不要依赖 `prepare`** —— 它在 `npm publish` 时会跑，但把构建放在流程里显式
   可见，出问题时日志说得清。
 
