@@ -1034,7 +1034,13 @@ fn is_desktop_foreground_class(class: Option<&str>) -> bool {
 fn is_desktop_surface_class(class: Option<&str>) -> bool {
     matches!(
         class,
-        Some("Progman") | Some("WorkerW") | Some("SHELLDLL_DefView") | Some("SysListView32")
+        Some("Progman")
+            | Some("WorkerW")
+            | Some("SHELLDLL_DefView")
+            | Some("SysListView32")
+            // 桌面窗口自己的类名。**这一条是被实测逼出来的**：光标压在覆盖层上时，UIA 父链里能看到的
+            // 桌面祖先就是这个类名的"桌面 N" Pane，而上面四个类名一个都不出现 —— 于是判负、双击被拒。
+            | Some("#32769")
     )
 }
 
@@ -2660,9 +2666,11 @@ fn uia_point_belongs_to_desktop(automation: &IUIAutomation) -> bool {
         };
         let walker = automation.ControlViewWalker().ok();
         let mut current = Some(element);
+        let mut seen: Vec<String> = Vec::new();
         for _ in 0..10 {
             let Some(element) = current else { break };
             let class = element.CurrentClassName().map(|value| value.to_string()).ok();
+            seen.push(class.clone().unwrap_or_else(|| "-".to_string()));
             if is_desktop_surface_class(class.as_deref()) {
                 return true;
             }
@@ -2670,6 +2678,7 @@ fn uia_point_belongs_to_desktop(automation: &IUIAutomation) -> bool {
                 .as_ref()
                 .and_then(|tree| tree.GetParentElement(&element).ok());
         }
+        log::info!("UIA 父链类名（都不是桌面类）: {}", seen.join(" < "));
         false
     }
 }
@@ -5103,7 +5112,7 @@ fn an_icon_rectangle_owns_its_own_area_and_nothing_else() {
 #[test]
 fn the_desktop_surface_classes_are_the_wallpaper_hosts_not_explorer_windows() {
     // 桌面表面：Progman/WorkerW 是宿主，另两个是空白双击时前台可能落到的图标视图。
-    for class in ["Progman", "WorkerW", "SHELLDLL_DefView", "SysListView32"] {
+    for class in ["Progman", "WorkerW", "SHELLDLL_DefView", "SysListView32", "#32769"] {
         assert!(is_desktop_surface_class(Some(class)), "{class}");
     }
     // Explorer 开出来的窗口不是桌面表面 —— 这条区分正是这个缺陷的修复点。
