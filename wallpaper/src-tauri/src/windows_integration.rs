@@ -2723,6 +2723,8 @@ fn cursor_hits_interaction_region(root_hwnd: HWND) -> bool {
 /// 这里直接用字面量，避免为它多引入一个模块）。
 const OBJID_CLIENT_ID: u32 = 0xFFFF_FFFC;
 const PAIR_WINDOW: std::time::Duration = std::time::Duration::from_millis(900);
+/// 一次切换之后的冷却：这段时间内的点击一律不算数，免得快速连点把开关来回拨。
+const PAIR_COOLDOWN: std::time::Duration = std::time::Duration::from_millis(350);
 /// 两次点击的最大位置差（物理像素）。位置相近才是双击；两次无关单击通常不在一处。
 const PAIR_REACH_PX: i32 = 64;
 /// 一次"点击"按下的最长时长。更长即为拖动，不参与配对。
@@ -2746,6 +2748,18 @@ fn is_clean_click(duration_ms: u128, movement_px: i32, max_ms: u128, max_move_px
 /// 按下瞬间是否有组合键。带修饰键的点击是别的意图（例如 Ctrl 多选），不参与配对。
 fn modifiers_are_idle(states: [bool; 5]) -> bool {
   !states.iter().any(|pressed| *pressed)
+}
+
+/// 两次点击是否构成一次"成立的双击"。四项缺一不可，且**不允许链式重配**：
+/// 第二下若不成立，这一对就作废（调用方据此清空状态），不能拿第二下当新的第一下 ——
+/// 否则快速连点会形成 1-2、2-3、3-4 这样的重叠配对，一次连点能拨动好几次。
+fn pair_is_complete(
+  has_previous: bool,
+  same_mode: bool,
+  within_window: bool,
+  within_reach: bool,
+) -> bool {
+  has_previous && same_mode && within_window && within_reach
 }
 
 fn should_toggle_desktop_workspace(
@@ -2805,6 +2819,8 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
         let mut was_down = false;
         // 上一次合格且干净的点击：时刻、位置、当时的表/里桌面模式。
         let mut last_click: Option<(std::time::Instant, (i32, i32), bool)> = None;
+        // 上一次真正切换的时刻：决定冷却，避免快速连点把桌面层来回拨。
+        let mut last_toggle_at: Option<std::time::Instant> = None;
         // 本次按下的现场：时刻、位置、按下时是否合格、按下时有无组合键。
         let mut press: Option<(std::time::Instant, (i32, i32), bool, bool)> = None;
         let mut last_blank_click: Option<std::time::Instant> = None;
@@ -2898,8 +2914,9 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                     (pressed.x, pressed.y)
                 };
                 let verdict = desktop_point_verdict();
-                let eligible = INNER_WORKSPACE_ACTIVE.load(Ordering::Acquire)
-                    || app
+                // 三条判据在**任何模式下都要成立**。此前这里为"里桌面交给 WebView"留过一条短路，
+                // 等于在里桌面下旁路了输入岛等区域的判据 —— 实测表现为"点击穿透被覆盖"与乱配对。
+                let eligible = app
                         .get_webview_window(BACKGROUND_WINDOW_LABEL)
                         .and_then(|window| window.hwnd().ok())
                         .map(|window| HWND(window.0))
@@ -4888,7 +4905,17 @@ mod tests {
     }
 
     #[test]
-    /// 配对的两条几何规则：位置相近才算同一次双击。
+    /// 围栏：四项缺一不可，而且不允许链式重配（第二下不成立就作废，不能当新的第一下）。
+#[test]
+fn a_pair_needs_all_four_conditions_and_never_chains() {
+  assert!(pair_is_complete(true, true, true, true));
+  assert!(!pair_is_complete(false, true, true, true));
+  assert!(!pair_is_complete(true, false, true, true));
+  assert!(!pair_is_complete(true, true, false, true));
+  assert!(!pair_is_complete(true, true, true, false));
+}
+
+/// 配对的两条几何规则：位置相近才算同一次双击。
 #[test]
 fn a_pair_must_land_in_nearly_the_same_place() {
   assert!(within_double_click_reach((100, 200), (104, 197), PAIR_REACH_PX));
