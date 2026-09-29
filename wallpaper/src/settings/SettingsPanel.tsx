@@ -6,7 +6,9 @@ import { BACKGROUND_OPTIONS, MAX_PRICE_PER_MILLION, normalizedPrice, type Wallpa
 import { type SettingsPage } from './settingsProbes.ts'
 import type { AppearanceAssetSummary } from '../features/appearance/appearanceViewModel.ts'
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
-import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, DesktopWorkspaceStatus, LockScreenDiagnostics, ManagedDshStatus, ApiConversationListing, ApiKeyStatus } from '../native/runtime.ts'
+// FREEZE(1A)：锁屏退出，LockScreenDiagnostics 一并冻结（单行 import 列表里不能用 // 注释单项，所以整行注释、旁边写出不含它的版本）。
+// import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, DesktopWorkspaceStatus, LockScreenDiagnostics, ManagedDshStatus, ApiConversationListing, ApiKeyStatus } from '../native/runtime.ts'
+import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, DesktopWorkspaceStatus, ManagedDshStatus, ApiConversationListing, ApiKeyStatus } from '../native/runtime.ts'
 import { preferredDisplayId } from '../runtime/displayLayout.ts'
 import { harnessStateLabel } from '../connect/harnessLabels.ts'
 import type { AutostartStatus, HarnessEndpointScan, HarnessTarget } from '../native/runtime.ts'
@@ -170,12 +172,13 @@ export interface SettingsPanelProps {
   onClassifyAppearance: (assetId: string, slot: AppearanceSlot) => void
   onSelectAppearance: (slot: AppearanceSlot, assetId: string) => void
   onClearAppearance: (slot: AppearanceSlot) => void
-  lockScreenDiagnostics?: LockScreenDiagnostics
-  onRefreshLockScreenDiagnostics: () => void
-  onRestoreLockScreen: () => void
-  onClearStaleLockScreenBackup: () => void
-  onSetLockScreenEnabled: (enabled: boolean) => void
-  lockScreenBusy: boolean
+  // FREEZE(1A)：锁屏退出，这 6 个 prop 随之冻结（见 docs/plans/release-scope-cleanup-plan.md 第一节）。
+  // lockScreenDiagnostics?: LockScreenDiagnostics
+  // onRefreshLockScreenDiagnostics: () => void
+  // onRestoreLockScreen: () => void
+  // onClearStaleLockScreenBackup: () => void
+  // onSetLockScreenEnabled: (enabled: boolean) => void
+  // lockScreenBusy: boolean
   autostartBusy: boolean
   desktopDisplays: DesktopDisplayInfo[]
   onRefreshDesktopDisplays: () => void | Promise<void>
@@ -1001,12 +1004,14 @@ export function SettingsPanel(props: SettingsPanelProps) {
         </Card>
         <Card title="Windows 集成">
           <Field title="登录后自动启动" detail={props.autostartBusy ? '正在更新 Windows 启动任务，请稍候；设置中心仍可继续使用。' : autostartDetail(props.autostart)}><Toggle label="登录后自动启动" checked={settings.autostart} onChange={(value) => set({ autostart: value })} disabled={props.autostartBusy} /></Field>
+          {/* FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30）。恢复办法：还原这段，并恢复接口里的 6 个 prop 与 SettingsWindow 的传参。
           <Field title="接管锁屏图片" detail={props.lockScreenBusy ? '正在应用系统锁屏设置，请稍候。' : '使用内置且已审计的熟睡画面；密码界面仍由 Windows 原生安全桌面处理。正式版需要 MSIX 包身份。'}><Toggle label="接管锁屏图片" checked={settings.lockScreenEnabled} onChange={props.onSetLockScreenEnabled} disabled={props.lockScreenBusy} /></Field>
           <div className="lockscreen-diagnostics">
             <div className="lockscreen-diagnostics__row"><div><strong>接管状态</strong><small>{props.lockScreenDiagnostics?.managedImageActive ? '正在使用大肥鱼的熟睡画面' : '未检测到本应用的锁屏图片'}</small></div>{props.lockScreenDiagnostics?.managedImageActive ? <button className="settings-action secondary" disabled={props.lockScreenBusy} onClick={props.onRestoreLockScreen}>打开 Windows 锁屏设置</button> : props.lockScreenDiagnostics?.staleBackup ? <button className="settings-action secondary" disabled={props.lockScreenBusy} onClick={props.onClearStaleLockScreenBackup}>{props.lockScreenBusy ? '正在清理…' : '清理旧恢复点（删除原图副本）'}</button> : null}</div>
             <div className="lockscreen-diagnostics__row"><div><strong>接管前检查</strong><small>{props.lockScreenDiagnostics ? props.lockScreenDiagnostics.takeoverAvailable ? 'Windows 与当前应用身份允许尝试设置锁屏图片' : props.lockScreenDiagnostics.supported ? 'Windows 允许，但当前正式版需要 MSIX 包身份' : '当前系统不允许应用修改锁屏图片' : '正在读取系统状态…'}</small></div><button className="settings-action secondary" disabled={props.lockScreenBusy} onClick={props.onRefreshLockScreenDiagnostics}>{props.lockScreenBusy ? '正在应用…' : '刷新检查'}</button></div>
             {props.lockScreenDiagnostics && <ul><li>备份：{props.lockScreenDiagnostics.staleBackup ? '已保留，但当前锁屏已被外部更改' : props.lockScreenDiagnostics.backupValid ? '原静态图片可恢复' : props.lockScreenDiagnostics.backupExists ? '备份失效' : '尚未创建（首次接管时保存）'}</li><li>托管睡眠图：{props.lockScreenDiagnostics.managedImageReady ? '已准备' : '首次接管时准备'}</li>{props.lockScreenDiagnostics.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
           </div>
+          */}
         </Card>
         <Card title="透明任务栏" description="通过松耦合方式连接独立安装的 TranslucentTB，本应用不会修改其配置。">
           <div className="integration-status"><div><i className={translucentTb.running ? 'is-online' : ''} /><span><strong>{translucentTb.running ? 'TranslucentTB 正在运行' : translucentTb.installed ? 'TranslucentTB 已安装' : 'TranslucentTB 未安装'}</strong><small>{translucentTb.source ?? '由用户独立安装和管理'}</small></span></div><div className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshTranslucentTb}>刷新</button><button className="settings-action" onClick={translucentTb.installed ? props.onLaunchTranslucentTb : props.onInstallTranslucentTb}>{translucentTb.installed ? '启动' : '前往商店'}</button></div></div>
