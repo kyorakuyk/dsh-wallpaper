@@ -88,12 +88,13 @@ describe('settings probe plan', () => {
     expect(PAGE_PROBES.personas).toEqual([])
     // The history page reads the durable API archive; nothing else needs it.
     expect([...PAGE_PROBES.history]).toEqual(['apiHistory'])
-    expect([...PAGE_PROBES.system].sort()).toEqual(['autostartStatus', 'lockScreenDiagnostics'])
+    // FREEZE(1A)：锁屏探针已退出，system 页现在只剩自启探针。
+  expect([...PAGE_PROBES.system]).toEqual(['autostartStatus'])
   })
 })
 
 describe('settings probe scheduling', () => {
-  it('does not run the lock-screen or autostart probes before the system page is opened', () => {
+  it('does not run the autostart probe before the system page is opened', () => {
     const test = harness()
     test.controller.activate('general')
     test.scheduler.flush()
@@ -101,11 +102,11 @@ describe('settings probe scheduling', () => {
 
     // Only the pages that were actually opened contributed probes.
     expect(test.calls).toEqual(['desktopDisplays', 'managedDsh'])
-    expect(test.calls).not.toContain('lockScreenDiagnostics')
+    // FREEZE(1A)：锁屏探针已退出，不再断言它。
     expect(test.calls).not.toContain('autostartStatus')
 
     test.controller.activate('system')
-    expect(test.calls).toEqual(expect.arrayContaining(['lockScreenDiagnostics', 'autostartStatus']))
+    expect(test.calls).toEqual(expect.arrayContaining(['autostartStatus']))
   })
 
   it('starts a page probe exactly once even across repeated page switches', () => {
@@ -166,7 +167,7 @@ describe('settings probe scheduling', () => {
     const controller = createSettingsProbeController({
       runProbe: (probe) => {
         calls.push(probe)
-        return probe === 'lockScreenDiagnostics' ? Promise.reject(new Error('系统探测失败')) : Promise.resolve(undefined)
+        return probe === 'autostartStatus' ? Promise.reject(new Error('系统探测失败')) : Promise.resolve(undefined)
       },
       schedule: scheduler.schedule,
       onError: (probe, error) => errors.push({ probe, error }),
@@ -174,10 +175,10 @@ describe('settings probe scheduling', () => {
 
     controller.activate('system')
     scheduler.flush()
-    await Promise.all([controller.settled('lockScreenDiagnostics'), controller.settled('autostartStatus')])
-    expect(calls).toEqual(expect.arrayContaining(['lockScreenDiagnostics', 'autostartStatus']))
-    expect(errors).toEqual([{ probe: 'lockScreenDiagnostics', error: expect.any(Error) }])
-    expect(settingsProbeErrorMessage('lockScreenDiagnostics', new Error('系统探测失败'))).toBe('锁屏检查失败：Error: 系统探测失败')
+    await controller.settled('autostartStatus')
+    expect(calls).toEqual(['autostartStatus'])
+    expect(errors).toEqual([{ probe: 'autostartStatus', error: expect.any(Error) }])
+    expect(settingsProbeErrorMessage('autostartStatus', new Error('系统探测失败'))).toBe('读取开机自启状态失败：Error: 系统探测失败')
   })
 
   it('cancels scheduled probes and stops reporting after disposal', async () => {
@@ -195,8 +196,8 @@ describe('settings probe scheduling', () => {
     // try to update (or notify) the closed window.
     controller.dispose()
     scheduler.flush()
-    await Promise.all([controller.settled('lockScreenDiagnostics'), controller.settled('autostartStatus')])
-    expect(calls).toEqual(['lockScreenDiagnostics', 'autostartStatus'])
+    await controller.settled('autostartStatus')
+    expect(calls).toEqual(['autostartStatus'])
     expect(errors).toEqual([])
     expect(scheduler.pending).toBe(0)
   })

@@ -520,7 +520,9 @@ export function SettingsWindow() {
       const status = await nativeRuntime.deepseekWebAdapterConfig()
       if (mountedRef.current) setDeepseekWebAdapterConfig(status)
     },
-    lockScreenDiagnostics: refreshLockScreenDiagnostics,
+    // FREEZE(1A)：锁屏退出，这一条探针不再注册（见 docs/plans/release-scope-cleanup-plan.md 第一节）。
+    // 恢复办法：取消注释即可 —— refreshLockScreenDiagnostics 仍然存在，只是暂时没人调用它。
+    // lockScreenDiagnostics: refreshLockScreenDiagnostics,
     autostartStatus: refreshAutostartStatus,
     desktopDisplays: refreshDesktopDisplays,
     // The history listing is a management view, not a live surface: it is read
