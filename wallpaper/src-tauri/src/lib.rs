@@ -357,6 +357,8 @@ async fn scan_dsh_paths(
 ///
 /// **只注册进完整版**：Lite 的能力边界明文禁止连接 harness（`verify-lite-bundle.ps1` 会检查），
 /// 这条命令不该出现在那边。
+// Lite 构建里连 harness_launch 模块都不存在（见文件顶部那一串 cfg），所以这条命令也要同门。
+#[cfg(not(feature = "lite"))]
 #[tauri::command]
 async fn ensure_profile_bridge(
     caller: tauri::WebviewWindow,
