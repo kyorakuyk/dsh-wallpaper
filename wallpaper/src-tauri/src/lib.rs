@@ -19,7 +19,8 @@ mod harness_targets;
 mod harness_launch;
 #[cfg(not(feature = "lite"))]
 mod harness_catalog;
-mod desktop_fallback;
+// FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30 决定，见 docs/plans/release-scope-cleanup-plan.md）。恢复办法：取消注释。
+// mod desktop_fallback;
 // 悬浮球是「折叠态胶囊」的新家，而胶囊只属于完整版；它的创建/监控也只挂在完整版
 // 的 setup 块里。像上面 api_persistence / chat 那样按 edition 收窄，否则整个模块
 // 在 Lite 构建里全部不可达，会给 Lite 门禁凭空加一串 dead_code 警告。
@@ -1847,29 +1848,30 @@ fn lite_image_resolve(
 /// wallpaper with the packaged sleep artwork. This masks the short interval
 /// before WorkerW/WebView2 paints after login. The source is resolved inside
 /// Rust and the renderer can only choose the boolean setting.
-#[tauri::command]
-#[cfg(feature = "lite")]
-fn set_desktop_wallpaper_fallback(
-    caller: tauri::WebviewWindow,
-    enabled: bool,
-) -> Result<String, String> {
-    require_settings(&caller)?;
-    if enabled {
-        let source = desktop_fallback::bundled_sleep_source()?;
-        desktop_fallback::set_fallback(Some(&source), true)
-    } else {
-        desktop_fallback::set_fallback(None, false)
-    }
-}
-
-#[tauri::command]
-#[cfg(feature = "lite")]
-fn desktop_wallpaper_fallback_status(
-    caller: tauri::WebviewWindow,
-) -> Result<desktop_fallback::DesktopWallpaperFallbackStatus, String> {
-    require_settings(&caller)?;
-    Ok(desktop_fallback::status())
-}
+// FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30 决定，见 docs/plans/release-scope-cleanup-plan.md）。恢复办法：取消注释。
+// #[tauri::command]
+// #[cfg(feature = "lite")]
+// fn set_desktop_wallpaper_fallback(
+//     caller: tauri::WebviewWindow,
+//     enabled: bool,
+// ) -> Result<String, String> {
+//     require_settings(&caller)?;
+//     if enabled {
+//         let source = desktop_fallback::bundled_sleep_source()?;
+//         desktop_fallback::set_fallback(Some(&source), true)
+//     } else {
+//         desktop_fallback::set_fallback(None, false)
+//     }
+// }
+// 
+// #[tauri::command]
+// #[cfg(feature = "lite")]
+// fn desktop_wallpaper_fallback_status(
+//     caller: tauri::WebviewWindow,
+// ) -> Result<desktop_fallback::DesktopWallpaperFallbackStatus, String> {
+//     require_settings(&caller)?;
+//     Ok(desktop_fallback::status())
+// }
 
 #[cfg(all(test, feature = "lite"))]
 mod lite_asset_tests {
@@ -1972,133 +1974,134 @@ async fn autostart_status(
         .map_err(|error| format!("读取开机自启状态未完成：{error}"))?
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TranslucentTbStatus {
-    installed: bool,
-    running: bool,
-    source: Option<String>,
-}
-
-#[cfg(windows)]
-fn hide_child_console(command: &mut std::process::Command) {
-    std::os::windows::process::CommandExt::creation_flags(command, 0x08000000);
-}
-
-fn translucent_tb_status_blocking() -> Result<TranslucentTbStatus, String> {
-    #[cfg(windows)]
-    {
-        let mut tasklist = std::process::Command::new("tasklist");
-        tasklist.args(["/FI", "IMAGENAME eq TranslucentTB.exe", "/FO", "CSV", "/NH"]);
-        hide_child_console(&mut tasklist);
-        let running = tasklist.output().ok().is_some_and(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .to_ascii_lowercase()
-                .contains("translucenttb.exe")
-        });
-
-        let mut where_command = std::process::Command::new("where.exe");
-        where_command.arg("ttb.exe");
-        hide_child_console(&mut where_command);
-        let alias = where_command
-            .output()
-            .ok()
-            .is_some_and(|output| output.status.success());
-
-        // AppX discovery is occasionally slow on a busy Windows session, so
-        // this whole probe runs on a blocking worker and the child console is
-        // explicitly suppressed. The settings WebView remains responsive.
-        let mut packaged_command = std::process::Command::new("powershell.exe");
-        packaged_command.args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "if (Get-AppxPackage -Name TranslucentTB -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }",
-        ]);
-        hide_child_console(&mut packaged_command);
-        let packaged = packaged_command
-            .status()
-            .ok()
-            .is_some_and(|status| status.success());
-
-        return Ok(TranslucentTbStatus {
-            installed: alias || packaged,
-            running,
-            source: if alias {
-                Some("execution-alias".into())
-            } else if packaged {
-                Some("msix".into())
-            } else {
-                None
-            },
-        });
-    }
-
-    #[cfg(not(windows))]
-    Ok(TranslucentTbStatus {
-        installed: false,
-        running: false,
-        source: None,
-    })
-}
-
-#[tauri::command]
-async fn translucent_tb_status(
-    caller: tauri::WebviewWindow,
-) -> Result<TranslucentTbStatus, String> {
-    require_settings(&caller)?;
-    tauri::async_runtime::spawn_blocking(translucent_tb_status_blocking)
-        .await
-        .map_err(|error| format!("读取透明任务栏状态未完成：{error}"))?
-}
-
-#[tauri::command]
-fn launch_translucent_tb(caller: tauri::WebviewWindow) -> Result<(), String> {
-    require_settings(&caller)?;
-    std::process::Command::new("ttb.exe")
-        .spawn()
-        .map(|_| ())
-        .map_err(|_| {
-            "未找到 TranslucentTB。请先从 Microsoft Store 安装并启用 ttb.exe 执行别名。".into()
-        })
-}
-
-#[tauri::command]
-fn open_translucent_tb_install(caller: tauri::WebviewWindow) -> Result<(), String> {
-    require_settings(&caller)?;
-    // `explorer.exe <uri>` may treat the Store URI as a filesystem path and
-    // open Documents instead. Ask ShellExecute to resolve the URI protocol.
-    #[cfg(windows)]
-    {
-        let store_uri = "ms-windows-store://pdp/?ProductId=9PF4KZ2VN4W9";
-        let status = std::process::Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "Start-Process",
-                store_uri,
-            ])
-            .status()
-            .map_err(|error| format!("无法启动 Microsoft Store：{error}"))?;
-        if status.success() {
-            return Ok(());
-        }
-
-        // A Store-disabled Windows installation still gets a useful route.
-        std::process::Command::new("rundll32.exe")
-            .args([
-                "url.dll,FileProtocolHandler",
-                "https://apps.microsoft.com/detail/9PF4KZ2VN4W9",
-            ])
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| format!("无法打开 TranslucentTB 下载页：{error}"))
-    }
-    #[cfg(not(windows))]
-    Err("TranslucentTB 仅支持 Windows。".into())
-}
+// FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30 决定，见 docs/plans/release-scope-cleanup-plan.md）。恢复办法：取消注释。
+// #[derive(serde::Serialize)]
+// #[serde(rename_all = "camelCase")]
+// struct TranslucentTbStatus {
+//     installed: bool,
+//     running: bool,
+//     source: Option<String>,
+// }
+// 
+// #[cfg(windows)]
+// fn hide_child_console(command: &mut std::process::Command) {
+//     std::os::windows::process::CommandExt::creation_flags(command, 0x08000000);
+// }
+// 
+// fn translucent_tb_status_blocking() -> Result<TranslucentTbStatus, String> {
+//     #[cfg(windows)]
+//     {
+//         let mut tasklist = std::process::Command::new("tasklist");
+//         tasklist.args(["/FI", "IMAGENAME eq TranslucentTB.exe", "/FO", "CSV", "/NH"]);
+//         hide_child_console(&mut tasklist);
+//         let running = tasklist.output().ok().is_some_and(|output| {
+//             String::from_utf8_lossy(&output.stdout)
+//                 .to_ascii_lowercase()
+//                 .contains("translucenttb.exe")
+//         });
+// 
+//         let mut where_command = std::process::Command::new("where.exe");
+//         where_command.arg("ttb.exe");
+//         hide_child_console(&mut where_command);
+//         let alias = where_command
+//             .output()
+//             .ok()
+//             .is_some_and(|output| output.status.success());
+// 
+//         // AppX discovery is occasionally slow on a busy Windows session, so
+//         // this whole probe runs on a blocking worker and the child console is
+//         // explicitly suppressed. The settings WebView remains responsive.
+//         let mut packaged_command = std::process::Command::new("powershell.exe");
+//         packaged_command.args([
+//             "-NoLogo",
+//             "-NoProfile",
+//             "-NonInteractive",
+//             "-Command",
+//             "if (Get-AppxPackage -Name TranslucentTB -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }",
+//         ]);
+//         hide_child_console(&mut packaged_command);
+//         let packaged = packaged_command
+//             .status()
+//             .ok()
+//             .is_some_and(|status| status.success());
+// 
+//         return Ok(TranslucentTbStatus {
+//             installed: alias || packaged,
+//             running,
+//             source: if alias {
+//                 Some("execution-alias".into())
+//             } else if packaged {
+//                 Some("msix".into())
+//             } else {
+//                 None
+//             },
+//         });
+//     }
+// 
+//     #[cfg(not(windows))]
+//     Ok(TranslucentTbStatus {
+//         installed: false,
+//         running: false,
+//         source: None,
+//     })
+// }
+// 
+// #[tauri::command]
+// async fn translucent_tb_status(
+//     caller: tauri::WebviewWindow,
+// ) -> Result<TranslucentTbStatus, String> {
+//     require_settings(&caller)?;
+//     tauri::async_runtime::spawn_blocking(translucent_tb_status_blocking)
+//         .await
+//         .map_err(|error| format!("读取透明任务栏状态未完成：{error}"))?
+// }
+// 
+// #[tauri::command]
+// fn launch_translucent_tb(caller: tauri::WebviewWindow) -> Result<(), String> {
+//     require_settings(&caller)?;
+//     std::process::Command::new("ttb.exe")
+//         .spawn()
+//         .map(|_| ())
+//         .map_err(|_| {
+//             "未找到 TranslucentTB。请先从 Microsoft Store 安装并启用 ttb.exe 执行别名。".into()
+//         })
+// }
+// 
+// #[tauri::command]
+// fn open_translucent_tb_install(caller: tauri::WebviewWindow) -> Result<(), String> {
+//     require_settings(&caller)?;
+//     // `explorer.exe <uri>` may treat the Store URI as a filesystem path and
+//     // open Documents instead. Ask ShellExecute to resolve the URI protocol.
+//     #[cfg(windows)]
+//     {
+//         let store_uri = "ms-windows-store://pdp/?ProductId=9PF4KZ2VN4W9";
+//         let status = std::process::Command::new("powershell.exe")
+//             .args([
+//                 "-NoProfile",
+//                 "-NonInteractive",
+//                 "-Command",
+//                 "Start-Process",
+//                 store_uri,
+//             ])
+//             .status()
+//             .map_err(|error| format!("无法启动 Microsoft Store：{error}"))?;
+//         if status.success() {
+//             return Ok(());
+//         }
+// 
+//         // A Store-disabled Windows installation still gets a useful route.
+//         std::process::Command::new("rundll32.exe")
+//             .args([
+//                 "url.dll,FileProtocolHandler",
+//                 "https://apps.microsoft.com/detail/9PF4KZ2VN4W9",
+//             ])
+//             .spawn()
+//             .map(|_| ())
+//             .map_err(|error| format!("无法打开 TranslucentTB 下载页：{error}"))
+//     }
+//     #[cfg(not(windows))]
+//     Err("TranslucentTB 仅支持 Windows。".into())
+// }
 
 // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
 // /// Opens the system-owned lock-screen settings page. During the current
@@ -4830,17 +4833,17 @@ macro_rules! register_edition_commands {
             lite_settings_save,
             lite_image_import,
             lite_image_resolve,
-            set_desktop_wallpaper_fallback,
-            desktop_wallpaper_fallback_status,
+            // set_desktop_wallpaper_fallback,
+            // desktop_wallpaper_fallback_status,
 // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
 //             set_lock_screen_enabled,
 //             clear_stale_lock_screen_backup,
 //             get_lock_screen_diagnostics,
             set_autostart,
             autostart_status,
-            translucent_tb_status,
-            launch_translucent_tb,
-            open_translucent_tb_install,
+            // translucent_tb_status,
+            // launch_translucent_tb,
+            // open_translucent_tb_install,
 // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
 //             open_windows_lock_screen_settings,
             native_bootstrap_generation,
@@ -4879,9 +4882,9 @@ macro_rules! register_edition_commands {
             managed_dsh_autostart_status,
             managed_dsh_status,
             stop_managed_dsh,
-            translucent_tb_status,
-            launch_translucent_tb,
-            open_translucent_tb_install,
+            // translucent_tb_status,
+            // launch_translucent_tb,
+            // open_translucent_tb_install,
 // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
 //             open_windows_lock_screen_settings,
             save_api_key,
