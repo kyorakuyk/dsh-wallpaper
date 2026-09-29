@@ -32,6 +32,7 @@
 | `v0.3-product-rewrite-plan.md` | v0.3 产品化重写 |
 | `wallpaper-update-detection-plan.md` | 壁纸更新检测与立绘更新气泡（待施工；含标签约定、状态机与验收条件） |
 
+| `publishing-the-bridge.md` | 把桥发到 npm：独立仓库、Action、版本纪律与两条已知的坑 |
 **evidence/**
 
 | 文档 | 主题 |
