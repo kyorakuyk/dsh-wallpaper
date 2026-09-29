@@ -1,20 +1,19 @@
 # 归档：素材（2026-09-30）
 
-用户决定：**仓库里只留产品真正看得见的东西**——四张立绘 + 四张帧动画；其余"挪个窝存"，不删。
-这里保存的是从仓库主体挪出来的素材，路径与原位置一一对应。
+用户决定：**仓库里只留产品真正在用的东西**；不用的"挪个窝存"，不删。这里保存的就是那些从主体挪出来的
+素材，内部路径与原位置一一对应（`git mv`，历史可查，恢复就是挪回去）。
 
-| 归档内容 | 原位置 | 为什么 |
+## 归档内容
+
+| 归档内容 | 原位置 | 为什么判定"没在用" |
 | --- | --- | --- |
-| wallpaper/public/personas/wake-frames/variant-v4/** | 同左 | 代码与构建**零引用**（只有一份计划文档提过它） |
-| wallpaper/public/personas/wake-frames/frame-{1-sleep,2-eyes,3-situp,4-yawn}.jpg | 同左 | 零引用；真正在播的是 ariant-anima/ 里那四张（WakeScene.tsx 的 DEFAULT_WAKE_FRAMES） |
+| `assets/personas/**`（除下面保留的四个） | 同左 | 唯一读 `assets/` 的是 `scripts/publish-local-msix.ps1`，它只读四个文件；其余是原始件与工作副本 |
+| `wallpaper/public/personas/wake-frames/variant-v4/**`（8 张） | 同左 | 代码、构建、打包**零引用** |
+| `wallpaper/public/personas/wake-frames/frame-{1-sleep,2-eyes,3-situp,4-yawn}.jpg` | 同左 | 零引用；真正在播的是 `variant-anima/` 那四张 |
 
-**产品仍在用的（留在原位，不要动）**：personas/portrait-{blue,black}-{child,adult}.png（四张立绘）、
-personas/wake-frames/variant-anima/{sleep.png,frame-2-eyes.png,frame-3-yawn.webp,frame-4-awake.webp}（四张帧动画）、
-以及 personas/{sleep.jpg,wake.jpg}。
+## 原地保留（**在用，不要动**）
 
-## 还没挪的：`assets/`（约 81.7 MB 的原始素材）
-
-它**不能直接挪**：`scripts/publish-local-msix.ps1` 有 9 处读它（打包时核对立绘）。
-要挪就得**同时把那 9 处指向归档路径或 `wallpaper/public`**，改完跑一次打包验证——那一步单独做。
-
-恢复办法：`git mv` 回原路径即可（本次全部用 `git mv`，历史都在）。
+* `assets/personas/{蓝幼,蓝熟,黑红幼,黑红熟}.png` —— `publish-local-msix.ps1` 打包时用它们核对包里的四张立绘；
+* `wallpaper/public/personas/portrait-{blue,black}-{child,adult}.png` —— 产品里的**四张立绘**；
+* `wallpaper/public/personas/wake-frames/variant-anima/{sleep.png,frame-2-eyes.png,frame-3-yawn.webp,frame-4-awake.webp}` —— 产品里的**四张帧动画**（`WakeScene.tsx` 的 `DEFAULT_WAKE_FRAMES`）；
+* `wallpaper/public/personas/{sleep.jpg,wake.jpg}` —— 睡眠与苏醒两张场景图。
