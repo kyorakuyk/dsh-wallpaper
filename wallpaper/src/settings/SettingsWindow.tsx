@@ -888,14 +888,17 @@ export function SettingsWindow() {
   }
 
   const change = (next: WallpaperSettings) => {
-    const previous = settingsRef.current
+    // FREEZE(1A)：只为上面那段已冻结的合并而生，随之冻结。
+    // const previous = settingsRef.current
     const autostartChanged = next.autostart !== latestAutostartRef.current
-    // System lock-screen ownership is deliberately excluded from the normal
-    // immediate-save path. The dedicated async operation above is the only
-    // place allowed to persist or broadcast a change to this field.
-    const normalNext = next.lockScreenEnabled === previous.lockScreenEnabled
-      ? next
-      : { ...next, lockScreenEnabled: previous.lockScreenEnabled }
+    // FREEZE(1A)：锁屏退出，字段已不存在，合并回归"直接用 next"。恢复办法：还原下面被注释的六行。
+    // // System lock-screen ownership is deliberately excluded from the normal
+    // // immediate-save path. The dedicated async operation above is the only
+    // // place allowed to persist or broadcast a change to this field.
+    // const normalNext = next.lockScreenEnabled === previous.lockScreenEnabled
+    //   ? next
+    //   : { ...next, lockScreenEnabled: previous.lockScreenEnabled }
+    const normalNext = next
     if (autostartChanged) {
       // The switch follows the user at once; Windows' answer decides whether it
       // stays there. A second toggle is queued instead of dropped, and the

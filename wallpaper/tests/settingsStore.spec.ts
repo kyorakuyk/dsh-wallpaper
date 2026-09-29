@@ -35,7 +35,8 @@ const VALID: WallpaperSettings = {
   animationSpeed: 1.5,
   playWakeOnEveryUnlock: false,
   skipWakeAnimation: true,
-  lockScreenEnabled: true,
+  // FREEZE(1A)：锁屏退出，夹具里不再带这个字段（归一化现在会丢掉它，这正是本轮想要的）。
+    // lockScreenEnabled: true,
   autostart: true,
   sendShortcut: 'Ctrl+Enter',
   background: 'deepsea-2',
@@ -157,7 +158,8 @@ describe('settings normalization boundary', () => {
 
   it('accepts non-boolean flags only as their default', () => {
     expect(normalizeSettings({ ...VALID, autoSwitchHarness: 'yes' }).autoSwitchHarness).toBe(false)
-    expect(normalizeSettings({ ...VALID, lockScreenEnabled: 1 }).lockScreenEnabled).toBe(DEFAULT_SETTINGS.lockScreenEnabled)
+  // FREEZE(1A)：这个字段没了，"垃圾值被拒"这条断言随之失效。
+    // expect(normalizeSettings({ ...VALID, lockScreenEnabled: 1 }).lockScreenEnabled).toBe(DEFAULT_SETTINGS.lockScreenEnabled)
     expect(normalizeSettings({ ...VALID, animationsEnabled: null }).animationsEnabled).toBe(DEFAULT_SETTINGS.animationsEnabled)
   })
 
