@@ -418,22 +418,24 @@ async fn launch_harness_target(
 ) -> Result<harness_launch::HarnessLaunchOutcome, String> {
     require_wallpaper_surface(&caller)?;
     let args = harness_launch::normalize_launch_args(args)?;
-    let plan = harness_launch::plan_launch(
-        &target_id,
-        profile.as_deref().unwrap_or_default(),
-        &args,
-        harness_launch::LaunchTrigger::Slider,
-    )
-    .map_err(str::to_string)?;
-    // Starting a shell waits for the client to answer (up to the launch timeout),
-    // so it must not run on the caller's own thread. The managed state is taken
-    // inside the blocking task, where acquiring it cannot block the UI.
+    let profile = profile.unwrap_or_default();
+    // 决定"跑什么"要看扫描记录、必要时还要重扫一次（施工文档 §7.4 第 5 条），所以它与启动一起
+    // 留在阻塞线程上：那一步最坏要几秒，而它绝不该占住界面线程。
     tauri::async_runtime::spawn_blocking(move || {
+        let host_cli = harness_launch::shell_host_cli(&target_id);
+        let plan = harness_launch::plan_background_launch(
+            &target_id,
+            &profile,
+            &args,
+            harness_launch::LaunchTrigger::Slider,
+            host_cli.as_deref(),
+        )
+        .map_err(str::to_string)?;
         let managed = app.state::<ManagedDshState>();
-        harness_launch::run_launch(&plan, managed.inner(), harness_launch::LaunchTrigger::Slider)
+        Ok::<_, String>(harness_launch::run_launch(&plan, managed.inner(), harness_launch::LaunchTrigger::Slider))
     })
     .await
-    .map_err(|error| format!("启动 Harness 执行主体未完成：{error}"))
+    .map_err(|error| format!("启动 Harness 执行主体未完成：{error}"))?
 }
 
 /// The one automatic-launch record, read without consuming it.
@@ -623,29 +625,38 @@ async fn autostart_harness_target(
         return Ok(serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null));
     };
     let args = harness_launch::normalize_launch_args(args)?;
-    let plan = match harness_launch::plan_launch(
-        &target_id,
-        &profile,
-        &args,
-        harness_launch::LaunchTrigger::Automatic,
-    ) {
-        Ok(plan) => plan,
+    // The handle is cloned into the blocking task so this one keeps working for
+    // the record below: the task owns the clone, this frame owns the original.
+    let worker = app.clone();
+    // 计划连同启动一起放进阻塞任务：决定"跑什么"可能要重扫一次扫描记录（§7.4 第 5 条），
+    // 而那条路最坏几秒。拿不到计划时把拒绝码原样带回来记进那一次尝试的结果里。
+    let subject_for_plan = target_id.clone();
+    let planned = tauri::async_runtime::spawn_blocking(move || {
+        let host_cli = harness_launch::shell_host_cli(&subject_for_plan);
+        let plan = harness_launch::plan_background_launch(
+            &subject_for_plan,
+            &profile,
+            &args,
+            harness_launch::LaunchTrigger::Automatic,
+            host_cli.as_deref(),
+        )?;
+        let managed = worker.state::<ManagedDshState>();
+        Ok::<_, &'static str>(harness_launch::run_launch(
+            &plan,
+            managed.inner(),
+            harness_launch::LaunchTrigger::Automatic,
+        ))
+    })
+    .await
+    .map_err(|error| format!("启动 Harness 执行主体未完成：{error}"))?;
+    let outcome = match planned {
+        Ok(outcome) => outcome,
         Err(code) => {
             let outcome = ManagedDshAutostart::new(code);
             record_autostart_attempt(&app, &outcome)?;
             return Ok(serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null));
         }
     };
-
-    // The handle is cloned into the blocking task so this one keeps working for
-    // the record below: the task owns the clone, this frame owns the original.
-    let worker = app.clone();
-    let outcome = tauri::async_runtime::spawn_blocking(move || {
-        let managed = worker.state::<ManagedDshState>();
-        harness_launch::run_launch(&plan, managed.inner(), harness_launch::LaunchTrigger::Automatic)
-    })
-    .await
-    .map_err(|error| format!("启动 Harness 执行主体未完成：{error}"))?;
 
     let record = ManagedDshAutostart {
         // An `already-running` subject is someone else's live client, left

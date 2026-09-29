@@ -12,9 +12,10 @@
  *
  * harness 那一侧的判据与设置中心「打开」那张卡片同源（`SettingsPanel` 的 `openRoutes`）：
  * 客户端带来自己的窗口，只有已安装的 CLI 真有浏览器与终端两条路，源码目录只有浏览器一条。所以
- * 它问的其实是"这次会拉起哪个界面"。**待办**：等后台宿主换成壁纸自己起的静默 `web` 宿主
- * （[施工文档第 7 节](../../../docs/plans/dsh-harness-connection-autostart-compatibility-plan.md)）
- * 之后，harness 这一侧要改成按"谁在服务这段对话"来判，否则这枚指示器会与实际不符。
+ * 它问的其实是"这次会拉起哪个界面"。**已定案（2026-09-30，施工文档 §7.6 走法 A）**：这里继续
+ * 按**主体的 DSH** 判，不改成按"谁在服务这段对话"判 —— 壳主体的宿主无论是它自带的 CLI
+ * （壁纸在后台起的）还是壳自己（用户点「打开」之后），服务的都是"客户端那个 DSH"，
+ * 所以 `Desktop` 两种情况都对。
  */
 import type { BackendMode } from '../domain/types.ts'
 import { subjectKindLabel, subjectKindOf } from './harnessSubjects.ts'

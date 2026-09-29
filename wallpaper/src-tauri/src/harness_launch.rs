@@ -262,6 +262,25 @@ pub(crate) enum LaunchPlan {
         profile: String,
         args: Vec<String>,
     },
+    /// 本应用为**某个主体**跑起来的宿主：它的 CLI，绑在那个主体自己的端口上。
+    ///
+    /// 与 `InstalledCli` 的差别只有两处，两处都关键：记录用的主体 id 是 `host:<主体>`
+    /// （所以它归我们管、可以被我们收回；而主体自己的 `shell:<aumid>` 仍然永不归我们管），
+    /// 而且它**没有窗口**（`web` 档案、`--no-open`）——那正是这条路存在的理由。
+    ///
+    /// 启动参数里补的 `--port` 就是"同一个端口、宿主归属移交"这条政策的落点
+    /// （施工文档 §7.6 走法 A）：壁纸的宿主与用户打开的完整壳先后绑同一个端口，从不并存。
+    SubjectHost {
+        /// `host:<主体 id>`：记录与停止都用它。
+        host_id: String,
+        /// 主体自己的 id，只用于日志与类别。
+        subject_id: String,
+        kind: HarnessTargetKind,
+        launcher: String,
+        profile: String,
+        args: Vec<String>,
+        port: Option<u16>,
+    },
 }
 
 /// The web app's own hand-off address, per port.
@@ -379,6 +398,24 @@ pub(crate) fn owned_instances(subject_id: &str) -> Vec<ManagedChild> {
         .collect()
 }
 
+/// 从一份记录里挑出"本应用启动的、官壳除外"的那些，且**此刻还确实是同一个进程**。
+///
+/// 独立成纯函数是为了能被钉住：这里曾经把判据写反过（`!is_managed_by_us`），而两个消费者
+/// （状态清单、"停止全部"）各自都会再滤一遍官壳，于是它**一声不响**——落盘记录那一半永远是空的：
+/// 壁纸重启之后既列不出、也停不掉自己启动过的宿主，而"停止全部"还会静默报成功。
+fn our_live_instances(
+    cylinder: &ManagedChildren,
+    alive: &dyn Fn(&str) -> bool,
+) -> Vec<ManagedChild> {
+    cylinder
+        .children
+        .values()
+        .filter(|child| is_managed_by_us(&child.subject_id))
+        .filter(|child| alive(&child.instance_key))
+        .cloned()
+        .collect()
+}
+
 /// 本应用启动的**每一个**仍然活着的实例，官壳除外。
 ///
 /// 官壳那一类**必须**被排除，它不在本应用的管辖范围内：它是用户自己的客户端，退出方式是它
@@ -386,13 +423,8 @@ pub(crate) fn owned_instances(subject_id: &str) -> Vec<ManagedChild> {
 /// 这里不能只靠"壳没有孩子"这个假设，而是明确按 id 前缀过滤。
 pub(crate) fn owned_instances_all() -> Vec<ManagedChild> {
     let Some(path) = RECORDS_PATH.get() else { return Vec::new() };
-    read_managed_children(path)
-        .children
-        .values()
-        .filter(|child| !is_managed_by_us(&child.subject_id))
-        .filter(|child| owned_instance(&child.instance_key).is_some())
-        .cloned()
-        .collect()
+    let cylinder = read_managed_children(path);
+    our_live_instances(&cylinder, &|key| owned_instance(key).is_some())
 }
 
 /// 这一类主体是不是"本应用可以启动、也可以停止"的那一类。
@@ -600,7 +632,19 @@ pub(crate) fn redact_handoff(path: &str) -> String {
 /// and dropping it is what left the browser opening a page that could only say
 /// "authentication required". The reader keeps draining for the child's whole life — a
 /// pipe closed early would hand the CLI a write error it does not deserve.
-fn launch_installed_cli(launcher: &str, profile: &str, args: &[String]) -> HarnessLaunchOutcome {
+/// 跑一个主体的 **CLI 宿主**：`.cmd`/`.exe` 的差别、`web` 档案才有的门票、以及"这个孩子是
+/// 我们起的"那条记录，全在这一处。
+///
+/// `subject_id` 是**记录用的 id**，不一定是主体的 id：壳的后台宿主记在 `host:<主体>` 下
+/// （见 `LaunchPlan::SubjectHost`），而那正是"它归我们管、主体自己的进程不归我们管"的分界。
+fn launch_cli_host(
+    subject_id: &str,
+    kind: HarnessTargetKind,
+    launcher: &str,
+    profile: &str,
+    args: &[String],
+    hidden: bool,
+) -> HarnessLaunchOutcome {
     let (program, command_args) = installed_cli_command(Path::new(launcher), profile, args);
     let wants_handoff = profile.trim() == "web";
     let mut command = std::process::Command::new(&program);
@@ -620,7 +664,7 @@ fn launch_installed_cli(launcher: &str, profile: &str, args: &[String]) -> Harne
         command.creation_flags(CREATE_NO_WINDOW);
     }
     log::info!(
-        "harness installed-cli launch: program={} args={command_args:?}",
+        "harness cli host launch: subject={subject_id} program={} args={command_args:?}",
         program.display()
     );
     match command.spawn() {
@@ -633,7 +677,7 @@ fn launch_installed_cli(launcher: &str, profile: &str, args: &[String]) -> Harne
                     //
                     // 为什么非要在这一处记：启动有三条入口（设置里的「打开」、壁纸面的「启动主体」、
                     // 开机自启），只有这一处**知道端口**，也只有这一处能确定"是我们启动的"。
-                    let subject = format!("{CLI_ID_PREFIX}{launcher}");
+                    let subject = subject_id.to_string();
                     let record_args = args.to_vec();
                     std::thread::spawn(move || {
                         use std::io::BufRead;
@@ -671,16 +715,28 @@ fn launch_installed_cli(launcher: &str, profile: &str, args: &[String]) -> Harne
             // 而"孩子"应当指真正在服务的那一个 —— 端口的属主。统一由调用方在端口起来之后记。
             HarnessLaunchOutcome {
                 outcome: "started".into(),
-                kind: HarnessTargetKind::InstalledCli,
+                kind,
                 pid: Some(child.id()),
-                hidden: false,
+                hidden,
             }
         }
         Err(error) => {
-            log::warn!("harness installed-cli launch failed: {error}");
-            HarnessLaunchOutcome::new("spawn-failed", HarnessTargetKind::InstalledCli)
+            log::warn!("harness cli host launch failed: subject={subject_id} error={error}");
+            HarnessLaunchOutcome::new("spawn-failed", kind)
         }
     }
+}
+
+/// 已安装 CLI 那一类：记录 id 就是它自己，界面在浏览器里，所以不算"隐藏"。
+fn launch_installed_cli(launcher: &str, profile: &str, args: &[String]) -> HarnessLaunchOutcome {
+    launch_cli_host(
+        &format!("{CLI_ID_PREFIX}{launcher}"),
+        HarnessTargetKind::InstalledCli,
+        launcher,
+        profile,
+        args,
+        false,
+    )
 }
 
 /// The command that raises the TUI in a console window of its own.
@@ -833,6 +889,98 @@ pub(crate) fn plan_background_cli(
     Ok(BackgroundCli::TreeChain)
 }
 
+/// 主体后台宿主该用哪个 CLI 启动器，含"记录可能比这一版构建旧"的处理。
+///
+/// 政策（施工文档 §7.4 第 5 条）：记录里放不出可执行文件时**先重扫一次**再判。理由是实测的：
+/// 本机那份记录是 2026-09-29 写的、没有 `executable` 字段，而同一次重扫就能读到，于是从安装
+/// 位置推出的 `resources\runtime\cli\bin\dsh.cmd` 确实存在。记录只在设置窗口扫描时才写，
+/// 所以"启动一次"完全可能发生在"记录还没被这一版构建重写过"之前。
+///
+/// `rescan` 由调用方给：它做完扫描并把新记录落盘后，返回新的可执行文件。**至多重扫一次**，
+/// 而且重扫没有带来不同答案时直接沿用第一次的拒绝 —— 同一个输入问两遍只是多花两秒。
+pub(crate) fn resolve_background_cli(
+    subject_id: &str,
+    recorded: Option<String>,
+    rescan: &dyn Fn() -> Option<String>,
+    exists: &dyn Fn(&Path) -> bool,
+) -> Result<BackgroundCli, &'static str> {
+    let first = plan_background_cli(subject_id, recorded.as_deref(), exists);
+    if first.is_ok() {
+        return first;
+    }
+    let refreshed = rescan();
+    if refreshed == recorded {
+        return first;
+    }
+    plan_background_cli(subject_id, refreshed.as_deref(), exists)
+}
+
+/// 一个壳主体的后台宿主该跑哪个 CLI；`None` 表示退回 AUMID 激活。
+///
+/// 三处 I/O 都收在这里（读记录、必要时重扫一次、查路径），调用方拿到的就是一个答案 ——
+/// 启动路径上不该再出现第二处"这个路径从哪来"的判断。
+pub(crate) fn shell_host_cli(subject_id: &str) -> Option<PathBuf> {
+    let aumid = subject_id.trim().strip_prefix(SHELL_ID_PREFIX)?;
+    known_shell(aumid)?;
+    let resolved = resolve_background_cli(
+        subject_id,
+        recorded_shell_executable(aumid),
+        &|| {
+            // 重扫只读用户数据，落盘只是为了让下一次不必再扫。它慢（本机约 2.8 秒），
+            // 所以只在记录放不出可执行文件时才走，而且只走一次。
+            let scan = crate::harness_targets::scan_harness_targets_blocking(None, false);
+            crate::harness_catalog::persist_scan(&scan);
+            crate::harness_targets::recorded_shell_executable(&scan.targets, aumid)
+        },
+        &|path| path.exists(),
+    );
+    match resolved {
+        Ok(BackgroundCli::Launch(path)) => Some(path),
+        _ => None,
+    }
+}
+
+/// 后台启动（滑槽、随壁纸自启）该怎么跑 —— §7.6 走法 A 之后，壳与别的类走的路不同了。
+///
+/// * 壳：能解析出它自带的 CLI 就跑那个（`web` 档案、绑它自己的端口、没有窗口），
+///   记录用的 id 是 `host:<主体>`；解析不出来就退回原来的 AUMID 激活（背景启动照旧把窗口
+///   留在屏幕外）；
+/// * 已安装 CLI 与源码树：原样交给 `plan_launch` —— 它们本来就是"跑自己的 CLI"。
+pub(crate) fn plan_background_launch(
+    id: &str,
+    profile: &str,
+    args: &[String],
+    trigger: LaunchTrigger,
+    subject_host_cli: Option<&Path>,
+) -> Result<LaunchPlan, &'static str> {
+    let subject = id.trim();
+    if let Some(aumid) = subject.strip_prefix(SHELL_ID_PREFIX) {
+        if let (Some(launcher), Some(shell)) = (subject_host_cli, known_shell(aumid)) {
+            let port = shell.default_port;
+            // 「启动参数」点名的端口优先：那是用户自己写的，而许可端口表本来就认它
+            // （`apply_endpoint_scope` 会把参数里的端口并进这个主体的端口表）。
+            let mut host_args = args.to_vec();
+            if let Some(port) = port {
+                if port_from_args(&host_args).is_none() {
+                    host_args.push("--port".to_string());
+                    host_args.push(port.to_string());
+                }
+            }
+            return Ok(LaunchPlan::SubjectHost {
+                host_id: crate::harness_targets::host_subject_id(subject),
+                subject_id: subject.to_string(),
+                kind: HarnessTargetKind::EmbeddedShell,
+                launcher: launcher.to_string_lossy().into_owned(),
+                // 只有 `web` 能提供 HTTP 且能装桥；`desktop` 档案两边的 CLI 都会拒绝。
+                profile: "web".to_string(),
+                args: host_args,
+                port,
+            });
+        }
+    }
+    plan_launch(subject, profile, args, trigger)
+}
+
 /// Who is asking for the start, which is what decides the one rule that still differs.
 ///
 /// 「显示还是不显示那个窗口」由**谁在问**决定，而不是由"是不是用户按的"决定：用户按下的
@@ -934,6 +1082,51 @@ pub(crate) fn plan_launch(
     })
 }
 
+/// 把端口从我们自己的宿主手里收回来，交给即将绑它的完整壳（施工文档 §7.6 走法 A）。
+///
+/// 三件事按顺序做，缺一件都会坏事：**只认出我们自己的孩子**（记在 `host:<主体>` 下的那一条；
+/// 主体自己的 `shell:<aumid>` 永远不在可停清单里）、**整树收掉**（Windows 上刚 spawn 的是
+/// `cmd` 外壳，真正占着端口的是它的孩子）、**等端口真的空出来**（壳紧接着就要绑它，抢跑只会
+/// 让它启动失败 —— 而它的窗口内容就是它自己宿主的 URL，绑不上就是一个没有内容的窗口）。
+///
+/// 返回是否真的收掉过东西，好让日志分得清"移交过"与"本来就没有我们的宿主"。
+fn hand_over_endpoint(subject_id: &str, port: Option<u16>) -> bool {
+    let host_id = crate::harness_targets::host_subject_id(subject_id);
+    let children = owned_instances(&host_id);
+    if children.is_empty() {
+        return false;
+    }
+    let mut stopped = false;
+    for child in children {
+        log::info!(
+            "handing the endpoint over: stopping our own host pid={} for subject={subject_id}",
+            child.pid
+        );
+        if crate::client_window::stop_process_tree(child.pid) {
+            stopped = true;
+        }
+        // 记录要清掉，无论 taskkill 是否报成功：它已经不再是可用的孩子，留着只会让下一次
+        // "状态清单"里多一行幽灵，或者让下一次移交去等一个永远不会释放的端口。
+        forget_instance(&child.instance_key);
+    }
+    if let Some(port) = port {
+        for _ in 0..ENDPOINT_HANDOVER_TICKS {
+            if !crate::client_window::endpoint_is_listening(port) {
+                break;
+            }
+            std::thread::sleep(ENDPOINT_HANDOVER_TICK);
+        }
+    }
+    stopped
+}
+
+/// 移交时等端口释放的节奏：最多 60 × 50ms = 3 秒。
+///
+/// 有界是刻意的：`taskkill /F` 之后内核关掉监听套接字通常只需几十毫秒，等满 3 秒说明那个进程
+/// 不肯走 —— 那时把"打开"继续做下去（壳自己会因为端口被占而报错），比在这里无限等更有用。
+const ENDPOINT_HANDOVER_TICKS: usize = 60;
+const ENDPOINT_HANDOVER_TICK: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// Start the planned subject and report what happened.
 pub(crate) fn run_launch(
     plan: &LaunchPlan,
@@ -946,7 +1139,28 @@ pub(crate) fn run_launch(
             alias,
             port,
             hide_window,
-        } => launch_shell(aumid, alias, *port, *hide_window, trigger),
+        } => {
+            // §7.6 走法 A 的移交：用户要看的完整壳会**自己**绑那个端口，而壁纸自己的宿主可能
+            // 正占着它（壳的窗口内容就是它自己宿主的 URL —— 绑不上就得到一个没有内容的窗口）。
+            // 所以先把自己那个宿主收掉，再把端口让出去。只停 `host:<主体>` 那一条记录：
+            // 用户打开的客户端从来不是我们的孩子，这条底线不变。
+            if !*hide_window {
+                hand_over_endpoint(&format!("{SHELL_ID_PREFIX}{aumid}"), *port);
+            }
+            launch_shell(aumid, alias, *port, *hide_window, trigger)
+        }
+        LaunchPlan::SubjectHost {
+            host_id,
+            subject_id,
+            kind,
+            launcher,
+            profile,
+            args,
+            ..
+        } => {
+            log::info!("harness subject host: subject={subject_id} record={host_id} profile={profile}");
+            launch_cli_host(host_id, *kind, launcher, profile, args, true)
+        }
         LaunchPlan::InstalledCli {
             launcher,
             profile,
@@ -2649,6 +2863,145 @@ mod tests {
             Ok(BackgroundCli::TreeChain)
         );
         assert_eq!(plan_background_cli("   ", None, &|_| false), Ok(BackgroundCli::TreeChain));
+    }
+
+    /// 后台启动的分岔（施工文档 §7.6 走法 A）：壳走它自带的 CLI，别的类原样。
+    #[test]
+    fn a_shells_background_start_runs_its_bundled_cli_on_its_own_port() {
+        let launcher = Path::new(r"D:\Family\dsh-official\resources\runtime\cli\bin\dsh.cmd");
+        let plan = plan_background_launch(OFFICIAL_ID, "web", &[], SLIDER, Some(launcher)).expect("host plan");
+        match plan {
+            LaunchPlan::SubjectHost { host_id, subject_id, kind, launcher: planned, profile, args, port } => {
+                // 记录用的是 **host:<主体>**：它归我们管；而 `shell:<aumid>` 永远不归我们管，
+                // 这两件事必须分得开，否则"收掉自己的宿主"会变成"杀掉用户的客户端"。
+                assert_eq!(host_id, "host:shell:com.deepseek.dsh");
+                assert_eq!(subject_id, OFFICIAL_ID);
+                assert_eq!(kind, HarnessTargetKind::EmbeddedShell);
+                assert_eq!(planned, launcher.to_string_lossy());
+                // 只有 `web` 能提供 HTTP 且能装桥；`desktop` 档案两边的 CLI 都会拒绝。
+                assert_eq!(profile, "web");
+                assert_eq!(port, Some(19387));
+                // 端口是这条路的关键：壁纸的宿主与用户打开的完整壳**先后**绑同一个端口。
+                assert_eq!(args, argv(&["--port", "19387"]));
+            }
+            other => panic!("expected a subject host plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_port_the_user_declared_is_not_replaced_by_the_subject_default() {
+        let launcher = Path::new(r"D:\Family\dsh-official\resources\runtime\cli\bin\dsh.cmd");
+        let declared = argv(&["--port", "3099"]);
+        let plan = plan_background_launch(OFFICIAL_ID, "web", &declared, AUTO, Some(launcher)).expect("host plan");
+        match plan {
+            LaunchPlan::SubjectHost { args, .. } => {
+                // 用户自己写的端口原样保留，而且**不再补一个**：许可端口表本来就认它
+                // （`apply_endpoint_scope` 把参数里的端口并进了这个主体的端口表）。
+                assert_eq!(args, declared);
+            }
+            other => panic!("expected a subject host plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_shell_without_a_resolvable_cli_falls_back_to_activating_the_client() {
+        // 解析不出来（记录旧、CLI 被删、客户端换过地方）时退回原来的路：背景启动照旧把窗口
+        // 留在屏幕外，而不是什么都不起。
+        let automatic = plan_background_launch(OFFICIAL_ID, "desktop", &[], AUTO, None).expect("shell plan");
+        assert!(matches!(automatic, LaunchPlan::Shell { hide_window: true, .. }));
+        let slider = plan_background_launch(OFFICIAL_ID, "desktop", &[], SLIDER, None).expect("shell plan");
+        assert_eq!(slider, automatic);
+    }
+
+    #[test]
+    fn other_subject_kinds_are_untouched_by_the_host_route() {
+        // 已安装 CLI 与源码树本来就是"跑自己的 CLI"，这条岔路与它们无关：即便递进来一个启动器，
+        // 计划也不该变成"用壳的方式跑它"。
+        let launcher = Path::new(r"D:\Family\dsh-official\resources\runtime\cli\bin\dsh.cmd");
+        let cli = format!("{CLI_ID_PREFIX}C:\\Users\\u\\AppData\\Roaming\\npm\\dsh.cmd");
+        assert!(matches!(
+            plan_background_launch(&cli, "web", &[], SLIDER, Some(launcher)),
+            Ok(LaunchPlan::InstalledCli { .. })
+        ));
+        assert!(matches!(
+            plan_background_launch(CHECKOUT, " web ", &[], SLIDER, Some(launcher)),
+            Ok(LaunchPlan::Checkout { .. })
+        ));
+    }
+
+    /// "记录可能比这一版构建旧"的处理：先重扫一次，而且**只扫一次**。
+    #[test]
+    fn a_stale_record_is_rescanned_once_before_refusing() {
+        let bundled = r"D:\Family\dsh-official\resources\runtime\cli\bin\dsh.cmd";
+        let found = |path: &Path| path == Path::new(bundled);
+        let exe = r"D:\Family\dsh-official\DeepSeek Harness.exe";
+
+        // 记录里就有可执行文件 ⇒ 一次都不扫（重扫本机实测约 2.8 秒，不该花在能直接回答的时候）。
+        let scans = std::cell::Cell::new(0);
+        let resolved = resolve_background_cli(
+            OFFICIAL_ID,
+            Some(exe.to_string()),
+            &|| { scans.set(scans.get() + 1); None },
+            &found,
+        );
+        assert!(matches!(resolved, Ok(BackgroundCli::Launch(_))));
+        assert_eq!(scans.get(), 0, "记录够用时不该扫描");
+
+        // 记录里没有 ⇒ 扫一次，并用新答案。
+        let scans = std::cell::Cell::new(0);
+        let resolved = resolve_background_cli(
+            OFFICIAL_ID,
+            None,
+            &|| { scans.set(scans.get() + 1); Some(exe.to_string()) },
+            &found,
+        );
+        assert!(matches!(resolved, Ok(BackgroundCli::Launch(_))));
+        assert_eq!(scans.get(), 1);
+
+        // 重扫没有带来不同答案 ⇒ 沿用第一次的拒绝，而不是拿同一个输入再问一遍。
+        let scans = std::cell::Cell::new(0);
+        assert_eq!(
+            resolve_background_cli(OFFICIAL_ID, None, &|| { scans.set(scans.get() + 1); None }, &found),
+            Err("missing-executable")
+        );
+        assert_eq!(scans.get(), 1);
+
+        // 客户端换过地方是同一个形状：旧记录指向一条不存在的路径，新记录给出新安装位置。
+        let moved = |path: &Path| path == Path::new(r"E:\Apps\DSH\resources\runtime\cli\bin\dsh.cmd");
+        assert_eq!(
+            resolve_background_cli(
+                OFFICIAL_ID,
+                Some(r"D:\old\DeepSeek Harness.exe".to_string()),
+                &|| Some(r"E:\Apps\DSH\DeepSeek Harness.exe".to_string()),
+                &moved,
+            ),
+            Ok(BackgroundCli::Launch(PathBuf::from(r"E:\Apps\DSH\resources\runtime\cli\bin\dsh.cmd")))
+        );
+    }
+
+    /// 落盘记录那一半挑出来的必须是**我们自己的**实例，官壳除外。
+    ///
+    /// 这条判据曾经写反（`!is_managed_by_us`），而两个消费者各自又滤了一遍官壳，于是它一声不响：
+    /// 重启过的壁纸既列不出、也停不掉自己启动的宿主，而"停止全部"还会静默报成功。
+    #[test]
+    fn the_record_only_half_lists_ours_and_never_the_client() {
+        let cli = r"cli:C:\Users\u\AppData\Roaming\npm\dsh.cmd";
+        let host = "host:shell:com.deepseek.dsh";
+        let mut cylinder = ManagedChildren::default();
+        cylinder.remember(child(CHECKOUT, CHECKOUT, 111, Some(1)));
+        cylinder.remember(child(cli, cli, 222, Some(1)));
+        cylinder.remember(child(host, host, 333, Some(1)));
+        cylinder.remember(child(OFFICIAL_ID, OFFICIAL_ID, 444, Some(1)));
+
+        let listed = our_live_instances(&cylinder, &|_| true);
+        let ours: Vec<&str> = listed.iter().map(|entry| entry.subject_id.as_str()).collect();
+        assert!(ours.contains(&CHECKOUT) && ours.contains(&cli) && ours.contains(&host));
+        // 官壳那条记录混在这份文件里是正常的（它是给"门票"用的），但它一次都不该出现在"我们的"里。
+        assert!(!ours.contains(&OFFICIAL_ID), "the client is never ours: {ours:?}");
+        assert_eq!(ours.len(), 3);
+
+        // 存活判定同样要生效：报"已经不是同一个进程"的一条都不留。
+        assert!(our_live_instances(&cylinder, &|_| false).is_empty());
     }
 
     #[test]

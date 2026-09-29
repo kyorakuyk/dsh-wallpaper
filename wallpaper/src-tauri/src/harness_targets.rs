@@ -509,6 +509,24 @@ fn checkout_target(root_path: &str, source: &str) -> HarnessTarget {
 /// id, so the two spellings must not drift.
 pub(crate) const CLI_ID_PREFIX: &str = "cli:";
 
+/// Prefix of the id under which this app records **the host it runs for a subject**.
+///
+/// Deliberately not the subject's own id. `shell:<aumid>` means "the user's client
+/// process", and that process is never ours to stop — the bottom line the whole
+/// subject model is built on. This prefix means "the process *this app* started to
+/// serve that subject", which is ours by construction, so it may be stopped by us
+/// without ever touching the client. A shell's background host is the client's own
+/// bundled CLI (施工文档 §7.6 走法 A), and that is exactly the process this names.
+pub(crate) const HOST_ID_PREFIX: &str = "host:";
+
+/// The id this app records its own host for `subject_id` under.
+///
+/// One place, because the writer (`remember_child`) and the reader (the hand-over
+/// that stops it before the client binds the port itself) must spell it identically.
+pub(crate) fn host_subject_id(subject_id: &str) -> String {
+    format!("{HOST_ID_PREFIX}{}", subject_id.trim())
+}
+
 /// One globally installed DSH CLI, as a subject.
 ///
 /// Mirrors `checkout_target` deliberately — same service shape, same default port,
