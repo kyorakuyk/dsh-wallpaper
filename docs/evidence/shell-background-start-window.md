@@ -159,3 +159,56 @@ settled            +4707ms  连续 2 秒不在屏上，这一场结束
 * 状态胶囊（岛左下角那个只读元素）显示**当前实际入口**：`API` / `Web`（API 后端）、`Web` / `Desktop` / `TUI`
   （harness，判据 `settings.window === 'tui'`、`isEmbeddedShellSubject`、其余为 `Web`）。
 * 回退开关：保留旧的 AUMID 后台启动路径作为退路，出问题时可以切回。
+
+### 八点二、两个宿主同时运行时会发生什么（源码取证，2026-09-30 深夜）
+
+用户提问："两个进程同时在使用同一个 CLI，会出现什么行为？" 这是上面那套"后台 web 宿主 + 前台完整壳"
+能不能并存的先决问题。结论：**并存是被支持的，只有两条硬边界**（同一端口、同一会话同时写），其余共享
+资源都是按资源加锁。
+
+**一、进程层：没有全局单实例锁。** CLI 入口 `@deepseek-ai/dsh/lib/bin.js` 的 `runCli()` 没有任何
+"只允许一个实例"的机制，第二次调用照常启动。壳的"只有一个窗口"来自 Electron 的窗口语义，不是 CLI 的约束。
+
+**二、端口：同端口就是启动失败。** `dsh-host-webserver/lib/index.js:295-305` 把 `listen` 的 `error`
+直接接到 `reject`，绑定失败即整个启动失败，**没有自动换端口的逻辑**；`dsh-web-app` 才提供 `--port 0`
+（交给系统分配）。而**壳的 desktop 宿主把端口写死**：`dsh-desktop-host/lib/index.js` 的 `main()` 传的是
+`["--no-open", "--port", "19387"]`（本机实测 19387 的 OwningProcess 就是壳的渲染进程 34120）。
+所以后台宿主必须**显式**选另一个端口，不能落回 19387。
+
+**三、会话：跨进程写锁，第二个写者拿到具名错误。**
+`dsh-session-persistence-jsonl` 给每个会话目录一把跨进程写锁：Windows 上是**命名内核信号量**
+`Local\dsh-session-lock-<sha256(规范化小写路径)>`（零超时等待，拿不到即抛 `SessionAlreadyOwnedError`），
+POSIX 上是 `session.lock` 的 `flock(2)`（注意：**Windows 上根本没有锁文件**，锁是内核对象）。
+三个关键性质：
+
+1. **只在"写打开"时获取**（已有产物打开写、或新建会话），**读、搜索、删目录都不碰它** —— 这正是
+   "一个进程正在写某会话时，另一个进程仍能自由读它"的原因，也是会话能在壁纸与壳之间互通的原因。
+2. 持有者进程**崩溃即由内核释放**，不会留下需要人工清理的死锁。
+3. 错误沿 API 上行变成 `session/writer-held`（`dsh-api-session-controller`），前端有专门文案
+   （`dsh-client-ui-conversation` 的 `error.sessionInUse`）：**"当前会话已被占用，可能是其他正在运行的
+   DSH 导致的（如其他 dsh web、桌面端），请退出其他正在运行的 DSH 后重试。"**
+   ——上游自己就把"dsh web 与桌面端同时在跑"当成预期场景。
+
+**四、共享配置文件：按文件串行，最长等 120 秒。** `dsh-atomic-write` 的模型是
+`<file>.lock`（`wx` 创建、内容写 PID）+ rename 原子提交：**读者完全无锁**，写者之间的
+"读-改-写"整段串行。持锁进程已退出（`ESRCH`）时后继者会接管，但 **PID 被复用时会留下打不开的僵锁**——
+本机现在就有一个实例：`$DSH_HOME/profiles/dsh-tui/package.json.lock`（5 字节，9/29 00:34）。
+插件操作（`dsh plugin` 以及**启动时的 bundle reconcile**）锁 `profiles/<profile>/package.json.lock`，
+默认 `lockWaitMs` = 120000，超时报 `atomic-write: timed out waiting for the writer lock at <path>`。
+注意这是**按档案**加锁：后台宿主在 `web`、前台壳在 `desktop`，两者不互相排队。
+
+**五、派生索引：按进程独立。** `dsh-session-query-sqlite` 的 `path` 是"由启动器指定的、**本进程自己的**
+派生查询索引"（默认 `journal_mode = wal`），所以不存在两个进程抢同一个 SQLite 文件。
+
+**六、PATH 注册：命名互斥体 5 秒超时。** `resources/runtime/cli/command-path.ps1` 用
+`[Threading.Mutex]` + 注册表所有权，等 5000 ms，拿不到就抛
+`EBUSY 'Another command-management operation is running.'`。
+
+**七、对施工的约束（据上述结论）**
+
+* 后台宿主**显式指定端口**，并把它当作 `endpointPort` 记在设置里；壳固定占 19387。
+* 后台与前台**不要同时驱动同一个会话**：壁纸侧的会话与桌面会话保持分离，否则第二个写者只会得到
+  "会话已被占用"的提示——不损坏数据，但体验是"发不出去"。
+* 两个宿主各有一份自己的桥实例（`desktop` 与 `web` 档案都装了桥），所以壁纸必须**固定连它的后台宿主**
+  （按 `endpointPort`），不能"探测到哪个连哪个"。
+* 一句话总结：**同一份 `$DSH_HOME` 可以放心被两个宿主同时读；写是按资源加锁的，读永远自由。**
