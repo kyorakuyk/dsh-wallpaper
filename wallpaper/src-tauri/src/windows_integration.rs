@@ -2573,11 +2573,23 @@ fn restore_desktop_keyboard_focus(app: &tauri::AppHandle) {
 /// 而我们的判据认为不是，于是每一次点击都被当成"第一击"，功能静默失效（2026-09-30 实测，
 /// 日志里连续三次 armed 却一次都没切换）。Windows 把这个间隔作为用户设置暴露给程序，
 /// 就应该按它来；上限夹到 2 秒，防止被设成极端值时误配对。
+/// 两次点击的位置是否近到可以算作一次双击。
+///
+/// 这是把时间窗口放宽之后的必要配套：时间放宽了，两次**互不相干**的单击也可能落进窗口里，
+/// 那就会凭空切换桌面层。真正的双击几乎在原处（人手的抖动是几个像素），所以按切比雪夫距离
+/// 判一个宽松的容差即可。容差取物理像素，因为 `GetCursorPos` 给的就是物理坐标。
+fn within_double_click_reach(a: (i32, i32), b: (i32, i32), tolerance: i32) -> bool {
+    (a.0 - b.0).abs() <= tolerance && (a.1 - b.1).abs() <= tolerance
+}
+
 fn double_click_pairing_window_ms(system_ms: u32) -> u64 {
     // 这里是**我们自己的手势**，不是操作系统的双击：系统那个 500ms 决定的是"Explorer 要不要打开
     // 图标"，而"在空白桌面上连点两下"在系统看来只是两次普通点击。实测用户自然的节奏会超过 500ms
     // （系统值就是 500，而功能一直不触发），所以取系统值与 900ms 里较大的那个，再夹到 2 秒以内。
-    u64::from(system_ms).clamp(200, 2000).max(900)
+    // 实测这台机器上用户的双击节奏在 1000~1600ms 之间（日志里的"双击配对：间隔"），所以下限给到
+    // 1500ms —— 900ms 时有一半的配对失败，而**所有**判据都是通过的，卡的只是时间。
+    // 放宽时间带来的误配对风险，由"两次点击必须位置相近"那条条件兜住（见 within_double_click_reach）。
+    u64::from(system_ms).clamp(200, 2000).max(1500)
 }
 
 fn double_click_became_someone_elses(
@@ -2954,6 +2966,8 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
         // 记录首次点击时前台的**窗口句柄**。句柄比进程号细一档：双击壁纸自己的快捷方式时进程号
         // 不变（应用已在运行），只有窗口会变。
         let mut foreground_at_first_click: Option<isize> = None;
+        // 首次点击的位置：把时间窗口放宽之后，位置相近就成了"这确实是一次双击"的主要依据。
+        let mut last_blank_point: Option<(i32, i32)> = None;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(16));
             if app.get_webview_window("background").is_none() {
@@ -2961,6 +2975,15 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
             }
             let down = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0;
             if down && !was_down {
+                // 这一次点击的位置：配对的"位置相近"条件与首次点击的记录都要用。
+                let (cursor_x, cursor_y) = unsafe {
+                    let mut point = POINT::default();
+                    if GetCursorPos(&mut point).is_err() {
+                        (0, 0)
+                    } else {
+                        (point.x, point.y)
+                    }
+                };
                 let background = app
                     .get_webview_window(BACKGROUND_WINDOW_LABEL)
                     .and_then(|window| window.hwnd().ok())
@@ -2989,11 +3012,14 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                                             log_workspace_toggle_decision(false, true);
                     let now = std::time::Instant::now();
                     // 配对是否成立，取决于这一次点击与上一次的间隔 —— 把它记下来，节奏问题一眼可见。
+                    let gap_ms = last_blank_click
+                        .map(|previous| now.duration_since(previous).as_millis())
+                        .unwrap_or(u128::MAX);
+                    let gap_px = last_blank_point
+                        .map(|previous| (previous.0 - cursor_x).abs().max((previous.1 - cursor_y).abs()))
+                        .unwrap_or(-1);
                     log::info!(
-                        "双击配对：间隔 {}ms（窗口 {}ms）",
-                        last_blank_click
-                            .map(|previous| now.duration_since(previous).as_millis())
-                            .unwrap_or(u128::MAX),
+                        "双击配对：间隔 {gap_ms}ms（窗口 {}ms），位置差距 {gap_px}px（上限 64px）",
                         double_click_window.as_millis()
                     );
                     let foreground_now = unsafe {
@@ -3032,12 +3058,16 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                         );
                         last_blank_click = None;
                         foreground_at_first_click = None;
+                        last_blank_point = None;
+                        last_blank_point = None;
                         was_down = down;
                         continue;
                     }
+                    let reached = last_blank_point
+                        .is_some_and(|previous| within_double_click_reach(previous, (cursor_x, cursor_y), 64));
                     if last_blank_click.is_some_and(|previous| {
                         now.duration_since(previous) <= double_click_window
-                    }) {
+                    }) && reached {
                         last_blank_click = None;
                         // The transition itself lives in enter/leave_inner_workspace so the
                         // double click and the floating ball cannot drift apart.
@@ -3064,10 +3094,12 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                     } else {
                         last_blank_click = Some(now);
                         foreground_at_first_click = foreground_now;
+                        last_blank_point = Some((cursor_x, cursor_y));
                     }
                 } else {
                     last_blank_click = None;
                     foreground_at_first_click = None;
+                    last_blank_point = None;
                 }
             }
             was_down = down;
@@ -5009,11 +5041,11 @@ fn a_double_click_that_activated_something_else_never_toggles_the_workspace() {
 fn the_pairing_window_follows_the_system_setting_within_sane_bounds() {
     // 系统默认 500ms 原样使用。
     // 系统值 500ms：我们的手势仍给到 900ms —— 实测用户自然节奏会超过系统值。
-    assert_eq!(double_click_pairing_window_ms(500), 900);
+    assert_eq!(double_click_pairing_window_ms(500), 1500);
     // 系统值本身更宽时跟着系统。
-    assert_eq!(double_click_pairing_window_ms(1200), 1200);
+    assert_eq!(double_click_pairing_window_ms(1700), 1700);
     // 极端值夹住，避免误配对。
-    assert_eq!(double_click_pairing_window_ms(50), 900);
+    assert_eq!(double_click_pairing_window_ms(50), 1500);
     assert_eq!(double_click_pairing_window_ms(10_000), 2000);
 }
 
@@ -5030,6 +5062,18 @@ fn only_small_foreign_onscreen_rectangles_count_as_desktop_icons() {
     // 退化的零面积矩形（虚拟化项常见）不参与。
     assert!(!looks_like_a_desktop_icon((100, 100, 100, 100), false, false));
     assert!(!looks_like_a_desktop_icon((0, 0, 2, 2), false, false));
+}
+
+#[test]
+fn a_pair_must_land_in_nearly_the_same_place() {
+    // 双击：几乎在原处（人手抖动几个像素）。
+    assert!(within_double_click_reach((100, 200), (104, 197), 64));
+    // 同一处的两次点击：当然算。
+    assert!(within_double_click_reach((100, 200), (100, 200), 64));
+    // 相隔很远的两次单击（例如点两下不同角落）：不算 —— 时间窗口放宽到 1500ms 之后，
+    // 这一条是防止"两次无关单击恰好凑成一次切换"的关键。
+    assert!(!within_double_click_reach((100, 200), (800, 900), 64));
+    assert!(!within_double_click_reach((100, 200), (100, 300), 64));
 }
 
 #[test]
