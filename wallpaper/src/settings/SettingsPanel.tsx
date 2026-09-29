@@ -728,7 +728,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
               />
             </Field>}
             */}
-            <Field title="数据档案（Profile）" detail="这份源码使用的档案名；不同档案的会话互不相通。"><input value={settings.dshLaunch.profile} placeholder="desktop" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, profile: e.target.value || 'desktop' } })} /></Field>
+            <Field title="数据档案（Profile）" detail="源码检出与已安装的 CLI 用它启动（官壳与 TUI 各自用固定的档案，不看这里）。档案决定装载哪些插件与提示词；会话与工作区按 DSH 主目录共享，不按档案隔离。"><input value={settings.dshLaunch.profile} placeholder="desktop" onChange={(e) => set({ dshLaunch: { ...settings.dshLaunch, profile: e.target.value || 'desktop' } })} /></Field>
             {/* FREEZE（临时冻结，不是删除）：「启动参数」行。
                 为什么关：本 build 有意回到这个功能之前的行为 —— 没有参数这一项，启动链也不接受
                 参数（`App.tsx` 里三个入口、`SettingsWindow.tsx` 里两个入口都冻结了）。界面上留着
