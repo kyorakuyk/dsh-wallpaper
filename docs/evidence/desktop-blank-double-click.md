@@ -132,4 +132,17 @@ Armed ──以上任一条件不满足─────────────�
   代价要记住：立绘区域内的点击不再穿透，因此**视觉上压在立绘之上、位于桌面图标层的图标在那块区域内点不到**。
   这是"把立绘当作我们的内容"的必然结果，若将来觉得碍事，可改为单独一份"不算空白但不拦截点击"的声明
   （那需要前端多加一个字段、原生多加一条判定）。
+* **点立绘"闪一下"的成因已定位，修法尚未落地**（2026-09-30 晚）：立绘成为热区后，点击会走进
+  `WM_NCHITTEST` 里那套"输入岛点击 ⇒ 键盘交接"的路径（`hand_over_keyboard_after_island_click`）。
+  该路径在按住期间被重复触发，日志实测**两秒内跑了六次交接**（每次 `SetForegroundWindow=true
+  SetFocus=true`，并伴随 `keyboard channel is not restored` 警告），岛与 WebView 每次可见地动一下，
+  就是那次"闪"。同期热区快照是稳定的（只有一条 `region_count=2`），所以"热区消失"那条旧解释已被推翻。
+  修法只有一句：**交接只对输入岛自己的热区（id 为 `ISLAND_REGION_ID`）做**，其它热区（立绘等）只需要
+  "点击归我们"。落点：`windows_integration.rs` 的 `WM_NCHITTEST` 分支里，命中判定之后的
+  `if GetAsyncKeyState(VK_LBUTTON) < 0 { … hand_over_keyboard_after_island_click(…) }` —— 给这个条件
+  补一个"命中的是岛热区"的前置判断（新增一个照 `point_hits_interaction_region` 写、但只认
+  `ISLAND_REGION_ID` 的判定函数即可）。
+  本轮尝试改这一处时，因为对 `PhysicalInteractionRegion` 的字段/构造取法判断有误导致测试编译不过，
+  已按"不留破的中间态"原则整体回退；下次只需先读一眼该结构体的定义（`island_visible_from_regions`
+  里有现成的 `region.id == ISLAND_REGION_ID` 用法）再动手，工作量很小。
 * 探针只在**本机**验证过（Windows 11，图标层可见/隐藏两态各测一次）。
