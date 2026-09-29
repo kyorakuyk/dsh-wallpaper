@@ -5013,7 +5013,7 @@ fn the_pairing_window_follows_the_system_setting_within_sane_bounds() {
     // 系统值本身更宽时跟着系统。
     assert_eq!(double_click_pairing_window_ms(1200), 1200);
     // 极端值夹住，避免误配对。
-    assert_eq!(double_click_pairing_window_ms(50), 200);
+    assert_eq!(double_click_pairing_window_ms(50), 900);
     assert_eq!(double_click_pairing_window_ms(10_000), 2000);
 }
 
