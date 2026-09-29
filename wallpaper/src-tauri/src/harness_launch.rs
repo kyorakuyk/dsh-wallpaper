@@ -1156,8 +1156,20 @@ pub(crate) fn run_launch(
             launcher,
             profile,
             args,
-            ..
+            port,
         } => {
+            // 端口上已经有人应答（用户自己开着客户端，或上一次起的宿主还在）⇒ **别再起一个**：
+            // 那个进程服务的是同一份数据、同一套桥，壁纸连上它就是对的答案。这与 `launch_shell`
+            // 开头那条同名判断是同一条规矩；少了它，我们会 spawn 一个注定绑不上端口的进程，
+            // 在日志里留下一次谁也看不懂的失败，还多一个几百毫秒后自己消失的孩子。
+            if let Some(port) = port {
+                if crate::client_window::endpoint_is_listening(*port) {
+                    log::info!(
+                        "harness subject host not needed: subject={subject_id} port={port} already answers"
+                    );
+                    return HarnessLaunchOutcome::new("already-running", *kind);
+                }
+            }
             log::info!("harness subject host: subject={subject_id} record={host_id} profile={profile}");
             launch_cli_host(host_id, *kind, launcher, profile, args, true)
         }
