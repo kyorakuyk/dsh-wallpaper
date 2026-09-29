@@ -280,6 +280,13 @@ struct InteractionRegionState {
     /// 在前面——否则球会在岛正上方冒出来。判定就放在发布热区这一步，避免为它再开
     /// 一条 IPC。
     island_visible: bool,
+    /// **输入岛自己**那块矩形（发布时按 id 挑出来单独留一份）。
+    ///
+    /// 为什么单独存：内部结构 `PhysicalInteractionRegion` 只保留四个坐标，id 在转换时就丢了，
+    /// 而"要不要做键盘交接"必须区分"命中的是岛"还是"命中的是立绘等其它热区"——两者都该归我们
+    /// 收点击，但只有前者该抢前台与焦点（实测：立绘若也抢，一次点击会因 `WM_NCHITTEST` 重复
+    /// 触发六次交接，表现为"点立绘闪一下"）。
+    island_rect: Option<PhysicalInteractionRegion>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -638,6 +645,16 @@ fn point_hits_interaction_region(regions: &[PhysicalInteractionRegion], x: i32, 
     regions.iter().any(|region| region.contains(x, y))
 }
 
+/// 这一点是否落在**输入岛自己**那块矩形里。
+///
+/// 与 `point_hits_interaction_region` 的分工：后者决定"点击归不归我们"（任何热区都算，立绘也算），
+/// 前者决定"要不要做键盘交接、把前台与焦点抢过来"——那件事只有输入岛该做。
+fn point_hits_island_rect(state: &InteractionRegionState, x: i32, y: i32) -> bool {
+    state
+        .island_rect
+        .is_some_and(|rect| rect.contains(x, y))
+}
+
 pub fn update_interaction_regions(
     regions: Vec<InteractionRegionInput>,
     scale_factor: f64,
@@ -654,6 +671,11 @@ pub fn update_interaction_regions(
     }
     // 判定要在 `into_iter()` 吃掉 regions 之前做。
     let island_visible = regions.iter().any(|region| region.id == ISLAND_REGION_ID);
+    let island_rect = regions
+        .iter()
+        .find(|region| region.id == ISLAND_REGION_ID)
+        .cloned()
+        .and_then(|region| scale_interaction_region(region, scale_factor));
     let physical_regions: Vec<_> = regions
         .into_iter()
         .enumerate()
@@ -675,6 +697,7 @@ pub fn update_interaction_regions(
     state.revision = revision;
     state.scale_factor = scale_factor;
     state.regions = physical_regions;
+    state.island_rect = island_rect;
     // 岛可见性的变化必须留痕：悬浮球「岛在前面就不弹」完全建立在这个标志上，
     // 而它只可能由前端发布热区改变——出问题时第一个要看的就是这条日志。
     if state.island_visible != island_visible {
@@ -2384,12 +2407,17 @@ unsafe extern "system" fn interaction_subclass_proc(
                 if !hit {
                     return LRESULT(HTTRANSPARENT as isize);
                 }
+                // 点击归属（`hit`）与"要不要抢焦点"是两件事：立绘等其它热区只需要前者。
+                let hit_is_island = interaction_regions()
+                    .read()
+                    .map(|state| point_hits_island_rect(&state, local_x, local_y))
+                    .unwrap_or(false);
                 // Inside the input island. `WM_NCHITTEST` reaches us where the mouse
                 // messages do not, so this is where a real click can be recognised: the
                 // point is in a declared region and the physical left button is down.
                 // Outside the island nothing here runs, so the wallpaper still never
                 // takes the keyboard without the user asking for it (plan 3.C).
-                if unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0 {
+                if hit_is_island && unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0 {
                     // Phase A still has one open question: whether this branch is reached at all on
                     // a real click. The WebView2 child belongs to another process, so hit-testing may
                     // not be ours to see. Traced so the answer is measured rather than assumed.
@@ -5101,7 +5129,42 @@ fn workspace_toggle_requires_a_blank_desktop_and_never_a_chat_region() {
     }
 
     /// 悬浮球「岛可见时不弹出」的判据就挂在这条映射上：发布的热区里出现
-    /// `ISLAND_REGION_ID` ⇔ 展开态输入岛正在前面。
+    /// 交接只对岛那块矩形做：立绘等其它热区命中时，点击仍归我们，但不该抢前台与焦点。
+#[test]
+fn only_the_island_rect_asks_for_the_keyboard() {
+  let island = PhysicalInteractionRegion {
+    left: 100,
+    top: 100,
+    right: 300,
+    bottom: 300,
+  };
+  let persona = PhysicalInteractionRegion {
+    left: 500,
+    top: 500,
+    right: 800,
+    bottom: 800,
+  };
+  let state = InteractionRegionState {
+    regions: vec![island, persona],
+    island_rect: Some(island),
+    island_visible: true,
+    ..Default::default()
+  };
+  // 岛内：归属成立，且**该**做交接。
+  assert!(point_hits_interaction_region(&state.regions, 150, 150));
+  assert!(point_hits_island_rect(&state, 150, 150));
+  // 立绘内：归属仍成立（点击归我们），但**不该**做交接 —— 这就是"点立绘闪一下"的修复点。
+  assert!(point_hits_interaction_region(&state.regions, 600, 600));
+  assert!(!point_hits_island_rect(&state, 600, 600));
+  // 两者之外：都不成立。
+  assert!(!point_hits_interaction_region(&state.regions, 1000, 1000));
+  assert!(!point_hits_island_rect(&state, 1000, 1000));
+  // 岛不可见（未发布）时：任何一点都不做交接。
+  let empty = InteractionRegionState::default();
+  assert!(!point_hits_island_rect(&empty, 150, 150));
+}
+
+/// `ISLAND_REGION_ID` ⇔ 展开态输入岛正在前面。
     #[test]
     fn island_visibility_follows_the_published_island_region() {
         let _guard = REGION_TEST_LOCK.lock().expect("region test lock");
