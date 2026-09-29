@@ -1,5 +1,13 @@
 use std::sync::{OnceLock, RwLock};
 
+// 冻结说明（2026-09-30）：本文件里的"双击桌面空白处切换表/里桌面"这一功能，其**加固版本**已按用户
+// 要求冻结并回退到更早的行为 —— 现在只保留 original 的三条判据（在桌面表面、不在输入岛、自动化判定
+// 为空白），也就是"双击桌面上的文件/图标同样会切换桌面层"的那个版本。
+//
+// 被冻结的那一轮改动（共 15 个提交，从 c9a9665 到 dc49983）都在 git 历史里，包含：图标矩形判据与三重
+// 过滤、按窗口句柄/进程/桌面表面类判断"这一下是否启动了别的东西"、UIA 桌面归属信号（含 #32769 与三层
+// 以内收紧）、配对窗口与位置容差、以及一整套诊断日志。需要时用 `git show <提交> -- 本文件` 取回，
+// 不必重写。冻结原因见当次对话：加固过程中反复在两个方向上失灵，用户决定先回到已知行为。
 use serde::{Deserialize, Serialize};
 
 #[cfg(windows)]
@@ -60,7 +68,6 @@ fn emit_system_session(app: &tauri::AppHandle, transition: &'static str) {
 }
 
 #[cfg(windows)]
-use windows::Win32::System::Variant::VARIANT;
 use windows::{
     core::{w, BOOL, HSTRING, PCWSTR, PWSTR},
     ApplicationModel::{StartupTask, StartupTaskState},
@@ -116,10 +123,10 @@ use windows::{
             WS_POPUP, WS_SYSMENU, WS_THICKFRAME, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
         },
         UI::{
-            Accessibility::{CUIAutomation, IUIAutomation, UIA_ControlTypePropertyId, UIA_ListItemControlTypeId, UIA_PaneControlTypeId, TreeScope_Descendants},
+            Accessibility::{CUIAutomation, IUIAutomation, UIA_ListItemControlTypeId},
             Controls::MARGINS,
             HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI},
-            Input::KeyboardAndMouse::{GetAsyncKeyState, GetDoubleClickTime, SetFocus, VK_LBUTTON},
+            Input::KeyboardAndMouse::{GetAsyncKeyState, SetFocus, VK_LBUTTON},
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         },
     },
@@ -1026,22 +1033,6 @@ fn is_desktop_foreground_class(class: Option<&str>) -> bool {
     // of them, so comparing against FindWindowW("WorkerW") (the first match)
     // incorrectly hides the overlay on otherwise valid desktop surfaces.
     matches!(class, Some("WorkerW") | Some("Progman"))
-}
-
-/// 这个类是不是**桌面表面本身**。只给双击切换那条判据用，别改
-/// `is_desktop_foreground_class` 的含义 —— 那个是 Win+D 覆盖层的老判据（只认 WorkerW/Progman），
-/// 现在这里要多认两个：点空白桌面时前台可能落到图标视图上。
-fn is_desktop_surface_class(class: Option<&str>) -> bool {
-    matches!(
-        class,
-        Some("Progman")
-            | Some("WorkerW")
-            | Some("SHELLDLL_DefView")
-            | Some("SysListView32")
-            // 桌面窗口自己的类名。**这一条是被实测逼出来的**：光标压在覆盖层上时，UIA 父链里能看到的
-            // 桌面祖先就是这个类名的"桌面 N" Pane，而上面四个类名一个都不出现 —— 于是判负、双击被拒。
-            | Some("#32769")
-    )
 }
 
 fn should_upgrade_wallpaper_parent(current_class: Option<&str>, worker_available: bool) -> bool {
@@ -2565,248 +2556,9 @@ fn restore_desktop_keyboard_focus(app: &tauri::AppHandle) {
     }
 }
 
-/// 一次双击里，前台窗口是否已经换了人 —— 也就是这次双击确实**启动了/激活了什么东西**。
-///
-/// 这是"双击桌面图标会翻桌面层"这个缺陷的行为兜底：判据（UIA）可以说谎，但"双击之后前台变成了
-/// 别的应用的窗口"不会 —— 那说明这次双击不是对着空白桌面发的，就不该翻。
-///
-/// 只在前台**从某个值变成了另一个值**、且新值既不是桌面家族也不是我们自己时才为真：
-/// - 空白桌面双击可能让 Progman 变成前台（那是桌面本身），仍然允许翻；
-/// - 前台没变（点空白时常见，因为点击穿透让前台留在原处）也仍然允许翻。
-/// 这一次双击配对允许的间隔：**用系统设置**，不要写死。
-///
-/// 写死过一个 500ms，结果是"时好时坏"：点击稍慢的用户，系统认为那是双击（图标照常打开），
-/// 而我们的判据认为不是，于是每一次点击都被当成"第一击"，功能静默失效（2026-09-30 实测，
-/// 日志里连续三次 armed 却一次都没切换）。Windows 把这个间隔作为用户设置暴露给程序，
-/// 就应该按它来；上限夹到 2 秒，防止被设成极端值时误配对。
-/// 两次点击的位置是否近到可以算作一次双击。
-///
-/// 这是把时间窗口放宽之后的必要配套：时间放宽了，两次**互不相干**的单击也可能落进窗口里，
-/// 那就会凭空切换桌面层。真正的双击几乎在原处（人手的抖动是几个像素），所以按切比雪夫距离
-/// 判一个宽松的容差即可。容差取物理像素，因为 `GetCursorPos` 给的就是物理坐标。
-fn within_double_click_reach(a: (i32, i32), b: (i32, i32), tolerance: i32) -> bool {
-    (a.0 - b.0).abs() <= tolerance && (a.1 - b.1).abs() <= tolerance
-}
-
-fn double_click_pairing_window_ms(system_ms: u32) -> u64 {
-    // 这里是**我们自己的手势**，不是操作系统的双击：系统那个 500ms 决定的是"Explorer 要不要打开
-    // 图标"，而"在空白桌面上连点两下"在系统看来只是两次普通点击。实测用户自然的节奏会超过 500ms
-    // （系统值就是 500，而功能一直不触发），所以取系统值与 900ms 里较大的那个，再夹到 2 秒以内。
-    // 用户决定按 900ms 试（此前 1500ms）。两者的取舍是明确写下来的：日志里一次**真实的**桌面双击
-    // 间隔是 1044ms —— 900ms 时那种节奏会落空；反过来 1500ms 更容易让两次无关的单击凑成一对。
-    // 位置相近那条条件（within_double_click_reach）继续兜住后者的风险。日志每次配对都会打印实测间隔，
-    // 所以下一步该往哪边调，看数字即可。
-    u64::from(system_ms).clamp(200, 2000).max(900)
-}
-
-fn double_click_became_someone_elses(
-    foreground_at_first_click: Option<isize>,
-    foreground_now: Option<isize>,
-    foreground_now_is_desktop_surface: bool,
-) -> bool {
-    // 放行只有两种：前台**没变**，或换成了**桌面表面窗口**（Progman/WorkerW/图标视图）。
-    //
-    // 判据用窗口句柄而不是进程号，而且**不再放行"我们自己的进程"**——这一条是两次实测换来的：
-    // * 按"进程号是 Explorer"放行时漏掉了"用资源管理器打开文件夹"（动作由 explorer 自己完成）；
-    // * 按"进程号是我们自己"放行时漏掉了"双击壁纸自己的桌面快捷方式"（应用已在运行，激活它不换
-    //   进程，只换窗口）。
-    // 句柄比较把这两种都归入"别人动过了"；点空白桌面时前台要么不动、要么落到桌面表面窗口上。
-    match (foreground_at_first_click, foreground_now) {
-        (Some(before), Some(now)) if before != now => !foreground_now_is_desktop_surface,
-        _ => false,
-    }
-}
-
 /// Uses UI Automation, rather than ListView messages with a pointer owned by
 /// Explorer, to distinguish desktop icons from empty desktop space. This is a
 /// supported cross-process accessibility boundary and never consumes input.
-#[cfg(windows)]
-/// 矩形是否包含某点。抽成纯函数，便于测试。
-fn rect_contains_point(rect: (i32, i32, i32, i32), x: i32, y: i32) -> bool {
-    x >= rect.0 && x < rect.2 && y >= rect.1 && y < rect.3
-}
-
-/// 这个矩形是否"像一枚桌面图标"。把明显不是图标的东西挡掉，这三条都是被实测逼出来的：
-///
-/// * **尺寸**：桌面图标是几十像素的小方块。UIA 树里总有元素报告覆盖整屏的矩形（容器、列表、
-///   我们自己的界面都可能），哪怕只漏进来一个，整块桌面就都成了"图标范围"，双击空白再也切不动。
-/// * **是否离屏**：隐藏/虚拟化的项不该参与命中。
-/// * **归属**：**只用别的进程的项**。壁纸自己的窗口就挂在 WorkerW 之下，是桌面 Pane 的后代，
-///   而输入岛与设置里的列表项同样是 ListItem —— 用自己进程的项必然误判。
-fn looks_like_a_desktop_icon(
-    rect: (i32, i32, i32, i32),
-    is_offscreen: bool,
-    belongs_to_us: bool,
-) -> bool {
-    if is_offscreen || belongs_to_us {
-        return false;
-    }
-    let width = rect.2 - rect.0;
-    let height = rect.3 - rect.1;
-    (4..=400).contains(&width) && (4..=400).contains(&height)
-}
-
-/// 光标这一点在 UIA 的父链上是否属于**桌面表面**。
-///
-/// 这是 `cursor_is_on_desktop_surface` 的补充信号，而不是替代品。那条判据只看 Win32 的窗口父链，
-/// 实测会漏：光标下可能是一个覆盖层窗口（例如 `NVIDIA GeForce Overlay`，覆盖桌面且点击穿透），
-/// 它的父链不落到桌面上，于是双击的第二下被判成"不在桌面"，功能静默失效（2026-09-30 实测）。
-/// 而 UIA 的父链能看出它挂在"桌面 N"这个 Pane 之下。
-///
-/// 用类名判断，和 Win32 那条用的是同一套桌面类定义，所以两者不会互相矛盾。
-#[cfg(windows)]
-fn uia_point_belongs_to_desktop(automation: &IUIAutomation) -> bool {
-    let mut point = POINT::default();
-    unsafe {
-        if GetCursorPos(&mut point).is_err() {
-            return false;
-        }
-        let Ok(element) = automation.ElementFromPoint(point) else {
-            return false;
-        };
-        let walker = automation.ControlViewWalker().ok();
-        let mut current = Some(element);
-        let mut seen: Vec<String> = Vec::new();
-        for depth in 0..10 {
-            let Some(element) = current else { break };
-            let class = element.CurrentClassName().map(|value| value.to_string()).ok();
-            seen.push(class.clone().unwrap_or_else(|| "-".to_string()));
-            // 只在**三层以内**承认桌面类名。原因：UIA 树的根就是桌面自己，爬得够远总能碰到它 ——
-            // 任务栏按钮的祖先链就是这样，于是"点任务栏也算在桌面上"（实测被误放行过一次）。
-            // 而真正要覆盖的情形（桌面之上压着一层点击穿透的覆盖层）只需要两三层就碰到桌面。
-            if depth < 3 && is_desktop_surface_class(class.as_deref()) {
-                return true;
-            }
-            current = walker
-                .as_ref()
-                .and_then(|tree| tree.GetParentElement(&element).ok());
-        }
-        log::info!("UIA 父链类名（都不是桌面类）: {}", seen.join(" < "));
-        false
-    }
-}
-
-/// 光标是否落在某个**桌面图标**的范围内。
-///
-/// 为什么不用命中测试：实测（2026-09-30）光标下最上层的 UIA 元素可能是盖在桌面上的覆盖层
-/// （例如 `NVIDIA GeForce Overlay` 的 Document，它挂在"桌面 1"这个 Pane 下、覆盖整个桌面、而且
-/// 点击穿透），于是命中测试看不到图标，判据把图标位置当成"空白桌面" —— 双击图标既打开了东西、
-/// 又翻了桌面层。枚举图标矩形做包含判断则完全不受覆盖层影响。
-///
-/// 图标是桌面 Pane 下的 ListItem，所以从命中元素沿父链找到那个 Pane，再枚举它下面的 ListItem。
-#[cfg(windows)]
-fn cursor_is_over_a_desktop_icon(automation: &IUIAutomation) -> bool {
-    let mut point = POINT::default();
-    unsafe {
-        if GetCursorPos(&mut point).is_err() {
-            return false;
-        }
-        let Ok(element) = automation.ElementFromPoint(point) else {
-            return false;
-        };
-        let walker = automation.ControlViewWalker().ok();
-        // 沿父链找桌面 Pane：命中的可能是覆盖层，但桌面 Pane 一定在它的祖先里。
-        let mut current = Some(element);
-        let mut container = None;
-        for _ in 0..10 {
-            let Some(element) = current else { break };
-            if element.CurrentControlType().ok() == Some(UIA_PaneControlTypeId) {
-                container = Some(element);
-                break;
-            }
-            current = walker
-                .as_ref()
-                .and_then(|tree| tree.GetParentElement(&element).ok());
-        }
-        let Some(container) = container else { return false };
-        let Ok(condition) = automation.CreatePropertyCondition(
-            UIA_ControlTypePropertyId,
-            &VARIANT::from(UIA_ListItemControlTypeId.0),
-        ) else {
-            return false;
-        };
-        let Ok(items) = container.FindAll(TreeScope_Descendants, &condition) else {
-            return false;
-        };
-        let Ok(count) = items.Length() else { return false };
-        let mut examined = 0usize;
-        let mut skipped_big = 0usize;
-        let mut skipped_ours = 0usize;
-        for index in 0..count {
-            let Ok(item) = items.GetElement(index) else { continue };
-            let Ok(rect) = item.CurrentBoundingRectangle() else { continue };
-            let is_offscreen = item.CurrentIsOffscreen().map(|value| value.as_bool()).unwrap_or(false);
-            let belongs_to_us = item
-                .CurrentProcessId()
-                .map(|pid| pid as u32 == std::process::id())
-                .unwrap_or(false);
-            let candidate = (rect.left, rect.top, rect.right, rect.bottom);
-            if !looks_like_a_desktop_icon(candidate, is_offscreen, belongs_to_us) {
-                if belongs_to_us {
-                    skipped_ours += 1;
-                } else {
-                    skipped_big += 1;
-                }
-                continue;
-            }
-            examined += 1;
-            if rect_contains_point(candidate, point.x, point.y) {
-                log::info!(
-                    "桌面图标命中: rect=({},{})-({},{}) 共枚举 {count} 项（过滤掉 大矩形 {skipped_big} / 我们自己 {skipped_ours}）",
-                    rect.left, rect.top, rect.right, rect.bottom
-                );
-                return true;
-            }
-        }
-        log::info!(
-            "桌面图标扫描: 枚举 {count} 项，可用 {examined} 项，过滤掉 大矩形 {skipped_big} / 我们自己 {skipped_ours} —— 光标不在任何图标内"
-        );
-        false
-    }
-}
-
-/// 光标下那个 UIA 元素长什么样 —— 只用于日志。这条判据已经两次失灵（把图标当空白、把桌面容器当
-/// 内容），所以宁可每次判定都把现场写下来，也不要在下一次故障时靠猜。
-#[cfg(windows)]
-fn describe_point_for_blank(automation: &IUIAutomation) -> String {
-    let mut point = POINT::default();
-    unsafe {
-        if GetCursorPos(&mut point).is_err() {
-            return "cursor-unavailable".to_string();
-        }
-        let Ok(element) = automation.ElementFromPoint(point) else {
-            return "no-element".to_string();
-        };
-        let walker = automation.ControlViewWalker().ok();
-        let mut parts: Vec<String> = Vec::new();
-        let mut current = Some(element);
-        for _ in 0..4 {
-            let Some(element) = current else {
-                break;
-            };
-            let control = element
-                .CurrentControlType()
-                .map(|value| format!("{}", value.0))
-                .unwrap_or_else(|_| "?".to_string());
-            let name = element
-                .CurrentName()
-                .map(|value| value.to_string())
-                .unwrap_or_default();
-            let name = name.trim();
-            let name = if name.is_empty() {
-                "-".to_string()
-            } else {
-                name.chars().take(24).collect()
-            };
-            parts.push(format!("{control}:{name}"));
-            current = walker
-                .as_ref()
-                .and_then(|tree| tree.GetParentElement(&element).ok());
-        }
-        parts.join(" < ")
-    }
-}
-
 #[cfg(windows)]
 fn cursor_is_over_desktop_blank(automation: &IUIAutomation) -> bool {
     let mut point = POINT::default();
@@ -2822,18 +2574,13 @@ fn cursor_is_over_desktop_blank(automation: &IUIAutomation) -> bool {
         // point blank; no Explorer memory or window messages are involved.
         let walker = automation.ControlViewWalker().ok();
         let mut current = Some(element);
-        // 8 层而不是 4 层：Windows 11 的图标在自动化树里可能藏得比一层标签文本更深，而漏判的
-        // 代价是真实的 —— 用户双击桌面图标时这一条若报"空白"，就会同时打开应用并翻掉桌面层
-        // （2026-09-30 实测的缺陷）。
-        for depth in 0..8 {
+        for _ in 0..4 {
             let Some(element) = current else {
                 break;
             };
             if element.CurrentControlType().ok() == Some(UIA_ListItemControlTypeId) {
                 return false;
             }
-            // 曾按「元素有名字就说明是图标」判过一次，实测在空白处会误判（把桌面容器当成内容），
-            // 于是凭空让「双击空白切换表/里桌面」失效 —— 已撤回，只保留控件类型与 8 层遍历。
             current = walker
                 .as_ref()
                 .and_then(|tree| tree.GetParentElement(&element).ok());
@@ -2967,20 +2714,8 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
         };
         log::info!("表/里桌面双击监控已启动（UI Automation）");
 
-        let double_click_window = std::time::Duration::from_millis(double_click_pairing_window_ms(
-            unsafe { GetDoubleClickTime() },
-        ));
-        log::info!(
-            "表/里桌面双击配对窗口 = {}ms（取自系统设置，不再写死）",
-            double_click_window.as_millis()
-        );
         let mut was_down = false;
         let mut last_blank_click: Option<std::time::Instant> = None;
-        // 记录首次点击时前台的**窗口句柄**。句柄比进程号细一档：双击壁纸自己的快捷方式时进程号
-        // 不变（应用已在运行），只有窗口会变。
-        let mut foreground_at_first_click: Option<isize> = None;
-        // 首次点击的位置：把时间窗口放宽之后，位置相近就成了"这确实是一次双击"的主要依据。
-        let mut last_blank_point: Option<(i32, i32)> = None;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(16));
             if app.get_webview_window("background").is_none() {
@@ -2988,110 +2723,23 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
             }
             let down = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0;
             if down && !was_down {
-                // 这一次点击的位置：配对的"位置相近"条件与首次点击的记录都要用。
-                let (cursor_x, cursor_y) = unsafe {
-                    let mut point = POINT::default();
-                    if GetCursorPos(&mut point).is_err() {
-                        (0, 0)
-                    } else {
-                        (point.x, point.y)
-                    }
-                };
                 let background = app
                     .get_webview_window(BACKGROUND_WINDOW_LABEL)
                     .and_then(|window| window.hwnd().ok())
                     .map(|window| HWND(window.0));
-                let on_surface_by_window =
-                    background.is_some_and(|background| cursor_is_on_desktop_surface(background));
-                let on_surface_by_tree = uia_point_belongs_to_desktop(&automation);
-                // 两条独立信号取或：窗口父链（Win32）与自动化父链（UIA）各能看出对方漏掉的归属。
-                let on_surface = on_surface_by_window || on_surface_by_tree;
-                let hits_interaction =
-                    background.is_some_and(|background| cursor_hits_interaction_region(background));
-                let over_icon = cursor_is_over_a_desktop_icon(&automation);
-                // 图标矩形命中是硬判据：覆盖层再盖上也不会误判为空白。
-                let blank = !over_icon && cursor_is_over_desktop_blank(&automation);
-                let blank_saw = describe_point_for_blank(&automation);
-                let can_toggle = should_toggle_desktop_workspace(on_surface, hits_interaction, blank);
-                if !can_toggle {
-                    // 三条判据分开记：这个功能两侧都栽过（图标处被当成空白、空白处被兜底挡掉），
-                    // 只有分开写，下一次失灵才不必靠猜。
-                    log::info!(
-                        "workspace toggle declined: on_surface={on_surface}(win={on_surface_by_window} uia={on_surface_by_tree}) hits_interaction={hits_interaction} blank={blank} over_icon={over_icon} uia_seen={blank_saw}"
-                    );
-                }
+                let can_toggle = background.is_some_and(|background| {
+                    should_toggle_desktop_workspace(
+                        cursor_is_on_desktop_surface(background),
+                        cursor_hits_interaction_region(background),
+                        cursor_is_over_desktop_blank(&automation),
+                    )
+                });
                 if can_toggle {
-                    log::info!("workspace toggle accepted: over_icon={over_icon} on_surface_win={on_surface_by_window} on_surface_uia={on_surface_by_tree} uia_seen={blank_saw}");
-                                            log_workspace_toggle_decision(false, true);
+                    log_workspace_toggle_decision(false, true);
                     let now = std::time::Instant::now();
-                    // 配对是否成立，取决于这一次点击与上一次的间隔 —— 把它记下来，节奏问题一眼可见。
-                    let gap_ms = last_blank_click
-                        .map(|previous| now.duration_since(previous).as_millis())
-                        .unwrap_or(u128::MAX);
-                    let gap_px = last_blank_point
-                        .map(|previous| (previous.0 - cursor_x).abs().max((previous.1 - cursor_y).abs()))
-                        .unwrap_or(-1);
-                    log::info!(
-                        "双击配对：间隔 {gap_ms}ms（窗口 {}ms），位置差距 {gap_px}px（上限 64px）",
-                        double_click_window.as_millis()
-                    );
-                    let foreground_now = unsafe {
-                        let window = GetForegroundWindow();
-                        if window.0.is_null() { None } else { Some(window.0 as isize) }
-                    };
-                    let foreground_pid_now = unsafe {
-                        let window = GetForegroundWindow();
-                        if window.0.is_null() {
-                            None
-                        } else {
-                            let mut pid = 0u32;
-                            GetWindowThreadProcessId(window, Some(&mut pid));
-                            if pid == 0 { None } else { Some(pid) }
-                        }
-                    };
-                    let foreground_now_class = unsafe {
-                        let window = GetForegroundWindow();
-                        if window.0.is_null() {
-                            None
-                        } else {
-                            window_class(window)
-                        }
-                    };
-
-                    let foreground_now_is_desktop_surface =
-                        is_desktop_surface_class(foreground_now_class.as_deref());
-                    // 判定时的前台是谁：用户实测"Win+D 之后立刻变灵敏"，而两次点击的间隔没有变，
-                    // 说明两个状态之间有别的差异。此前日志里缺的就是这个量。
-                    log::info!(
-                        "判定时的前台：class={foreground_now_class:?} pid={foreground_pid_now:?} 是桌面表面类={foreground_now_is_desktop_surface}"
-                    );
-                    if double_click_became_someone_elses(
-                        foreground_at_first_click,
-                        foreground_now,
-                        foreground_now_is_desktop_surface,
-                    ) {
-                        // 这次双击启动了别的东西（例如桌面上的快捷方式）：那是它在响应你，
-                        // 不是"对着空白桌面双击"。不翻，并把这一对点击忘掉。
-                        log::info!(
-                            "双击落在了会启动东西的位置：不切换表/里桌面（前台 pid={foreground_pid_now:?} class={foreground_now_class:?} 首次 pid={foreground_at_first_click:?}）"
-                        );
-                        last_blank_click = None;
-                        foreground_at_first_click = None;
-                        last_blank_point = None;
-                        last_blank_point = None;
-                        was_down = down;
-                        continue;
-                    }
-                    let reached = last_blank_point
-                        .is_some_and(|previous| within_double_click_reach(previous, (cursor_x, cursor_y), 64));
-                    let gap_ok = last_blank_click
-                        .is_some_and(|previous| now.duration_since(previous) <= double_click_window);
-                    if !gap_ok {
-                        log::info!("配对未成立：{gap_px}px 距离、间隔超窗或无上一次点击（窗口 {}ms）", double_click_window.as_millis());
-                    } else if !reached {
-                        log::info!("配对未成立：与上一次点击相距 {gap_px}px，超过 64px 上限");
-                    }
-                    if gap_ok && reached {
+                    if last_blank_click.is_some_and(|previous| {
+                        now.duration_since(previous) <= std::time::Duration::from_millis(500)
+                    }) {
                         last_blank_click = None;
                         // The transition itself lives in enter/leave_inner_workspace so the
                         // double click and the floating ball cannot drift apart.
@@ -3117,13 +2765,9 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                         );
                     } else {
                         last_blank_click = Some(now);
-                        foreground_at_first_click = foreground_now;
-                        last_blank_point = Some((cursor_x, cursor_y));
                     }
                 } else {
                     last_blank_click = None;
-                    foreground_at_first_click = None;
-                    last_blank_point = None;
                 }
             }
             was_down = down;
@@ -5044,89 +4688,7 @@ mod tests {
     }
 
     #[test]
-    /// 「双击图标会翻桌面层」这个缺陷的回归钉子。判据（UIA）在真实机器上可能说谎，这条兜底不依赖
-/// 它：只要这次双击让前台换成了**别人的**窗口，就说明双击落在了会启动东西的位置，不该翻。
-#[test]
-fn a_double_click_that_activated_something_else_never_toggles_the_workspace() {
-    // 前台换成了另一个窗口（双击快捷方式、文件夹、文件都属于这一类）：不翻。
-    assert!(double_click_became_someone_elses(Some(101), Some(202), false));
-    // 换成的是**我们自己的另一个窗口**（双击壁纸自己的桌面图标：应用已在运行，进程号不变，
-    // 只有窗口会变）：同样不翻 —— 这是按进程号判断时漏掉的那一类。
-    assert!(double_click_became_someone_elses(Some(101), Some(303), false));
-    // 换成了桌面表面窗口（点空白桌面的常见结果，含图标视图）：仍然翻。
-    assert!(!double_click_became_someone_elses(Some(101), Some(202), true));
-    // 前台没变（点击穿透时常见）：仍然翻。
-    assert!(!double_click_became_someone_elses(Some(101), Some(101), false));
-    // 首次点击没记到前台：不因此阻止（宁可保留原行为，也不要让功能静默失效）。
-    assert!(!double_click_became_someone_elses(None, Some(202), false));
-}
-
-#[test]
-fn the_pairing_window_follows_the_system_setting_within_sane_bounds() {
-    // 系统默认 500ms 原样使用。
-    // 系统值 500ms：我们的手势仍给到 900ms —— 实测用户自然节奏会超过系统值。
-    assert_eq!(double_click_pairing_window_ms(500), 900);
-    // 系统值本身更宽时跟着系统。
-    assert_eq!(double_click_pairing_window_ms(1700), 1700);
-    // 极端值夹住，避免误配对。
-    assert_eq!(double_click_pairing_window_ms(50), 900);
-    assert_eq!(double_click_pairing_window_ms(10_000), 2000);
-}
-
-#[test]
-fn only_small_foreign_onscreen_rectangles_count_as_desktop_icons() {
-    // 典型图标：几十像素的小方块，别人的进程，在屏上。
-    assert!(looks_like_a_desktop_icon((100, 100, 180, 172), false, false));
-    // 覆盖整屏的伪项：必须挡掉，否则整块桌面都成了"图标范围"，双击空白再也切不动（实测复发过）。
-    assert!(!looks_like_a_desktop_icon((0, 0, 2560, 1600), false, false));
-    // 我们自己进程里的列表项（输入岛/设置里的 LI 同样是 ListItem）：必须挡掉。
-    assert!(!looks_like_a_desktop_icon((100, 100, 180, 172), false, true));
-    // 离屏/隐藏的项不参与。
-    assert!(!looks_like_a_desktop_icon((100, 100, 180, 172), true, false));
-    // 退化的零面积矩形（虚拟化项常见）不参与。
-    assert!(!looks_like_a_desktop_icon((100, 100, 100, 100), false, false));
-    assert!(!looks_like_a_desktop_icon((0, 0, 2, 2), false, false));
-}
-
-#[test]
-fn a_pair_must_land_in_nearly_the_same_place() {
-    // 双击：几乎在原处（人手抖动几个像素）。
-    assert!(within_double_click_reach((100, 200), (104, 197), 64));
-    // 同一处的两次点击：当然算。
-    assert!(within_double_click_reach((100, 200), (100, 200), 64));
-    // 相隔很远的两次单击（例如点两下不同角落）：不算 —— 时间窗口放宽到 1500ms 之后，
-    // 这一条是防止"两次无关单击恰好凑成一次切换"的关键。
-    assert!(!within_double_click_reach((100, 200), (800, 900), 64));
-    assert!(!within_double_click_reach((100, 200), (100, 300), 64));
-}
-
-#[test]
-fn an_icon_rectangle_owns_its_own_area_and_nothing_else() {
-    // 图标矩形 (100,100)-(180,180)：内部（含左上角）算命中，右/下边界与外部不算。
-    let icon = (100, 100, 180, 180);
-    assert!(rect_contains_point(icon, 100, 100));
-    assert!(rect_contains_point(icon, 179, 179));
-    assert!(!rect_contains_point(icon, 180, 180));
-    assert!(!rect_contains_point(icon, 99, 120));
-    assert!(!rect_contains_point(icon, 120, 99));
-    assert!(!rect_contains_point(icon, 500, 500));
-}
-
-#[test]
-fn the_desktop_surface_classes_are_the_wallpaper_hosts_not_explorer_windows() {
-    // 桌面表面：Progman/WorkerW 是宿主，另两个是空白双击时前台可能落到的图标视图。
-    for class in ["Progman", "WorkerW", "SHELLDLL_DefView", "SysListView32", "#32769"] {
-        assert!(is_desktop_surface_class(Some(class)), "{class}");
-    }
-    // Explorer 开出来的窗口不是桌面表面 —— 这条区分正是这个缺陷的修复点。
-    for class in ["CabinetWClass", "ExploreWClass", "Chrome_WidgetWin_1"] {
-        assert!(!is_desktop_surface_class(Some(class)), "{class}");
-    }
-    assert!(!is_desktop_surface_class(None));
-}
-
-#[test]
-fn workspace_toggle_requires_a_blank_desktop_and_never_a_chat_region() {
+    fn workspace_toggle_requires_a_blank_desktop_and_never_a_chat_region() {
         assert!(should_toggle_desktop_workspace(true, false, true));
         assert!(!should_toggle_desktop_workspace(false, false, true));
         assert!(!should_toggle_desktop_workspace(true, true, true));
