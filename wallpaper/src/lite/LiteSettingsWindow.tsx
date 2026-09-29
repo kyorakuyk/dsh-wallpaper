@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
-import type { AutostartStatus, LockScreenDiagnostics, TranslucentTbStatus } from '../native/runtime.ts'
+// FREEZE(1A)：锁屏退出，这个类型随之冻结（单行 import 列表里不能用 // 注释单项）。
+// import type { AutostartStatus, LockScreenDiagnostics, TranslucentTbStatus } from '../native/runtime.ts'
+import type { AutostartStatus, TranslucentTbStatus } from '../native/runtime.ts'
 import * as liteNative from './native.ts'
 import { assetUrl, DEFAULT_LITE_SETTINGS, LITE_BACKGROUND_OPTIONS, LITE_PORTRAIT_OPTIONS, loadLiteSettings, saveLiteSettings } from './settings.ts'
 import { listenUntilDisposed } from '../runtime/lifecycle.ts'
@@ -22,15 +24,18 @@ export function LiteSettingsWindow() {
   const [settings, setSettings] = useState<LiteSettings>(DEFAULT_LITE_SETTINGS)
   const settingsRef = useRef(settings)
   const [notice, setNotice] = useState<string>()
-  const [lockScreenDiagnostics, setLockScreenDiagnostics] = useState<LockScreenDiagnostics>()
+  // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
+  //   const [lockScreenDiagnostics, setLockScreenDiagnostics] = useState<LockScreenDiagnostics>()
   const [desktopFallbackStatus, setDesktopFallbackStatus] = useState<liteNative.DesktopWallpaperFallbackStatus>()
   const [translucentTb, setTranslucentTb] = useState<TranslucentTbStatus>({ installed: false, running: false })
   const [customBackground, setCustomBackground] = useState<string>()
   const [customPortrait, setCustomPortrait] = useState<string>()
   const [autostartBusy, setAutostartBusy] = useState(false)
-  const [lockScreenBusy, setLockScreenBusy] = useState(false)
+  // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
+  //   const [lockScreenBusy, setLockScreenBusy] = useState(false)
   const [desktopFallbackBusy, setDesktopFallbackBusy] = useState(false)
-  const lockOperationRef = useRef(false)
+  // FREEZE(1A)：锁屏退出后没人再用。
+  // const lockOperationRef = useRef(false)
   const autostartOperationRef = useRef(false)
   // The state Windows reported, not the state that was requested: the row says
   // which path carries autostart and why, and Lite's page had no such state.
@@ -50,24 +55,25 @@ export function LiteSettingsWindow() {
     void saveLiteSettings(next).catch((error) => setNotice(`设置保存失败：${String(error)}`))
   }
 
-  const refreshDiagnostics = async () => {
-    try {
-      const diagnostics = await liteNative.lockScreenDiagnostics()
-      setLockScreenDiagnostics(diagnostics)
-      // A user may install Lite while the full edition's shared lock-screen
-      // recovery point is still active. Mirror Windows' authoritative state
-      // instead of presenting a misleading unchecked toggle.
-      const current = settingsRef.current
-      if (current.lockScreenEnabled !== diagnostics.managedImageActive) {
-        const next = { ...current, lockScreenEnabled: diagnostics.managedImageActive }
-        settingsRef.current = next
-        setSettings(next)
-        void saveLiteSettings(next).catch((error) => setNotice(`设置同步失败：${String(error)}`))
-      }
-    } catch (error) {
-      setNotice(`锁屏检查失败：${String(error)}`)
-    }
-  }
+  // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
+  //   const refreshDiagnostics = async () => {
+  //     try {
+  //       const diagnostics = await liteNative.lockScreenDiagnostics()
+  //       setLockScreenDiagnostics(diagnostics)
+  //       // A user may install Lite while the full edition's shared lock-screen
+  //       // recovery point is still active. Mirror Windows' authoritative state
+  //       // instead of presenting a misleading unchecked toggle.
+  //       const current = settingsRef.current
+  //       if (current.lockScreenEnabled !== diagnostics.managedImageActive) {
+  //         const next = { ...current, lockScreenEnabled: diagnostics.managedImageActive }
+  //         settingsRef.current = next
+  //         setSettings(next)
+  //         void saveLiteSettings(next).catch((error) => setNotice(`设置同步失败：${String(error)}`))
+  //       }
+  //     } catch (error) {
+  //       setNotice(`锁屏检查失败：${String(error)}`)
+  //     }
+  //   }
 
   const refreshAutostart = async () => {
     try {
@@ -126,7 +132,8 @@ export function LiteSettingsWindow() {
     void loadLiteSettings().then((loaded) => {
       settingsRef.current = loaded
       setSettings(loaded)
-      void refreshDiagnostics()
+      // FREEZE(1A)：锁屏诊断随锁屏一起退出，这次挂载时的刷新随之冻结。
+      // void refreshDiagnostics()
       void refreshAutostart()
       void refreshDesktopFallback()
       void refreshTranslucentTb()
@@ -186,22 +193,23 @@ export function LiteSettingsWindow() {
     autostartQueue().request(enabled)
   }
 
-  const setLockScreen = async (enabled: boolean) => {
-    if (lockOperationRef.current) return
-    lockOperationRef.current = true
-    setLockScreenBusy(true)
-    try {
-      const confirmation = await liteNative.setLockScreen(enabled)
-      commit({ ...settingsRef.current, lockScreenEnabled: enabled })
-      setNotice(confirmation)
-      await refreshDiagnostics()
-    } catch (error) {
-      setNotice(`${enabled ? '接管锁屏图片' : '恢复原锁屏图片'}失败：${String(error)}`)
-    } finally {
-      lockOperationRef.current = false
-      setLockScreenBusy(false)
-    }
-  }
+  // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
+  //   const setLockScreen = async (enabled: boolean) => {
+  //     if (lockOperationRef.current) return
+  //     lockOperationRef.current = true
+  //     setLockScreenBusy(true)
+  //     try {
+  //       const confirmation = await liteNative.setLockScreen(enabled)
+  //       commit({ ...settingsRef.current, lockScreenEnabled: enabled })
+  //       setNotice(confirmation)
+  //       await refreshDiagnostics()
+  //     } catch (error) {
+  //       setNotice(`${enabled ? '接管锁屏图片' : '恢复原锁屏图片'}失败：${String(error)}`)
+  //     } finally {
+  //       lockOperationRef.current = false
+  //       setLockScreenBusy(false)
+  //     }
+  //   }
 
   const setDesktopFallback = async (enabled: boolean) => {
     if (desktopFallbackBusy) return
@@ -218,30 +226,32 @@ export function LiteSettingsWindow() {
     }
   }
 
-  const openLockScreenSettings = async () => {
-    try {
-      await liteNative.openWindowsLockScreenSettings()
-      setNotice('已打开 Windows 锁屏设置。')
-    } catch (error) {
-      setNotice(`无法打开 Windows 锁屏设置：${String(error)}`)
-    }
-  }
+  // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
+  //   const openLockScreenSettings = async () => {
+  //     try {
+  //       await liteNative.openWindowsLockScreenSettings()
+  //       setNotice('已打开 Windows 锁屏设置。')
+  //     } catch (error) {
+  //       setNotice(`无法打开 Windows 锁屏设置：${String(error)}`)
+  //     }
+  //   }
 
-  const clearStaleLockScreenBackup = async () => {
-    if (lockOperationRef.current) return
-    if (!window.confirm('清理过期恢复点会永久删除已保存的原锁屏图片副本。Windows 当前锁屏图片不会被修改。确定继续吗？')) return
-    lockOperationRef.current = true
-    setLockScreenBusy(true)
-    try {
-      setNotice(await liteNative.clearStaleLockScreenBackup(true))
-      await refreshDiagnostics()
-    } catch (error) {
-      setNotice(`清理旧锁屏恢复点失败：${String(error)}`)
-    } finally {
-      lockOperationRef.current = false
-      setLockScreenBusy(false)
-    }
-  }
+  // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
+  //   const clearStaleLockScreenBackup = async () => {
+  //     if (lockOperationRef.current) return
+  //     if (!window.confirm('清理过期恢复点会永久删除已保存的原锁屏图片副本。Windows 当前锁屏图片不会被修改。确定继续吗？')) return
+  //     lockOperationRef.current = true
+  //     setLockScreenBusy(true)
+  //     try {
+  //       setNotice(await liteNative.clearStaleLockScreenBackup(true))
+  //       await refreshDiagnostics()
+  //     } catch (error) {
+  //       setNotice(`清理旧锁屏恢复点失败：${String(error)}`)
+  //     } finally {
+  //       lockOperationRef.current = false
+  //       setLockScreenBusy(false)
+  //     }
+  //   }
 
   const chooseCustomImage = async (slot: liteNative.LiteImageSlot) => {
     try {
@@ -278,12 +288,13 @@ export function LiteSettingsWindow() {
       </section>
 
       <section className="lite-card">
-        <div className="lite-card-heading"><div><span className="lite-kicker">01 · SYSTEM</span><h2>锁屏与启动</h2></div><span className={`lite-status-dot ${lockScreenDiagnostics?.managedImageActive ? 'is-active' : ''}`} /></div>
-        <SettingRow title="接管 Windows 锁屏图片" detail={lockScreenBusy ? '正在应用系统设置，请稍候。' : '密码输入页仍由 Windows 原生处理。'}><Toggle label="接管 Windows 锁屏图片" checked={settings.lockScreenEnabled} disabled={lockScreenBusy} onChange={(value) => void setLockScreen(value)} /></SettingRow>
+        {/* FREEZE(1A)：这张卡里的"锁屏"状态点随锁屏一起冻结（卡内还留着登录过渡底图与自动启动，所以标题保留）。 */}
+        <div className="lite-card-heading"><div><span className="lite-kicker">01 · SYSTEM</span><h2>锁屏与启动</h2></div></div>
+        {/* FREEZE(1A)：锁屏退出，这一行随之冻结。<SettingRow title="接管 Windows 锁屏图片" detail={lockScreenBusy ? '正在应用系统设置，请稍候。' : '密码输入页仍由 Windows 原生处理。'}><Toggle label="接管 Windows 锁屏图片" checked={settings.lockScreenEnabled} disabled={lockScreenBusy} onChange={(value) => void setLockScreen(value)} /></SettingRow> */}
         <SettingRow title="登录过渡底图" detail={desktopFallbackBusy ? '正在更新 Explorer 桌面底图。' : desktopFallbackStatus?.managedActive ? '已确认 Explorer 正在使用睡眠画面；重启后可减少解锁空档。' : desktopFallbackStatus?.warning ?? '让 Explorer 在应用启动前先显示睡眠画面，减少解锁后的原壁纸空档。'}><Toggle label="登录过渡底图" checked={settings.desktopWallpaperFallback} disabled={desktopFallbackBusy} onChange={(value) => void setDesktopFallback(value)} /></SettingRow>
         <SettingRow title="登录后自动启动" detail={autostartBusy ? '正在更新启动任务。' : autostartDetail(autostartState)}><Toggle label="登录后自动启动" checked={settings.autostart} disabled={autostartBusy} onChange={(value) => setAutostart(value)} /></SettingRow>
-        <div className="lite-actions"><button type="button" onClick={() => void openLockScreenSettings()}>打开 Windows 锁屏设置</button><button type="button" onClick={() => void refreshDiagnostics()}>刷新诊断</button></div>
-        {lockScreenDiagnostics && <div className="lite-diagnostics"><strong>{lockScreenDiagnostics.takeoverAvailable ? '锁屏接管可用' : '当前暂不可接管锁屏'}</strong>{lockScreenDiagnostics.warnings.slice(0, 2).map((warning) => <span key={warning}>{warning}</span>)}{desktopFallbackStatus?.backupExists && desktopFallbackStatus.warning && <span>{desktopFallbackStatus.warning}</span>}{lockScreenDiagnostics.staleBackup && <button type="button" className="lite-diagnostics-action" disabled={lockScreenBusy} onClick={() => void clearStaleLockScreenBackup()}>清理过期恢复点（删除原图副本）</button>}</div>}
+        {/* FREEZE(1A)：锁屏退出，这一行随之冻结。<div className="lite-actions"><button type="button" onClick={() => void openLockScreenSettings()}>打开 Windows 锁屏设置</button><button type="button" onClick={() => void refreshDiagnostics()}>刷新诊断</button></div> */}
+        {/* FREEZE(1A)：锁屏退出，这一行随之冻结。{lockScreenDiagnostics && <div className="lite-diagnostics"><strong>{lockScreenDiagnostics.takeoverAvailable ? '锁屏接管可用' : '当前暂不可接管锁屏'}</strong>{lockScreenDiagnostics.warnings.slice(0, 2).map((warning) => <span key={warning}>{warning}</span>)}{desktopFallbackStatus?.backupExists && desktopFallbackStatus.warning && <span>{desktopFallbackStatus.warning}</span>}{lockScreenDiagnostics.staleBackup && <button type="button" className="lite-diagnostics-action" disabled={lockScreenBusy} onClick={() => void clearStaleLockScreenBackup()}>清理过期恢复点（删除原图副本）</button>}</div>} */}
       </section>
 
       <section className="lite-card">

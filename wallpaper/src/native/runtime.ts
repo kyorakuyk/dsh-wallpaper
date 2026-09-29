@@ -343,15 +343,19 @@ export interface DesktopDisplayInfo { id: string; name: string; bounds: DesktopR
 
 export interface NativeRuntime {
   isNative: boolean
-  setLockScreen(enabled: boolean): Promise<string>
-  clearStaleLockScreenBackup(confirmed: boolean): Promise<string>
-  lockScreenDiagnostics(): Promise<LockScreenDiagnostics>
+  // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
+  //   setLockScreen(enabled: boolean): Promise<string>
+  // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
+  //   clearStaleLockScreenBackup(confirmed: boolean): Promise<string>
+  // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
+  //   lockScreenDiagnostics(): Promise<LockScreenDiagnostics>
   setAutostart(enabled: boolean): Promise<AutostartStatus>
   autostartStatus(): Promise<AutostartStatus>
   translucentTbStatus(): Promise<TranslucentTbStatus>
   launchTranslucentTb(): Promise<void>
   openTranslucentTbInstall(): Promise<void>
-  openWindowsLockScreenSettings(): Promise<void>
+  // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
+  //   openWindowsLockScreenSettings(): Promise<void>
   /**
    * Store the DeepSeek API key the user typed in Settings.
    *
@@ -560,21 +564,24 @@ const nativeWindowAvailable = typeof window !== 'undefined' && '__TAURI_INTERNAL
 
 export const nativeRuntime: NativeRuntime = {
   isNative: nativeWindowAvailable,
-  async setLockScreen(enabled) {
-    if (!await tauriAvailable()) return '浏览器预览不支持设置系统锁屏。'
-    const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<string>('set_lock_screen_enabled', { enabled })
-  },
-  async clearStaleLockScreenBackup(confirmed) {
-    if (!await tauriAvailable()) return '浏览器预览不支持清理系统锁屏恢复点。'
-    const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<string>('clear_stale_lock_screen_backup', { confirmed })
-  },
-  async lockScreenDiagnostics() {
-    if (!await tauriAvailable()) return { supported: false, packageIdentity: false, takeoverAvailable: false, backupExists: false, backupValid: false, staleBackup: false, managedImageReady: false, managedImageActive: false, developmentBuild: false, warnings: ['浏览器预览不支持系统锁屏诊断。'] }
-    const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<LockScreenDiagnostics>('get_lock_screen_diagnostics')
-  },
+  // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
+  //   async setLockScreen(enabled) {
+  //     if (!await tauriAvailable()) return '浏览器预览不支持设置系统锁屏。'
+  //     const { invoke } = await import('@tauri-apps/api/core')
+  //     return invoke<string>('set_lock_screen_enabled', { enabled })
+  //   },
+  // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
+  //   async clearStaleLockScreenBackup(confirmed) {
+  //     if (!await tauriAvailable()) return '浏览器预览不支持清理系统锁屏恢复点。'
+  //     const { invoke } = await import('@tauri-apps/api/core')
+  //     return invoke<string>('clear_stale_lock_screen_backup', { confirmed })
+  //   },
+  // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
+  //   async lockScreenDiagnostics() {
+  //     if (!await tauriAvailable()) return { supported: false, packageIdentity: false, takeoverAvailable: false, backupExists: false, backupValid: false, staleBackup: false, managedImageReady: false, managedImageActive: false, developmentBuild: false, warnings: ['浏览器预览不支持系统锁屏诊断。'] }
+  //     const { invoke } = await import('@tauri-apps/api/core')
+  //     return invoke<LockScreenDiagnostics>('get_lock_screen_diagnostics')
+  //   },
   async setAutostart(enabled) {
     if (!await tauriAvailable()) return unsupportedAutostart()
     const { invoke } = await import('@tauri-apps/api/core')
@@ -598,11 +605,12 @@ export const nativeRuntime: NativeRuntime = {
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('open_translucent_tb_install')
   },
-  async openWindowsLockScreenSettings() {
-    if (!await tauriAvailable()) return
-    const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('open_windows_lock_screen_settings')
-  },
+  // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
+  //   async openWindowsLockScreenSettings() {
+  //     if (!await tauriAvailable()) return
+  //     const { invoke } = await import('@tauri-apps/api/core')
+  //     await invoke('open_windows_lock_screen_settings')
+  //   },
   async saveApiKey(key) {
     if (!await tauriAvailable()) throw new Error('仅桌面版支持 Windows 凭据管理器')
     const { invoke } = await import('@tauri-apps/api/core')
