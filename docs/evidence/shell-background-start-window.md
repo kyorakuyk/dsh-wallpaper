@@ -159,6 +159,10 @@ settled            +4707ms  连续 2 秒不在屏上，这一场结束
 * 状态胶囊（岛左下角那个只读元素）显示**当前实际入口**：`API` / `Web`（API 后端）、`Web` / `Desktop` / `TUI`
   （harness，判据 `settings.window === 'tui'`、`isEmbeddedShellSubject`、其余为 `Web`）。
 * 回退开关：保留旧的 AUMID 后台启动路径作为退路，出问题时可以切回。
+* **桥的安装范围（2026-09-30 追加拍板）**：壁纸只连**它自己起的那个 `web` 宿主**，所以桥**只装在 `web`**；
+  `desktop` 里那份只服务于回退路径。**硬条件：回退一旦启用，`desktop` 里就必须有可用的桥**，否则失败形态是
+  "连得上、建不了会话"（`/status` 可达而 `/sessions` 404）。施工口径写在
+  [施工文档第 7 节](../plans/dsh-harness-connection-autostart-compatibility-plan.md)。
 
 ### 八点二、两个宿主同时运行时会发生什么（源码取证，2026-09-30 深夜）
 
