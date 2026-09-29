@@ -18,12 +18,15 @@ full = [
   "dep:zip",
 ]
 lite = ["dep:base64", "dep:urlencoding"]
-lockscreen-probe = ["dep:urlencoding"]
+# FREEZE（临时冻结，不是删除）：锁屏功能整体退出（2026-09-30），诊断探针随之停用。
+# 归档在 archive/lockscreen-20260930/（含脚本与 MSIX 清单）。恢复办法：把那个目录里的
+# 三个文件放回原位，并取消下面这几行的注释。
+# lockscreen-probe = ["dep:urlencoding"]
 
-[[bin]]
-name = "lockscreen_probe"
-path = "src/bin/lockscreen_probe.rs"
-required-features = ["lockscreen-probe"]
+# [[bin]]
+# name = "lockscreen_probe"
+# path = "src/bin/lockscreen_probe.rs"
+# required-features = ["lockscreen-probe"]
 
 [lib]
 name = "dsh_wallpaper_lib"
