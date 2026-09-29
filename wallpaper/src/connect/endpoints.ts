@@ -97,6 +97,17 @@ const SHELL_SUBJECTS: Readonly<Record<string, { kind: HarnessClientKind; ports: 
 }
 
 /**
+ * 壁纸自己跑宿主时用的端口，与 `harness_targets.rs` 的 `WALLPAPER_HOST_PORT` 是同一个数。
+ *
+ * 为什么壳的主体要多出这一个端口：19387 是**客户端自己要绑的**。壁纸的宿主占着它，用户从
+ * 开始菜单直接打开壳就会撞上 `EADDRINUSE`（2026-09-30 实测：壳的引导整体失败并弹错误框）。
+ * 所以壁纸的宿主另占一个端口，客户端的端口永远留给客户端 —— 我们的排在后面，是因为**连上
+ * 客户端自己的宿主**永远是最省事也最不容易出岔子的那个答案：同一份数据、同一套桥，而且只有
+ * 一个宿主在跑。
+ */
+export const WALLPAPER_HOST_PORT = 3099
+
+/**
  * The subject a stored choice must fall back to when this build no longer supports it.
  *
  * 2026-09-27：第三方桌面客户端被移除（它把本地接口锁在自己的授权后面，壁纸一律 403 ✓）。
@@ -248,7 +259,10 @@ export function subjectEndpointPorts(scope: EndpointScope): number[] | undefined
     // An AUMID this build does not know has no port to offer. Reporting that as
     // "nothing configured" would put the wallpaper back on the priority order —
     // i.e. on a client the user did not choose.
-    return usablePorts(SHELL_SUBJECTS[aumid]?.ports ?? [])
+    const clientPorts = SHELL_SUBJECTS[aumid]?.ports ?? []
+    // 客户端自己的端口在前、壁纸宿主的端口在后：客户端在跑就连它，不在跑才轮到我们的宿主
+    // （见 `WALLPAPER_HOST_PORT` 的说明）。本 build 不认识的 AUMID 仍然一个端口都不给。
+    return clientPorts.length === 0 ? [] : usablePorts([...clientPorts, WALLPAPER_HOST_PORT])
   }
   // 「启动参数」里点名的端口排在最前面：它是这个主体**被要求**服务的地方，比默认端口更具体。
   // 已安装的 CLI 与源码检出同形状（都 boot 一个 profile、都在 DSH 自己的默认端口上服务 ✓）：

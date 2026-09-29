@@ -262,14 +262,15 @@ pub(crate) enum LaunchPlan {
         profile: String,
         args: Vec<String>,
     },
-    /// 本应用为**某个主体**跑起来的宿主：它的 CLI，绑在那个主体自己的端口上。
+    /// 本应用为**某个主体**跑起来的宿主：它的 CLI，**绑壁纸自己的端口**（`WALLPAPER_HOST_PORT`）。
     ///
-    /// 与 `InstalledCli` 的差别只有两处，两处都关键：记录用的主体 id 是 `host:<主体>`
+    /// 与 `InstalledCli` 的差别有两处，两处都关键：记录用的主体 id 是 `host:<主体>`
     /// （所以它归我们管、可以被我们收回；而主体自己的 `shell:<aumid>` 仍然永不归我们管），
     /// 而且它**没有窗口**（`web` 档案、`--no-open`）——那正是这条路存在的理由。
     ///
-    /// 启动参数里补的 `--port` 就是"同一个端口、宿主归属移交"这条政策的落点
-    /// （施工文档 §7.6 走法 A）：壁纸的宿主与用户打开的完整壳先后绑同一个端口，从不并存。
+    /// 端口**不是**主体自己的那个（施工文档 §7.6 修正版）：19387 是壳自己要绑的，我们占着它，
+    /// 用户直接打开壳就会撞上 `EADDRINUSE` 并拿到一个错误框（实测）。所以两个字段分开：
+    /// `subject_port` 只用来判断"客户端是不是已经在自己服务了"，`host_port` 才是我们绑的。
     SubjectHost {
         /// `host:<主体 id>`：记录与停止都用它。
         host_id: String,
@@ -279,7 +280,10 @@ pub(crate) enum LaunchPlan {
         launcher: String,
         profile: String,
         args: Vec<String>,
-        port: Option<u16>,
+        /// 主体自己（客户端）的端口；它已经有人应答时我们什么都不起。
+        subject_port: Option<u16>,
+        /// 我们的宿主绑哪个端口。
+        host_port: u16,
     },
 }
 
@@ -942,7 +946,7 @@ pub(crate) fn shell_host_cli(subject_id: &str) -> Option<PathBuf> {
 
 /// 后台启动（滑槽、随壁纸自启）该怎么跑 —— §7.6 走法 A 之后，壳与别的类走的路不同了。
 ///
-/// * 壳：能解析出它自带的 CLI 就跑那个（`web` 档案、绑它自己的端口、没有窗口），
+/// * 壳：能解析出它自带的 CLI 就跑那个（`web` 档案、**绑壁纸自己的端口**、没有窗口），
 ///   记录用的 id 是 `host:<主体>`；解析不出来就退回原来的 AUMID 激活（背景启动照旧把窗口
 ///   留在屏幕外）；
 /// * 已安装 CLI 与源码树：原样交给 `plan_launch` —— 它们本来就是"跑自己的 CLI"。
@@ -956,16 +960,13 @@ pub(crate) fn plan_background_launch(
     let subject = id.trim();
     if let Some(aumid) = subject.strip_prefix(SHELL_ID_PREFIX) {
         if let (Some(launcher), Some(shell)) = (subject_host_cli, known_shell(aumid)) {
-            let port = shell.default_port;
-            // 「启动参数」点名的端口优先：那是用户自己写的，而许可端口表本来就认它
-            // （`apply_endpoint_scope` 会把参数里的端口并进这个主体的端口表）。
-            let mut host_args = args.to_vec();
-            if let Some(port) = port {
-                if port_from_args(&host_args).is_none() {
-                    host_args.push("--port".to_string());
-                    host_args.push(port.to_string());
-                }
-            }
+            // **端口是我们的，不是用户说的那个**：许可端口表里壳自己的端口是 19387、我们的宿主
+            // 在 `WALLPAPER_HOST_PORT`，而参数里的 `--port` 在这里一律丢掉 —— 让用户改掉我们绑在
+            // 哪个端口上，就等于让探测表与实际对不上（表是按主体算的，不读参数）。
+            // 「启动参数」的其余部分照常送达。
+            let mut host_args = without_port_flag(args);
+            host_args.push("--port".to_string());
+            host_args.push(crate::harness_targets::WALLPAPER_HOST_PORT.to_string());
             return Ok(LaunchPlan::SubjectHost {
                 host_id: crate::harness_targets::host_subject_id(subject),
                 subject_id: subject.to_string(),
@@ -974,11 +975,32 @@ pub(crate) fn plan_background_launch(
                 // 只有 `web` 能提供 HTTP 且能装桥；`desktop` 档案两边的 CLI 都会拒绝。
                 profile: "web".to_string(),
                 args: host_args,
-                port,
+                subject_port: shell.default_port,
+                host_port: crate::harness_targets::WALLPAPER_HOST_PORT,
             });
         }
     }
     plan_launch(subject, profile, args, trigger)
+}
+
+/// 「启动参数」去掉 `--port` 那一段（`--port N` 与 `--port=N` 两种写法都算）。
+///
+/// 壳那条路上端口是**契约**不是偏好：探测表按主体算端口，用户改不掉它，所以也不该能改我们绑在
+/// 哪儿。其余参数一个字都不动 —— 用户写的别的词仍然原样送到启动器后面。
+fn without_port_flag(args: &[String]) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    let mut iterator = args.iter();
+    while let Some(value) = iterator.next() {
+        if value == "--port" {
+            let _ = iterator.next();
+            continue;
+        }
+        if value.starts_with("--port=") {
+            continue;
+        }
+        kept.push(value.clone());
+    }
+    kept
 }
 
 /// Who is asking for the start, which is what decides the one rule that still differs.
@@ -1082,51 +1104,6 @@ pub(crate) fn plan_launch(
     })
 }
 
-/// 把端口从我们自己的宿主手里收回来，交给即将绑它的完整壳（施工文档 §7.6 走法 A）。
-///
-/// 三件事按顺序做，缺一件都会坏事：**只认出我们自己的孩子**（记在 `host:<主体>` 下的那一条；
-/// 主体自己的 `shell:<aumid>` 永远不在可停清单里）、**整树收掉**（Windows 上刚 spawn 的是
-/// `cmd` 外壳，真正占着端口的是它的孩子）、**等端口真的空出来**（壳紧接着就要绑它，抢跑只会
-/// 让它启动失败 —— 而它的窗口内容就是它自己宿主的 URL，绑不上就是一个没有内容的窗口）。
-///
-/// 返回是否真的收掉过东西，好让日志分得清"移交过"与"本来就没有我们的宿主"。
-fn hand_over_endpoint(subject_id: &str, port: Option<u16>) -> bool {
-    let host_id = crate::harness_targets::host_subject_id(subject_id);
-    let children = owned_instances(&host_id);
-    if children.is_empty() {
-        return false;
-    }
-    let mut stopped = false;
-    for child in children {
-        log::info!(
-            "handing the endpoint over: stopping our own host pid={} for subject={subject_id}",
-            child.pid
-        );
-        if crate::client_window::stop_process_tree(child.pid) {
-            stopped = true;
-        }
-        // 记录要清掉，无论 taskkill 是否报成功：它已经不再是可用的孩子，留着只会让下一次
-        // "状态清单"里多一行幽灵，或者让下一次移交去等一个永远不会释放的端口。
-        forget_instance(&child.instance_key);
-    }
-    if let Some(port) = port {
-        for _ in 0..ENDPOINT_HANDOVER_TICKS {
-            if !crate::client_window::endpoint_is_listening(port) {
-                break;
-            }
-            std::thread::sleep(ENDPOINT_HANDOVER_TICK);
-        }
-    }
-    stopped
-}
-
-/// 移交时等端口释放的节奏：最多 60 × 50ms = 3 秒。
-///
-/// 有界是刻意的：`taskkill /F` 之后内核关掉监听套接字通常只需几十毫秒，等满 3 秒说明那个进程
-/// 不肯走 —— 那时把"打开"继续做下去（壳自己会因为端口被占而报错），比在这里无限等更有用。
-const ENDPOINT_HANDOVER_TICKS: usize = 60;
-const ENDPOINT_HANDOVER_TICK: std::time::Duration = std::time::Duration::from_millis(50);
-
 /// Start the planned subject and report what happened.
 pub(crate) fn run_launch(
     plan: &LaunchPlan,
@@ -1139,16 +1116,7 @@ pub(crate) fn run_launch(
             alias,
             port,
             hide_window,
-        } => {
-            // §7.6 走法 A 的移交：用户要看的完整壳会**自己**绑那个端口，而壁纸自己的宿主可能
-            // 正占着它（壳的窗口内容就是它自己宿主的 URL —— 绑不上就得到一个没有内容的窗口）。
-            // 所以先把自己那个宿主收掉，再把端口让出去。只停 `host:<主体>` 那一条记录：
-            // 用户打开的客户端从来不是我们的孩子，这条底线不变。
-            if !*hide_window {
-                hand_over_endpoint(&format!("{SHELL_ID_PREFIX}{aumid}"), *port);
-            }
-            launch_shell(aumid, alias, *port, *hide_window, trigger)
-        }
+        } => launch_shell(aumid, alias, *port, *hide_window, trigger),
         LaunchPlan::SubjectHost {
             host_id,
             subject_id,
@@ -1156,13 +1124,15 @@ pub(crate) fn run_launch(
             launcher,
             profile,
             args,
-            port,
+            subject_port,
+            host_port,
         } => {
-            // 端口上已经有人应答（用户自己开着客户端，或上一次起的宿主还在）⇒ **别再起一个**：
+            // 两个端口各有一句话要说。
+            //
+            // **主体自己的端口有人应答**（用户开着客户端，或者另一个 DSH 宿主在那儿）⇒ 什么都别起：
             // 那个进程服务的是同一份数据、同一套桥，壁纸连上它就是对的答案。这与 `launch_shell`
-            // 开头那条同名判断是同一条规矩；少了它，我们会 spawn 一个注定绑不上端口的进程，
-            // 在日志里留下一次谁也看不懂的失败，还多一个几百毫秒后自己消失的孩子。
-            if let Some(port) = port {
+            // 开头那条判断是同一条规矩。
+            if let Some(port) = subject_port {
                 if crate::client_window::endpoint_is_listening(*port) {
                     log::info!(
                         "harness subject host not needed: subject={subject_id} port={port} already answers"
@@ -1170,7 +1140,17 @@ pub(crate) fn run_launch(
                     return HarnessLaunchOutcome::new("already-running", *kind);
                 }
             }
-            log::info!("harness subject host: subject={subject_id} record={host_id} profile={profile}");
+            // **我们自己的端口有人应答** ⇒ 上一次起的宿主还在，重复按「启动」应当是幂等的一次，
+            // 而不是第二个进程白撞一次 `EADDRINUSE`。
+            if crate::client_window::endpoint_is_listening(*host_port) {
+                log::info!(
+                    "harness subject host already serving: subject={subject_id} port={host_port}"
+                );
+                return HarnessLaunchOutcome::new("already-running", *kind);
+            }
+            log::info!(
+                "harness subject host: subject={subject_id} record={host_id} profile={profile} port={host_port}"
+            );
             launch_cli_host(host_id, *kind, launcher, profile, args, true)
         }
         LaunchPlan::InstalledCli {
@@ -2877,13 +2857,22 @@ mod tests {
         assert_eq!(plan_background_cli("   ", None, &|_| false), Ok(BackgroundCli::TreeChain));
     }
 
-    /// 后台启动的分岔（施工文档 §7.6 走法 A）：壳走它自带的 CLI，别的类原样。
+    /// 后台启动的分岔（施工文档 §7.6 修正版）：壳走它自带的 CLI，但**绑壁纸自己的端口**。
     #[test]
-    fn a_shells_background_start_runs_its_bundled_cli_on_its_own_port() {
+    fn a_shells_background_host_binds_the_wallpapers_own_port() {
         let launcher = Path::new(r"D:\Family\dsh-official\resources\runtime\cli\bin\dsh.cmd");
         let plan = plan_background_launch(OFFICIAL_ID, "web", &[], SLIDER, Some(launcher)).expect("host plan");
         match plan {
-            LaunchPlan::SubjectHost { host_id, subject_id, kind, launcher: planned, profile, args, port } => {
+            LaunchPlan::SubjectHost {
+                host_id,
+                subject_id,
+                kind,
+                launcher: planned,
+                profile,
+                args,
+                subject_port,
+                host_port,
+            } => {
                 // 记录用的是 **host:<主体>**：它归我们管；而 `shell:<aumid>` 永远不归我们管，
                 // 这两件事必须分得开，否则"收掉自己的宿主"会变成"杀掉用户的客户端"。
                 assert_eq!(host_id, "host:shell:com.deepseek.dsh");
@@ -2892,27 +2881,37 @@ mod tests {
                 assert_eq!(planned, launcher.to_string_lossy());
                 // 只有 `web` 能提供 HTTP 且能装桥；`desktop` 档案两边的 CLI 都会拒绝。
                 assert_eq!(profile, "web");
-                assert_eq!(port, Some(19387));
-                // 端口是这条路的关键：壁纸的宿主与用户打开的完整壳**先后**绑同一个端口。
-                assert_eq!(args, argv(&["--port", "19387"]));
+                // 客户端自己的端口只用来问"它在不在跑"。
+                assert_eq!(subject_port, Some(19387));
+                // 我们绑的是**壁纸自己的**端口。占着 19387 会让用户从开始菜单直接打开壳时
+                // 引导失败并弹错误框（2026-09-30 实测的 `EADDRINUSE 127.0.0.1:19387`）。
+                assert_eq!(host_port, crate::harness_targets::WALLPAPER_HOST_PORT);
+                assert_eq!(args, argv(&["--port", "3099"]));
             }
             other => panic!("expected a subject host plan, got {other:?}"),
         }
     }
 
+    /// 壳那条路上端口是**契约**，不是用户的偏好。
     #[test]
-    fn a_port_the_user_declared_is_not_replaced_by_the_subject_default() {
+    fn a_launch_arg_port_cannot_move_the_shell_host() {
         let launcher = Path::new(r"D:\Family\dsh-official\resources\runtime\cli\bin\dsh.cmd");
-        let declared = argv(&["--port", "3099"]);
+        let declared = argv(&["--port", "4000", "--verbose"]);
         let plan = plan_background_launch(OFFICIAL_ID, "web", &declared, AUTO, Some(launcher)).expect("host plan");
         match plan {
-            LaunchPlan::SubjectHost { args, .. } => {
-                // 用户自己写的端口原样保留，而且**不再补一个**：许可端口表本来就认它
-                // （`apply_endpoint_scope` 把参数里的端口并进了这个主体的端口表）。
-                assert_eq!(args, declared);
+            LaunchPlan::SubjectHost { args, host_port, .. } => {
+                assert_eq!(host_port, crate::harness_targets::WALLPAPER_HOST_PORT);
+                // 用户写的端口被丢掉、别的词照常送达：探测表按主体算端口，读不到用户的参数，
+                // 所以让参数改掉我们绑在哪儿，等于让表与实际对不上。
+                assert_eq!(args, argv(&["--verbose", "--port", "3099"]));
             }
             other => panic!("expected a subject host plan, got {other:?}"),
         }
+        // 两种写法都要认，而且 `--port` 后面那个值必须一起走 —— 留下孤零零的 `4000` 会被
+        // 启动器当成一个它不认识的词。
+        assert_eq!(without_port_flag(&argv(&["--port=4000", "a"])), argv(&["a"]));
+        assert_eq!(without_port_flag(&argv(&["--port"])), Vec::<String>::new());
+        assert_eq!(without_port_flag(&argv(&["a", "--port", "4000", "b"])), argv(&["a", "b"]));
     }
 
     #[test]

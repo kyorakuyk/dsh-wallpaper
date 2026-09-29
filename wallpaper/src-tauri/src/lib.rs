@@ -3830,9 +3830,10 @@ mod harness_status_tests {
     fn a_configured_subject_narrows_the_candidates_to_its_own_ports() {
         let state = HarnessEndpointState::default();
         apply_endpoint_scope(&state, None, Some("shell:com.deepseek.dsh"), &[], None).expect("scope");
-        // The official shell owns 19387 and nothing else, even though the shipped
-        // order also holds 3080.
-        assert_eq!(candidates_of(&state), vec![19387]);
+        // The official shell owns 19387, and the wallpaper's own host port follows it: the
+        // client is asked first, and only when nothing answers there does the host we run
+        // ourselves come into play. 3080 belongs to neither — a CLI host may be on it.
+        assert_eq!(candidates_of(&state), vec![19387, crate::harness_targets::WALLPAPER_HOST_PORT]);
 
         // A checkout owns DSH's default plus the ports the user added for it.
         apply_endpoint_scope(&state, None, Some(r"D:\tree"), &[3081], None).expect("scope");
@@ -3860,7 +3861,7 @@ mod harness_status_tests {
         // 换回没有参数 ⇒ 回到默认端口（一个不再生效的设置不该留下痕迹）。
         apply_endpoint_scope(&state, None, Some(r"D:\tree"), &[], Some(&[])).expect("scope");
         assert_eq!(candidates_of(&state), vec![HARNESS_DEFAULT_PORT]);
-        // 官壳的端口编译在它自己的包里，参数改不了它。
+        // 官壳的端口编译在它自己的包里，参数改不了它 —— 壁纸自己宿主的那个端口也不受参数影响。
         apply_endpoint_scope(
             &state,
             None,
@@ -3869,7 +3870,10 @@ mod harness_status_tests {
             Some(&args),
         )
         .expect("scope");
-        assert_eq!(candidates_of(&state), vec![19387]);
+        assert_eq!(
+            candidates_of(&state),
+            vec![19387, crate::harness_targets::WALLPAPER_HOST_PORT]
+        );
     }
 
     /// Changing the subject is the one moment the wallpaper may move, and it does

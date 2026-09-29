@@ -5,6 +5,7 @@ import {
   DEFAULT_ENDPOINT_PORTS,
   OFFICIAL_SHELL_SUBJECT_ID,
   SHELL_SUBJECT_PREFIX,
+  WALLPAPER_HOST_PORT,
   clientRaiseAction,
   endpointPriority,
   endpointScopeConfigured,
@@ -163,12 +164,12 @@ describe('endpoint selection', () => {
  */
 describe('the configured subject decides the endpoint', () => {
   it('gives a shell the one port compiled into it', () => {
-    expect(subjectEndpointPorts({ subjectId: OFFICIAL_SHELL })).toEqual([19387])
+    expect(subjectEndpointPorts({ subjectId: OFFICIAL_SHELL })).toEqual([19387, WALLPAPER_HOST_PORT])
     // 第三方桌面客户端 2026-09-27 起不再受支持：它的 AUMID 现在与任何陌生 AUMID 一样
     // **不给出任何端口**（而不是"给出 43120 然后探测失败"）。
     expect(subjectEndpointPorts({ subjectId: UNKNOWN_SHELL })).toEqual([])
     // The AUMID is matched case-insensitively, like the native table does.
-    expect(subjectEndpointPorts({ subjectId: `${SHELL_SUBJECT_PREFIX}COM.DeepSeek.DSH` })).toEqual([19387])
+    expect(subjectEndpointPorts({ subjectId: `${SHELL_SUBJECT_PREFIX}COM.DeepSeek.DSH` })).toEqual([19387, WALLPAPER_HOST_PORT])
   })
 
   it('gives a source tree its own default plus the ports the user added for it', () => {
@@ -268,7 +269,7 @@ describe('the configured subject decides the endpoint', () => {
     expect(fallback?.notice).toContain('已切回官方桌面客户端')
     // 落回去的那个 id 必须真的是本 build 认识的主体，否则等于换了个看不到的灯。
     expect(subjectClientKind(OFFICIAL_SHELL_SUBJECT_ID)).toBe('official-desktop')
-    expect(subjectEndpointPorts({ subjectId: OFFICIAL_SHELL_SUBJECT_ID })).toEqual([19387])
+    expect(subjectEndpointPorts({ subjectId: OFFICIAL_SHELL_SUBJECT_ID })).toEqual([19387, WALLPAPER_HOST_PORT])
     // 反例：没有存值、存的是已知主体、或存的是源码目录路径 ⇒ **不动**（路径永远是合法身份）。
     expect(unsupportedShellSubjectFallback(undefined)).toBeNull()
     expect(unsupportedShellSubjectFallback('   ')).toBeNull()
@@ -296,10 +297,14 @@ describe('the configured subject decides the endpoint', () => {
     // 没人监听的端口上，就是"灯不亮而看不到原因"。
     for (const aumid of ['com.deepseek.dsh']) {
       const ports = subjectEndpointPorts({ subjectId: `${SHELL_SUBJECT_PREFIX}${aumid}` })
-      expect(ports).toHaveLength(1)
+      // 客户端自己的端口排在**第一位**：它在跑时，壁纸连的就是它。
       const known = DEFAULT_ENDPOINT_PORTS.find((entry) => entry.port === ports?.[0])
       expect(known, `port for ${aumid} must be a client port this build scans`).toBeDefined()
       expect(known?.kind).toBe(subjectClientKind(`${SHELL_SUBJECT_PREFIX}${aumid}`))
+      // 排在后面的那个是**壁纸自己宿主的**端口，它刻意不在客户端的端口表里：客户端随时可以
+      // 打开，不会撞车（19387 被我们占着时壳会直接启动失败，实测过）。
+      expect(ports?.slice(1)).toEqual([WALLPAPER_HOST_PORT])
+      expect(DEFAULT_ENDPOINT_PORTS.some((entry) => entry.port === WALLPAPER_HOST_PORT)).toBe(false)
     }
     // 曾经也在表里的第三方客户端：现在既不给端口，也不给形状（§ 用户 2026-09-27 的要求）。
     expect(subjectEndpointPorts({ subjectId: UNKNOWN_SHELL })).toEqual([])
@@ -465,9 +470,13 @@ describe('the endpoint monitor', () => {
     stubDialled(() => [], seen)
     await published(() => ({ subjectId: OFFICIAL_SHELL }), 2)
     // Probing another client's port on the way would be harmless but dishonest:
-    // the settings say which subject this wallpaper talks to.
+    // the settings say which subject this wallpaper talks to. 这个主体现在有两个端口
+    // （客户端自己的，加壁纸自己宿主的），两个都算"这个主体的"；别的客户端一个都不许问。
     expect(seen.length).toBeGreaterThan(0)
-    expect(seen.every((url) => url.includes(':19387'))).toBe(true)
+    expect(
+      seen.every((url) => url.includes(':19387') || url.includes(`:${WALLPAPER_HOST_PORT}`)),
+    ).toBe(true)
+    expect(seen.some((url) => url.includes(':3080'))).toBe(false)
   })
 
   it('publishes the configured subject as soon as it answers', async () => {
