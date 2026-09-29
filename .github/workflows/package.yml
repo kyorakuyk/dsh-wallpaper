@@ -2,9 +2,13 @@ name: Package
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
+  # FREEZE（2026-09-30）：标签不再触发本工作流。理由是一次实况：给 v0.3.0 打标签时它自动把
+  # 测试签名的 MSIX 与测试证书挂到了公开发布页上，和真正的安装器并排 —— 用户会点到那条需要
+  # 先信任证书的路，而那条路我们已经不用了（锁屏退出后不再需要包身份）。
+  # 恢复办法：取消下面 push/tags 三行的注释。真要重发 MSIX，用上面的手动触发。
+  # push:
+  # tags:
+  # - 'v*'
 
 permissions:
   contents: read
