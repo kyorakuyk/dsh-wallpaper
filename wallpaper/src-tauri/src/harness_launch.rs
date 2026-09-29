@@ -671,6 +671,29 @@ fn launch_cli_host(
         "harness cli host launch: subject={subject_id} program={} args={command_args:?}",
         program.display()
     );
+    // 起宿主之前先把桥对齐（缺桥、或版本不是我们钉的那一版时补齐）。
+    //
+    // **为什么在原生而不是界面**：主体这个值在原生这边；界面那份设置是异步快照来的，启动那一刻
+    // 还没有它 —— 2026-09-30 实测，界面那条 effect 连一次请求都发不出来。而这里正好是"需要桥的
+    // 那一刻"：宿主一起来就会去加载插件。
+    //
+    // 放后台线程：装桥要跑包管理（几秒），不能拖住宿主的启动。代价要说清：如果这次真的装了桥，
+    // **当前这个宿主**启动时还看不到它，要等下一次启动加载 —— 下一次因为版本已相符，不会重复安装。
+    {
+        let subject = subject_id.to_string();
+        std::thread::spawn(move || {
+            let outcomes = install_bridge_for_subject(&subject, "", kind);
+            for outcome in &outcomes {
+                log::info!(
+                    "装桥结果：profile={} status={} command={} detail={}",
+                    outcome.profile,
+                    outcome.status,
+                    outcome.command,
+                    outcome.detail
+                );
+            }
+        });
+    }
     match command.spawn() {
         Ok(mut child) => {
             if wants_handoff {
