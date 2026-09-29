@@ -2567,18 +2567,19 @@ fn restore_desktop_keyboard_focus(app: &tauri::AppHandle) {
 /// - 空白桌面双击可能让 Progman 变成前台（那是桌面本身），仍然允许翻；
 /// - 前台没变（点空白时常见，因为点击穿透让前台留在原处）也仍然允许翻。
 fn double_click_became_someone_elses(
-    foreground_pid_at_first_click: Option<u32>,
-    foreground_pid_now: Option<u32>,
-    our_pid: u32,
+    foreground_at_first_click: Option<isize>,
+    foreground_now: Option<isize>,
     foreground_now_is_desktop_surface: bool,
 ) -> bool {
-    // 放行只有两种：前台换成**我们自己**，或换成**桌面表面窗口**（Progman/WorkerW/图标视图）。
+    // 放行只有两种：前台**没变**，或换成了**桌面表面窗口**（Progman/WorkerW/图标视图）。
     //
-    // 这里刻意不再用「进程号 == Explorer」当放行条件：用资源管理器打开文件夹或文件时，
-    // 动作正是由 explorer 自己完成的，进程号不变，于是双击图标那一类会漏过去（实测复发过一次）。
-    // 按窗口类判断才分得清「桌面表面」与「Explorer 开出来的窗口」。
-    match (foreground_pid_at_first_click, foreground_pid_now) {
-        (Some(before), Some(now)) if before != now => now != our_pid && !foreground_now_is_desktop_surface,
+    // 判据用窗口句柄而不是进程号，而且**不再放行"我们自己的进程"**——这一条是两次实测换来的：
+    // * 按"进程号是 Explorer"放行时漏掉了"用资源管理器打开文件夹"（动作由 explorer 自己完成）；
+    // * 按"进程号是我们自己"放行时漏掉了"双击壁纸自己的桌面快捷方式"（应用已在运行，激活它不换
+    //   进程，只换窗口）。
+    // 句柄比较把这两种都归入"别人动过了"；点空白桌面时前台要么不动、要么落到桌面表面窗口上。
+    match (foreground_at_first_click, foreground_now) {
+        (Some(before), Some(now)) if before != now => !foreground_now_is_desktop_surface,
         _ => false,
     }
 }
@@ -2586,6 +2587,49 @@ fn double_click_became_someone_elses(
 /// Uses UI Automation, rather than ListView messages with a pointer owned by
 /// Explorer, to distinguish desktop icons from empty desktop space. This is a
 /// supported cross-process accessibility boundary and never consumes input.
+#[cfg(windows)]
+/// 光标下那个 UIA 元素长什么样 —— 只用于日志。这条判据已经两次失灵（把图标当空白、把桌面容器当
+/// 内容），所以宁可每次判定都把现场写下来，也不要在下一次故障时靠猜。
+#[cfg(windows)]
+fn describe_point_for_blank(automation: &IUIAutomation) -> String {
+    let mut point = POINT::default();
+    unsafe {
+        if GetCursorPos(&mut point).is_err() {
+            return "cursor-unavailable".to_string();
+        }
+        let Ok(element) = automation.ElementFromPoint(point) else {
+            return "no-element".to_string();
+        };
+        let walker = automation.ControlViewWalker().ok();
+        let mut parts: Vec<String> = Vec::new();
+        let mut current = Some(element);
+        for _ in 0..4 {
+            let Some(element) = current else {
+                break;
+            };
+            let control = element
+                .CurrentControlType()
+                .map(|value| format!("{}", value.0))
+                .unwrap_or_else(|_| "?".to_string());
+            let name = element
+                .CurrentName()
+                .map(|value| value.to_string())
+                .unwrap_or_default();
+            let name = name.trim();
+            let name = if name.is_empty() {
+                "-".to_string()
+            } else {
+                name.chars().take(24).collect()
+            };
+            parts.push(format!("{control}:{name}"));
+            current = walker
+                .as_ref()
+                .and_then(|tree| tree.GetParentElement(&element).ok());
+        }
+        parts.join(" < ")
+    }
+}
+
 #[cfg(windows)]
 fn cursor_is_over_desktop_blank(automation: &IUIAutomation) -> bool {
     let mut point = POINT::default();
@@ -2748,9 +2792,9 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
 
         let mut was_down = false;
         let mut last_blank_click: Option<std::time::Instant> = None;
-        // 记录首次点击时前台的**进程号**。按进程判断而不是按窗口类名，因为点空白桌面时前台也可能
-        // 变成 Explorer 自己的窗口（SHELLDLL_DefView 之类），按类名判断会把那种情况误当成别人。
-        let mut foreground_pid_at_first_click: Option<u32> = None;
+        // 记录首次点击时前台的**窗口句柄**。句柄比进程号细一档：双击壁纸自己的快捷方式时进程号
+        // 不变（应用已在运行），只有窗口会变。
+        let mut foreground_at_first_click: Option<isize> = None;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(16));
             if app.get_webview_window("background").is_none() {
@@ -2767,17 +2811,23 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                 let hits_interaction =
                     background.is_some_and(|background| cursor_hits_interaction_region(background));
                 let blank = cursor_is_over_desktop_blank(&automation);
+                let blank_saw = describe_point_for_blank(&automation);
                 let can_toggle = should_toggle_desktop_workspace(on_surface, hits_interaction, blank);
                 if !can_toggle {
                     // 三条判据分开记：这个功能两侧都栽过（图标处被当成空白、空白处被兜底挡掉），
                     // 只有分开写，下一次失灵才不必靠猜。
                     log::info!(
-                        "workspace toggle declined: on_surface={on_surface} hits_interaction={hits_interaction} blank={blank}"
+                        "workspace toggle declined: on_surface={on_surface} hits_interaction={hits_interaction} blank={blank} uia={blank_saw}"
                     );
                 }
                 if can_toggle {
+                    log::info!("workspace toggle accepted: uia={blank_saw}");
                     log_workspace_toggle_decision(false, true);
                     let now = std::time::Instant::now();
+                    let foreground_now = unsafe {
+                        let window = GetForegroundWindow();
+                        if window.0.is_null() { None } else { Some(window.0 as isize) }
+                    };
                     let foreground_pid_now = unsafe {
                         let window = GetForegroundWindow();
                         if window.0.is_null() {
@@ -2799,18 +2849,17 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                     let foreground_now_is_desktop_surface =
                         is_desktop_surface_class(foreground_now_class.as_deref());
                     if double_click_became_someone_elses(
-                        foreground_pid_at_first_click,
-                        foreground_pid_now,
-                        std::process::id(),
+                        foreground_at_first_click,
+                        foreground_now,
                         foreground_now_is_desktop_surface,
                     ) {
                         // 这次双击启动了别的东西（例如桌面上的快捷方式）：那是它在响应你，
                         // 不是"对着空白桌面双击"。不翻，并把这一对点击忘掉。
                         log::info!(
-                            "双击落在了会启动东西的位置：不切换表/里桌面（前台 pid={foreground_pid_now:?} class={foreground_now_class:?} 首次 pid={foreground_pid_at_first_click:?}）"
+                            "双击落在了会启动东西的位置：不切换表/里桌面（前台 pid={foreground_pid_now:?} class={foreground_now_class:?} 首次 pid={foreground_at_first_click:?}）"
                         );
                         last_blank_click = None;
-                        foreground_pid_at_first_click = None;
+                        foreground_at_first_click = None;
                         was_down = down;
                         continue;
                     }
@@ -2842,11 +2891,11 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                         );
                     } else {
                         last_blank_click = Some(now);
-                        foreground_pid_at_first_click = foreground_pid_now;
+                        foreground_at_first_click = foreground_now;
                     }
                 } else {
                     last_blank_click = None;
-                    foreground_pid_at_first_click = None;
+                    foreground_at_first_click = None;
                 }
             }
             was_down = down;
@@ -4771,21 +4820,17 @@ mod tests {
 /// 它：只要这次双击让前台换成了**别人的**窗口，就说明双击落在了会启动东西的位置，不该翻。
 #[test]
 fn a_double_click_that_activated_something_else_never_toggles_the_workspace() {
-    let ours = 1000u32;
-    let explorer = 2000u32;
-    // 前台换成了别的进程的普通窗口：不翻。
-    assert!(double_click_became_someone_elses(Some(ours), Some(3000), ours, false));
-    // 前台换成了 Explorer **开出来的**窗口（双击文件夹/文件，动作由 explorer 自己完成）：
-    // 同样不翻 —— 这正是上一版按「进程号 == Explorer」放行时漏过去的那一类。
-    assert!(double_click_became_someone_elses(Some(ours), Some(explorer), ours, false));
-    // 前台换成了桌面表面窗口（点空白桌面的常见结果，含图标视图）：仍然翻。
-    assert!(!double_click_became_someone_elses(Some(3000), Some(explorer), ours, true));
-    // 前台换成了我们自己：仍然翻。
-    assert!(!double_click_became_someone_elses(Some(explorer), Some(ours), ours, false));
-    // 前台没变（点击穿透）：仍然翻。
-    assert!(!double_click_became_someone_elses(Some(3000), Some(3000), ours, false));
+    // 前台换成了另一个窗口（双击快捷方式、文件夹、文件都属于这一类）：不翻。
+    assert!(double_click_became_someone_elses(Some(101), Some(202), false));
+    // 换成的是**我们自己的另一个窗口**（双击壁纸自己的桌面图标：应用已在运行，进程号不变，
+    // 只有窗口会变）：同样不翻 —— 这是按进程号判断时漏掉的那一类。
+    assert!(double_click_became_someone_elses(Some(101), Some(303), false));
+    // 换成了桌面表面窗口（点空白桌面的常见结果，含图标视图）：仍然翻。
+    assert!(!double_click_became_someone_elses(Some(101), Some(202), true));
+    // 前台没变（点击穿透时常见）：仍然翻。
+    assert!(!double_click_became_someone_elses(Some(101), Some(101), false));
     // 首次点击没记到前台：不因此阻止（宁可保留原行为，也不要让功能静默失效）。
-    assert!(!double_click_became_someone_elses(None, Some(3000), ours, false));
+    assert!(!double_click_became_someone_elses(None, Some(202), false));
 }
 
 #[test]
