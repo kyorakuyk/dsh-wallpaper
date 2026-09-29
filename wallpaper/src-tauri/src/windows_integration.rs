@@ -3045,8 +3045,14 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                             window_class(window)
                         }
                     };
+
                     let foreground_now_is_desktop_surface =
                         is_desktop_surface_class(foreground_now_class.as_deref());
+                    // 判定时的前台是谁：用户实测"Win+D 之后立刻变灵敏"，而两次点击的间隔没有变，
+                    // 说明两个状态之间有别的差异。此前日志里缺的就是这个量。
+                    log::info!(
+                        "判定时的前台：class={foreground_now_class:?} pid={foreground_pid_now:?} 是桌面表面类={foreground_now_is_desktop_surface}"
+                    );
                     if double_click_became_someone_elses(
                         foreground_at_first_click,
                         foreground_now,
@@ -3066,9 +3072,14 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                     }
                     let reached = last_blank_point
                         .is_some_and(|previous| within_double_click_reach(previous, (cursor_x, cursor_y), 64));
-                    if last_blank_click.is_some_and(|previous| {
-                        now.duration_since(previous) <= double_click_window
-                    }) && reached {
+                    let gap_ok = last_blank_click
+                        .is_some_and(|previous| now.duration_since(previous) <= double_click_window);
+                    if !gap_ok {
+                        log::info!("配对未成立：{gap_px}px 距离、间隔超窗或无上一次点击（窗口 {}ms）", double_click_window.as_millis());
+                    } else if !reached {
+                        log::info!("配对未成立：与上一次点击相距 {gap_px}px，超过 64px 上限");
+                    }
+                    if gap_ok && reached {
                         last_blank_click = None;
                         // The transition itself lives in enter/leave_inner_workspace so the
                         // double click and the floating ball cannot drift apart.
