@@ -1,6 +1,6 @@
 {
   "name": "dsh-wallpaper-bridge",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Loopback DSH session bridge for the dsh-wallpaper desktop app.",
   "type": "module",
   "main": "lib/index.js",
@@ -36,7 +36,9 @@
     "@deepseek-ai/dsh-user-approval": "^0.1.0-rc.5 || ^0.2.0-rc.1"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/dsh-user-approval": { "optional": true }
+    "@deepseek-ai/dsh-user-approval": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

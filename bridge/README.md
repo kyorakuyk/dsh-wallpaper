@@ -9,6 +9,44 @@ random bearer token stored in `$DSH_HOME/wallpaper/bridge-token` (or
 `~/.dsh/wallpaper/bridge-token`). The token is consumed by the native wallpaper
 process and must never be exposed to its WebView or logs.
 
+## Installing this plugin
+
+Publish-side instructions, for anyone who wants the wallpaper's session bridge
+inside their own DSH. Two routes, and the published package is the one to prefer.
+
+**From the DSH desktop app.** Open 「添加插件」, paste the package name and install:
+
+```
+dsh-wallpaper-bridge
+```
+
+The installer does the bookkeeping itself — measured: it creates the profile if it
+is missing (`dsh: initialized profile web at …`) and adds the package to
+`dsh.profile.bundles` as well as `dependencies`. The plugin is loaded at start-up,
+so **restart DSH** afterwards. From a terminal the same thing is
+`dsh plugin --profile <profile> add dsh-wallpaper-bridge`.
+
+**Upgrading means uninstalling and reinstalling.** The plugin dialog says so
+itself ("插件安装后，暂不支持自动更新。若需升级，请先卸载再安装新版"), and the
+wallpaper does not promise otherwise: when it finds a stale bridge it reports
+`bridge-incompatible` and asks you to reinstall.
+
+Two traps worth knowing:
+
+- **Do not install from a checked-out directory if you want it to keep working.**
+  A local-directory install is recorded as `link:<that directory>`, so moving or
+  deleting the directory breaks the plugin, and the install does **not** build it
+  either — `lib/` is not committed, so a source-only copy installs into a plugin
+  that cannot load. The npm package carries a built `lib/`; that is the point of
+  publishing it.
+- **This bridge is Windows-specific.** It tightens the token directory with
+  `whoami.exe` and `icacls.exe`, and its tests assert that, so it is not expected
+  to work on other platforms.
+
+Verify with `/api/wallpaper/v1/status`: `state` should be `bridge-ready`. A 401 on
+that route means the bridge is not there at all; `web-only` in the wallpaper means
+DSH answers but no bridge is installed in the profile that is running.
+
 ## Desktop entry boundary
 
 Wallpaper sessions receive a scoped `wallpaper:desktop-entry` system context.
