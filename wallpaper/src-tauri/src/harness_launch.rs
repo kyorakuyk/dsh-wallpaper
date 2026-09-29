@@ -1079,6 +1079,112 @@ fn truncate_for_surface(text: &str) -> String {
     clipped
 }
 
+/// 从主体 id 推出它的类别。前缀就是约定（与前端 `subjectKindOf` 同一套）：
+/// `shell:` 是官壳、`cli:` 是已安装的 CLI、其余（路径）是源码树。
+pub(crate) fn subject_kind_from_id(subject_id: &str) -> HarnessTargetKind {
+    let id = subject_id.trim();
+    if id.starts_with(SHELL_ID_PREFIX) {
+        HarnessTargetKind::EmbeddedShell
+    } else if id.starts_with(CLI_ID_PREFIX) {
+        HarnessTargetKind::InstalledCli
+    } else {
+        HarnessTargetKind::Checkout
+    }
+}
+
+/// 某个主体的启动器。`cli:<路径>` 就是它自己；`shell:<AUMID>` 用壳自带的 CLI；
+/// 源码树返回 `None`（自动装桥暂不支持它，调用方要给出可读原因而不是猜一个 CLI）。
+pub(crate) fn subject_launcher(subject_id: &str) -> Option<PathBuf> {
+    let id = subject_id.trim();
+    if let Some(path) = id.strip_prefix(CLI_ID_PREFIX) {
+        let path = path.trim();
+        return if path.is_empty() { None } else { Some(PathBuf::from(path)) };
+    }
+    if id.starts_with(SHELL_ID_PREFIX) {
+        return shell_host_cli(id);
+    }
+    None
+}
+
+/// 一次装桥尝试的结果，一个档案一条。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct BridgeInstallOutcome {
+    /// 目标档案。
+    pub profile: String,
+    /// `installed` / `needs-confirmation` / `failed`。
+    pub status: String,
+    /// CLI 的原文（截断后的）；失败或需要确认时，用户要能读到它。
+    pub detail: String,
+    /// 实际跑过的命令，方便用户照着手动复现。
+    pub command: String,
+}
+
+/// 把桥装进某个主体该用的那些档案。**只跑官方那条命令**（`dsh plugin --profile <档案> add <包>`），
+/// 不自己动包管理；遇到需要用户确认的提示原样带回去（见 `interpret_install_output`）。
+pub(crate) fn install_bridge_for_subject(
+    subject_id: &str,
+    profile: &str,
+    kind: HarnessTargetKind,
+) -> Vec<BridgeInstallOutcome> {
+    let shell_cli = if subject_id.trim().starts_with(SHELL_ID_PREFIX) {
+        shell_host_cli(subject_id)
+    } else {
+        None
+    };
+    let launcher = subject_launcher(subject_id);
+    bridge_profiles_for(kind, profile)
+        .into_iter()
+        .map(|profile| {
+            let chosen = if profile == "desktop" {
+                shell_cli.clone()
+            } else {
+                launcher.clone()
+            };
+            let Some(chosen) = chosen else {
+                return BridgeInstallOutcome {
+                    profile,
+                    status: BRIDGE_STATUS_FAILED.to_string(),
+                    detail: "没能解析出可用的 CLI：源码树主体暂不支持自动装桥，请按文档手动执行。".to_string(),
+                    command: String::new(),
+                };
+            };
+            let plan = match plan_bridge_install(&profile, &chosen, shell_cli.clone()) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    return BridgeInstallOutcome {
+                        profile,
+                        status: BRIDGE_STATUS_FAILED.to_string(),
+                        detail: error,
+                        command: String::new(),
+                    }
+                }
+            };
+            let command = format!("{} {}", plan.launcher.display(), plan.args.join(" "));
+            match std::process::Command::new(&plan.launcher).args(&plan.args).output() {
+                Ok(output) => {
+                    let (status, detail) = interpret_install_output(
+                        output.status.code(),
+                        &String::from_utf8_lossy(&output.stdout),
+                        &String::from_utf8_lossy(&output.stderr),
+                    );
+                    BridgeInstallOutcome {
+                        profile,
+                        status: status.to_string(),
+                        detail,
+                        command,
+                    }
+                }
+                Err(error) => BridgeInstallOutcome {
+                    profile,
+                    status: BRIDGE_STATUS_FAILED.to_string(),
+                    detail: format!("无法启动 CLI：{error}"),
+                    command,
+                },
+            }
+        })
+        .collect()
+}
+
 /// 后台启动（滑槽、随壁纸自启）该怎么跑 —— §7.6 走法 A 之后，壳与别的类走的路不同了。
 ///
 /// * 壳：能解析出它自带的 CLI 就跑那个（`web` 档案、**绑壁纸自己的端口**、没有窗口），
@@ -2512,6 +2618,29 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn a_subject_id_carries_its_kind_and_a_checkout_offers_no_launcher() {
+        assert_eq!(
+            subject_kind_from_id("shell:com.deepseek.dsh"),
+            HarnessTargetKind::EmbeddedShell
+        );
+        assert_eq!(
+            subject_kind_from_id("cli:C:\\Users\\me\\AppData\\Roaming\\npm\\dsh.cmd"),
+            HarnessTargetKind::InstalledCli
+        );
+        assert_eq!(
+            subject_kind_from_id("D:\\Family\\DeepSeekHarness\\deepseek-harness"),
+            HarnessTargetKind::Checkout
+        );
+        // `cli:` 前缀就是启动器本身；空路径与源码树都没有可用的启动器。
+        assert_eq!(
+            subject_launcher("cli:C:\\npm\\dsh.cmd"),
+            Some(PathBuf::from("C:\\npm\\dsh.cmd"))
+        );
+        assert_eq!(subject_launcher("cli:   "), None);
+        assert_eq!(subject_launcher("D:\\tree"), None);
+    }
+
     #[test]
     fn a_clean_install_reads_as_installed_and_a_failure_keeps_its_reason() {
         let (status, detail) = interpret_install_output(Some(0), "Packages: +1\nDone in 2.7s", "");
