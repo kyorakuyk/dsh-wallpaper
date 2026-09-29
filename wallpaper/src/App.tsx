@@ -1017,21 +1017,41 @@ export function App({ surface = 'combined' }: AppProps) {
     settings.deepseekApi.priceOutputPerMillion,
   ])
 
-  const enterInnerWorkspace = () => {
+  // 入场/离场的代际计数：两个延时收尾（280ms 入场、220ms 离场）都要先确认自己仍是最新那一次，
+// 否则快速进出时，旧定时器会把新状态覆盖掉。
+const workspaceEpochRef = useRef(0)
+
+const enterInnerWorkspace = () => {
     // The existing drawer already has its own state and visual treatment. The
     // preference therefore only chooses its initial state as a workspace is
     // entered; it does not add another surface or force a transcript open.
     // Read through the ref: these handlers are held by a long-lived listener, so a
     // captured value would go stale the moment the preference changed.
+    // 已经在里桌面（或正在入场）时直接返回。
+    //
+    // 立绘的单击路径直达这里（`onOpenChat`），而它不该有"重新入场"的语义：不加这道判断，
+    // 每次点立绘都会把状态重新置回 `entering-inner`，280ms 的入场动画便从透明+模糊重播
+    // （看起来就是输入岛闪一下），并且会把会话记录的展开状态重置回设置里的默认值。
+    // 读 ref 而不是闭包里的 `workspace`：这些处理器被长生命周期监听器持有。
+    if (workspaceRef.current === 'entering-inner' || workspaceRef.current === 'inner') {
+      return
+    }
+    const epoch = ++workspaceEpochRef.current
     setInnerHistoryExpanded(settingsRef.current.historyStartsExpanded)
     setWorkspace('entering-inner')
     setInteractionState('expanded')
     baseDispatch({ type: 'OPEN_CHAT' })
     dispatchCore('open-chat')
-    window.setTimeout(() => setWorkspace('inner'), 280)
+    window.setTimeout(() => {
+      if (workspaceEpochRef.current === epoch) {
+        setWorkspace('inner')
+      }
+    }, 280)
   }
 
   const leaveInnerWorkspace = () => {
+    // 代际 +1：任何尚未触发的入场收尾（280ms）就此作废，不会在离场后把状态又置回 inner。
+    const epoch = ++workspaceEpochRef.current
     setInnerHistoryExpanded(false)
     if (settingsRef.current.interactionLayout === 'floating') {
       // A floating surface is either fully present or absent. Resizing its native
@@ -1044,6 +1064,9 @@ export function App({ surface = 'combined' }: AppProps) {
     }
     setWorkspace('leaving-inner')
     window.setTimeout(() => {
+      if (workspaceEpochRef.current !== epoch) {
+        return
+      }
       setWorkspace('front')
       setInteractionState('collapsed')
       baseDispatch({ type: 'CLOSE_CHAT' })
