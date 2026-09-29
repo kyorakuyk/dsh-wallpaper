@@ -1839,8 +1839,11 @@ const enterInnerWorkspace = () => {
   // （那里有一句话的总结），而"桥不在"这件事聊天区本来就会显示出来。
   const bridgedAtStartupRef = useRef(false)
   useEffect(() => {
-    if (bridgedAtStartupRef.current) return
     const subjectId = settings.dshLaunch.subjectId ?? settings.dshLaunch.rootPath
+    // 挂载那一刻 settings 还是默认值（壁纸窗口的设置是异步从原生快照来的），所以**不能**只跑一次：
+    // 依赖里必须带上主体，等它出现时再动手。2026-09-30 实测：写成 `[]` 时这条 effect 永远在
+    // `!subjectId` 那行返回，日志里连一次请求都没有。
+    if (bridgedAtStartupRef.current) return
     if (!subjectId) return
     bridgedAtStartupRef.current = true
     void nativeRuntime
@@ -1852,8 +1855,8 @@ const enterInnerWorkspace = () => {
         // 不弹提示（启动检查是家务活），但**不许消失**：这里曾经连吞两次真失败。
         console.warn('bridge alignment failed', error)
       })
-    // 只做一次：subjectId 变化由设置窗口那条 effect 负责。
-  }, [])
+    // 守卫保证"每个主体只对齐一次"，所以依赖变化不会变成重复跑。
+  }, [settings.dshLaunch.subjectId, settings.dshLaunch.rootPath])
 
   const scene = useMemo(() => {
     if (runtime.phase === 'booting' || runtime.phase === 'locked') return <SleepScene persona={persona} mode="system" />
