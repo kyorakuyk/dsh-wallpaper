@@ -365,7 +365,13 @@ async fn ensure_profile_bridge(
     subject_id: String,
     profile: String,
 ) -> Result<Vec<harness_launch::BridgeInstallOutcome>, String> {
-    require_settings(&caller)?;
+    // 两个应用窗口都会调它：设置中心负责"换主体时对齐并报告"，壁纸宿主负责"每次启动静默对齐"。
+    // 所以这里不能只认设置窗口 —— 早先那样写，启动那一路被拒绝、又被前端的 catch 吞掉，
+    // 实测表现为"删掉桥、重启应用后桥没有回来"（2026-09-30 06:30）。
+    let label = caller.label();
+    if label != SETTINGS_WINDOW_LABEL && label != BACKGROUND_WINDOW_LABEL {
+        return Err("该命令只允许壁纸宿主与设置中心调用。".into());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let kind = harness_launch::subject_kind_from_id(&subject_id);
         harness_launch::install_bridge_for_subject(&subject_id, &profile, kind)
