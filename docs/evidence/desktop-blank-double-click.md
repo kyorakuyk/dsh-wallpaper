@@ -145,10 +145,11 @@ Armed ──以上任一条件不满足─────────────�
   本轮尝试改这一处时，因为对 `PhysicalInteractionRegion` 的字段/构造取法判断有误导致测试编译不过，
   已按"不留破的中间态"原则整体回退；下次只需先读一眼该结构体的定义（`island_visible_from_regions`
   里有现成的 `region.id == ISLAND_REGION_ID` 用法）再动手，工作量很小。
-* **（与双击无关，用户 2026-09-30 提出）输入岛左下角那个盒子要换成"到达方式"滑槽**：现在 Web/API
-  模式显示的是模型名（截图里是 `deepseek-chat`），harness 模式显示 `DeepSeek-V41-Flash`；要改成滑槽，
-  左端在 API 模式给出 `Web` / `API` 两个位置，在 harness 模式给出 `Desktop` / `Web` / `TUI` 三个位置。
-  定位线索：该盒子不是用模型名字面量渲染的（按 `deepseek-chat` 搜不到源码），应从岛的底部结构与样式类名
-  入手（`features/chat/ConversationBubble.tsx` 与 `styles.css` 的底部那一行）；早前那版滑槽 UI 曾按用户
-  要求冻结（`07c7050` 附近），先看它的代码是注释保留还是已删除，再决定接线还是重建。
+* **（与双击无关，用户 2026-09-30 提出，同日澄清）输入岛左下角那个盒子应当是"到达方式的状态提示器"，
+  不是选择器**。位置：`wallpaper/src/features/chat/ConversationBubble.tsx` 的 `<footer>`，L453 起那个
+  **模型选择按钮 + 下拉菜单**（`dsh-chat__model-menu`），它显示 `modelLabels[selectedModel] ?? selectedModel`，
+  所以 API 模式是 `deepseek-chat`、harness 模式是 `DeepSeek-V41-Flash`。
+  要改成显示**当前到达方式**：API 模式 `Web` / `API`，harness 模式 `Desktop` / `Web` / `TUI`。
+  **待定**：原来那个模型下拉菜单的去处（挪到标题栏 / 暂时去掉 / 另给入口）—— 动手前需用户定。
+  早期那版"滑槽"从未落地在本仓库（按 `delivery`/`slot`/`reach` 检索无岛上相关实现），不要再按滑槽理解。
 * 探针只在**本机**验证过（Windows 11，图标层可见/隐藏两态各测一次）。
