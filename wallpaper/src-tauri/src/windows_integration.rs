@@ -2667,11 +2667,14 @@ fn uia_point_belongs_to_desktop(automation: &IUIAutomation) -> bool {
         let walker = automation.ControlViewWalker().ok();
         let mut current = Some(element);
         let mut seen: Vec<String> = Vec::new();
-        for _ in 0..10 {
+        for depth in 0..10 {
             let Some(element) = current else { break };
             let class = element.CurrentClassName().map(|value| value.to_string()).ok();
             seen.push(class.clone().unwrap_or_else(|| "-".to_string()));
-            if is_desktop_surface_class(class.as_deref()) {
+            // 只在**三层以内**承认桌面类名。原因：UIA 树的根就是桌面自己，爬得够远总能碰到它 ——
+            // 任务栏按钮的祖先链就是这样，于是"点任务栏也算在桌面上"（实测被误放行过一次）。
+            // 而真正要覆盖的情形（桌面之上压着一层点击穿透的覆盖层）只需要两三层就碰到桌面。
+            if depth < 3 && is_desktop_surface_class(class.as_deref()) {
                 return true;
             }
             current = walker
