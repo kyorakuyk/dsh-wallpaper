@@ -59,13 +59,22 @@ export const BRIDGE_VERSION: string = packageManifest.version ?? '0.0.0'
  */
 export const BRIDGE_AUTHORED_AGAINST: string = authoredAgainst()
 /**
- * Non-sensitive build provenance. `DSH_WALLPAPER_BRIDGE_BUILD` is set by the
- * release build; `dev` is the honest answer for a local build, and it is never
- * used to decide compatibility.
+ * Non-sensitive build provenance: which build this copy is, not which version it
+ * claims to be.
+ *
+ * `bridgeVersion` already answers "which release", and that turned out not to be
+ * enough: three copies installed in three profiles all reported `0.1.3` while
+ * containing three *different* builds, so no one could tell them apart from a
+ * status response. The release build therefore bakes a stamp in here at compile
+ * time (`tsdown.config.ts` computes it and replaces this expression), and `dev`
+ * is the honest answer for a build that carries none. It is never used to decide
+ * compatibility.
+ *
+ * Written as a plain member access on purpose: the build replaces exactly
+ * `process.env.DSH_WALLPAPER_BRIDGE_BUILD`, and an optional chain
+ * (`process.env?.…`) would not match it.
  */
-export const BRIDGE_BUILD = typeof process !== 'undefined' && process.env?.DSH_WALLPAPER_BRIDGE_BUILD
-  ? String(process.env.DSH_WALLPAPER_BRIDGE_BUILD).slice(0, 40)
-  : 'dev'
+export const BRIDGE_BUILD = (process.env.DSH_WALLPAPER_BRIDGE_BUILD || 'dev').slice(0, 40)
 export const API_PREFIX = '/api/wallpaper/v1'
 
 export interface BridgeQuestionOption {

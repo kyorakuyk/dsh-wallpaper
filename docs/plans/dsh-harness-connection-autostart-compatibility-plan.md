@@ -151,6 +151,24 @@ Windows 真实链路必须用本轮 Bridge 构建及当前源码壁纸验证：�
    * 客户端**不在跑**时，壁纸起的是自带 CLI 的 **`web` 档案**宿主（3099）—— 那一份也必须有桥。
    所以壳主体两种状态各需要一份，缺哪一份都会在对应的那半段路上失败。
 2. status 增加非敏感 build 标识（第 5 节已有此要求），用于一眼看出宿主里跑的是哪一份。
+   **已实现（2026-09-30）**：`tsdown.config.ts` 在构建时把 stamp 烘进 `BRIDGE_BUILD`
+   （发布构建 `0.1.5+<sha>`，本地构建 `dev+g<sha>`），status 照旧报 `bridgeBuild`。
+3. **桥的依赖已钉版本（2026-09-30 完成）**：`dsh-wallpaper-bridge@0.1.5` 由发布仓的 CI
+   （推标签 `v0.1.5` → `Publish`）发到 npm，`latest = 0.1.5`。三个档案一律改用 npm 版本，
+   改前备份在 `%LOCALAPPDATA%\com.dsh.wallpaper\profile-backup-20260930-035708\`：
+   * `web`、`dsh-tui` 用全局 CLI：`dsh plugin --profile <p> add dsh-wallpaper-bridge@0.1.5`；
+   * `desktop` **只能用官壳自带的 CLI**（全局 CLI 会拒绝 `desktop`：`profile "desktop" is managed
+     exclusively by the Electron application`）：`<壳安装目录>\resources\runtime\cli\bin\dsh.cmd
+     plugin --profile desktop add …`。
+   * 结果：三个档案的依赖与已安装版本都是 `0.1.5`，三份 `lib/index.js` 的 SHA-256 前 12 位
+     **完全相同**（`59A6F75C3361`，与 npm 上那份一致）——"三份不同构建"到此结束。
+   * 两条要记住的旁枝：pnpm 11 会往档案的 `pnpm-workspace.yaml` 里写 `minimumReleaseAgeExclude`
+     （包太新时的门槛豁免），这是它的正常行为；`dsh-tui` 档案里另有**与本项目无关**的既有问题——
+     `@deepseek-harness-tui/dsh-tui@0.11.1` 等插件与 dsh 0.2.0-rc.1 不兼容，启动时会被拒，除非显式授予豁免。
+   * **宿主是启动时加载的**：改完之后正在跑的两台宿主仍报旧份（实测 `bridgeVersion=0.1.3`、
+     `bridgeBuild=dev`），要等它们下次启动才会变成 `0.1.5+85e0d0e`。这也正是"两个宿主都自称 0.1.3
+     而内容不同"的现场证据。
+   * 许可口径：`0.1.3`–`0.1.5` 都是 **MIT**（已发布不可追溯），AGPL-3.0 从 **0.1.6** 起。
 3. **端口与发现的简化**：宿主由我们起、端口由我们定之后，`wallpaper/src/connect/endpoints.ts` 的
    19387/3080 候选表、`subjectEndpointPorts` 扫描与端口 pin 自愈逻辑，以及 `connect/probe.ts` 的 3080 轮询，
    退化为"读设置里的 `endpointPort` + 存活检查"。**但第 0 节的原则不变：端口开放不等于连接成功**，
