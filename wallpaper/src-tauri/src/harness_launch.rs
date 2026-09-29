@@ -1396,6 +1396,9 @@ fn wait_for_shell(
     let mut cover: Option<crate::client_window::LaunchCover> = None;
     // "窗口要显示"的现场通知（`SetWinEventHook`）。它连同 `pump_show_events` 一起工作。
     let mut show_watch: Option<crate::client_window::ShowEventWatch> = None;
+    // 挪走了几个窗口（含 CREATE 钩子后来补挪的）。它会写进 `hide-landed` —— 本地日志开头会被截断，
+    // 关键数字必须出现在靠后的标记里，这一条是被截断的日志教会的。
+    let mut moved_offscreen = 0usize;
     let mut hidden_windows = 0u32;
     // 抬到 1 毫秒只在这一场里需要（[`SHELL_HIDE_TICK`] 的兑现条件），出作用域就还回去 ——
     // 它最多活 [`SHELL_HIDE_EPISODE`]，而且只出现在一次后台启动里。
@@ -1560,6 +1563,7 @@ fn wait_for_shell(
                             .as_deref()
                             .map(crate::client_window::move_family_offscreen)
                             .unwrap_or(0);
+                        moved_offscreen = moved;
                         if moved > 0 {
                             timeline.mark(
                                 "moved-offscreen",
@@ -1628,7 +1632,7 @@ fn wait_for_shell(
                             );
                             timeline.mark(
                                 "hide-landed",
-                                format!("windows=1 sweeps={sweeps} via=tick"),
+                                format!("windows=1 sweeps={sweeps} via=tick moved_offscreen={moved_offscreen}"),
                             );
                             timeline.mark(
                                 "visible-frame",
