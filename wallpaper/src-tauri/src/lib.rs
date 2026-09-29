@@ -350,6 +350,28 @@ async fn scan_dsh_paths(
     .map_err(|error| format!("扫描 DSH 未完成：{error}"))
 }
 
+/// 确保某个主体的档案里有我们钉住的那一版桥。
+///
+/// 界面在"选中主体"与"每次启动"时调用它。版本相符时里面什么都不做（判据在
+/// `bridge_install_needed`），所以这条命令不会变成每次启动跑一遍包管理。
+///
+/// **只注册进完整版**：Lite 的能力边界明文禁止连接 harness（`verify-lite-bundle.ps1` 会检查），
+/// 这条命令不该出现在那边。
+#[tauri::command]
+async fn ensure_profile_bridge(
+    caller: tauri::WebviewWindow,
+    subject_id: String,
+    profile: String,
+) -> Result<Vec<harness_launch::BridgeInstallOutcome>, String> {
+    require_settings(&caller)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let kind = harness_launch::subject_kind_from_id(&subject_id);
+        harness_launch::install_bridge_for_subject(&subject_id, &profile, kind)
+    })
+    .await
+    .map_err(|error| format!("装桥任务未完成：{error}"))
+}
+
 /// List the harness execution subjects this machine offers.
 ///
 /// This is the shim's "find" half: it answers "which subjects exist" for the two
@@ -4864,6 +4886,7 @@ macro_rules! register_edition_commands {
             select_backend,
             dispatch_app_action,
             publish_settings,
+            ensure_profile_bridge,
             notify_appearance_changed,
 // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
 //             set_lock_screen_enabled,
