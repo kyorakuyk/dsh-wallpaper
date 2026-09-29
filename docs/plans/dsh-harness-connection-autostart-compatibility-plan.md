@@ -151,8 +151,17 @@ Windows 真实链路必须用本轮 Bridge 构建及当前源码壁纸验证：�
    仍须用真实 `POST /sessions` 加 SSE 握手确认后才进入 Harness 模式。
 4. 状态胶囊（输入岛左下角的只读元素）显示当前实际入口：`API` / `Web`（API 后端）、
    `Web` / `Desktop` / `TUI`（harness，判据 `settings.window === 'tui'`、`isEmbeddedShellSubject`、其余为 `Web`）。
+   **已实现并已安装验收**（`conversationHostChip`，提交 `f4ecb9d`）。
+5. **壳那条路依赖一次"带 `executable` 的扫描"**（本机实测，2026-09-30）：官方客户端的自带 CLI 是**从安装
+   位置推出来的**（`<可执行文件所在目录>\resources\runtime\cli\bin\dsh.cmd`），而安装位置只存在于扫描
+   记录里。本机磁盘上那份记录是 2026-09-29 0:59 写的、**没有 `executable` 字段**，于是解析结果是
+   `missing-executable`；同一次重扫则给出 `...\resources\runtime\cli\bin\dsh.cmd`（实测存在）。
+   记录由 `scan_harness_targets` 这个命令写入（`lib.rs` 的 `persist_scan`），而它目前**只在设置窗口
+   扫描时触发**（`SettingsWindow.tsx`）。所以接线时必须显式处理这条依赖：拿不到可执行文件时
+   **先重扫再回退到 AUMID 激活**，不能把 `missing-executable` 当成"这个主体没有 CLI"。
 
 ### 7.5 状态
 
-本节是**口径**，代码尚未改动。开工顺序建议：先在原生层做"主体 → CLI 启动器"的解析函数（纯函数加单测，
-不改变现有行为），再动后台宿主的生命周期（必须连子进程一起收），最后才是前端的状态胶囊与端口简化。
+口径已落地第一块：原生层的"主体 → CLI 启动器"解析 `harness_launch.rs::plan_background_cli`
+（纯函数，`exists` 由调用方注入；5 条单测钉住"从安装位置推""两种拒绝分得开""源码树不查启动器"，
+另有一条默认忽略的本机取证测试）。**尚未接线**：现在没有任何调用方，现有行为一字未改。

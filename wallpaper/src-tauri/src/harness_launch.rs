@@ -758,6 +758,81 @@ pub(crate) fn installed_cli_command(
     }
 }
 
+/// A shell's own CLI, relative to the executable its windows belong to.
+///
+/// Measured on the official client: `DeepSeek Harness.exe` sits beside
+/// `resources\runtime\cli\bin\dsh.cmd`, and that batch file starts the same executable
+/// again in `ELECTRON_RUN_AS_NODE` mode — which is why this route needs no separate
+/// Node and why its version can never drift from the client's.
+const BUNDLED_CLI_RELATIVE: [&str; 5] = ["resources", "runtime", "cli", "bin", "dsh.cmd"];
+
+/// How a subject's **CLI** is reached, which is what every subject kind collapses onto
+/// (施工文档 §7：三种主体都退化为"跑它的 CLI"，所以后台宿主只需要这一条解析).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BackgroundCli {
+    /// Start this launcher. `installed_cli_command` owns the `cmd /c` difference and
+    /// the `--profile`/`--no-open` prefix; this only answers *which* file.
+    Launch(PathBuf),
+    /// A source tree already *is* its CLI: the managed chain runs `apps/cli` under the
+    /// tree, so there is no separate launcher to resolve and nothing to substitute.
+    TreeChain,
+}
+
+/// Which CLI can serve as this subject's background host.
+///
+/// `shell_executable` is the path the scan recorded for the client's own windows
+/// (`HarnessTarget::executable`) — never a path derived from the AUMID. That is not
+/// pedantry: the id is deliberately location-independent, so the AUMID alone cannot
+/// answer where the client is installed, and a caller that "figured it out" from the
+/// name would start a path nobody measured.
+///
+/// `exists` is injected rather than read, so the resolver stays pure: the happy path and
+/// both refusals can be pinned without a machine, and the *caller* decides what a
+/// refusal means. A shell that refuses falls back to AUMID activation, which is exactly
+/// why the two refusals are different codes instead of one.
+pub(crate) fn plan_background_cli(
+    subject_id: &str,
+    shell_executable: Option<&str>,
+    exists: &dyn Fn(&Path) -> bool,
+) -> Result<BackgroundCli, &'static str> {
+    let id = subject_id.trim();
+    if let Some(launcher) = id.strip_prefix(CLI_ID_PREFIX) {
+        let launcher = launcher.trim();
+        if launcher.is_empty() {
+            return Err("unknown-target");
+        }
+        let path = PathBuf::from(launcher);
+        return if exists(&path) {
+            Ok(BackgroundCli::Launch(path))
+        } else {
+            Err("missing-launcher")
+        };
+    }
+    if id.starts_with(SHELL_ID_PREFIX) {
+        let Some(executable) = shell_executable.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Err("missing-executable");
+        };
+        // A bare file name has no directory to hang the install on, and an empty parent
+        // would silently turn the relative path into one against the current directory.
+        let Some(install) = Path::new(executable)
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        else {
+            return Err("missing-executable");
+        };
+        let mut path = install.to_path_buf();
+        for segment in BUNDLED_CLI_RELATIVE {
+            path.push(segment);
+        }
+        return if exists(&path) {
+            Ok(BackgroundCli::Launch(path))
+        } else {
+            Err("missing-launcher")
+        };
+    }
+    Ok(BackgroundCli::TreeChain)
+}
+
 /// Who is asking for the start, which is what decides the one rule that still differs.
 ///
 /// 「显示还是不显示那个窗口」由**谁在问**决定，而不是由"是不是用户按的"决定：用户按下的
@@ -2455,6 +2530,126 @@ mod tests {
     const MANUAL: LaunchTrigger = LaunchTrigger::Manual;
     const AUTO: LaunchTrigger = LaunchTrigger::Automatic;
     const SLIDER: LaunchTrigger = LaunchTrigger::Slider;
+
+    /// 施工文档 §7 把三种主体都收成"跑它的 CLI"，所以这条解析是所有主体共用的一步。
+    ///
+    /// 三件事必须钉住，否则错法都是安静的：壳的路径**从安装位置推**（不是存的，也不是从
+    /// AUMID 猜的）、两种拒绝**分得开**（缺可执行文件 vs 缺启动器，调用方的退路不一样）、
+    /// 源码树**不查启动器**（它自己就是 CLI）。
+    #[test]
+    fn a_shells_cli_is_derived_from_its_install_and_never_stored() {
+        let executable = r"D:\Family\dsh-official\DeepSeek Harness.exe";
+        let bundled = r"D:\Family\dsh-official\resources\runtime\cli\bin\dsh.cmd";
+        let found = |path: &Path| path == Path::new(bundled);
+        assert_eq!(
+            plan_background_cli(OFFICIAL_ID, Some(executable), &found),
+            Ok(BackgroundCli::Launch(PathBuf::from(bundled)))
+        );
+
+        // 换一个安装目录，答案跟着走：这正是"不存路径"要保住的性质（客户端重装到别处时，
+        // 存储里那份 id 一个字都不该改）。
+        let elsewhere = r"E:\Apps\DSH\DeepSeek Harness.exe";
+        let bundled_elsewhere = r"E:\Apps\DSH\resources\runtime\cli\bin\dsh.cmd";
+        let found_elsewhere = |path: &Path| path == Path::new(bundled_elsewhere);
+        assert_eq!(
+            plan_background_cli(OFFICIAL_ID, Some(elsewhere), &found_elsewhere),
+            Ok(BackgroundCli::Launch(PathBuf::from(bundled_elsewhere)))
+        );
+
+        // 反过来也要成立：问的是"这份安装里那个启动器在不在"，不是"某个固定路径在不在"。
+        assert_eq!(
+            plan_background_cli(OFFICIAL_ID, Some(elsewhere), &found),
+            Err("missing-launcher")
+        );
+    }
+
+    #[test]
+    fn a_shell_without_a_measured_executable_refuses_instead_of_guessing() {
+        // AUMID 换不出路径。没有扫描到的可执行文件时只能拒绝，让调用方退回 AUMID 激活；
+        // 拼一个"看起来对"的目录，会在用户机器上开出一个没人验证过的路径。
+        assert_eq!(plan_background_cli(OFFICIAL_ID, None, &|_| true), Err("missing-executable"));
+        assert_eq!(plan_background_cli(OFFICIAL_ID, Some("   "), &|_| true), Err("missing-executable"));
+        // 只有文件名、没有目录：没有安装位置可挂，同样拒绝（否则相对路径会落到当前目录）。
+        assert_eq!(
+            plan_background_cli(OFFICIAL_ID, Some("DeepSeek Harness.exe"), &|_| true),
+            Err("missing-executable")
+        );
+    }
+
+    #[test]
+    fn a_missing_launcher_is_a_different_refusal_than_a_missing_executable() {
+        // 这两个错误码不能合成一个：缺可执行文件是"这个主体没有可用的安装位置"，缺启动器是
+        // "安装位置有，但那份 CLI 不在"。客户端的退路（AUMID 激活）只对后者有意义。
+        assert_eq!(
+            plan_background_cli(OFFICIAL_ID, Some(r"D:\gone\DeepSeek Harness.exe"), &|_| false),
+            Err("missing-launcher")
+        );
+    }
+
+    #[test]
+    fn an_installed_cli_is_its_own_launcher() {
+        let launcher = r"C:\Users\someone\AppData\Roaming\npm\dsh.cmd";
+        let id = format!("{CLI_ID_PREFIX}{launcher}");
+        let found = |path: &Path| path == Path::new(launcher);
+        assert_eq!(
+            plan_background_cli(&id, None, &found),
+            Ok(BackgroundCli::Launch(PathBuf::from(launcher)))
+        );
+        // 两端空白是存储格式的噪音，不是路径的一部分。
+        let padded = format!("  {CLI_ID_PREFIX}  {launcher}  ");
+        assert_eq!(
+            plan_background_cli(&padded, None, &found),
+            Ok(BackgroundCli::Launch(PathBuf::from(launcher)))
+        );
+        // 空启动器与已卸载的 CLI 是两件事：前者是坏 id，后者是"这个主体现在起不来"。
+        assert_eq!(plan_background_cli("cli:", None, &|_| true), Err("unknown-target"));
+        assert_eq!(plan_background_cli("cli:   ", None, &|_| true), Err("unknown-target"));
+        assert_eq!(plan_background_cli(&id, None, &|_| false), Err("missing-launcher"));
+    }
+
+    /// 这台机器上的真话：官方客户端自带的 CLI 到底在不在那个相对位置上。
+    ///
+    /// 默认忽略（要读本机安装目录）。跑法：
+    /// `cargo test --lib -- --ignored --nocapture this_machine_resolves_the_bundled_cli`。
+    /// 它只读路径、不启动任何东西 —— 与上面那条 `this_machine_*` 同一条规矩。
+    #[test]
+    #[ignore = "reads this machine's installed client; starts nothing"]
+    fn this_machine_resolves_the_bundled_cli() {
+        let aumid = "com.deepseek.dsh";
+        let id = format!("{SHELL_ID_PREFIX}{aumid}");
+        // 两条来源分开打：记录里那份可能比这一版构建旧（本机实测就是），而"重扫一次能不能
+        // 解析成功"才是这条路可不可用的真话。差在这两者之间，是**重扫**要补的，不是推导错。
+        let recorded = recorded_shell_executable(aumid);
+        println!("recorded executable: {recorded:?}");
+        println!(
+            "plan from the record: {:?}",
+            plan_background_cli(&id, recorded.as_deref(), &|path| path.exists())
+        );
+
+        let scan = crate::harness_targets::scan_harness_targets_blocking(None, false);
+        let live = scan
+            .targets
+            .iter()
+            .find(|target| target.id.eq_ignore_ascii_case(&id))
+            .and_then(|target| target.executable.clone());
+        println!("scanned executable: {live:?}");
+        println!(
+            "plan from a live scan: {:?}",
+            plan_background_cli(&id, live.as_deref(), &|path| path.exists())
+        );
+    }
+
+    #[test]
+    fn a_checkout_is_already_its_own_cli() {
+        // 源码树的 CLI 就在树里（托管链跑的是它的 `apps/cli`），所以这里没有"启动器"要解析，
+        // 也就**不查**任何路径：树本身是不是成立，由托管链按根的形状自己去验。
+        assert_eq!(plan_background_cli(CHECKOUT, None, &|_| false), Ok(BackgroundCli::TreeChain));
+        assert_eq!(
+            plan_background_cli(CHECKOUT, Some(r"D:\ignored\DeepSeek Harness.exe"), &|_| false),
+            Ok(BackgroundCli::TreeChain)
+        );
+        assert_eq!(plan_background_cli("   ", None, &|_| false), Ok(BackgroundCli::TreeChain));
+    }
 
     #[test]
     fn a_shell_plan_carries_the_alias_this_build_knows() {
