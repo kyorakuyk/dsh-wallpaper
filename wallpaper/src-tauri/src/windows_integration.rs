@@ -2722,7 +2722,7 @@ fn cursor_hits_interaction_region(root_hwnd: HWND) -> bool {
 /// OBJID_CLIENT：Windows 头文件里的 0xFFFFFFFC（windows crate 把它放在 WindowsAndMessaging 下，
 /// 这里直接用字面量，避免为它多引入一个模块）。
 const OBJID_CLIENT_ID: u32 = 0xFFFF_FFFC;
-const PAIR_WINDOW: std::time::Duration = std::time::Duration::from_millis(900);
+const PAIR_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
 /// 一次切换之后的冷却：这段时间内的点击一律不算数，免得快速连点把开关来回拨。
 const PAIR_COOLDOWN: std::time::Duration = std::time::Duration::from_millis(350);
 /// 两次点击的最大位置差（物理像素）。位置相近才是双击；两次无关单击通常不在一处。
