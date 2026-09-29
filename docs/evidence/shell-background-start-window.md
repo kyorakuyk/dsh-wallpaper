@@ -123,3 +123,39 @@ settled            +4707ms  连续 2 秒不在屏上，这一场结束
 3. 会话互通：后台宿主里发一条，打开完整壳确认看得到同一条，反向再试一次。
 
 三条通过之后再改代码。**输入岛左下角那个只读状态胶囊**正好承担这套新语义：`API` / `Web`（API 后端）、`Web` / `Desktop` / `TUI`（harness）。
+
+### 八点一、三条验证结果与"统一到 CLI"的施工口径（2026-09-30 晚）
+
+**验证结果（本机实测）**
+
+1. **自带 CLI 同样拒绝 `desktop` 档案** —— 与全局 CLI 一字不差：
+   `error: profile "desktop" is managed exclusively by the Electron application`。
+   所以"打开完整壳"**不能走 CLI**，只能按现在的方式用 AUMID 激活。
+2. **自带 CLI 起 web 宿主 = 零窗口 + 桥就绪**：`--profile web --port 3099 --no-open`，
+   进程树里唯一两个窗口都 `visible=False`（隐藏控制台与 IME 辅助窗口），**可见窗口 0 个**；
+   `/api/wallpaper/v1/status` → HTTP 200 且 `state=bridge-ready`。
+3. **会话存储是共用的**：`$DSH_HOME/sessions` 下就有「桌面会话」的目录
+   （`--C-Users-…-com.dsh.wallpaper-~684C~9762~4F1A~8BDD--`），后台宿主与前台壳读的是同一份。
+   验证方式是等价对比与磁盘观察，**没有往用户历史里写任何东西**。
+
+**顺带查明的机制**：官壳自带的 `dsh.cmd` 最终执行的是 `DeepSeek Harness.exe` 本身（Electron 的
+`ELECTRON_RUN_AS_NODE` 模式），因此不需要额外 node、也不需要单独的 CLI 包，而且版本与壳天然一致。
+
+**统一口径（用户 2026-09-30 拍板）**：三种主体**都退化为"跑它的 CLI"** —— 官壳用它自带的 CLI、全局 CLI
+用它自己、源码检出用树里的启动链。于是**读写（会话、桥、投递）只需要兼容 CLI 这一条路径**，不必分别为
+三种 runtime 各写一套。
+
+| 角色 | 用什么 | 档案 | 有没有窗口 |
+| --- | --- | --- | --- |
+| 后台（滑槽切 harness、随壁纸自启） | 所选主体的 **CLI** | **`web`**（唯一能提供 HTTP 且能装桥的） | **无** |
+| 前台（设置「打开」、岛左侧按钮） | 主体是壳 ⇒ **AUMID 激活完整壳**；主体是 CLI/检出 ⇒ 原有"打开网页界面"路径 | 各自 | 有（用户主动要的） |
+
+**施工要点**
+
+* CLI 启动器解析：壳 → `<壳安装目录>\resources\runtime\cli\bin\dsh.cmd`（**动态解析**，壳更新会换目录）；
+  CLI → 现有 `installed_cli_command`；检出 → 树里的启动链。
+* 后台宿主的**生命周期**：必须**连子进程一起收**（本次实测中 `cmd` 包装进程被杀而真正的 Electron 宿主
+  存活，端口直到单独清理才释放）。记录宿主 pid 与其进程树，退出/切换时整树收掉。
+* 状态胶囊（岛左下角那个只读元素）显示**当前实际入口**：`API` / `Web`（API 后端）、`Web` / `Desktop` / `TUI`
+  （harness，判据 `settings.window === 'tui'`、`isEmbeddedShellSubject`、其余为 `Web`）。
+* 回退开关：保留旧的 AUMID 后台启动路径作为退路，出问题时可以切回。
