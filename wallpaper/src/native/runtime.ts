@@ -1,3 +1,4 @@
+import type { BridgeInstallOutcome } from '../connect/bridgeInstall.ts'
 import type { BackendMode, ChatMessage, ScopedChatEvent } from '../domain/types.ts'
 import type { HarnessStatus } from '../connect/harness.ts'
 import { parseLaunchArgs } from '../connect/launchArgs.ts'
@@ -352,6 +353,11 @@ export interface NativeRuntime {
   //   lockScreenDiagnostics(): Promise<LockScreenDiagnostics>
   setAutostart(enabled: boolean): Promise<AutostartStatus>
   autostartStatus(): Promise<AutostartStatus>
+  /**
+   * 确保某个主体的档案里有我们钉住的那一版桥（只跑官方那条 CLI 命令）。
+   * 每个档案一条结果；失败与"需要用户确认版本豁免"都由调用方呈现，不在这里吞掉。
+   */
+  ensureProfileBridge(subjectId: string, profile: string): Promise<BridgeInstallOutcome[]>
   // FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30 决定），这一项随之冻结。恢复办法：取消注释。
   // translucentTbStatus(): Promise<TranslucentTbStatus>
   // launchTranslucentTb(): Promise<void>
@@ -593,6 +599,10 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) return unsupportedAutostart()
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<AutostartStatus>('autostart_status')
+  },
+  async ensureProfileBridge(subjectId, profile) {
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<BridgeInstallOutcome[]>('ensure_profile_bridge', { subjectId, profile })
   },
   // FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30 决定），这一项随之冻结。恢复办法：取消注释。
   // async translucentTbStatus() {
