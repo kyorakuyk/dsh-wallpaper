@@ -1,6 +1,6 @@
 import type { SVGAttributes } from 'react'
 
-export type IconName = 'arrow-up' | 'check' | 'chevron-up' | 'close' | 'export' | 'history' | 'image' | 'import' | 'inbox' | 'lock' | 'message' | 'model' | 'palette' | 'refresh' | 'spark' | 'stop'
+export type IconName = 'arrow-up' | 'check' | 'chevron-up' | 'close' | 'export' | 'history' | 'host' | 'image' | 'import' | 'inbox' | 'lock' | 'message' | 'model' | 'palette' | 'refresh' | 'spark' | 'stop'
 
 /**
  * 字形本身，按名字索引。导出是为了让**不是普通 `<Icon>` 的场景**复用同一份路径
@@ -13,6 +13,8 @@ export const iconPaths: Record<IconName, string> = {
   close: 'M7 7l10 10M17 7 7 17',
   export: 'M12 15V3m0 0L7 8m5-5 5 5M5 13v7h14v-7',
   history: 'M3 12a9 9 0 1 0 3-6.7L3 8m0 0h5M3 8V3m9 4v5l3 2',
+  // 两片机架：输入岛左下角用它表示"这段对话跑在谁身上"，比一枚球或云更像"一台机器"。
+  host: 'M4.5 6h15v5h-15zM4.5 13h15v5h-15zM8 8.5h.01M8 15.5h.01',
   image: 'M4 5h16v14H4V5Zm0 11 4.5-4.5 3.5 3 2.5-2.5 5.5 5M9 9h.01',
   import: 'M12 3v12m0 0-5-5m5 5 5-5M5 18v2h14v-2',
   inbox: 'M4 5h16l-2 14H6L4 5Zm1.3 9h4l1.2 2h3l1.2-2h4',

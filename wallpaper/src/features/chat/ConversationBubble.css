@@ -547,7 +547,7 @@
 .dsh-chat__footer { display: flex; min-height: 32px; align-items: center; gap: 7px; padding: 0 var(--dsh-chat-gutter) 9px; color: var(--dsh-text-faint); font-size: 10px; flex-wrap: wrap; }
 .dsh-chat__footer .dsh-chat__model-picker { margin-left: auto; }
 .dsh-chat__meta { display: inline-flex; min-width: 0; align-items: center; gap: 5px; }
-.dsh-chat__model { max-width: 210px; overflow: hidden; color: var(--dsh-text-muted); text-overflow: ellipsis; white-space: nowrap; }
+.dsh-chat__host { max-width: 210px; overflow: hidden; color: var(--dsh-text-muted); text-overflow: ellipsis; white-space: nowrap; }
 .dsh-chat__separator { width: 2px; height: 2px; border-radius: 50%; background: currentColor; }
 .dsh-chat__billing { color: var(--dsh-warning); }
 .dsh-chat__turn-usage,

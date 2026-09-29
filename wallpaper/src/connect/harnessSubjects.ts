@@ -50,6 +50,19 @@ export function isInstalledCliSubject(subjectId: string | undefined): boolean {
 }
 
 /**
+ * 存下来的 id 属于哪一类别。
+ *
+ * 两个前缀测试收成一个类别值，好让调用处复用 `subjectKindLabel` 的说法 —— 「客户端 / 已安装的
+ * CLI / 源码目录」这三个词只在这里定义一次。认不出前缀的一律算源码目录：旧版本写下的设置里只
+ * 有路径，那时也确实是源码树。
+ */
+export function subjectKindOf(subjectId: string | undefined): HarnessTarget['kind'] {
+  if (isEmbeddedShellSubject(subjectId)) return 'embedded-shell'
+  if (isInstalledCliSubject(subjectId)) return 'installed-cli'
+  return 'checkout'
+}
+
+/**
  * The one line under a subject's name.
  *
  * A shell has nothing to configure — it brings its own checkout and its own data

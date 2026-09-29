@@ -19,7 +19,8 @@ import { endpointScopeOf, subjectEndpointPorts } from './connect/endpoints.ts'
 // ---------------------------------------------------------------------------
 // import { parseLaunchArgs } from './connect/launchArgs.ts'
 import { HARNESS_STATE_DETAILS } from './connect/harnessLabels.ts'
-import { isEmbeddedShellSubject, isInstalledCliSubject, reachNeedsBrowser } from './connect/harnessSubjects.ts'
+import { isEmbeddedShellSubject, isInstalledCliSubject, reachNeedsBrowser, subjectAlias } from './connect/harnessSubjects.ts'
+import { conversationHostChip } from './connect/conversationHost.ts'
 import { profileForLaunch } from './connect/harnessProfiles.ts'
 import {
   apiModelDirectory,
@@ -986,7 +987,16 @@ export function App({ surface = 'combined' }: AppProps) {
     ? tier === 'pro' ? 'persona.harness.pro' : 'persona.harness.flash'
     : tier === 'pro' ? 'persona.deepseek.pro' : 'persona.deepseek.flash'
   const resolvedPersona = resolvedAssets[personaSlot]
-  const modelLabel = runtime.model ?? (tier === 'pro' ? 'Pro · 成年形态' : 'Flash · 幼年形态')
+  /**
+   * 岛左下角那枚宿主指示器。派生规则是纯函数（`conversationHostChip`，可测），这里只负责
+   * 把"当下这一份设置"喂给它：主体 id 与「打开」路线都随设置变，别名只在用户起过名字时出现。
+   */
+  const hostChip = conversationHostChip({
+    backend: runtime.backend,
+    subjectId: settings.dshLaunch.subjectId ?? settings.dshLaunch.rootPath,
+    window: settings.dshLaunch.window,
+    alias: subjectAlias(settings.dshLaunch.subjectId, settings.dshLaunch.aliases),
+  })
   /**
    * 黄灯：中间态，规则见 `isHarnessTransitioning`（纯函数，可测）。两个来源各自算：原生监控
    * 把 `harnessProbing` 随快照发下来（它能看到端口属主的进程是否还活着），浏览器预览那条路
@@ -1863,7 +1873,7 @@ const enterInnerWorkspace = () => {
       return <ConversationBubble
       backend={runtime.backend}
       activity={runtime.activity}
-      modelLabel={modelLabel}
+      hostChip={hostChip}
       messages={messages}
       streamingText={streamingText}
       historyExpanded={workspace === 'front' ? runtime.historyExpanded : innerHistoryExpanded}
