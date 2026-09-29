@@ -20,7 +20,7 @@
   </a>
   &nbsp;
   <a href="https://github.com/kyorakuyk/dsh-wallpaper#license">
-    <img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="License" style="height: 30px">
+    <img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg?style=flat-square" alt="License" style="height: 30px">
   </a>
 
 </div>
@@ -322,9 +322,9 @@ dsh-wallpaper/
 
 <h2 id="license">📄 License</h2>
 
-本项目程序部分以AGPL-3.0协议开源（注，代码部分因为涉及网页桥接与凭证管理，所以使用强协议约定。）
+**代码以 AGPL-3.0 授权**（见 [LICENSE](LICENSE)）。取强协议的原因是这个项目涉及网页桥接与凭证管理；AGPL 比 GPL 多覆盖一种用法——**把本程序作为网络服务提供给别人用**。
 
-美术部分灵感与立绘原型来自于ZipZipPipe大佬，按照协议本项目的美术素材部分同样以CC BY-NC-SA 4.0协议开源。
+**美术素材不与代码同许可**：立绘原型来自 ZipZipPipe（鲸鱼娘形象另致谢上善无形），本项目的立绘是在其基础上的**衍生**，因此**沿用** CC BY-NC-SA 4.0（署名 + 非商业 + 相同方式共享），不适用 AGPL。详见 [LICENSE-ASSETS.md](LICENSE-ASSETS.md)。
 
 <br>
 

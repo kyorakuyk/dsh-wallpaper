@@ -17,7 +17,7 @@
     "desktop:build": "pnpm -C wallpaper tauri build",
     "desktop:build:lite": "pnpm -C wallpaper tauri:build:lite"
   },
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "devDependencies": {
     "vitest": "^4.1.10"
   }

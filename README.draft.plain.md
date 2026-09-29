@@ -124,7 +124,7 @@ CI（`.github/workflows/ci.yml`）在 `master`、`codex/**` 的推送与面向 `
 
 ## 素材与版权
 
-- 立绘、动画帧、背景均为 AI 生成或用户自备；代码 MIT
+- **代码以 AGPL-3.0 授权**；立绘、动画帧与背景不与代码同许可（CC BY-NC-SA 4.0，见 LICENSE-ASSETS.md）
 - 四张内置立绘的源图在 `assets/personas/`：`蓝幼.png`、`蓝熟.png`、`黑红幼.png`、`黑红熟.png`。`python scripts/remove-bg.py` 会生成运行时的 `wallpaper/public/personas/portrait-*.png`（已有透明通道的图原样保留）
 - 单用户换装走「设置中心 → 外观 → 素材库」；改项目默认图则替换源图后重新生成并打包
 
@@ -143,4 +143,8 @@ CI（`.github/workflows/ci.yml`）在 `master`、`codex/**` 的推送与面向 `
 
 ## 许可
 
-MIT（项目代码）；内置素材为 AI 生成或用户自备，用户自备素材版权归其所有。
+**代码**：AGPL-3.0（见 [LICENSE](LICENSE)）。
+
+**美术素材**（立绘、动画帧、背景）：CC BY-NC-SA 4.0 —— 原型来自 ZipZipPipe 与上善无形，本项目的立绘是其衍生，因此沿用该许可：**署名 + 非商业 + 相同方式共享**；用户自备素材的版权仍归其作者。详见 [LICENSE-ASSETS.md](LICENSE-ASSETS.md)。
+
+两者分开授权：**行使 AGPL 授予的权利时，请自行移除或替换美术素材**。

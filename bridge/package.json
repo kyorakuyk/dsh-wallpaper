@@ -1,6 +1,6 @@
 {
   "name": "dsh-wallpaper-bridge",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Loopback DSH session bridge for the dsh-wallpaper desktop app.",
   "type": "module",
   "main": "lib/index.js",
@@ -25,7 +25,7 @@
     "cordis.patch.yml",
     "README.md"
   ],
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/schemastery": "^3.18.1",
