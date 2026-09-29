@@ -930,10 +930,15 @@ pub(crate) fn shell_host_cli(subject_id: &str) -> Option<PathBuf> {
         subject_id,
         recorded_shell_executable(aumid),
         &|| {
-            // 重扫只读用户数据，落盘只是为了让下一次不必再扫。它慢（本机约 2.8 秒），
-            // 所以只在记录放不出可执行文件时才走，而且只走一次。
+            // 重扫**只用这一次，绝不落盘**。理由是一次实测：浅扫描（`deep_scan = false`）只读开始菜单
+            // 与 PATH 上的启动器，**不扫磁盘**，看不到用户用「扫描」找出来的源码检出；把它的结果写进
+            // 目录，等于拿"我没找"覆盖"上次找到了" —— 本机就是这么丢掉两个源码检出的
+            // （2026-09-30 03:08，`harness-targets.json` 从 4 个主体变成 2 个）。
+            //
+            // 规则：**目录只归手动扫描所有**（设置窗口的注释也这么写：走磁盘的深度扫描只有那一次）。
+            // 代价是记录被刷新之前每次启动都要多跑一次这段重扫（本机约 2.8 秒）—— 那是"慢一点"，
+            // 而上面那条是"用户的主体没了"。
             let scan = crate::harness_targets::scan_harness_targets_blocking(None, false);
-            crate::harness_catalog::persist_scan(&scan);
             crate::harness_targets::recorded_shell_executable(&scan.targets, aumid)
         },
         &|path| path.exists(),
