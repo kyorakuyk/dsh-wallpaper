@@ -46,7 +46,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW,
+    DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, EVENT_OBJECT_SHOW,
     WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
     GetSystemMetrics, GetWindowLongW, GetWindowPlacement, IsWindow, SetWindowPlacement,
     SetWindowPos,
@@ -1625,30 +1625,13 @@ unsafe extern "system" fn show_event_proc(
     _thread: u32,
     _time: u32,
 ) {
-    // 只管顶层窗口的 CREATE 与 SHOW：移动、重命名、焦点在这里都没有意义。
-    if id_object != 0 || id_child != 0 {
-        return;
-    }
-    if event == EVENT_OBJECT_CREATE {
-        if move_one_offscreen(hwnd) {
-            log::info!("launch: a family window was created and sent off screen before it could show");
-        }
-        return;
-    }
-    if event != EVENT_OBJECT_SHOW {
+    // 只关心"某个顶层窗口要显示"这一件事：别的事件（移动、重命名、焦点）在这里没有意义。
+    if event != EVENT_OBJECT_SHOW || id_object != 0 || id_child != 0 {
         return;
     }
     let Some(state) = SHOW_WATCH.get() else { return };
     let Ok(mut state) = state.lock() else { return };
     if hwnd != state.target.hwnd() {
-        // 家族里**别的**窗口要显示：同样不该露面，而且这条路径比枚举扫描快得多。它已经可见了，
-        // 所以这里走隐藏（`hide_window` 会自己再复核一次"这还是个能碰的窗口吗"）。
-        if !window_is_owned(hwnd) && !is_popup_or_helper_class(&class_name(hwnd)) {
-            let other = WindowHandle::from(hwnd, window_pid(hwnd));
-            if hide_window(other) {
-                log::info!("launch: a second family window asked to show and was taken off screen");
-            }
-        }
         return;
     }
     state.seen_at = Some(std::time::Instant::now());
@@ -1680,9 +1663,7 @@ pub(crate) fn watch_show_events(target: WindowHandle) -> Option<ShowEventWatch> 
     }
     let hook = unsafe {
         SetWinEventHook(
-            // 从 CREATE 起就听：窗口**一创建**就挪到屏幕外，比等它 SHOW 再隐藏早整整一步；
-            // SHOW 仍然保留，作为第二道（后来的窗口若没被 CREATE 那条路覆盖到）。
-            EVENT_OBJECT_CREATE,
+            EVENT_OBJECT_SHOW,
             EVENT_OBJECT_SHOW,
             None,
             Some(show_event_proc),
@@ -1801,68 +1782,14 @@ pub(crate) fn move_family_offscreen(executable: &str) -> usize {
     if moved.is_empty() {
         return 0;
     }
-    record_moved(executable, &moved);
-    moved.len()
-}
-
-/// 把一次挪动记进档案。**追加**而不是"只记第一次"：后来才创建出来的窗口（CREATE 钩子抓到的那些）
-/// 也要能挪回去，否则它们会永远留在屏幕之外。
-#[cfg(windows)]
-fn record_moved(executable: &str, moved: &[(isize, WINDOWPLACEMENT)]) {
-    if moved.is_empty() {
-        return;
-    }
     let slot = MOVED_OFFSCREEN.get_or_init(|| std::sync::Mutex::new(None));
     if let Ok(mut guard) = slot.lock() {
-        match guard.as_mut() {
-            Some((recorded, entries)) if same_executable_path(recorded, executable) => {
-                entries.extend(moved.iter().cloned());
-            }
-            _ => *guard = Some((executable.to_string(), moved.to_vec())),
+        // 同一家族只记第一次：第二次挪动记下的"原处"已经是屏幕之外了。
+        if guard.is_none() {
+            *guard = Some((executable.to_string(), moved.clone()));
         }
     }
-}
-
-/// 把**一个**新出现的窗口挪到屏幕之外并记下原处。给 CREATE 钩子用：窗口一创建就挪，这样它哪怕
-/// 立刻 `ShowWindow`，那一帧也落在没有像素的地方 —— 比"等它 SHOW 再隐藏"早整整一步。
-#[cfg(windows)]
-pub(crate) fn move_one_offscreen(hwnd: HWND) -> bool {
-    if unsafe { IsWindowVisible(hwnd) }.as_bool() || window_is_owned(hwnd) {
-        return false;
-    }
-    if is_popup_or_helper_class(&class_name(hwnd)) {
-        return false;
-    }
-    let pid = window_pid(hwnd);
-    let Some(executable) = process_image_path(pid) else {
-        return false;
-    };
-    let mut placement = WINDOWPLACEMENT {
-        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
-        ..Default::default()
-    };
-    if unsafe { GetWindowPlacement(hwnd, &mut placement) }.is_err() {
-        return false;
-    }
-    // 最大化/最小化的窗口不挪：那两种状态下"窗口在哪"不是我们写的坐标决定的。
-    if placement.showCmd == SW_SHOWMAXIMIZED.0 as u32 || placement.showCmd == SW_SHOWMINIMIZED.0 as u32 {
-        return false;
-    }
-    let (x, y) = offscreen_spot();
-    if unsafe { SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSIZE) }.is_err()
-    {
-        return false;
-    }
-    record_moved(&executable, &[(hwnd.0 as isize, placement)]);
-    true
-}
-
-/// 这个句柄属于哪个进程。
-#[cfg(windows)]
-fn window_pid(hwnd: HWND) -> u32 {
-    let mut pid = 0u32;
-    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
-    pid
+    moved.len()
 }
 
 /// 展示之前把窗口挪回原处。返回是否真的挪回去了。
