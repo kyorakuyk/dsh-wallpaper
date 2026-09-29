@@ -2823,7 +2823,6 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
         let mut last_toggle_at: Option<std::time::Instant> = None;
         // 本次按下的现场：时刻、位置、按下时是否合格、按下时有无组合键。
         let mut press: Option<(std::time::Instant, (i32, i32), bool, bool)> = None;
-        let mut last_blank_click: Option<std::time::Instant> = None;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(16));
             if app.get_webview_window("background").is_none() {
@@ -2935,56 +2934,6 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                 ));
                 if !eligible {
                     log::info!("按下即不合格（verdict={verdict:?}）");
-                }
-                let background = app
-                    .get_webview_window(BACKGROUND_WINDOW_LABEL)
-                    .and_then(|window| window.hwnd().ok())
-                    .map(|window| HWND(window.0));
-                let verdict = desktop_point_verdict();
-                let can_toggle = background.is_some_and(|background| {
-                    should_toggle_desktop_workspace(
-                        cursor_is_on_desktop_surface(background),
-                        cursor_hits_interaction_region(background),
-                        verdict == DesktopPointVerdict::Blank,
-                    )
-                });
-                if !can_toggle {
-                    log::info!("workspace toggle declined: verdict={verdict:?}");
-                }
-                if can_toggle {
-                    log_workspace_toggle_decision(false, true);
-                    let now = std::time::Instant::now();
-                    if last_blank_click.is_some_and(|previous| {
-                        now.duration_since(previous) <= std::time::Duration::from_millis(500)
-                    }) {
-                        last_blank_click = None;
-                        // The transition itself lives in enter/leave_inner_workspace so the
-                        // double click and the floating ball cannot drift apart.
-                        let result = if INNER_WORKSPACE_ACTIVE.load(Ordering::Acquire) {
-                            leave_inner_workspace(&app)
-                        } else {
-                            enter_inner_workspace(&app)
-                        };
-                        if let Err(error) = result {
-                            // If Explorer has restarted or the icon view cannot
-                            // be found, preserve a truthful state and do not
-                            // enter a half-working inner desktop.
-                            log::warn!("无法切换表/里桌面图标层：{error}");
-                            continue;
-                        }
-                        log::info!(
-                            "桌面空白双击：切换至{}桌面",
-                            if INNER_WORKSPACE_ACTIVE.load(Ordering::Acquire) {
-                                "里"
-                            } else {
-                                "表"
-                            }
-                        );
-                    } else {
-                        last_blank_click = Some(now);
-                    }
-                } else {
-                    last_blank_click = None;
                 }
             }
             was_down = down;
