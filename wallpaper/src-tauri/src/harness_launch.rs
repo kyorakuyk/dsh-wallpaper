@@ -1027,6 +1027,58 @@ pub(crate) fn bridge_install_needed(reported: Option<&str>) -> bool {
     reported.map(str::trim) != Some(BRIDGE_VERSION)
 }
 
+/// 一次"装桥"尝试的结果状态。
+pub(crate) const BRIDGE_STATUS_INSTALLED: &str = "installed";
+pub(crate) const BRIDGE_STATUS_NEEDS_CONFIRMATION: &str = "needs-confirmation";
+pub(crate) const BRIDGE_STATUS_FAILED: &str = "failed";
+
+/// 判读 CLI 的输出。**纯函数**，因为这里藏着一条政策：不代劳风险确认。
+///
+/// * 退出码 0 且输出里没有"豁免/不兼容"的字样 → 装好了；
+/// * 退出码 0 但提到了 `allow-version` 或 `incompatible` → **交给用户**（DSH 的规矩是
+///   "不兼容插件需要用户明确确认精确版本豁免"，我们只把原文带回去，绝不替他点）；
+/// * 非 0 退出码 → 失败，原因取 stderr（没有就取 stdout）。
+///
+/// 返回值里的文本会截断到 `MAX_BRIDGE_OUTPUT_CHARS`，避免把整段包管理日志塞进界面。
+pub(crate) const MAX_BRIDGE_OUTPUT_CHARS: usize = 600;
+
+pub(crate) fn interpret_install_output(
+    code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+) -> (&'static str, String) {
+    let mut detail = String::new();
+    let trimmed_out = stdout.trim();
+    let trimmed_err = stderr.trim();
+    if !trimmed_out.is_empty() {
+        detail.push_str(trimmed_out);
+    }
+    if !trimmed_err.is_empty() {
+        if !detail.is_empty() {
+            detail.push('\n');
+        }
+        detail.push_str(trimmed_err);
+    }
+    let lowered = detail.to_lowercase();
+    let mentions_exemption =
+        lowered.contains("allow-version") || lowered.contains("incompatible") || lowered.contains("豁免");
+    let status = match (code, mentions_exemption) {
+        (Some(0), false) => BRIDGE_STATUS_INSTALLED,
+        (Some(0), true) => BRIDGE_STATUS_NEEDS_CONFIRMATION,
+        _ => BRIDGE_STATUS_FAILED,
+    };
+    (status, truncate_for_surface(&detail))
+}
+
+fn truncate_for_surface(text: &str) -> String {
+    if text.chars().count() <= MAX_BRIDGE_OUTPUT_CHARS {
+        return text.to_string();
+    }
+    let mut clipped: String = text.chars().take(MAX_BRIDGE_OUTPUT_CHARS).collect();
+    clipped.push('…');
+    clipped
+}
+
 /// 后台启动（滑槽、随壁纸自启）该怎么跑 —— §7.6 走法 A 之后，壳与别的类走的路不同了。
 ///
 /// * 壳：能解析出它自带的 CLI 就跑那个（`web` 档案、**绑壁纸自己的端口**、没有窗口），
@@ -2460,6 +2512,36 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn a_clean_install_reads_as_installed_and_a_failure_keeps_its_reason() {
+        let (status, detail) = interpret_install_output(Some(0), "Packages: +1\nDone in 2.7s", "");
+        assert_eq!(status, BRIDGE_STATUS_INSTALLED);
+        assert!(detail.contains("Done in 2.7s"));
+
+        let (status, detail) = interpret_install_output(Some(1), "", "ERR_PNPM_FETCH_404  未找到该版本");
+        assert_eq!(status, BRIDGE_STATUS_FAILED);
+        assert!(detail.contains("ERR_PNPM_FETCH_404"), "失败原因要带原文：{detail}");
+    }
+
+    #[test]
+    fn a_version_exemption_is_handed_to_the_user_instead_of_being_accepted() {
+        // 这行是 2026-09-30 实测的原文形状：宿主拒了插件，并提示用户可以自己授予豁免。
+        let warning = "dsh: warning: Plugin @deepseek-harness-tui/dsh-tui@0.11.1 is incompatible with dsh 0.2.0-rc.1\n\
+                       To accept this risk explicitly, grant the exact-version exemption … with `dsh plugin allow-version`\n\
+                       Exact-version exemption: not active.";
+        let (status, detail) = interpret_install_output(Some(0), warning, "");
+        assert_eq!(status, BRIDGE_STATUS_NEEDS_CONFIRMATION);
+        assert!(detail.contains("allow-version"), "要把原文交回去：{detail}");
+    }
+
+    #[test]
+    fn a_long_package_manager_log_is_clipped_before_it_reaches_the_surface() {
+        let long = "x".repeat(MAX_BRIDGE_OUTPUT_CHARS + 200);
+        let (_, detail) = interpret_install_output(Some(1), &long, "");
+        assert!(detail.chars().count() <= MAX_BRIDGE_OUTPUT_CHARS + 1, "长度 {}", detail.chars().count());
+        assert!(detail.ends_with('…'));
+    }
+
     #[test]
     fn the_package_string_and_the_pinned_version_cannot_drift() {
         assert!(BRIDGE_PACKAGE.starts_with("dsh-wallpaper-bridge@"));
