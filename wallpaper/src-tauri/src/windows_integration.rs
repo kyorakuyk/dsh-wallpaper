@@ -2594,6 +2594,26 @@ fn rect_contains_point(rect: (i32, i32, i32, i32), x: i32, y: i32) -> bool {
     x >= rect.0 && x < rect.2 && y >= rect.1 && y < rect.3
 }
 
+/// 这个矩形是否"像一枚桌面图标"。把明显不是图标的东西挡掉，这三条都是被实测逼出来的：
+///
+/// * **尺寸**：桌面图标是几十像素的小方块。UIA 树里总有元素报告覆盖整屏的矩形（容器、列表、
+///   我们自己的界面都可能），哪怕只漏进来一个，整块桌面就都成了"图标范围"，双击空白再也切不动。
+/// * **是否离屏**：隐藏/虚拟化的项不该参与命中。
+/// * **归属**：**只用别的进程的项**。壁纸自己的窗口就挂在 WorkerW 之下，是桌面 Pane 的后代，
+///   而输入岛与设置里的列表项同样是 ListItem —— 用自己进程的项必然误判。
+fn looks_like_a_desktop_icon(
+    rect: (i32, i32, i32, i32),
+    is_offscreen: bool,
+    belongs_to_us: bool,
+) -> bool {
+    if is_offscreen || belongs_to_us {
+        return false;
+    }
+    let width = rect.2 - rect.0;
+    let height = rect.3 - rect.1;
+    (4..=400).contains(&width) && (4..=400).contains(&height)
+}
+
 /// 光标是否落在某个**桌面图标**的范围内。
 ///
 /// 为什么不用命中测试：实测（2026-09-30）光标下最上层的 UIA 元素可能是盖在桌面上的覆盖层
@@ -2637,13 +2657,38 @@ fn cursor_is_over_a_desktop_icon(automation: &IUIAutomation) -> bool {
             return false;
         };
         let Ok(count) = items.Length() else { return false };
+        let mut examined = 0usize;
+        let mut skipped_big = 0usize;
+        let mut skipped_ours = 0usize;
         for index in 0..count {
             let Ok(item) = items.GetElement(index) else { continue };
             let Ok(rect) = item.CurrentBoundingRectangle() else { continue };
-            if rect_contains_point((rect.left, rect.top, rect.right, rect.bottom), point.x, point.y) {
+            let is_offscreen = item.CurrentIsOffscreen().map(|value| value.as_bool()).unwrap_or(false);
+            let belongs_to_us = item
+                .CurrentProcessId()
+                .map(|pid| pid as u32 == std::process::id())
+                .unwrap_or(false);
+            let candidate = (rect.left, rect.top, rect.right, rect.bottom);
+            if !looks_like_a_desktop_icon(candidate, is_offscreen, belongs_to_us) {
+                if belongs_to_us {
+                    skipped_ours += 1;
+                } else {
+                    skipped_big += 1;
+                }
+                continue;
+            }
+            examined += 1;
+            if rect_contains_point(candidate, point.x, point.y) {
+                log::info!(
+                    "桌面图标命中: rect=({},{})-({},{}) 共枚举 {count} 项（过滤掉 大矩形 {skipped_big} / 我们自己 {skipped_ours}）",
+                    rect.left, rect.top, rect.right, rect.bottom
+                );
                 return true;
             }
         }
+        log::info!(
+            "桌面图标扫描: 枚举 {count} 项，可用 {examined} 项，过滤掉 大矩形 {skipped_big} / 我们自己 {skipped_ours} —— 光标不在任何图标内"
+        );
         false
     }
 }
@@ -4893,6 +4938,21 @@ fn a_double_click_that_activated_something_else_never_toggles_the_workspace() {
     assert!(!double_click_became_someone_elses(Some(101), Some(101), false));
     // 首次点击没记到前台：不因此阻止（宁可保留原行为，也不要让功能静默失效）。
     assert!(!double_click_became_someone_elses(None, Some(202), false));
+}
+
+#[test]
+fn only_small_foreign_onscreen_rectangles_count_as_desktop_icons() {
+    // 典型图标：几十像素的小方块，别人的进程，在屏上。
+    assert!(looks_like_a_desktop_icon((100, 100, 180, 172), false, false));
+    // 覆盖整屏的伪项：必须挡掉，否则整块桌面都成了"图标范围"，双击空白再也切不动（实测复发过）。
+    assert!(!looks_like_a_desktop_icon((0, 0, 2560, 1600), false, false));
+    // 我们自己进程里的列表项（输入岛/设置里的 LI 同样是 ListItem）：必须挡掉。
+    assert!(!looks_like_a_desktop_icon((100, 100, 180, 172), false, true));
+    // 离屏/隐藏的项不参与。
+    assert!(!looks_like_a_desktop_icon((100, 100, 180, 172), true, false));
+    // 退化的零面积矩形（虚拟化项常见）不参与。
+    assert!(!looks_like_a_desktop_icon((100, 100, 100, 100), false, false));
+    assert!(!looks_like_a_desktop_icon((0, 0, 2, 2), false, false));
 }
 
 #[test]
