@@ -1696,7 +1696,6 @@ fn lite_settings_save(
         "skipWakeAnimation",
 // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
 //         "lockScreenEnabled",
-        "lockScreenEnabled",
         "desktopWallpaperFallback",
         "autostart",
     ];
@@ -1914,65 +1913,35 @@ fn notify_appearance_changed(
 
 // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
 // #[tauri::command]
-#[tauri::command]
 // async fn set_lock_screen_enabled(
-async fn set_lock_screen_enabled(
 //     caller: tauri::WebviewWindow,
-    caller: tauri::WebviewWindow,
 //     app: tauri::AppHandle,
-    app: tauri::AppHandle,
 //     enabled: bool,
-    enabled: bool,
 // ) -> Result<String, String> {
-) -> Result<String, String> {
 //     require_settings(&caller)?;
-    require_settings(&caller)?;
 //     windows_integration::set_lock_screen(&app, enabled).await
-    windows_integration::set_lock_screen(&app, enabled).await
 // }
-}
 // 
-
 // #[tauri::command]
-#[tauri::command]
 // async fn clear_stale_lock_screen_backup(
-async fn clear_stale_lock_screen_backup(
 //     caller: tauri::WebviewWindow,
-    caller: tauri::WebviewWindow,
 //     app: tauri::AppHandle,
-    app: tauri::AppHandle,
 //     confirmed: bool,
-    confirmed: bool,
 // ) -> Result<String, String> {
-) -> Result<String, String> {
 //     require_settings(&caller)?;
-    require_settings(&caller)?;
 //     windows_integration::clear_stale_lock_screen_backup(&app, confirmed).await
-    windows_integration::clear_stale_lock_screen_backup(&app, confirmed).await
 // }
-}
 // 
-
 // #[tauri::command]
-#[tauri::command]
 // async fn get_lock_screen_diagnostics(
-async fn get_lock_screen_diagnostics(
 //     caller: tauri::WebviewWindow,
-    caller: tauri::WebviewWindow,
 //     app: tauri::AppHandle,
-    app: tauri::AppHandle,
 // ) -> Result<windows_integration::LockScreenDiagnostics, String> {
-) -> Result<windows_integration::LockScreenDiagnostics, String> {
 //     require_settings(&caller)?;
-    require_settings(&caller)?;
 //     tauri::async_runtime::spawn_blocking(move || windows_integration::lock_screen_diagnostics(&app))
-    tauri::async_runtime::spawn_blocking(move || windows_integration::lock_screen_diagnostics(&app))
 //         .await
-        .await
 //         .map_err(|error| format!("读取锁屏诊断未完成：{error}"))?
-        .map_err(|error| format!("读取锁屏诊断未完成：{error}"))?
 // }
-}
 
 fn set_autostart_blocking(enabled: bool) -> Result<windows_integration::AutostartStatus, String> {
     // The whole operation lives next to the Windows calls it makes: which path
@@ -2133,60 +2102,32 @@ fn open_translucent_tb_install(caller: tauri::WebviewWindow) -> Result<(), Strin
 
 // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
 // /// Opens the system-owned lock-screen settings page. During the current
-/// Opens the system-owned lock-screen settings page. During the current
 // /// MSIX-only test phase Windows accepts the package's bundled sleep image but
-/// MSIX-only test phase Windows accepts the package's bundled sleep image but
 // /// may reject a user-image restore snapshot; delegating the choice to Windows
-/// may reject a user-image restore snapshot; delegating the choice to Windows
 // /// is clearer and safer than pretending a restore has completed.
-/// is clearer and safer than pretending a restore has completed.
 // #[tauri::command]
-#[tauri::command]
 // fn open_windows_lock_screen_settings(caller: tauri::WebviewWindow) -> Result<(), String> {
-fn open_windows_lock_screen_settings(caller: tauri::WebviewWindow) -> Result<(), String> {
 //     require_settings(&caller)?;
-    require_settings(&caller)?;
 //     #[cfg(windows)]
-    #[cfg(windows)]
 //     {
-    {
 //         std::process::Command::new("powershell.exe")
-        std::process::Command::new("powershell.exe")
 //             .args([
-            .args([
 //                 "-NoProfile",
-                "-NoProfile",
 //                 "-NonInteractive",
-                "-NonInteractive",
 //                 "-Command",
-                "-Command",
 //                 "Start-Process",
-                "Start-Process",
 //                 "ms-settings:lockscreen",
-                "ms-settings:lockscreen",
 //             ])
-            ])
 //             .spawn()
-            .spawn()
 //             .map(|_| ())
-            .map(|_| ())
 //             .map_err(|error| format!("无法打开 Windows 锁屏设置：{error}"))
-            .map_err(|error| format!("无法打开 Windows 锁屏设置：{error}"))
 //     }
-    }
 //     #[cfg(not(windows))]
-    #[cfg(not(windows))]
 //     Err("锁屏设置仅支持 Windows。".into())
-    Err("锁屏设置仅支持 Windows。".into())
 // }
-}
-// 
 
-// /// 「桌面会话」目录名。与桥那边（`bridge/src/index.ts`）保持一致：**同一个名字**既是工作区标题，
 /// 「桌面会话」目录名。与桥那边（`bridge/src/index.ts`）保持一致：**同一个名字**既是工作区标题，
-// /// 也是壁纸数据目录下的那个子目录名。
 /// 也是壁纸数据目录下的那个子目录名。
-// #[cfg(not(feature = "lite"))]
 #[cfg(not(feature = "lite"))]
 const DESKTOP_WORKSPACE_DIRECTORY_NAME: &str = "桌面会话";
 
@@ -4893,11 +4834,8 @@ macro_rules! register_edition_commands {
             desktop_wallpaper_fallback_status,
 // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
 //             set_lock_screen_enabled,
-            set_lock_screen_enabled,
 //             clear_stale_lock_screen_backup,
-            clear_stale_lock_screen_backup,
 //             get_lock_screen_diagnostics,
-            get_lock_screen_diagnostics,
             set_autostart,
             autostart_status,
             translucent_tb_status,
@@ -4905,7 +4843,6 @@ macro_rules! register_edition_commands {
             open_translucent_tb_install,
 // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
 //             open_windows_lock_screen_settings,
-            open_windows_lock_screen_settings,
             native_bootstrap_generation,
             release_native_bootstrap,
             start_settings_drag,
@@ -4927,11 +4864,8 @@ macro_rules! register_edition_commands {
             notify_appearance_changed,
 // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
 //             set_lock_screen_enabled,
-            set_lock_screen_enabled,
 //             clear_stale_lock_screen_backup,
-            clear_stale_lock_screen_backup,
 //             get_lock_screen_diagnostics,
-            get_lock_screen_diagnostics,
             set_autostart,
             autostart_status,
             scan_dsh_paths,
@@ -4950,7 +4884,6 @@ macro_rules! register_edition_commands {
             open_translucent_tb_install,
 // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
 //             open_windows_lock_screen_settings,
-            open_windows_lock_screen_settings,
             save_api_key,
             api_key_status,
             desktop_workspace_status,
