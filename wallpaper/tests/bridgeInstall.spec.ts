@@ -16,6 +16,11 @@ describe('bridge install summary', () => {
     // 那个"要不要说给用户听"的函数是废话，已删除；走到这里就代表原生侧确实做过事。
   })
 
+  it('says nothing when every profile already had the pinned version', () => {
+    // 原生侧在这种情况下连包管理都不跑，界面也不该每次都报一遍。
+    expect(summarizeBridgeInstall([outcome('web', 'already-present')])).toBeNull()
+  })
+
   it('names every profile it installed into', () => {
     const summary = summarizeBridgeInstall([outcome('web', 'installed'), outcome('desktop', 'installed')])
     expect(summary?.tone).toBe('ok')

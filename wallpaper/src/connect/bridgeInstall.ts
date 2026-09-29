@@ -57,6 +57,9 @@ export function summarizeBridgeInstall(outcomes: BridgeInstallOutcome[]): Bridge
     }
   }
 
+  // 全部"已经是这一版"时（原生侧连包管理都没跑）不出一声：这是每次启动的常态。
+  const installed = outcomes.filter((outcome) => outcome.status === 'installed')
+  if (installed.length === 0) return null
   return {
     tone: 'ok',
     text: `已为 ${profileNames(outcomes)} 装好桥。`,

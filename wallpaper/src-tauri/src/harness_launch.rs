@@ -1067,8 +1067,33 @@ pub(crate) fn bridge_install_needed(reported: Option<&str>) -> bool {
 
 /// 一次"装桥"尝试的结果状态。
 pub(crate) const BRIDGE_STATUS_INSTALLED: &str = "installed";
+/// 档案里已经是对应的版本：**没有跑包管理**（这是"每次启动检查"不产生副作用的关键）。
+pub(crate) const BRIDGE_STATUS_ALREADY_PRESENT: &str = "already-present";
 pub(crate) const BRIDGE_STATUS_NEEDS_CONFIRMATION: &str = "needs-confirmation";
 pub(crate) const BRIDGE_STATUS_FAILED: &str = "failed";
+
+/// DSH 档案目录的根：`$DSH_HOME`（或 `~/.dsh`）下的 `profiles`。
+///
+/// 与 `chat.rs` 解析家目录的方式一致 —— 那处负责桥 token，两处必须看同一个家。
+pub(crate) fn dsh_profiles_root() -> Option<PathBuf> {
+    let home = std::env::var_os("DSH_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(|value| PathBuf::from(value).join(".dsh")))?;
+    Some(home.join("profiles"))
+}
+
+/// 某个档案里现装的桥版本（读它的 `node_modules/dsh-wallpaper-bridge/package.json`）。
+/// 读不到就是 `None`：没装、或那个档案目录不在。
+pub(crate) fn installed_bridge_version(profiles_root: &Path, profile: &str) -> Option<String> {
+    let path = profiles_root
+        .join(profile)
+        .join("node_modules")
+        .join("dsh-wallpaper-bridge")
+        .join("package.json");
+    let text = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value.get("version")?.as_str().map(str::to_string)
+}
 
 /// 判读 CLI 的输出。**纯函数**，因为这里藏着一条政策：不代劳风险确认。
 ///
@@ -1197,6 +1222,20 @@ pub(crate) fn install_bridge_for_subject(
                     }
                 }
             };
+            // 先看档案里现装的是不是这一版。相符就**不跑包管理**：2026-09-30 实测，即使
+            // `add` 是空操作，pnpm 也会重写 `pnpm-lock.yaml` —— 每次启动都动用户的档案不该发生。
+            if dsh_profiles_root()
+                .and_then(|root| installed_bridge_version(&root, &profile))
+                .as_deref()
+                == Some(BRIDGE_VERSION)
+            {
+                return BridgeInstallOutcome {
+                    profile,
+                    status: BRIDGE_STATUS_ALREADY_PRESENT.to_string(),
+                    detail: format!("档案里已经是 {BRIDGE_VERSION}，没有跑包管理。"),
+                    command: String::new(),
+                };
+            }
             let command = format!("{} {}", plan.launcher.display(), plan.args.join(" "));
             let (program, program_args) = windows_launch_command(&plan.launcher, &plan.args);
             let actual = format!("{} {}", program.display(), program_args.join(" "));
@@ -2658,6 +2697,29 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn the_installed_bridge_version_is_read_from_the_profile_tree() {
+        let root = std::env::temp_dir().join(format!("dsh-bridge-test-{}", std::process::id()));
+        let module = root.join("web").join("node_modules").join("dsh-wallpaper-bridge");
+        std::fs::create_dir_all(&module).expect("临时目录");
+        std::fs::write(
+            module.join("package.json"),
+            format!(r#"{{"name":"dsh-wallpaper-bridge","version":"{BRIDGE_VERSION}"}}"#),
+        )
+        .expect("写 package.json");
+        assert_eq!(
+            installed_bridge_version(&root, "web").as_deref(),
+            Some(BRIDGE_VERSION)
+        );
+        // 没装过的档案、以及内容不是 JSON 的情况都读成 None，而不是报错。
+        assert_eq!(installed_bridge_version(&root, "desktop"), None);
+        let broken = root.join("broken").join("node_modules").join("dsh-wallpaper-bridge");
+        std::fs::create_dir_all(&broken).expect("临时目录");
+        std::fs::write(broken.join("package.json"), "not json").expect("写坏文件");
+        assert_eq!(installed_bridge_version(&root, "broken"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn the_plugin_command_also_goes_through_cmd_when_the_launcher_is_a_batch_file() {
         let args = vec![
