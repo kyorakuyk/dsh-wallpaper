@@ -68,6 +68,7 @@ fn emit_system_session(app: &tauri::AppHandle, transition: &'static str) {
 }
 
 #[cfg(windows)]
+use windows::core::Interface;
 use windows::{
     core::{w, BOOL, HSTRING, PCWSTR, PWSTR},
     ApplicationModel::{StartupTask, StartupTaskState},
@@ -123,10 +124,12 @@ use windows::{
             WS_POPUP, WS_SYSMENU, WS_THICKFRAME, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
         },
         UI::{
-            Accessibility::{CUIAutomation, IUIAutomation, UIA_ListItemControlTypeId},
+            Accessibility::{AccessibleObjectFromWindow, IAccessible, CUIAutomation, IUIAutomation, UIA_ListItemControlTypeId},
             Controls::MARGINS,
             HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI},
-            Input::KeyboardAndMouse::{GetAsyncKeyState, SetFocus, VK_LBUTTON},
+            Input::KeyboardAndMouse::{
+            GetAsyncKeyState, SetFocus, VK_CONTROL, VK_LBUTTON, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+        },
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         },
     },
@@ -2556,45 +2559,102 @@ fn restore_desktop_keyboard_focus(app: &tauri::AppHandle) {
     }
 }
 
-/// Uses UI Automation, rather than ListView messages with a pointer owned by
-/// Explorer, to distinguish desktop icons from empty desktop space. This is a
-/// supported cross-process accessibility boundary and never consumes input.
-#[cfg(windows)]
-fn cursor_is_over_desktop_blank(automation: &IUIAutomation) -> bool {
-    let mut point = POINT::default();
-    unsafe {
-        if GetCursorPos(&mut point).is_err() {
-            return false;
-        }
-        let Ok(element) = automation.ElementFromPoint(point) else {
-            return false;
-        };
-        // ElementFromPoint can return an icon label/text child rather than the
-        // ListItem itself. Check the short parent chain before considering the
-        // point blank; no Explorer memory or window messages are involved.
-        let walker = automation.ControlViewWalker().ok();
-        let mut current = Some(element);
-        for _ in 0..4 {
-            let Some(element) = current else {
-                break;
-            };
-            if element.CurrentControlType().ok() == Some(UIA_ListItemControlTypeId) {
-                return false;
-            }
-            current = walker
-                .as_ref()
-                .and_then(|tree| tree.GetParentElement(&element).ok());
-        }
-        true
-    }
+/// 光标处到底是"桌面图标"、"桌面空白"，还是"无法确认"。
+///
+/// 判据来自**旧接口 MSAA**，不是 UI Automation。实测（2026-09-30，本机）：
+///   * UI Automation 从 Explorer 的 `FolderView` 读不到任何子节点（四种读法全为 0），所以那条路
+///     永远只会说"这里没有图标"，从而把图标位当成空白 —— 正是最初那个缺陷的根子；
+///   * MSAA 的 `AccessibleObjectFromWindow(OBJID_CLIENT)` 一次就给出 18 个子项（带名称与矩形），
+///     而在该对象上做 `accHitTest` 时：落在图标上返回子项编号（大于 0），落在空白返回 0。
+/// 实测七点零歧义：图标 1/2/3 号 -> 1/2/3，四个空白点 -> 0。
+///
+/// 三态是刻意的：读不到对象、子项数为 0、调用异常，一律是"无法确认"，绝不退化成"空白"。
+/// 判错的代价不对称 —— 把图标当空白会让"打开快捷方式"顺带翻掉桌面层。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DesktopPointVerdict {
+  /// 双击的语义是两拍：**第一下判定、第二下执行** —— 按下时取三态（这一点是图标、是空白、
+/// 还是无法确认），松开时若这次与上一次构成长度/位置都合格的配对，才真正切换。判定只在按下
+/// 那一刻取一次，因为点击的目标由按下决定；第一下不合格就直接作废，不会留到第二下去补。
+/// 落在某个桌面图标上（或图标标签上）。
+  Icon,
+  /// 确认是桌面空白处。
+  Blank,
+  /// 读不到、结构异常或调用失败；调用方必须当作"不切换"。
+  Unknown,
 }
 
-/// The wallpaper host is a child of Explorer's WorkerW. After click-through,
-/// Explorer does not reliably become the foreground window, so foreground
-/// state cannot decide whether a global double click belongs to the desktop.
-/// Walk the actual HWND below the cursor instead; normal top-level apps do
-/// not have WorkerW/Progman in their parent chain.
+/// 取 Explorer 的图标列表（`SHELLDLL_DefView` -> `SysListView32`），并拿到它的 MSAA 对象。
 #[cfg(windows)]
+fn desktop_icon_list_accessible() -> Option<IAccessible> {
+  let layer = desktop_icon_layer()?;
+  let list = desktop_icon_list_view_in_layer(layer)?;
+  let mut raw: *mut core::ffi::c_void = std::ptr::null_mut();
+  unsafe {
+    AccessibleObjectFromWindow(
+      list,
+      // OBJID_CLIENT = 0xFFFFFFFC（Windows 头文件里的定义；windows crate 把它放在
+      // WindowsAndMessaging 下，这里直接用字面量，避免多引入一个模块）。
+      OBJID_CLIENT_ID,
+      &IAccessible::IID,
+      &mut raw as *mut _ as *mut *mut core::ffi::c_void,
+    )
+    .ok()?;
+    if raw.is_null() {
+      return None;
+    }
+    Some(IAccessible::from_raw(raw))
+  }
+}
+
+/// 光标处的三态判定。只读，不注入 Explorer、不发鼠标消息。
+#[cfg(windows)]
+pub(crate) fn desktop_point_verdict() -> DesktopPointVerdict {
+  let mut point = POINT::default();
+  if unsafe { GetCursorPos(&mut point) }.is_err() {
+    return DesktopPointVerdict::Unknown;
+  }
+  let Some(accessible) = desktop_icon_list_accessible() else {
+    log::info!("桌面空白判定：取不到图标列表的辅助对象，判为无法确认");
+    return DesktopPointVerdict::Unknown;
+  };
+  let child_count = match unsafe { accessible.accChildCount() } {
+    Ok(count) => count,
+    Err(error) => {
+      log::info!("桌面空白判定：读取子项数失败（{error}），判为无法确认");
+      return DesktopPointVerdict::Unknown;
+    }
+  };
+  if child_count <= 0 {
+    log::info!("桌面空白判定：图标列表报告 0 个子项，判为无法确认");
+    return DesktopPointVerdict::Unknown;
+  }
+  let hit = match unsafe { accessible.accHitTest(point.x, point.y) } {
+    Ok(value) => value,
+    Err(error) => {
+      log::info!("桌面空白判定：accHitTest 失败（{error}），判为无法确认");
+      return DesktopPointVerdict::Unknown;
+    }
+  };
+  // accHitTest 的返回值是 VARIANT：本对象内的子项编号是整数，别的元素是对象。
+  let verdict = match unsafe { hit.Anonymous.Anonymous.vt } {
+    windows::Win32::System::Variant::VT_I4 => {
+      let child = unsafe { hit.Anonymous.Anonymous.Anonymous.lVal };
+      if child > 0 {
+        DesktopPointVerdict::Icon
+      } else {
+        DesktopPointVerdict::Blank
+      }
+    }
+    _ => DesktopPointVerdict::Unknown,
+  };
+  log::info!(
+    "桌面空白判定：cursor=({},{}) 子项数={child_count} 结论={:?}",
+    point.x,
+    point.y,
+    verdict
+  );
+  verdict
+}
 fn cursor_is_on_desktop_surface(background: HWND) -> bool {
     let mut point = POINT::default();
     unsafe {
@@ -2658,12 +2718,44 @@ fn cursor_hits_interaction_region(root_hwnd: HWND) -> bool {
         .unwrap_or(false)
 }
 
+/// 一次双击配对允许的最大间隔。用户实测节奏在 100 到 300 毫秒，900 毫秒留足余量。
+/// OBJID_CLIENT：Windows 头文件里的 0xFFFFFFFC（windows crate 把它放在 WindowsAndMessaging 下，
+/// 这里直接用字面量，避免为它多引入一个模块）。
+const OBJID_CLIENT_ID: u32 = 0xFFFF_FFFC;
+const PAIR_WINDOW: std::time::Duration = std::time::Duration::from_millis(900);
+/// 两次点击的最大位置差（物理像素）。位置相近才是双击；两次无关单击通常不在一处。
+const PAIR_REACH_PX: i32 = 64;
+/// 一次"点击"按下的最长时长。更长即为拖动，不参与配对。
+const CLICK_MAX_MS: u128 = 400;
+/// 一次"点击"期间允许的位移。超过即视为拖动。
+const CLICK_MAX_MOVE_PX: i32 = 12;
+
+/// 两次点击的位置是否近到可以算作一次双击。
+fn within_double_click_reach(a: (i32, i32), b: (i32, i32), tolerance: i32) -> bool {
+  (a.0 - b.0).abs() <= tolerance && (a.1 - b.1).abs() <= tolerance
+}
+
+/// 这一次按下到松开是否算一次"干净点击"：够短、没怎么移动。
+///
+/// 排除拖动是刻意的：拖拽选图标、拖窗口都会产生"按下-移动-松开"，若把它算成一次点击，
+/// 两次这样的操作就可能凑成一对而翻掉桌面层。
+fn is_clean_click(duration_ms: u128, movement_px: i32, max_ms: u128, max_move_px: i32) -> bool {
+  duration_ms <= max_ms && movement_px <= max_move_px
+}
+
+/// 按下瞬间是否有组合键。带修饰键的点击是别的意图（例如 Ctrl 多选），不参与配对。
+fn modifiers_are_idle(states: [bool; 5]) -> bool {
+  !states.iter().any(|pressed| *pressed)
+}
+
 fn should_toggle_desktop_workspace(
     cursor_on_desktop_surface: bool,
     cursor_hits_interaction: bool,
-    automation_reports_blank: bool,
+    blank_is_confirmed: bool,
 ) -> bool {
-    cursor_on_desktop_surface && !cursor_hits_interaction && automation_reports_blank
+    // 第三项必须是**确认**空白（MSAA 三态里的 Blank）：无法确认在调用方就折成 false。
+    // 判错的方向不对称 —— 把图标当空白会让"打开快捷方式"顺带翻掉桌面层。
+    cursor_on_desktop_surface && !cursor_hits_interaction && blank_is_confirmed
 }
 
 /// 「点功能组件却切回表桌面」只可能是三个输入里有一个不成立，而热区是前端按元素 rect
@@ -2705,16 +2797,16 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
         // UIA requires COM initialization on the monitor thread. A prior COM
         // mode is harmless: UIA can still be created on that thread.
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        let automation = unsafe {
-            CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
-        };
-        let Ok(automation) = automation else {
-            log::warn!("无法初始化 Windows UI Automation；表/里桌面双击切换暂不可用");
-            return;
-        };
-        log::info!("表/里桌面双击监控已启动（UI Automation）");
+        // 判据改走 MSAA（旧接口）：UI Automation 从 Explorer 的 FolderView 读不到任何子节点，
+        // 因此不必再初始化它。MSAA 按需取用，不注入 Explorer。
+        log::info!("表/里桌面双击监控已启动（判据：MSAA accHitTest 三态）");
+
 
         let mut was_down = false;
+        // 上一次合格且干净的点击：时刻、位置、当时的表/里桌面模式。
+        let mut last_click: Option<(std::time::Instant, (i32, i32), bool)> = None;
+        // 本次按下的现场：时刻、位置、按下时是否合格、按下时有无组合键。
+        let mut press: Option<(std::time::Instant, (i32, i32), bool, bool)> = None;
         let mut last_blank_click: Option<std::time::Instant> = None;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(16));
@@ -2722,18 +2814,126 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                 break;
             }
             let down = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0;
+            // 松开时成形：拖动（按下-移动-松开）天然被排除，不需要额外判断。
+            if !down && was_down {
+                if let Some((pressed_at, pressed_point, eligible, keys_idle)) = press.take() {
+                    let mut released = POINT::default();
+                    let released_point = if unsafe { GetCursorPos(&mut released) }.is_err() {
+                        pressed_point
+                    } else {
+                        (released.x, released.y)
+                    };
+                    let held_ms = pressed_at.elapsed().as_millis();
+                    let movement = (released_point.0 - pressed_point.0)
+                        .abs()
+                        .max((released_point.1 - pressed_point.1).abs());
+                    let clean = is_clean_click(held_ms, movement, CLICK_MAX_MS, CLICK_MAX_MOVE_PX);
+                    if !eligible || !keys_idle || !clean {
+                        log::info!(
+                            "点击不计入配对：合格={eligible} 无组合键={keys_idle} 干净={clean}（时长 {held_ms}ms，位移 {movement}px）"
+                        );
+                        last_click = None;
+                    } else {
+                        let now = std::time::Instant::now();
+                        let mode_inner = INNER_WORKSPACE_ACTIVE.load(Ordering::Acquire);
+                        let pair = last_click.filter(|(previous_at, previous_point, previous_mode)| {
+                            *previous_mode == mode_inner
+                                && now.duration_since(*previous_at) <= PAIR_WINDOW
+                                && within_double_click_reach(
+                                    *previous_point,
+                                    pressed_point,
+                                    PAIR_REACH_PX,
+                                )
+                        });
+                        match pair {
+                            Some((previous_at, previous_point, _)) => {
+                                last_click = None;
+                                log::info!(
+                                    "桌面空白双击成立：间隔 {}ms，位移 {}px，当前为{}桌面",
+                                    now.duration_since(previous_at).as_millis(),
+                                    (previous_point.0 - pressed_point.0)
+                                        .abs()
+                                        .max((previous_point.1 - pressed_point.1).abs()),
+                                    if mode_inner { "里" } else { "表" }
+                                );
+                                let result = if mode_inner {
+                                    leave_inner_workspace(&app)
+                                } else {
+                                    enter_inner_workspace(&app)
+                                };
+                                match result {
+                                    Err(error) => log::warn!("无法切换表/里桌面图标层：{error}"),
+                                    Ok(()) => log::info!(
+                                        "桌面空白双击：切换至{}桌面",
+                                        if INNER_WORKSPACE_ACTIVE.load(Ordering::Acquire) {
+                                            "里"
+                                        } else {
+                                            "表"
+                                        }
+                                    ),
+                                }
+                            }
+                            None => {
+                                last_click = Some((now, pressed_point, mode_inner));
+                            }
+                        }
+                    }
+                }
+            }
             if down && !was_down {
+                // 按下的现场：三条判据 + 组合键状态，全部**在这一刻**取，因为点击的目标由按下决定。
+                let keys = unsafe {
+                    [
+                        GetAsyncKeyState(VK_CONTROL.0 as i32) < 0,
+                        GetAsyncKeyState(VK_MENU.0 as i32) < 0,
+                        GetAsyncKeyState(VK_SHIFT.0 as i32) < 0,
+                        GetAsyncKeyState(VK_LWIN.0 as i32) < 0,
+                        GetAsyncKeyState(VK_RWIN.0 as i32) < 0,
+                    ]
+                };
+                let mut pressed = POINT::default();
+                let pressed_point = if unsafe { GetCursorPos(&mut pressed) }.is_err() {
+                    (i32::MIN, i32::MIN)
+                } else {
+                    (pressed.x, pressed.y)
+                };
+                let verdict = desktop_point_verdict();
+                let eligible = INNER_WORKSPACE_ACTIVE.load(Ordering::Acquire)
+                    || app
+                        .get_webview_window(BACKGROUND_WINDOW_LABEL)
+                        .and_then(|window| window.hwnd().ok())
+                        .map(|window| HWND(window.0))
+                        .is_some_and(|background| {
+                            should_toggle_desktop_workspace(
+                                cursor_is_on_desktop_surface(background),
+                                cursor_hits_interaction_region(background),
+                                verdict == DesktopPointVerdict::Blank,
+                            )
+                        });
+                press = Some((
+                    std::time::Instant::now(),
+                    pressed_point,
+                    eligible,
+                    modifiers_are_idle(keys),
+                ));
+                if !eligible {
+                    log::info!("按下即不合格（verdict={verdict:?}）");
+                }
                 let background = app
                     .get_webview_window(BACKGROUND_WINDOW_LABEL)
                     .and_then(|window| window.hwnd().ok())
                     .map(|window| HWND(window.0));
+                let verdict = desktop_point_verdict();
                 let can_toggle = background.is_some_and(|background| {
                     should_toggle_desktop_workspace(
                         cursor_is_on_desktop_surface(background),
                         cursor_hits_interaction_region(background),
-                        cursor_is_over_desktop_blank(&automation),
+                        verdict == DesktopPointVerdict::Blank,
                     )
                 });
+                if !can_toggle {
+                    log::info!("workspace toggle declined: verdict={verdict:?}");
+                }
                 if can_toggle {
                     log_workspace_toggle_decision(false, true);
                     let now = std::time::Instant::now();
@@ -4688,7 +4888,37 @@ mod tests {
     }
 
     #[test]
-    fn workspace_toggle_requires_a_blank_desktop_and_never_a_chat_region() {
+    /// 配对的两条几何规则：位置相近才算同一次双击。
+#[test]
+fn a_pair_must_land_in_nearly_the_same_place() {
+  assert!(within_double_click_reach((100, 200), (104, 197), PAIR_REACH_PX));
+  assert!(within_double_click_reach((100, 200), (100, 200), PAIR_REACH_PX));
+  // 相隔很远的两次单击：不算。时间窗口宽松之后，这一条是防止两次无关单击凑成一对的关键。
+  assert!(!within_double_click_reach((100, 200), (800, 900), PAIR_REACH_PX));
+  assert!(!within_double_click_reach((100, 200), (100, 300), PAIR_REACH_PX));
+}
+
+/// 一次点击必须够短、没怎么移动；拖动（按下-移动-松开）不算。
+#[test]
+fn a_click_that_was_really_a_drag_does_not_count() {
+  assert!(is_clean_click(120, 0, CLICK_MAX_MS, CLICK_MAX_MOVE_PX));
+  assert!(is_clean_click(399, 12, CLICK_MAX_MS, CLICK_MAX_MOVE_PX));
+  // 按住太久：是拖动或长按，不是点击。
+  assert!(!is_clean_click(401, 0, CLICK_MAX_MS, CLICK_MAX_MOVE_PX));
+  // 按位移出：拖拽选图标、拖窗口都属于这一类。
+  assert!(!is_clean_click(120, 13, CLICK_MAX_MS, CLICK_MAX_MOVE_PX));
+}
+
+/// 带组合键的点击是别的意图（Ctrl 多选之类），不参与配对。
+#[test]
+fn a_click_with_a_modifier_never_pairs() {
+  assert!(modifiers_are_idle([false, false, false, false, false]));
+  assert!(!modifiers_are_idle([true, false, false, false, false]));
+  assert!(!modifiers_are_idle([false, false, false, false, true]));
+}
+
+#[test]
+fn workspace_toggle_requires_a_blank_desktop_and_never_a_chat_region() {
         assert!(should_toggle_desktop_workspace(true, false, true));
         assert!(!should_toggle_desktop_workspace(false, false, true));
         assert!(!should_toggle_desktop_workspace(true, true, true));
