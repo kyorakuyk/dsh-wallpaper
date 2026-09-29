@@ -1832,7 +1832,9 @@ const enterInnerWorkspace = () => {
     if (runtime.phase === 'waking') {
       const wakeProps = {
         persona,
-        startIndex: 1,
+        // 从**熟睡**那一帧开始播（原来是 1 = 睁眼）。旧的 1 有个具体理由："锁屏已经显示过
+        // sleep.png，解锁不必再播一遍"；锁屏那块整体退出之后，这个理由随之消失。
+        startIndex: 0,
         handoffGeneration: nativeHandoffGeneration,
         enabled: settings.animationsEnabled && !settings.skipWakeAnimation,
         speed: settings.animationSpeed,

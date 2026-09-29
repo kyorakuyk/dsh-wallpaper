@@ -207,7 +207,8 @@ export function LiteApp() {
   if (phase === 'booting' || phase === 'locked') {
     scene = <SleepScene persona={persona} mode="system" quiet />
   } else if (phase === 'waking') {
-    scene = <WakeScene persona={persona} startIndex={1} handoffGeneration={nativeHandoffGeneration} enabled={settings.animationsEnabled && !settings.skipWakeAnimation} speed={settings.animationSpeed} onFirstWakeFrame={(generation) => reportNativeBootstrapReady(generation, liteNative, { verifySceneImages: false })} onWakeDone={wakeDone} />
+    // 从熟睡那一帧开始播（与 App.tsx 同一处改动；旧的 1 = 睁眼，理由是锁屏已显示过 sleep.png）。
+    scene = <WakeScene persona={persona} startIndex={0} handoffGeneration={nativeHandoffGeneration} enabled={settings.animationsEnabled && !settings.skipWakeAnimation} speed={settings.animationSpeed} onFirstWakeFrame={(generation) => reportNativeBootstrapReady(generation, liteNative, { verifySceneImages: false })} onWakeDone={wakeDone} />
   } else {
     scene = <LiteIdleScene persona={persona} backgroundUrl={backgroundUrl} />
   }
