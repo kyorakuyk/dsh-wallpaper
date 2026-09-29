@@ -1059,12 +1059,6 @@ pub(crate) fn bridge_profiles_for(kind: HarnessTargetKind, profile: &str) -> Vec
     }
 }
 
-/// 要不要动手装：宿主回报的桥版本与我们钉的不是同一个（含"根本没有桥"）就该对齐。
-/// 版本相符时**什么都不做**——这是"每次启动检查"不至于变成"每次启动跑一遍包管理"的关键。
-pub(crate) fn bridge_install_needed(reported: Option<&str>) -> bool {
-    reported.map(str::trim) != Some(BRIDGE_VERSION)
-}
-
 /// 一次"装桥"尝试的结果状态。
 pub(crate) const BRIDGE_STATUS_INSTALLED: &str = "installed";
 /// 档案里已经是对应的版本：**没有跑包管理**（这是"每次启动检查"不产生副作用的关键）。
