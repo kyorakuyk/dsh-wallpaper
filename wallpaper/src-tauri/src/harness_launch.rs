@@ -949,6 +949,61 @@ pub(crate) fn shell_host_cli(subject_id: &str) -> Option<PathBuf> {
     }
 }
 
+/// 装进档案的桥包与版本。**只此一处**：壁纸启动宿主后校验它回报的 build 时也用这个常量，
+/// 免得"钉的版本"与"校验的版本"各写一份、慢慢漂开。
+pub(crate) const BRIDGE_PACKAGE: &str = "dsh-wallpaper-bridge@0.1.5";
+
+/// 把桥装进某个档案该怎么跑（纯函数，只算不执行）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BridgeInstallPlan {
+    /// 用哪个 CLI 执行。
+    pub launcher: PathBuf,
+    /// 传给它的参数：`plugin --profile <档案> add <包>`。
+    pub args: Vec<String>,
+    /// 目标档案。
+    pub profile: String,
+    /// 目标包（含版本）。
+    pub package: String,
+}
+
+/// 计划一次"把桥装进档案"。
+///
+/// `desktop` 档案**只能由官壳自带的 CLI 管**：全局 CLI 会直接拒绝它，原话是
+/// `profile "desktop" is managed exclusively by the Electron application`（2026-09-30 实测）。
+/// 所以壳主体那一路必须把壳的 CLI 传进来；其余档案用主体自己的 CLI。
+///
+/// 官方文档里这是**唯一**受支持的外部插件分发路径（`dsh plugin --profile <name> add …`），
+/// 所以这里不自己写包管理，只是把那条命令拼出来交给调用方去跑。
+pub(crate) fn plan_bridge_install(
+    profile: &str,
+    subject_launcher: &std::path::Path,
+    shell_cli: Option<PathBuf>,
+) -> Result<BridgeInstallPlan, String> {
+    let profile = profile.trim();
+    if profile.is_empty() {
+        return Err("没有指定要装桥的档案。".into());
+    }
+    let launcher = if profile == "desktop" {
+        shell_cli.ok_or_else(|| {
+            "desktop 档案只能由桌面客户端自带的 CLI 管理，但没能解析出它的位置。".to_string()
+        })?
+    } else {
+        subject_launcher.to_path_buf()
+    };
+    Ok(BridgeInstallPlan {
+        launcher,
+        args: vec![
+            "plugin".to_string(),
+            "--profile".to_string(),
+            profile.to_string(),
+            "add".to_string(),
+            BRIDGE_PACKAGE.to_string(),
+        ],
+        profile: profile.to_string(),
+        package: BRIDGE_PACKAGE.to_string(),
+    })
+}
+
 /// 后台启动（滑槽、随壁纸自启）该怎么跑 —— §7.6 走法 A 之后，壳与别的类走的路不同了。
 ///
 /// * 壳：能解析出它自带的 CLI 就跑那个（`web` 档案、**绑壁纸自己的端口**、没有窗口），
@@ -2379,6 +2434,48 @@ mod tests {
 
     fn argv(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    #[test]
+    fn the_desktop_profile_is_installed_through_the_shell_s_own_cli() {
+        let plan = plan_bridge_install(
+            "desktop",
+            std::path::Path::new("C:\\npm\\dsh.cmd"),
+            Some(PathBuf::from("C:\\shell\\cli\\bin\\dsh.cmd")),
+        )
+        .expect("desktop 有壳 CLI 时应当能计划出来");
+        assert_eq!(plan.launcher, PathBuf::from("C:\\shell\\cli\\bin\\dsh.cmd"));
+        assert_eq!(
+            plan.args,
+            vec![
+                "plugin".to_string(),
+                "--profile".to_string(),
+                "desktop".to_string(),
+                "add".to_string(),
+                BRIDGE_PACKAGE.to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn the_desktop_profile_refuses_to_guess_when_the_shell_cli_is_missing() {
+        let error = plan_bridge_install("desktop", std::path::Path::new("C:\\npm\\dsh.cmd"), None)
+            .expect_err("没有壳 CLI 时不能拿别的 CLI 去碰 desktop 档案");
+        assert!(
+            error.contains("desktop"),
+            "错误里要说清是哪个档案：{error}"
+        );
+    }
+
+    #[test]
+    fn other_profiles_are_installed_through_the_subject_s_own_cli() {
+        let plan = plan_bridge_install("web", std::path::Path::new("C:\\npm\\dsh.cmd"), None)
+            .expect("非 desktop 档案用主体自己的 CLI");
+        assert_eq!(plan.launcher, PathBuf::from("C:\\npm\\dsh.cmd"));
+        assert_eq!(plan.profile, "web");
+        assert_eq!(plan.package, BRIDGE_PACKAGE);
+        assert!(plan.args.contains(&"--profile".to_string()));
     }
 
     #[test]
