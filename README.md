@@ -51,7 +51,7 @@
 
 
 <p align="center">
-  <img src="docs/media/hero.gif" alt="待机界面：桌面右侧立绘 + 输入岛" width="100%">
+  <video src="docs/media/hero.mp4" autoplay loop muted playsinline width="100%" aria-label="待机界面：桌面右侧立绘 + 输入岛"></video>
 </p>
 
 
@@ -149,9 +149,9 @@ AI 的摩擦往往不在"用起来难"，而在**入口不在手边**：先打�
 
 <!-- 下面几项录制/截图后放开注释；一行 ffmpeg 就能出片，方法见本节末尾 -->
 
-<p align="center"><em>▲ 点悬浮球 → 进入里桌面 → 输入岛就位。（待补 GIF：`docs/media/getin.gif`）</em></p>
+<p align="center"><em>▲ 点悬浮球 → 进入里桌面 → 输入岛就位。（`docs/media/getin.mp4`）</em></p>
 
-<p align="center"><em>▲ 设置中心切换聊天模式，正在运行的壁纸立刻换后端。（待补 GIF：`docs/media/mode-switch.gif`）</em></p>
+<p align="center"><em>▲ 设置中心切换聊天模式，正在运行的壁纸立刻换后端。（`docs/media/mode-switch.mp4`）</em></p>
 
 <p align="center">
   <img src="docs/media/persona-tier.png" alt="四张立绘并排：蓝色成年 / 蓝色幼年 / 红幼年 / 红成年" width="100%">
