@@ -1091,40 +1091,54 @@ pub(crate) fn installed_bridge_version(profiles_root: &Path, profile: &str) -> O
 
 /// 判读 CLI 的输出。**纯函数**，因为这里藏着一条政策：不代劳风险确认。
 ///
-/// * 退出码 0 且输出里没有"豁免/不兼容"的字样 → 装好了；
-/// * 退出码 0 但提到了 `allow-version` 或 `incompatible` → **交给用户**（DSH 的规矩是
-///   "不兼容插件需要用户明确确认精确版本豁免"，我们只把原文带回去，绝不替他点）；
-/// * 非 0 退出码 → 失败，原因取 stderr（没有就取 stdout）。
+/// 三种结果：
+/// * 退出码非 0 → 失败，原因取 stderr（没有就取 stdout）；
+/// * 退出码 0，且输出里的"豁免/不兼容"是**关于桥**的 → `needs-confirmation`：DSH 的规矩是
+///   "不兼容插件需要用户明确确认精确版本豁免"，我们只把原文带回去，绝不替他点；
+/// * 退出码 0，其他情况 → 装好了。
 ///
-/// 返回值里的文本会截断到 `MAX_BRIDGE_OUTPUT_CHARS`，避免把整段包管理日志塞进界面。
+/// 中间那条的"关于桥"是 2026-09-30 补上的：DSH 装包时会检查档案里的**所有**插件，并可能为
+/// **别的**插件打印豁免提示（当晚实测：装 web 档案时报的是 TUI 插件）。把别人的提示算成自己的，
+/// 用户会以为桥没装好 —— 隔壁机器上就是这么被吓到的，而他其实什么都不用做。
 pub(crate) const MAX_BRIDGE_OUTPUT_CHARS: usize = 600;
+
+/// 这条输出里的"不兼容/豁免"是不是关于我们桥的。
+fn exemption_concerns_our_bridge(text: &str) -> bool {
+    text.to_lowercase().contains("dsh-wallpaper-bridge")
+}
 
 pub(crate) fn interpret_install_output(
     code: Option<i32>,
     stdout: &str,
     stderr: &str,
 ) -> (&'static str, String) {
-    let mut detail = String::new();
+    let mut raw = String::new();
     let trimmed_out = stdout.trim();
     let trimmed_err = stderr.trim();
     if !trimmed_out.is_empty() {
-        detail.push_str(trimmed_out);
+        raw.push_str(trimmed_out);
     }
     if !trimmed_err.is_empty() {
-        if !detail.is_empty() {
-            detail.push('\n');
+        if !raw.is_empty() {
+            raw.push('\n');
         }
-        detail.push_str(trimmed_err);
+        raw.push_str(trimmed_err);
     }
-    let lowered = detail.to_lowercase();
+    let lowered = raw.to_lowercase();
     let mentions_exemption =
         lowered.contains("allow-version") || lowered.contains("incompatible") || lowered.contains("豁免");
-    let status = match (code, mentions_exemption) {
-        (Some(0), false) => BRIDGE_STATUS_INSTALLED,
-        (Some(0), true) => BRIDGE_STATUS_NEEDS_CONFIRMATION,
+    let ours = exemption_concerns_our_bridge(&raw);
+    let status = match (code, mentions_exemption, ours) {
+        (Some(0), false, _) => BRIDGE_STATUS_INSTALLED,
+        (Some(0), true, true) => BRIDGE_STATUS_NEEDS_CONFIRMATION,
+        (Some(0), true, false) => BRIDGE_STATUS_INSTALLED,
         _ => BRIDGE_STATUS_FAILED,
     };
-    (status, truncate_for_surface(&detail))
+    let mut text = truncate_for_surface(&raw);
+    if status == BRIDGE_STATUS_INSTALLED && mentions_exemption {
+        text.push_str("\n（另：DSH 为该档案里的其他插件打印了兼容提示，与桥无关。）");
+    }
+    (status, text)
 }
 
 fn truncate_for_surface(text: &str) -> String {
@@ -1235,11 +1249,20 @@ pub(crate) fn install_bridge_for_subject(
             let actual = format!("{} {}", program.display(), program_args.join(" "));
             match std::process::Command::new(&program).args(&program_args).output() {
                 Ok(output) => {
-                    let (status, detail) = interpret_install_output(
-                        output.status.code(),
-                        &String::from_utf8_lossy(&output.stdout),
-                        &String::from_utf8_lossy(&output.stderr),
+                    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+                    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+                    // 界面会截断，日志留全：判读规则再出错时，得能对着原文算。
+                    log::info!(
+                        "装桥原始 stdout（{} 字符）：{}",
+                        stdout.chars().count(),
+                        stdout.chars().take(3000).collect::<String>()
                     );
+                    log::info!(
+                        "装桥原始 stderr（{} 字符）：{}",
+                        stderr.chars().count(),
+                        stderr.chars().take(3000).collect::<String>()
+                    );
+                    let (status, detail) = interpret_install_output(output.status.code(), &stdout, &stderr);
                     BridgeInstallOutcome {
                         profile,
                         status: status.to_string(),
@@ -2770,11 +2793,20 @@ mod tests {
     }
 
     #[test]
-    fn a_version_exemption_is_handed_to_the_user_instead_of_being_accepted() {
-        // 这行是 2026-09-30 实测的原文形状：宿主拒了插件，并提示用户可以自己授予豁免。
+    fn an_exemption_about_another_plugin_does_not_alarm_the_user() {
+        // 2026-09-30 实况：装 web 档案时 DSH 为 *TUI 插件* 打印了豁免提示，
+        // 用户看到"桥已装好，但需要你确认版本豁免"以为自己要做什么，其实什么都不用做。
         let warning = "dsh: warning: Plugin @deepseek-harness-tui/dsh-tui@0.11.1 is incompatible with dsh 0.2.0-rc.1\n\
-                       To accept this risk explicitly, grant the exact-version exemption … with `dsh plugin allow-version`\n\
-                       Exact-version exemption: not active.";
+                       To accept this risk explicitly, grant the exact-version exemption … with `dsh plugin allow-version`";
+        let (status, detail) = interpret_install_output(Some(0), warning, "");
+        assert_eq!(status, BRIDGE_STATUS_INSTALLED, "别人的提示不该算成桥需要确认");
+        assert!(detail.contains("与桥无关"), "但要留一句说明：{detail}");
+    }
+
+    #[test]
+    fn an_exemption_about_the_bridge_itself_is_handed_to_the_user() {
+        let warning = "dsh: warning: Plugin dsh-wallpaper-bridge@0.1.5 is incompatible with dsh 0.1.0-rc.4\n\
+                       To accept this risk explicitly, grant the exact-version exemption with `dsh plugin allow-version`";
         let (status, detail) = interpret_install_output(Some(0), warning, "");
         assert_eq!(status, BRIDGE_STATUS_NEEDS_CONFIRMATION);
         assert!(detail.contains("allow-version"), "要把原文交回去：{detail}");
