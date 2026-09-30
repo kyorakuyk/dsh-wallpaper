@@ -4,16 +4,18 @@ DeepSeek Harness 生态的**交互式桌面壁纸框架**：以鲸鱼娘为拟�
 
 > 独立 Tauri 桌面应用，不修改 DSH 官方 Web UI；同时保留浏览器预览模式。
 
-## 首发产品：DSH Wallpaper Lite
+## 安装（完整版）
 
-Lite 与完整版共用本仓库和 Windows 原生壁纸核心，但采用独立的前端入口、Rust feature、Tauri 配置和 MSIX 身份。首发包只提供 Windows 锁屏图片接管、正式四帧苏醒动画、静态壁纸、立绘、开机自启、可选登录过渡底图以及 TranslucentTB 兼容入口；不包含聊天、DeepSeek/DSH 连接、会话、表里桌面或插件。
+前置：Windows 11（WebView2 由系统自带）。到 [Releases](https://github.com/kyorakuyk/dsh-wallpaper/releases) 下载 `dsh-wallpaper_<版本>_x64-setup.exe` 双击安装 —— **当前用户、不请求管理员、不需要证书**，卸载走「应用和功能」。安装器未签名，第一次运行会有一次 SmartScreen 提示（更多信息 → 仍要运行）。
+
+自己构建：
 
 ```powershell
-pnpm build:lite
-pnpm desktop:build:lite
+pnpm desktop:build                                  # 产物在 wallpaper/src-tauri/target/release/bundle/nsis/
+pwsh -File .\scripts\publish-local-nsis.ps1 -Install # 先跑四道门禁，再构建、报出 SHA-256、静默安装
 ```
 
-锁屏接管的正式验收和 MSIX 安装请在 Windows 11 测试机执行；完整范围与发布命令见 [`docs/lite-release.md`](docs/lite-release.md)。完整版的本地 MSIX 测试包也可按 [`docs/lockscreen-msix-test.md`](docs/lockscreen-msix-test.md) 构建，但自签名证书仅用于本机测试。
+**Lite 版**仍在仓库里（独立前端入口与 Rust feature：`pnpm build:lite` / `pnpm desktop:build:lite`），但它不再是首发包。MSIX 那条路保留给将来的商店上架（需要证书），相关文档见 [`docs/lockscreen-msix-test.md`](docs/lockscreen-msix-test.md) —— 文件名是历史遗留，包本身早已与锁屏无关。
 
 ## 功能总览
 
@@ -24,10 +26,10 @@ pnpm desktop:build:lite
 | 🎨 **形态系统** | ✅ | 蓝/黑 × 幼/成年 四形态，立绘即时切换（useMemo），气泡跟随立绘 |
 | 🌊 **深海背景** | ✅ | 3 款深海室内插画 + 默认渐变，设置面板切换，持久化 |
 | 💬 **聊天后端** | ✅ | DeepSeek API（流式）+ Harness（Bridge 会话）+ DeepSeek 网页 DOM 桥接（实验能力） |
-| 🔌 **DSH 会话桥** | 🧪 | `bridge/` 独立插件：loopback REST/SSE + bearer token 鉴权；会话恢复限定在桌面工作区，真机安装联调仍待完成 |
+| 🔌 **DSH 会话桥** | 🧪 | `bridge/` 独立插件：loopback REST/SSE + bearer token 鉴权；会话恢复限定在桌面工作区；真机安装已在两台机器上跑通（v0.3.0 / v0.3.1） |
 | 🖥️ **Tauri 壳** | ✅ | 统一 WorkerW 背景宿主（画面与桌面内交互热区）+ 独立设置窗口、托盘、开机自启 |
 | 🖥️ **完整版多屏** | 🧪 | 显示器枚举、逐屏背景与苏醒帧、会话窗/立绘目标屏幕选择；Lite 首发仍为单主屏 |
-| 🔐 **锁屏接管** | 🧪 | 安全备份/恢复与无副作用 MSIX 打包验证已完成；已安装 MSIX 的 `Win+L` 人工验收待做 |
+| 🔌 **桥的自动对齐** | ✅ | 启动与选中主体时把桥对齐到钉住的版本；版本相符时**不跑包管理、不动你的档案**；遇到"版本豁免"提示只转达，不代你确认 |
 | 🔒 **凭据安全** | ✅ | DeepSeek API Key 只存 Windows 凭据管理器（keyring） |
 
 ## 体验流程
@@ -64,7 +66,7 @@ pnpm desktop:dev     # 壁纸可独立启动；Harness 模式需要兼容的 Wal
 pnpm desktop:build   # 构建安装包
 ```
 
-**Lite 首发安装包**：由 GitHub Actions 远程生成；开发机默认不执行 Lite 发布包打包或安装，下载入口和测试机要求见 [`docs/lite-release.md`](docs/lite-release.md)。
+**安装包**：见上面的「安装（完整版）」；Lite 的构建与打包命令在 [`docs/lite-release.md`](docs/lite-release.md)。
 
 **交互**：
 - `Alt+W`：进入睡眠模式
@@ -123,7 +125,7 @@ dsh plugin --profile desktop install   # 换成你实际使用的 profile
 ```
 
 刷新后请从 `/api/wallpaper/v1/status` 的 `bridgeVersion` / `bridgeBuild` 确认已生效，
-而不要只看本地构建输出。壁纸自身不会在后台执行包管理、下载代码或改写 DSH profile。
+而不要只看本地构建输出。壁纸会在**启动时与选中主体时**各对齐一次桥：只跑官方那条 `dsh plugin … add` 命令，版本相符就什么都不做；它不会下载代码、不会替你确认版本豁免，也不会改写你档案以外的任何东西。
 版本矩阵、协议版本与包版本的区别、宿主适配层边界见
 [`bridge/README.md`](bridge/README.md)。
 
