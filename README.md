@@ -48,12 +48,12 @@
   ·
   <a href="https://github.com/kyorakuyk/dsh-wallpaper/issues">提出建议</a>
 </p>
-<!-- 首屏演示图待补（录好后去掉注释）
+
 
 <p align="center">
   <img src="docs/media/hero.gif" alt="待机界面：桌面右侧立绘 + 输入岛" width="100%">
 </p>
--->
+
 
 <h2 align="center">
 
@@ -131,7 +131,7 @@ AI 的摩擦往往不在"用起来难"，而在**入口不在手边**：先打�
 | 🧠 | **形态跟随模型** | 模型分层（Flash / Pro）与形态、主题色、气泡共用同一个生命周期，重启后按上次的选择立绘 |
 | 🌊 | **深海背景** | 三款室内场景 + 主题渐变，可按屏幕分别指定 |
 | 🖼️ | **素材库** | 导入图片 → 指定用途（桌面背景 / 四个立绘槽位），不写代码换装 |
-| ✨ | **唤醒动画** | 睡眠 → 睁眼 → 坐起 → 打哈欠的四帧序列 |
+| ✨ | **唤醒动画** | 四帧：熟睡 → 睁眼 → 打哈欠 → 醒来（`variant-anima`，3840×2400）；解锁后从熟睡那一帧开始播 |
 | 🪟 | **多屏** | 逐屏背景与苏醒帧、立绘与会话窗的目标屏幕选择 |
 
 ### 设置与系统集成
@@ -139,10 +139,9 @@ AI 的摩擦往往不在"用起来难"，而在**入口不在手边**：先打�
 |  | 功能 | 说明 |
 |:---:|------|------|
 | ⚙️ | **设置中心** | 六个页签：常规 / 连接 / 外观 / 形态 / 历史 / 系统；改动即时保存，切后端与端点立即生效 |
-| 🚀 | **开机自启** | MSIX StartupTask 优先，兼容 `HKCU\...\Run` |
-| 🔒 | **锁屏接管** | 锁屏图片的安全备份 / 恢复与打包验证已完成（已安装包的 `Win+L` 人工验收待做） |
-| 🪟 | **透明任务栏** | 与独立安装的 TranslucentTB 松耦合对接，不修改其配置 |
-| 🧩 | **DSH Wallpaper Lite** | 独立前端入口与 MSIX 身份：只做锁屏接管 + 静态壁纸，不含聊天与桌面交互 |
+| 🚀 | **开机自启** | 写 `HKCU\...\Run`，指向固定安装路径；不依赖包身份 |
+| 🔌 | **桥的自动对齐** | 启动与选中主体时把桥对齐到钉住的版本；版本相符就什么都不做；"版本豁免"提示只转达，不代你确认 |
+| 🧩 | **DSH Wallpaper Lite** | 独立前端入口与 Rust feature：静态壁纸 + 四帧苏醒 + 开机自启；不含聊天与桌面交互 |
 
 <br>
 
@@ -150,11 +149,14 @@ AI 的摩擦往往不在"用起来难"，而在**入口不在手边**：先打�
 
 <!-- 下面几项录制/截图后放开注释；一行 ffmpeg 就能出片，方法见本节末尾 -->
 
-<p align="center"><em>▲ 点悬浮球 → 进入里桌面 → 输入岛就位。（待补 GIF：`docs/media/hero.gif`）</em></p>
+<p align="center"><em>▲ 点悬浮球 → 进入里桌面 → 输入岛就位。（待补 GIF：`docs/media/getin.gif`）</em></p>
 
 <p align="center"><em>▲ 设置中心切换聊天模式，正在运行的壁纸立刻换后端。（待补 GIF：`docs/media/mode-switch.gif`）</em></p>
 
-<p align="center"><em>▲ 幼年 / 成年两档立绘的比例适配：头一样大，个子更高。（待补图：`docs/media/persona-tier.png`）</em></p>
+<p align="center">
+  <img src="docs/media/persona-tier.png" alt="四张立绘并排：蓝色成年 / 蓝色幼年 / 红幼年 / 红成年" width="100%">
+</p>
+<p align="center"><em>▲ 四形态立绘（蓝成年 / 蓝幼年 / 红幼年 / 红成年）：幼年与成年头一样大，成年个子更高。</em></p>
 
 <p align="center"><em>▲ 设置中心六个页签。（待补图：`docs/media/settings.png`）</em></p>
 
@@ -167,7 +169,7 @@ AI 的摩擦往往不在"用起来难"，而在**入口不在手边**：先打�
 ### 前置条件
 
 - **Windows 10 / 11 x64**（依赖 WorkerW 桌面宿主与 Win32 交互）（注：作者本人尚未在win10跑过，若有bug请报告）
-- **完整版**：一张与本机 MSIX `Publisher` 匹配的签名证书（自签即可；脚本不会创建或导出 PFX）
+- **安装**：到 [Releases](https://github.com/kyorakuyk/dsh-wallpaper/releases) 下载 `dsh-wallpaper_<版本>_x64-setup.exe`，双击即可 —— 当前用户安装、不请求管理员、不需要证书。安装器未签名，第一次运行会有一次 SmartScreen 提示（更多信息 → 仍要运行）
 - **Harness 模式**（可选）：DeepSeek Harness 本体 + 兼容的 Wallpaper Bridge
 
 ### 从源码跑（推荐先这样试）
@@ -178,30 +180,29 @@ pnpm dev            # 浏览器预览 http://127.0.0.1:5187
 pnpm desktop:dev    # 桌面应用：壁纸可独立启动；Harness 模式需要兼容的 Bridge
 ```
 
-### 装成 MSIX
+### 打包（NSIS 安装器）
 
 ```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\publish-local-msix.ps1
+pnpm desktop:build                                   # 产物在 wallpaper/src-tauri/target/release/bundle/nsis/
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\publish-local-nsis.ps1 -Install
 ```
 
-脚本按顺序做：类型检查与测试 → 构建 Release → 递增清单修订号 → 签名 → 校验 → 安装 → 启动，并保留上一版签名包供回退。常用开关：
+发布脚本按顺序做：类型检查 → 前端与 Bridge 测试 → Rust 测试 → 构建 → **报出 SHA-256** → （`-Install` 时）静默安装并核对装上的版本。常用开关：`-PlanOnly` 只显示计划；`-SkipChecks` 跳过门禁；`-NoLaunch` 装完不启动；`-Edition lite` 出 Lite 包。
 
-- `-PlanOnly` 只显示计划（含版本递增、用哪张证书、是否需要 UAC）
-- `-SkipChecks` 跳过类型检查与测试（Lite 产物边界、签名与安装校验仍执行）
-- `-NoLaunch` 安装后不启动
-- `-Edition lite` 出 Lite 包
+### 打包（MSIX，可选）
 
-Lite 首发包由 GitHub Actions（`.github/workflows/package.yml`）产出；完整版的公开分发渠道还在路上，目前以本机自签为主。
+MSIX 那条路保留给将来的商店上架：它需要一张与本机 `Publisher` 匹配的签名证书（自签即可），命令是 `pwsh -File .\scripts\publish-local-msix.ps1`。
+**产品本身已经不需要它** —— 锁屏接管曾是唯一需要包身份的功能，而那块已整体退出，所以日常分发走上面的 setup.exe。
 
 <br>
 
 <h2 id="usage">🚀 使用</h2>
 
-1. 启动后等唤醒动画播完，进入待机：**桌面右侧是立绘，右下角是悬浮球**
-2. 点立绘（或点悬浮球进里桌面）开始对话：输入岛里选模型、看用量与费用
-3. 在「设置中心 → 连接 → 聊天模式」里选 **网页入口** 或 **API**，正在运行的壁纸立刻切换；输入岛上的开关在 Harness 与聊天后端之间快切
-4. 需要认真干活时，点小图标或托盘项**把工作窗口拉到面前**（已经开着就唤到前台，没开就启动它，网页型的用浏览器打开）
-5. 快捷键：`Alt+W` 睡眠、`Esc` 睡眠中唤醒 / 关闭设置；发送键可在设置里改成 `Ctrl+Enter`
+1. 启动后等唤醒动画播完，进入待机：**桌面右侧是立绘，下方弹出悬浮球（仅任务栏停靠胶囊模式）**
+2. 点击悬浮球或者双击桌面空白处进入里桌面，开始对话，输入岛里可以选模型
+3. 在「设置中心 → 连接 → 聊天模式」里选 **网页入口** 或 **API**，正在运行的壁纸立刻切换；输入岛上的开关可以在 Harness 与聊天后端之间快切
+4. 需要认真干活时，点桌面会话左边的小图标或托盘项**把工作窗口拉到面前**（已经开着就唤到前台，没开就启动它，网页型的用浏览器或者tui打开）
+5. 需要防误触发送键可在设置里改成 `Ctrl+Enter`
 
 <br>
 
@@ -269,7 +270,7 @@ dsh-wallpaper/
 │   ├── public/personas/         # 立绘、背景与唤醒帧资源
 │   └── src-tauri/               # Rust 壳：WorkerW 宿主 / 悬浮球 / 设置窗 / 托盘 / 锁屏 / 自启 / 聊天
 ├── bridge/                      # DSH 会话桥插件（loopback REST/SSE + bearer token）
-├── assets/personas/             # 立绘源图与历史留档
+├── assets/personas/       # 仍在用的立绘源图（其余已归档到 archive/personas-sources-20260930/）
 ├── scripts/                     # 素材处理与本地发布（20 个）
 ├── docs/                        # plans / evidence / design / guides（见 docs/README.md）
 └── .github/workflows/           # CI（八步门禁）+ Lite 打包
@@ -309,13 +310,13 @@ dsh-wallpaper/
 - [x] **外观素材库**（导入 → 指定用途）
 - [x] **设置中心六页**（常规 / 连接 / 外观 / 形态 / 历史 / 系统）
 - [x] **API Key 在设置中心内输入与测试**（含模型目录缓存）
-- [x] **开机自启**（StartupTask 优先，兼容 Run 键）
+- [x] **开机自启**（Run 键，不依赖包身份）
 - [x] **CI 八步门禁**（类型检查 / JS 测试 / Rust 测试 / 前端构建 / Lite 构建与测试 / Lite 产物边界）
-- [ ] **锁屏接管真机验收**（已安装包 + `Win+L`）
-- [ ] **多屏真机验收**
+- [x] **桥的自动对齐**（启动与选中主体时各一次；版本相符不动档案，已在两台机器实测）
+- [x] **多屏真机验收**
 - [ ] **自定义形态扫描**（用户目录 manifest）
 - [ ] **主题包与插件**
-- [ ] **完整版公开分发渠道**
+- [x] **完整版公开分发渠道**（v0.3.0 / v0.3.1 的 setup.exe 在 Releases）
 - [ ] **演示 GIF 与截图**（见「效果展示」的待补项）
 
 <br>
@@ -345,7 +346,6 @@ dsh-wallpaper/
 - **DeepSeek Harness** —— 这个壁纸要接入的生态本体（Bridge 协议与会话接口）
 - [**Tauri**](https://tauri.app/) + [**tauri-plugin-single-instance**](https://github.com/tauri-apps/plugins-workspace) —— 应用壳与单实例
 - [**keyring**](https://github.com/hwchen/keyring-rs) —— Windows 凭据管理器读写
-- [**TranslucentTB**](https://github.com/TranslucentTB/TranslucentTB) —— 透明任务栏的兼容对象
 - [**windows-rs**](https://github.com/microsoft/windows-rs) —— Win32 窗口策略、Z 槽与 WTS 事件
 - ZipZipPipe和上善无形大佬的鲸鱼娘形象
 
