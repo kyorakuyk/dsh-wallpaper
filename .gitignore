@@ -59,6 +59,9 @@ Thumbs.db
 /_test*.txt
 /_tsc.txt
 
-# 录屏源文件：几秒的 GIF 会是几百 MB（hero.gif 曾达 605 MB，超过 GitHub 单文件上限），
-# 真正进仓库的是同名的 .mp4（同内容、体积小一到两个数量级），README 里用 <video> 引用。
-docs/media/*.gif
+# 未压缩的录屏源文件：几秒就能到几百 MB（hero.gif 实测 605 MB，超过 GitHub 单文件上限）。
+# 进仓库的是两种压缩产物：同名的 .mp4（完整画质）与 *-clip.gif（README 内嵌，几 MB）。
+# 新录一段时请照这三个名字命名，或转完就把源文件删掉。
+docs/media/hero.gif
+docs/media/mode-switch.gif
+docs/media/getin.gif

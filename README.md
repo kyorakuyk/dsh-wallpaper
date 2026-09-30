@@ -51,7 +51,7 @@
 
 
 <p align="center">
-  <video src="docs/media/hero.mp4" autoplay loop muted playsinline width="100%" aria-label="待机界面：桌面右侧立绘 + 输入岛"></video>
+  <a href="docs/media/hero.mp4"><img src="docs/media/hero-clip.gif" alt="待机界面：桌面右侧立绘 + 输入岛（点开看完整画质）" width="100%"></a>
 </p>
 
 
@@ -149,12 +149,12 @@ AI 的摩擦往往不在"用起来难"，而在**入口不在手边**：先打�
 <!-- 下面都是已录好的成品：录屏用 ffmpeg 出 mp4，静态界面用截图（方法见本节末尾）。 -->
 
 <p align="center">
-  <video src="docs/media/getin.mp4" autoplay loop muted playsinline width="100%" aria-label="点悬浮球进入里桌面，输入岛就位"></video>
+  <a href="docs/media/getin.mp4"><img src="docs/media/getin-clip.gif" alt="点悬浮球进入里桌面，输入岛就位（点开看完整画质）" width="100%"></a>
 </p>
 <p align="center"><em>▲ 点悬浮球 → 进入里桌面 → 输入岛就位。</em></p>
 
 <p align="center">
-  <video src="docs/media/mode-switch.mp4" autoplay loop muted playsinline width="100%" aria-label="设置中心切换聊天模式，正在运行的壁纸立刻换后端"></video>
+  <a href="docs/media/mode-switch.mp4"><img src="docs/media/mode-switch-clip.gif" alt="设置中心切换聊天模式，正在运行的壁纸立刻换后端（点开看完整画质）" width="100%"></a>
 </p>
 <p align="center"><em>▲ 设置中心切换聊天模式，正在运行的壁纸立刻换后端。</em></p>
 
