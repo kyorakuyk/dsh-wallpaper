@@ -147,20 +147,29 @@ AI 的摩擦往往不在"用起来难"，而在**入口不在手边**：先打�
 
 <h2 id="gallery">🖼️ 效果展示</h2>
 
-<!-- 下面几项录制/截图后放开注释；一行 ffmpeg 就能出片，方法见本节末尾 -->
+<!-- 下面都是已录好的成品：录屏用 ffmpeg 出 mp4，静态界面用截图（方法见本节末尾）。 -->
 
-<p align="center"><em>▲ 点悬浮球 → 进入里桌面 → 输入岛就位。（`docs/media/getin.mp4`）</em></p>
+<p align="center">
+  <video src="docs/media/getin.mp4" autoplay loop muted playsinline width="100%" aria-label="点悬浮球进入里桌面，输入岛就位"></video>
+</p>
+<p align="center"><em>▲ 点悬浮球 → 进入里桌面 → 输入岛就位。</em></p>
 
-<p align="center"><em>▲ 设置中心切换聊天模式，正在运行的壁纸立刻换后端。（`docs/media/mode-switch.mp4`）</em></p>
+<p align="center">
+  <video src="docs/media/mode-switch.mp4" autoplay loop muted playsinline width="100%" aria-label="设置中心切换聊天模式，正在运行的壁纸立刻换后端"></video>
+</p>
+<p align="center"><em>▲ 设置中心切换聊天模式，正在运行的壁纸立刻换后端。</em></p>
 
 <p align="center">
   <img src="docs/media/persona-tier.png" alt="四张立绘并排：蓝色成年 / 蓝色幼年 / 红幼年 / 红成年" width="100%">
 </p>
 <p align="center"><em>▲ 四形态立绘（蓝成年 / 蓝幼年 / 红幼年 / 红成年）：幼年与成年头一样大，成年个子更高。</em></p>
 
-<p align="center"><em>▲ 设置中心六个页签。（待补图：`docs/media/settings.png`）</em></p>
+<p align="center">
+  <img src="docs/media/settings.png" alt="设置中心的六个页签" width="100%">
+</p>
+<p align="center"><em>▲ 设置中心六个页签：常规 / 连接 / 外观 / 形态 / 历史 / 系统。</em></p>
 
-<p align="center"><em>录制方式：`ffmpeg -f gdigrab -offset_x … -offset_y … -video_size … -i desktop -t 6` 录成 mp4，再用 `palettegen` + `paletteuse=dither=none:diff_mode=rectangle` 转成 GIF（目标 ≤ 2 MB）。</em></p>
+<p align="center"><em>录制方式：`ffmpeg -f gdigrab -offset_x … -offset_y … -video_size … -i desktop -t 6` 直接出 mp4，再压一道：<code>-vf "scale=&#39;min(1280,iw)&#39;:-2" -c:v libx264 -crf 28 -pix_fmt yuv420p -movflags +faststart</code>。**不要转 GIF**：同一段画面 GIF 是 mp4 的几百倍（实测 605 MB 对 0.8 MB），既过不了 GitHub 的 100 MB 单文件限制，也会让每个访客白下几百兆。</em></p>
 
 <br>
 
