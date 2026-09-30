@@ -1,3 +1,4 @@
+import { openRoutesFor, selectedOpenRoute } from '../connect/openRoutes.ts'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 // `ModelTierRule` 随「模型与形态映射」卡片一起被冻结，解冻时连同上面那行 `updateRule` 一起加回来。
@@ -545,20 +546,15 @@ export function SettingsPanel(props: SettingsPanelProps) {
   // const argsIssue = launchArgsIssue(settings.dshLaunch.args)
   // 「打开」能做什么，由主体决定：官壳只有自己的窗口，源码树只有浏览器，只有"已安装的 CLI"真的有
   // 两条路可选。**单项不做成下拉** —— 那是一个点了没反应、也无法改变的控件。
-  const openRoutes: Array<{ value: 'browser' | 'tui'; label: string }> = !settings.dshLaunch.subjectId
-    ? []
-    : shellSelected
-      ? [{ value: 'browser', label: '官方客户端窗口' }]
-      : selectedSubject?.kind === 'installed-cli'
-        ? props.tuiAvailable
-          ? [{ value: 'browser', label: '浏览器' }, { value: 'tui', label: '终端里的 TUI' }]
-          // 没装 TUI 就不给这一项：点了只会报「本机没有找到 TUI（dst）」，那不是选项，是坑。
-          : [{ value: 'browser', label: '浏览器' }]
-        // 源码树只有浏览器一条路。
-        : [{ value: 'browser', label: '浏览器' }]
+  // 这条规则住在 connect/openRoutes.ts：它有单测，包括「没装 TUI 就不给选项」与「卸掉 TUI 之后不回落到死选项」。
+  const openRoutes = openRoutesFor({
+    hasSubject: Boolean(settings.dshLaunch.subjectId),
+    shellSelected,
+    subjectKind: selectedSubject?.kind,
+    tuiAvailable: props.tuiAvailable,
+  })
   // 存着的路线只有在**真的有两条路**时才作数：官壳/源码树即便档案里写着 tui，也仍然走它们唯一的路。
-  const openRoute: 'browser' | 'tui' =
-    openRoutes.length > 1 && settings.dshLaunch.window === 'tui' ? 'tui' : 'browser'
+  const openRoute = selectedOpenRoute(openRoutes, settings.dshLaunch.window)
   /**
    * Clients that are actually running. The endpoint picker is only a *choice* when
    * there is more than one: with zero or one, ports and Bridge states are internal
