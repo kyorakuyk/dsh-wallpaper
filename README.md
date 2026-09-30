@@ -161,14 +161,14 @@ AI 的摩擦往往不在"用起来难"，而在**入口不在手边**：先打�
 <p align="center">
   <img src="docs/media/persona-tier.png" alt="四张立绘并排：蓝色成年 / 蓝色幼年 / 红幼年 / 红成年" width="100%">
 </p>
-<p align="center"><em>▲ 四形态立绘（蓝成年 / 蓝幼年 / 红幼年 / 红成年）：幼年与成年头一样大，成年个子更高。</em></p>
+<p align="center"><em>▲ 四形态立绘</em></p>
 
 <p align="center">
   <img src="docs/media/settings.png" alt="设置中心的六个页签" width="100%">
 </p>
 <p align="center"><em>▲ 设置中心六个页签：常规 / 连接 / 外观 / 形态 / 历史 / 系统。</em></p>
 
-<p align="center"><em>录制方式：`ffmpeg -f gdigrab -offset_x … -offset_y … -video_size … -i desktop -t 6` 直接出 mp4，再压一道：<code>-vf "scale=&#39;min(1280,iw)&#39;:-2" -c:v libx264 -crf 28 -pix_fmt yuv420p -movflags +faststart</code>。**不要转 GIF**：同一段画面 GIF 是 mp4 的几百倍（实测 605 MB 对 0.8 MB），既过不了 GitHub 的 100 MB 单文件限制，也会让每个访客白下几百兆。</em></p>
+
 
 <br>
 
@@ -289,17 +289,10 @@ dsh-wallpaper/
 <h2 id="caveats">⚠️ 注意事项</h2>
 
 1. **只在 Windows 上跑** —— 依赖 WorkerW 桌面宿主、Win32 窗口策略与 WTS 锁屏事件，没有跨平台计划。
-
 2. **壁纸在图标层之下** —— 最大化窗口会盖住立绘与悬浮球，这是设计而不是 bug：桌面被盖住时，入口交给任务栏胶囊与托盘。
-
-3. **Harness 模式需要前置** —— 要先有兼容的 Wallpaper Bridge（按 `bridge/README.md` 装进 DSH profile），并从 `/api/wallpaper/v1/status` 的 `bridgeVersion` 确认生效。
-
+3. **Harness 模式需要前置** —— 要先有兼容的 Wallpaper Bridge（第一次跑默认会自动装，如果失败按 `bridge/README.md` 装进 DSH profile），并从 `/api/wallpaper/v1/status` 的 `bridgeVersion` 确认生效。
 4. **网页入口靠 DOM 适配器** —— 官方页面改版可能让它失效；适配器支持本地 override 配置修正，配置里不允许 JavaScript、Cookie 或任意域名。本应用不读取也不复制 Cookie。
-
-5. **完整版目前自签分发** —— 需要本机信任匹配的公开 CER，以及 `Cert:\CurrentUser\My` 里的签名证书；Lite 有 Actions 产出的测试签名包。
-
-6. **拉起窗口时可能被系统拒绝前台切换** —— 那也算"已经到达"，点一下那个窗口即可；壁纸不会为了拉起而抢焦点。
-
+5. **拉起窗口时可能被系统拒绝前台切换** —— 那也算"已经到达"，点一下那个窗口即可；壁纸不会为了拉起而抢焦点。
 7. **费用与账号** —— API 模式按官方计费；网页模式使用你自己的登录态；两种情况都需要你自备账号或 Key。
 
 <br>
