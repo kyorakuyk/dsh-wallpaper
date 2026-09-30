@@ -41,7 +41,7 @@ $script:BinaryName = if ($Edition -eq 'lite') { 'dsh-wallpaper-lite' } else { 'd
 $script:ManifestPath = Join-Path (Join-Path $script:RepoRoot 'packaging\msix') $script:ManifestName
 $script:BuildScript = Join-Path $script:RepoRoot 'scripts\build-msix-test.ps1'
 $script:LiteBoundaryScript = Join-Path $script:RepoRoot 'scripts\verify-lite-bundle.ps1'
-$msixFileName = if ($Edition -eq 'lite') { 'dsh-wallpaper-lite-lockscreen-test.msix' } else { 'dsh-wallpaper-lockscreen-test.msix' }
+$msixFileName = if ($Edition -eq 'lite') { 'dsh-wallpaper-lite-msix-test.msix' } else { 'dsh-wallpaper-msix-test.msix' }
 $script:MsixPath = Join-Path $script:ArtifactRoot $msixFileName
 if (-not $PublicCertificatePath) {
   $PublicCertificatePath = Join-Path $script:ArtifactRoot 'dsh-wallpaper-test.cer'

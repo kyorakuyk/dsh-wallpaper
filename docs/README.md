@@ -62,7 +62,7 @@
 | `engine-setup.md` | 引擎/环境搭建 |
 | `lite-release.md` | Lite 版发布 |
 | `lockscreen-minimal-probe.md` | 锁屏最小化探针 |
-| `lockscreen-msix-test.md` | 锁屏 MSIX 测试包 |
+| `lockscreen-msix-test.md` | MSIX 测试包 |
 
 ## 约定
 

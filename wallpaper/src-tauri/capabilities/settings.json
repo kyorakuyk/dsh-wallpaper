@@ -12,9 +12,6 @@
     "allow-select-backend",
     "allow-desktop-displays",
     "allow-set-interaction-enabled",
-    "allow-set-lock-screen-enabled",
-    "allow-clear-stale-lock-screen-backup",
-    "allow-get-lock-screen-diagnostics",
     "allow-set-autostart",
     "allow-autostart-status",
     "allow-scan-dsh-paths",
@@ -31,10 +28,6 @@
     "allow-launch-dsh",
     "allow-managed-dsh-status",
     "allow-stop-managed-dsh",
-    "allow-translucent-tb-status",
-    "allow-launch-translucent-tb",
-    "allow-open-translucent-tb-install",
-    "allow-open-windows-lock-screen-settings",
     "allow-save-api-key",
     "allow-api-key-status",
     "allow-desktop-workspace-status",
@@ -67,3 +60,4 @@
       "allow-ensure-profile-bridge"
   ]
 }
+

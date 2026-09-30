@@ -103,7 +103,7 @@ jobs:
           if (-not $installer) { throw '未找到 Lite NSIS 安装器。' }
           Copy-Item -LiteralPath $installer.FullName -Destination "$env:GITHUB_WORKSPACE\ci-artifacts\nsis\" -Force
           New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test" -Force | Out-Null
-          $msix = Get-ChildItem -LiteralPath "$env:GITHUB_WORKSPACE\artifacts\msix-test" -Filter '*-lockscreen-test.msix' -File | Select-Object -First 1
+          $msix = Get-ChildItem -LiteralPath "$env:GITHUB_WORKSPACE\artifacts\msix-test" -Filter '*-msix-test.msix' -File | Select-Object -First 1
           if (-not $msix) { throw '未找到 Lite MSIX 测试包。' }
           Copy-Item -LiteralPath $msix.FullName -Destination "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test\" -Force
           $certificate = Get-ChildItem -LiteralPath "$env:GITHUB_WORKSPACE\artifacts\msix-test" -Filter '*.cer' -File | Select-Object -First 1
@@ -114,7 +114,7 @@ jobs:
       - name: Build Lite MSIX test bootstrapper
         shell: pwsh
         run: |
-          $msix = Get-ChildItem -LiteralPath "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test" -Filter '*-lockscreen-test.msix' -File | Select-Object -First 1
+          $msix = Get-ChildItem -LiteralPath "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test" -Filter '*-msix-test.msix' -File | Select-Object -First 1
           $certificate = Get-ChildItem -LiteralPath "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test" -Filter '*.cer' -File | Select-Object -First 1
           if (-not $msix -or -not $certificate) { throw '构建引导安装器缺少 MSIX 或 CER。' }
           .\scripts\build-msix-test-bootstrapper.ps1 `
@@ -134,7 +134,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dsh-wallpaper-lite-msix-test-signed
-          path: ci-artifacts/msix-test/*-lockscreen-test.msix
+          path: ci-artifacts/msix-test/*-msix-test.msix
           if-no-files-found: error
           retention-days: 14
 

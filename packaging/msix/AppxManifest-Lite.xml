@@ -11,7 +11,7 @@
   <Properties>
     <DisplayName>DSH Wallpaper Lite</DisplayName>
     <PublisherDisplayName>DSH Wallpaper Test</PublisherDisplayName>
-    <Description>Lightweight Windows lock-screen and desktop wallpaper.</Description>
+    <Description>Lightweight Windows desktop wallpaper.</Description>
     <Logo>Assets\StoreLogo.png</Logo>
     <!-- 与正式版同样的原因：登录后自动启动写在 HKCU 的 Run 键里，包内默认的写入虚拟化
          会让应用读到的状态和 Windows 登录时执行的状态不一致。 -->
@@ -29,7 +29,7 @@
   <Capabilities><rescap:Capability Name="runFullTrust" /><rescap:Capability Name="unvirtualizedResources" /></Capabilities>
   <Applications>
     <Application Id="WallpaperLite" Executable="dsh-wallpaper-lite.exe" uap10:RuntimeBehavior="packagedClassicApp" uap10:TrustLevel="mediumIL">
-      <uap:VisualElements DisplayName="DSH Wallpaper Lite" Description="Lightweight lock-screen and desktop wallpaper" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png" BackgroundColor="transparent" />
+      <uap:VisualElements DisplayName="DSH Wallpaper Lite" Description="Lightweight desktop wallpaper" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png" BackgroundColor="transparent" />
       <!-- 与正式版同样的层级要求：uap5:StartupTask 必须在 Extensions 里，
            否则 Windows 不注册任务，GetAsync 只会回参数错误。 -->
       <Extensions>

@@ -1,4 +1,4 @@
-﻿# 锁屏接管：MSIX 安装包验收
+# 锁屏接管：MSIX 安装包验收
 
 锁屏图片接管是 Windows 的用户级设置。本项目将 **MSIX 包身份** 作为锁屏能力的正式支持与验收前提：无包身份的 `tauri dev`、直接运行的 EXE 与常规 NSIS 安装在不同 Windows 11 环境中的行为不一致，因此不在本项目的锁屏支持矩阵内。
 
@@ -33,7 +33,7 @@
 
 它会选择 `dsh-wallpaper-lite.exe`、`dist-lite`、`AppxManifest-Lite.xml` 和独立的 Lite MSIX 身份；默认仍不安装。
 
-完整版产物位于 `artifacts\msix-test\dsh-wallpaper-lockscreen-test.msix`，Lite 产物位于 `artifacts\msix-test\dsh-wallpaper-lite-lockscreen-test.msix`。未签名 MSIX 不可安装，这是预期行为。
+完整版产物位于 `artifacts\msix-test\dsh-wallpaper-msix-test.msix`，Lite 产物位于 `artifacts\msix-test\dsh-wallpaper-lite-msix-test.msix`。未签名 MSIX 不可安装，这是预期行为。
 
 Rust 二进制会以锁定依赖固定构建为 `x86_64-pc-windows-msvc`，并显式启用 Tauri `custom-protocol`（避免程序误访问已停止的 Vite `devUrl`），输出到独立的 `artifacts\msix-test\cargo-target\x86_64-pc-windows-msvc\`；脚本会在打包前读取 PE Machine 字段，拒绝任何非 x64 EXE 或 `WebView2Loader.dll`，不会写入或占用开发实例使用的 `wallpaper\src-tauri\target\`。
 
@@ -110,7 +110,7 @@ $password = Read-Host 'PFX password' -AsSecureString
 
 ## 验收清单
 
-1. 从开始菜单启动已安装的 **DSH Wallpaper (Lock Screen Test)**，不要直接运行构建目录的 EXE。
+1. 从开始菜单启动已安装的 **DSH Wallpaper**，不要直接运行构建目录的 EXE。
 2. 打开“设置 → 系统 → Windows 集成”。诊断必须确认当前进程有包身份；若显示“无包身份”，停止验收并检查是否从正确安装入口启动。
 3. “接管前检查”必须显示：Windows 允许尝试、睡眠图已准备，并且当前锁屏为可私有备份的静态本地图片。
 4. 如果当前锁屏来自 Windows Spotlight 或其他动态来源，应用必须拒绝接管，不能覆盖后再声称可恢复。

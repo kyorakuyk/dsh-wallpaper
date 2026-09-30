@@ -6,7 +6,7 @@ name: Package Full
 #   - package.yml 只发 Lite 首发，并负责在标签上创建 Release；
 #   - 本工作流只构建完整版 MSIX，标签上把资产**补**进同一枚 Release；
 #   - 缓存 key 各带自己的后缀（本文件用 -full），恢复前缀不重叠；
-#   - release 资产的**文件名**两两不同（完整版是 dsh-wallpaper-lockscreen-test.msix 与
+#   - release 资产的**文件名**两两不同（完整版是 dsh-wallpaper-msix-test.msix 与
 #     dsh-wallpaper-full-<版本>-test.cer，Lite 是 dsh-wallpaper-test.cer 等），
 #     创建与上传都写成幂等，两个工作流谁先跑完都可以。
 #
@@ -272,7 +272,7 @@ jobs:
 
           $expectedVersion = "$env:MSIX_PACKAGE_VERSION"
           $artifactRoot = Join-Path "$env:GITHUB_WORKSPACE" 'artifacts\msix-test'
-          $msix = Join-Path $artifactRoot 'dsh-wallpaper-lockscreen-test.msix'
+          $msix = Join-Path $artifactRoot 'dsh-wallpaper-msix-test.msix'
           if (-not (Test-Path -LiteralPath $msix -PathType Leaf)) { throw "未找到完整版 MSIX 测试包：$msix" }
           $certificate = Join-Path $artifactRoot 'dsh-wallpaper-test.cer'
           if (-not (Test-Path -LiteralPath $certificate -PathType Leaf)) { throw "未找到公开签名证书 CER：$certificate" }
@@ -310,14 +310,14 @@ jobs:
           # 私钥绝不离开 runner：与 package.yml 一样，上传前删掉 .pfx。
           Get-ChildItem -LiteralPath $artifactRoot -Filter '*.pfx' -File | Remove-Item -Force
 
-          $collected = Get-Item -LiteralPath "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test\dsh-wallpaper-lockscreen-test.msix"
+          $collected = Get-Item -LiteralPath "$env:GITHUB_WORKSPACE\ci-artifacts\msix-test\dsh-wallpaper-msix-test.msix"
           Write-Host ("完整版 MSIX 测试包：{0} 版本 {1}，{2:N0} 字节。" -f $collected.FullName, $expectedVersion, $collected.Length)
 
       - name: Upload the full signed MSIX test package
         uses: actions/upload-artifact@v4
         with:
           name: dsh-wallpaper-full-msix-test-signed
-          path: ci-artifacts/msix-test/*-lockscreen-test.msix
+          path: ci-artifacts/msix-test/*-msix-test.msix
           if-no-files-found: error
           retention-days: 14
 

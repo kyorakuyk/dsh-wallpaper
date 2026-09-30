@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
 Builds an x64 MSIX *test* package for lock-screen validation.
 
@@ -414,7 +414,7 @@ if ($packagedLockScreenSleep.Hash -ne $sourceSleep.Hash) { throw 'MSIX Assets �
 if ($InstallPackage -and -not $WhatIfPreference) { Assert-PackagedRuntimeDependencies }
 
 New-Item -ItemType Directory -Path $artifactRoot -Force -WhatIf:$false | Out-Null
-$msixFileName = if ($isLite) { 'dsh-wallpaper-lite-lockscreen-test.msix' } else { 'dsh-wallpaper-lockscreen-test.msix' }
+$msixFileName = if ($isLite) { 'dsh-wallpaper-lite-msix-test.msix' } else { 'dsh-wallpaper-msix-test.msix' }
 $msix = Join-Path $artifactRoot $msixFileName
 if (Test-Path -LiteralPath $msix) { Remove-Item -LiteralPath $msix -Force -WhatIf:$false }
 Invoke-Checked $makeAppx @('pack', '/o', '/h', 'SHA256', '/d', $packageRoot, '/p', $msix) 'MakeAppx 打包失败。'

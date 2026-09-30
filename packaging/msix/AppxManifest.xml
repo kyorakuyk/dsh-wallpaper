@@ -9,9 +9,9 @@
   IgnorableNamespaces="uap uap5 uap10 rescap virtualization">
   <Identity Name="com.dsh.wallpaper" Publisher="CN=DSH Wallpaper Test" Version="0.3.0.0" ProcessorArchitecture="x64" />
   <Properties>
-    <DisplayName>DSH Wallpaper (Lock Screen Test)</DisplayName>
+    <DisplayName>DSH Wallpaper</DisplayName>
     <PublisherDisplayName>DSH Wallpaper Test</PublisherDisplayName>
-    <Description>Test package for DSH Wallpaper lock-screen integration.</Description>
+    <Description>Test package for DSH Wallpaper.</Description>
     <Logo>Assets\StoreLogo.png</Logo>
     <!-- 「登录后自动启动」写在这个键里，它必须对包外的进程可见：Windows 登录时读的是
          真实键，而包内对 HKCU 的写入默认进私有配置单元（读取时与真实键合并）。于是包内
