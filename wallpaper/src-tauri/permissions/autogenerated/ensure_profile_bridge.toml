@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-ensure-profile-bridge"
+description = "Enables the ensure_profile_bridge command without any pre-configured scope."
+commands.allow = ["ensure_profile_bridge"]
+
+[[permission]]
+identifier = "deny-ensure-profile-bridge"
+description = "Denies the ensure_profile_bridge command without any pre-configured scope."
+commands.deny = ["ensure_profile_bridge"]

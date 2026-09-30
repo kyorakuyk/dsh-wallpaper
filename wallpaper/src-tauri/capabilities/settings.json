@@ -63,6 +63,7 @@
     "allow-appearance-classify-asset",
     "allow-appearance-export-current-theme",
     "allow-appearance-resolve-asset",
-    "allow-appearance-resolve-library-asset"
+    "allow-appearance-resolve-library-asset",
+      "allow-ensure-profile-bridge"
   ]
 }
