@@ -114,7 +114,7 @@ AI 的摩擦往往不在"用起来难"，而在**入口不在手边**：先打�
 
 |  | 功能 | 说明 |
 |:---:|------|------|
-| 🌐 | **DeepSeek 网页入口** | 应用内独立 WebView2 打开 chat.deepseek.com，DOM 适配器收发；登录态独立保存，不读取也不复制 Cookie |
+| 🌐 | **DeepSeek 网页 DOM 桥接** | 应用内独立 WebView2 打开 chat.deepseek.com，用 DOM 适配器收发；登录态独立保存，不读取也不复制 Cookie |
 | 🔑 | **DeepSeek API** | 官方 API 流式对话；Key 只写进 Windows 凭据管理器，界面能看到的只有脱敏形态 |
 | 🔗 | **DeepSeek Harness** | 接兼容的 Wallpaper Bridge，与 DSH 会话同一份上下文 |
 | 🔀 | **聊天模式开关** | 设置中心一键切换网页 / API，**正在运行的壁纸立即生效** |
@@ -285,6 +285,12 @@ dsh-wallpaper/
 ```
 
 <br>
+
+<h2 id="logs">🧭 出了问题看哪里</h2>
+
+- **应用日志**：`%LOCALAPPDATA%\com.dsh.wallpaper\logs\dsh-wallpaper.log`（设置、桥、宿主状态都写在这里）
+- **启动首帧诊断**：同目录的 `startup-diagnostic.log`。首帧挂到 WorkerW 失败、或桌面宿主（Explorer）重启时，这里逐行记录原生事件（如 `event=reattach parent=WorkerW`），是排查"壁纸没出来 / 黑屏 / 首帧卡住"的第一现场
+- **桥的令牌**：`$DSH_HOME\wallpaper\bridge-token`（由桥创建，权限收紧到"只有你"；读不到时设置里会说清原因）
 
 <h2 id="caveats">⚠️ 注意事项</h2>
 
