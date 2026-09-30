@@ -197,6 +197,11 @@ pub struct HarnessTargetScan {
     /// Shells first (in priority order), then the checkouts the scan found in
     /// its own order — so the user's configured root still leads.
     pub targets: Vec<HarnessTarget>,
+    /// 本机有没有 TUI（全局安装的 `dst`）。界面据此决定要不要摆出"终端里的 TUI"这一项：
+    /// 没装的人不该看到一个点了只会报错的选项。由 `scan_harness_targets_blocking` 填 ——
+    /// 纯构造函数 `build_scan` 不读环境，所以它给 `false`。
+    pub tui_available: bool,
+
     /// True when more than one source tree exists. The wallpaper must not pick
     /// one for the user; the settings surface asks instead (§4.3).
     pub requires_subject_choice: bool,
@@ -797,6 +802,8 @@ fn build_scan(
     HarnessTargetScan {
         targets,
         requires_subject_choice,
+        // 纯构造函数不读环境：这一项由 scan_harness_targets_blocking 填（见那里的注释）。
+        tui_available: false,
     }
 }
 
@@ -814,7 +821,14 @@ pub fn scan_harness_targets_blocking(hint_path: Option<String>, deep_scan: bool)
         std::env::var("APPDATA").ok().as_deref(),
         std::env::var("PATH").ok().as_deref(),
     );
-    let scan = build_scan(&shortcuts, &checkouts, &installed_clis);
+    let mut scan = build_scan(&shortcuts, &checkouts, &installed_clis);
+    // 本机有没有 TUI（`dst`）：用**同一个**查找函数（与"打开 TUI"那条命令一致），
+    // 环境也仍然只在这个函数里读一次。界面据此决定要不要给出 TUI 选项。
+    scan.tui_available = !tui_launcher_paths(
+        std::env::var("APPDATA").ok().as_deref(),
+        std::env::var("PATH").ok().as_deref(),
+    )
+    .is_empty();
     log::info!(
         "harness target scan: {} 个快捷方式，{} 个可选项（{} 个壳，{} 份源码检出，{} 个已安装 CLI）",
         shortcuts.len(),
@@ -1060,6 +1074,14 @@ mod tests {
         checkouts: &[crate::DshPathCandidate],
     ) -> HarnessTargetScan {
         super::build_scan(shortcuts, checkouts, &[])
+    }
+
+    #[test]
+    fn the_pure_builder_does_not_claim_to_know_about_the_machine() {
+        // 纯构造函数不读环境：tui_available 只能由 scan_harness_targets_blocking 填，
+        // 否则"本机有没有 TUI"就成了一个会被测试数据悄悄当成真/假的字段。
+        let scan = build_scan(&[], &[]);
+        assert!(!scan.tui_available);
     }
 
     #[test]

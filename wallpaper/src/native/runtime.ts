@@ -208,6 +208,8 @@ export interface HarnessTargetCatalog {
   verifiedAtMs: number
   targets: HarnessTarget[]
   requiresSubjectChoice: boolean
+  /** 本机有没有 TUI（全局安装的 dst）。没有就不该摆出那个选项。 */
+  tuiAvailable: boolean
 }
 
 /**
@@ -284,6 +286,8 @@ export interface HarnessTarget {
 export interface HarnessTargetScan {
   targets: HarnessTarget[]
   requiresSubjectChoice: boolean
+  /** 本机有没有 TUI（全局安装的 dst）。没有就不该摆出那个选项。 */
+  tuiAvailable: boolean
 }
 
 /**
@@ -932,7 +936,7 @@ export const nativeRuntime: NativeRuntime = {
     return invoke<Array<{ rootPath: string; source: string }>>('scan_dsh_paths', { hintPath, deepScan })
   },
   async scanHarnessTargets(hintPath, deepScan = false) {
-    if (!await tauriAvailable()) return { targets: [], requiresSubjectChoice: false }
+    if (!await tauriAvailable()) return { targets: [], requiresSubjectChoice: false, tuiAvailable: false }
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<HarnessTargetScan>('scan_harness_targets', { hintPath, deepScan })
   },

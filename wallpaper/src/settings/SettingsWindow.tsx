@@ -107,6 +107,8 @@ export function SettingsWindow() {
    * can say how old it is: a cached list must not look current.
    */
   const [catalogVerifiedAt, setCatalogVerifiedAt] = useState<number>()
+  // 本机有没有 TUI：由扫描结果带回来，决定要不要给出「终端里的 TUI」这个选项。
+  const [tuiAvailable, setTuiAvailable] = useState(false)
   const [managedDsh, setManagedDsh] = useState<ManagedDshStatus>({ instances: [], managed: false, running: false })
   /**
    * 停止/刷新是否在飞。
@@ -285,6 +287,7 @@ export function SettingsWindow() {
       const scan = await nativeRuntime.scanHarnessTargets(settingsRef.current.dshLaunch.rootPath, announce)
       if (!mountedRef.current) return
       setHarnessTargets(scan.targets)
+      setTuiAvailable(scan.tuiAvailable)
       // The scan that just finished is the verification this list now carries.
       setCatalogVerifiedAt(Date.now())
       // 设置里存着的主体可能已经**不再受支持**（第三方客户端 2026-09-27 被移除）：那就落回官方
@@ -326,6 +329,7 @@ export function SettingsWindow() {
       const catalog = await nativeRuntime.harnessTargetCatalog().catch(() => null)
       if (!mountedRef.current || !catalog) return
       setHarnessTargets(catalog.targets)
+      setTuiAvailable(catalog.tuiAvailable)
       setCatalogVerifiedAt(catalog.verifiedAtMs)
     })()
   }, [])
@@ -978,6 +982,7 @@ export function SettingsWindow() {
       /* FREEZE(1B)：透明任务栏退出，这几个 prop 随之冻结。
       translucentTb={translucentTb} */
       harnessTargets={harnessTargets}
+      tuiAvailable={tuiAvailable}
       subjectCatalogVerifiedAt={catalogVerifiedAt}
       subjectChoice={subjectChoicePrompt(harnessTargets) ?? undefined}
       onSelectSubject={(targetId) => change({

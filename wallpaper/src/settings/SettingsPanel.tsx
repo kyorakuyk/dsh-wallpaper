@@ -134,6 +134,8 @@ export interface SettingsPanelProps {
   onOpenTui: () => void
   /** 用户选的路线。存进 `dshLaunch.window`；缺省按浏览器（与旧档案行为一致）。 */
   onSelectWindow: (value: 'browser' | 'tui') => void
+  /** 本机有没有 TUI（扫描结果）。没有就不摆出那一项。 */
+  tuiAvailable: boolean
   /**
    * FREEZE（临时冻结，不是删除）：「启动参数」的输入框不在这一版里，所以它的三个 prop 与
    * 「起别名」的那一个也一起冻住。
@@ -548,7 +550,11 @@ export function SettingsPanel(props: SettingsPanelProps) {
     : shellSelected
       ? [{ value: 'browser', label: '官方客户端窗口' }]
       : selectedSubject?.kind === 'installed-cli'
-        ? [{ value: 'browser', label: '浏览器' }, { value: 'tui', label: '终端里的 TUI' }]
+        ? props.tuiAvailable
+          ? [{ value: 'browser', label: '浏览器' }, { value: 'tui', label: '终端里的 TUI' }]
+          // 没装 TUI 就不给这一项：点了只会报「本机没有找到 TUI（dst）」，那不是选项，是坑。
+          : [{ value: 'browser', label: '浏览器' }]
+        // 源码树只有浏览器一条路。
         : [{ value: 'browser', label: '浏览器' }]
   // 存着的路线只有在**真的有两条路**时才作数：官壳/源码树即便档案里写着 tui，也仍然走它们唯一的路。
   const openRoute: 'browser' | 'tui' =
