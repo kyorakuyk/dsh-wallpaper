@@ -80,11 +80,10 @@
 
 <h2 id="intro">简介</h2>
 
-<!-- 待补：docs/media/intro-island.png（输入岛 + 立绘同框图）
 <p align="center">
-  <img src="docs/media/intro-island.png" alt="输入岛与立绘" width="100%">
+  <img src="docs/media/intro-island.png" alt="输入岛与立绘同框" width="100%">
 </p>
--->
+<p align="center"><em>▲ 待机界面：右侧立绘 + 输入岛。</em></p>
 
 <p align="center"><em>▲ 聊天入口长在桌面上：一块壁纸、一个悬浮球、一座输入岛。</em></p>
 
@@ -326,7 +325,7 @@ dsh-wallpaper/
 - [ ] **自定义形态扫描**（用户目录 manifest）
 - [ ] **主题包与插件**
 - [x] **完整版公开分发渠道**（v0.3.0 / v0.3.1 的 setup.exe 在 Releases）
-- [ ] **演示 GIF 与截图**（见「效果展示」的待补项）
+- [x] **演示视频与截图**（见「效果展示」：三条录屏 + 两张界面图 + 四立绘）
 
 <br>
 
