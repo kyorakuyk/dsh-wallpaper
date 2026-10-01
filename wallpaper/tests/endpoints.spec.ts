@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
+import { formatMessage } from '../src/i18n/index.ts'
 import {
   CHECKOUT_ENDPOINT_PORT,
   CLI_SUBJECT_PREFIX,
@@ -66,11 +67,12 @@ describe('reaching a client interface', () => {
   })
 
   it('names the client and the next step for the two real failures', () => {
-    const noWindow = raiseOutcomeNotice('no-window', 'official-desktop')
+    // 这两句现在存的是**词条**（渲染期才求值），所以断言看的是渲染出来的样子。
+    const noWindow = formatMessage(raiseOutcomeNotice('no-window', 'official-desktop')!)
     expect(noWindow).toContain('桌面客户端')
     expect(noWindow).toContain('浏览器')
 
-    const notRunning = raiseOutcomeNotice('not-running', 'official-desktop')
+    const notRunning = formatMessage(raiseOutcomeNotice('not-running', 'official-desktop')!)
     expect(notRunning).toContain('桌面客户端')
     // Not-running must say to start it, not imply the wallpaper will.
     expect(notRunning).toContain('请先启动')
@@ -265,8 +267,9 @@ describe('the configured subject decides the endpoint', () => {
     // 卡在"未知主体"，而是落回官方桌面客户端并把原因说清楚。
     const fallback = unsupportedShellSubjectFallback(UNKNOWN_SHELL)
     expect(fallback?.subjectId).toBe(OFFICIAL_SHELL_SUBJECT_ID)
-    expect(fallback?.notice).toContain('已不再受支持')
-    expect(fallback?.notice).toContain('已切回官方桌面客户端')
+    // 原因存的是词条，渲染出来才是那句话。
+    expect(formatMessage(fallback!.notice)).toContain('已不再受支持')
+    expect(formatMessage(fallback!.notice)).toContain('已切回官方桌面客户端')
     // 落回去的那个 id 必须真的是本 build 认识的主体，否则等于换了个看不到的灯。
     expect(subjectClientKind(OFFICIAL_SHELL_SUBJECT_ID)).toBe('official-desktop')
     expect(subjectEndpointPorts({ subjectId: OFFICIAL_SHELL_SUBJECT_ID })).toEqual([19387, WALLPAPER_HOST_PORT])

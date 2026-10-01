@@ -1,5 +1,5 @@
 import type { ChatMessage } from '../domain/types.ts'
-import { t } from '../i18n/index.ts'
+import { msg, t } from '../i18n/index.ts'
 import { nativeRuntime } from '../native/runtime.ts'
 import { EventChatAdapter, type SendOptions } from './adapter.ts'
 
@@ -86,7 +86,7 @@ export class DeepSeekWebAdapter extends EventChatAdapter {
     this.connected = true
     this.emit({ type: 'model', provider: 'deepseek-web', model: status.model ?? 'deepseek-chat', tier: 'unknown' })
     if (status.state === 'unsupported') {
-      this.emit({ type: 'error', code: 'DEEPSEEK_WEB_UNSUPPORTED', recoverable: true, message: t('chat.web.unrecognised') })
+      this.emit({ type: 'error', code: 'DEEPSEEK_WEB_UNSUPPORTED', recoverable: true, message: msg('chat.web.unrecognised') })
     }
   }
 

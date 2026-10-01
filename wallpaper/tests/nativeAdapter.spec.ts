@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NativeChatAdapter, archivedSessionNotice, blockedTurnNotice, isArchivedSessionError, isMissingSessionError } from '../src/chat/nativeAdapter.ts'
 import type { ChatEvent, ChatMessage, ScopedChatEvent } from '../src/domain/types.ts'
+import { formatSentence } from '../src/i18n/index.ts'
 import { nativeRuntime, type NativeSendOptions } from '../src/native/runtime.ts'
 
 /**
@@ -555,8 +556,11 @@ describe('NativeChatAdapter archived-session recovery', () => {
       expect(native.chatSends).toHaveLength(1)
       const errors = events.filter((event) => event.type === 'error')
       expect(errors).toHaveLength(1)
-      expect(errors[0] && 'message' in errors[0] ? errors[0].message : '').toContain('HARNESS_SESSION_ARCHIVED')
-      expect(errors[0] && 'message' in errors[0] ? errors[0].message : '').toContain('bridge 未就绪')
+      // 事件里那句话现在是**词条**（渲染期才求值），所以核对它渲染出来的样子：用户读到的
+      // 仍然是"会话被归档了 + 换也没成功"这两件事。
+      const errorText = errors[0] && 'message' in errors[0] ? formatSentence(errors[0].message) ?? '' : ''
+      expect(errorText).toContain('HARNESS_SESSION_ARCHIVED')
+      expect(errorText).toContain('bridge 未就绪')
       expect(events.some((event) => event.type === 'conversation-reset')).toBe(false)
       adapter.disconnect()
     } finally {

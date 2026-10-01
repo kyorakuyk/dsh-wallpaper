@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Activity, BackendMode, ChatMessage, RuntimeState, TokenUsage } from '../../domain/types.ts'
-import { getLanguage, t, useLanguage, type Language } from '../../i18n/index.ts'
+import { formatMessage, getLanguage, t, useLanguage, type Language, type Message } from '../../i18n/index.ts'
 import { Button, Glass, Icon } from '../../ui/primitives/index.ts'
 import { composerPlaceholder, formatCost, isBusyActivity, sessionCostSummary, turnUsageSummary } from './conversationViewModel.ts'
 import { growHistoryWindow, historyWindow, HISTORY_RENDER_WINDOW } from './streamRender.ts'
@@ -97,8 +97,13 @@ export interface ConversationBubbleProps {
    * 立刻拉起对应 harness 进程并发一次握手申请）。
    */
   harnessFailed?: boolean
-  /** 选择器被禁用时，选项里显示的原因。三种"不能切换"的成因不同，文案由调用方决定。 */
-  modelSwitchDisabledReason?: string
+  /**
+   * 选择器被禁用时，选项里显示的原因。三种"不能切换"的成因不同，文案由调用方决定。
+   *
+   * 收的是 `Message`（没求值的键 + 参数）而不是句子：这句话在状态里躺着，切语言的时候它得跟着
+   * 变。渲染期由下面那一次 `formatMessage()` 现取。
+   */
+  modelSwitchDisabledReason?: Message
   onSelectModel?: (model: string) => void
   presetOptions?: readonly { id: string; name?: string; broken?: string }[]
   selectedPreset?: string
@@ -182,6 +187,11 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const [focused, setFocused] = useState(false)
   const [commandMenuOpen, setCommandMenuOpen] = useState(false)
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
+  // 禁用原因在**渲染期**求值（调用方存进来的是 `Message`，不是句子）：语言一变，屏幕上这句话
+  // 跟着变。这一处曾经是"存起来就不再变"的典型 —— 切到英文后选项里还留着中文原因。
+  const modelDisabledReason = props.modelSwitchDisabledReason
+    ? formatMessage(props.modelSwitchDisabledReason)
+    : undefined
   const historyRef = useRef<HTMLDivElement>(null)
   const historyAutoScrollRef = useRef(true)
   // Streaming history is prepended to the DOM when the user asks for earlier
@@ -472,7 +482,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
             原生 `<select>` 的弹层是 Chromium 创建的独立窗口，在这个窗口里弹不出来——实测
             框里已经显示 `DeepSeek-V41-Flash`（枚举成功、有多个选项），点开却没有任何列表。
             自绘列表不依赖系统弹层，也顺带和岛里的命令菜单保持同一套外观。 */}
-        <label className="dsh-chat__model-picker" title={props.modelSwitchDisabledReason ?? (props.onSelectModel ? t('chat.bubble.model.switch') : t('chat.bubble.model.unsupported'))}>
+        <label className="dsh-chat__model-picker" title={modelDisabledReason ?? (props.onSelectModel ? t('chat.bubble.model.switch') : t('chat.bubble.model.unsupported'))}>
           <Icon name="model" size={13} />
           <button
             type="button"
@@ -480,11 +490,11 @@ export function ConversationBubble(props: ConversationBubbleProps) {
             aria-label={t('chat.bubble.model.switch')}
             aria-haspopup="listbox"
             aria-expanded={modelMenuOpen}
-            disabled={!props.onSelectModel || !props.modelOptions?.length || Boolean(props.modelSwitchDisabledReason)}
+            disabled={!props.onSelectModel || !props.modelOptions?.length || Boolean(modelDisabledReason)}
             onClick={() => setModelMenuOpen((value) => !value)}
           >
-            {props.modelSwitchDisabledReason && !props.modelOptions?.length
-              ? props.modelSwitchDisabledReason
+            {modelDisabledReason && !props.modelOptions?.length
+              ? modelDisabledReason
               : props.modelLabels?.[props.selectedModel ?? ''] ?? props.selectedModel ?? t('chat.bubble.model.unavailable')}
           </button>
           {modelMenuOpen && props.modelOptions?.length ? <div className="dsh-chat__model-menu" role="listbox" aria-label={t('chat.bubble.model.label')}>

@@ -8,7 +8,7 @@
  *
  * Nothing here may carry a token, a filesystem path, or a raw exception.
  */
-import { t } from '../i18n/index.ts'
+import { msg, t, type Message } from '../i18n/index.ts'
 import type { HarnessAvailability } from '../connect/harness.ts'
 
 /**
@@ -49,8 +49,26 @@ export function harnessFailureVisible(
   return failed === true && availability !== 'bridge-ready'
 }
 
-/** Short label for the status dot in the bubble and the settings sidebar. */
-export function harnessStateLabel(
+/**
+ * 状态说明的**词条**版本，给"要存进状态"的句子用（`HARNESS_STATE_DETAILS` 是它渲染后的样子，
+ * 只适合当场读、当场显示）。
+ *
+ * 两句是同一份文案的两个形态，所以放在一起：分开写迟早会漂成两种说法。
+ * `bridge-ready` 没有"缺什么"可说，而词条不许为空 —— 于是它答 `undefined`（"这一段没有"），
+ * 拼句时渲染成空串，与改动前那段字符串拼接的结果逐字一致。
+ */
+export function harnessStateDetail(availability: HarnessAvailability): Message | undefined {
+  switch (availability) {
+    case 'offline': return msg('harness.detail.offline')
+    case 'web-only': return msg('harness.detail.web-only')
+    case 'bridge-loading': return msg('harness.detail.bridge-loading')
+    case 'bridge-auth-unavailable': return msg('harness.detail.bridge-auth-unavailable')
+    case 'bridge-incompatible': return msg('harness.detail.bridge-incompatible')
+    case 'bridge-ready': return undefined
+  }
+}
+
+/** Short label for the status dot in the bubble and the settings sidebar. */export function harnessStateLabel(
   state: HarnessAvailability | { availability: HarnessAvailability; probing?: boolean },
 ): string {
   const availability = typeof state === 'string' ? state : state.availability

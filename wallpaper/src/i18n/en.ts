@@ -597,13 +597,17 @@ export const en: Dict = {
   // ---------------------------------------------------------------------------
 
   // The **shared prefix** of the disconnected notice. It is not a whole sentence: prefix + state
-  // detail (the `harness.detail.*` entries) + the half-sentence below make one, and the same prefix
-  // is how the app recognises a notice it wrote itself. That is why `App.tsx` reads it through
-  // `harnessDisconnectedErrorPrefix()` at call time instead of holding a module-level constant.
+  // detail (the `harness.detail.*` entries) + the half-sentence below make one.
   'app.bubble.harness.disconnected-prefix': 'The DSH wallpaper Bridge is currently unavailable. ',
   // The continuation of the two sentences above (leading space, so it follows the state detail).
   'app.bubble.harness.selection-unavailable': ' Harness mode can only be selected once a compatible Bridge is ready.',
   'app.bubble.harness.session-preserved': ' The current Harness session and its transcript are kept; once the Bridge is back you can carry on, or switch backend yourself.',
+  // The frame that orders those three parts into one sentence. The whole thing is stored in the
+  // runtime state as a `Message` (key + params), so all three `{...}` are entries rather than
+  // sentences: switching language re-translates every part. No spaces live here - the two halves
+  // that need one carry it themselves (above).
+  'app.bubble.harness.disconnected-frame': '{prefix}{detail}{preserved}',
+  'app.bubble.harness.selection-frame': '{prefix}{detail}{unavailable}',
 
   // One sentence per autostart failure code (`dshAutostartNotice`). `dshAutostart.spec.ts` pins
   // several of these words verbatim, so they are not to be reworded casually.

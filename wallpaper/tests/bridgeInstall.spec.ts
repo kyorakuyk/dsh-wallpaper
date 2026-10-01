@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { summarizeBridgeInstall } from '../src/connect/bridgeInstall.ts'
+import { summarizeBridgeInstall, type BridgeInstallSummary } from '../src/connect/bridgeInstall.ts'
+import { formatMessage } from '../src/i18n/index.ts'
 
 function outcome(profile: string, status: string, detail = ''): {
   profile: string
@@ -8,6 +9,14 @@ function outcome(profile: string, status: string, detail = ''): {
   command: string
 } {
   return { profile, status, detail, command: `dsh plugin --profile ${profile} add dsh-wallpaper-bridge@0.1.5` }
+}
+
+/**
+ * 通知条上那句话存的是**词条**（`Message`，渲染期才求值），所以断言看的是它渲染出来的样子 ——
+ * 这几条钉的本来就是"用户读到的那句话里有没有这个事实"。
+ */
+function textOf(summary: BridgeInstallSummary | null): string {
+  return summary ? formatMessage(summary.text) : ''
 }
 
 describe('bridge install summary', () => {
@@ -24,8 +33,8 @@ describe('bridge install summary', () => {
   it('names every profile it installed into', () => {
     const summary = summarizeBridgeInstall([outcome('web', 'installed'), outcome('desktop', 'installed')])
     expect(summary?.tone).toBe('ok')
-    expect(summary?.text).toContain('「web」')
-    expect(summary?.text).toContain('「desktop」')
+    expect(textOf(summary)).toContain('「web」')
+    expect(textOf(summary)).toContain('「desktop」')
   })
 
   it('hands a version exemption to the user instead of reporting success', () => {
@@ -34,8 +43,8 @@ describe('bridge install summary', () => {
       outcome('desktop', 'needs-confirmation', 'is incompatible with dsh 0.2.0-rc.1 … dsh plugin allow-version'),
     ])
     expect(summary?.tone).toBe('attention')
-    expect(summary?.text).toContain('allow-version')
-    expect(summary?.text).toContain('desktop')
+    expect(textOf(summary)).toContain('allow-version')
+    expect(textOf(summary)).toContain('desktop')
   })
 
   it('lets a failure outrank a success, and keeps the reason', () => {
@@ -44,15 +53,15 @@ describe('bridge install summary', () => {
       outcome('desktop', 'failed', 'ERR_PNPM_FETCH_404 未找到该版本'),
     ])
     expect(summary?.tone).toBe('error')
-    expect(summary?.text).toContain('ERR_PNPM_FETCH_404')
-    expect(summary?.text).toContain('desktop')
+    expect(textOf(summary)).toContain('ERR_PNPM_FETCH_404')
+    expect(textOf(summary)).toContain('desktop')
   })
 
   it('clips a long log and collapses its newlines before it reaches the surface', () => {
     const long = 'x'.repeat(400) + '\n\n第二个段落'
     const summary = summarizeBridgeInstall([outcome('web', 'failed', long)])
-    expect(summary?.text).not.toContain('\n')
-    expect((summary?.text ?? '').length).toBeLessThan(400)
-    expect(summary?.text).toContain('…')
+    expect(textOf(summary)).not.toContain('\n')
+    expect(textOf(summary).length).toBeLessThan(400)
+    expect(textOf(summary)).toContain('…')
   })
 })

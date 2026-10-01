@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { formatMessage, type Message } from '../src/i18n/index.ts'
 import { DEFAULT_SETTINGS, normalizeSettings } from '../src/settings/store.ts'
 
 // AppCore's browser preview fallback is evaluated when App.tsx is imported, and
@@ -14,6 +15,18 @@ beforeAll(() => {
 
 async function appModule() {
   return import('../src/App.tsx')
+}
+
+/**
+ * 这些句子现在存的是**词条**（`Message`，渲染期才求值），所以断言看的是它渲染出来的样子：
+ * 这几条钉的本来就是"用户会读到什么"。
+ */
+function noticeText(notice: Message | null): string {
+  return notice ? formatMessage(notice) : ''
+}
+
+function outcomeText(outcome: { message: Message } | null): string {
+  return outcome ? formatMessage(outcome.message) : ''
 }
 
 const wallpaperRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -42,7 +55,7 @@ describe('DSH autostart outcome reporting', () => {
       ['spawn-failed', '进程启动失败'],
     ]
     for (const [outcome, expected] of cases) {
-      const notice = dshAutostartNotice({ outcome, external: false })
+      const notice = noticeText(dshAutostartNotice({ outcome, external: false }))
       expect(notice, outcome).toContain(expected)
       expect(notice, outcome).toContain('设置中心')
     }
@@ -53,7 +66,7 @@ describe('DSH autostart outcome reporting', () => {
     const outcomes = ['started', 'already-attempted', 'root-path-missing', 'root-path-invalid',
       'launcher-missing', 'profile-invalid', 'port-occupied-external', 'launch-args-invalid', 'spawn-failed'] as const
     for (const outcome of outcomes) {
-      const notice = dshAutostartNotice({ outcome, external: false }) ?? ''
+      const notice = noticeText(dshAutostartNotice({ outcome, external: false }))
       expect(notice, outcome).not.toMatch(/[A-Za-z]:\\/)
       expect(notice, outcome).not.toMatch(/Bearer|token|Error:|at /i)
     }
@@ -76,9 +89,9 @@ describe('launch supervision', () => {
     expect(harnessLaunchOutcome({ availability: 'offline' }, 500, { managed: false, running: false })).toBeNull()
     expect(harnessLaunchOutcome({ availability: 'offline' }, 7_999, { managed: true, running: false })).toBeNull()
     // 过了宽限期仍然没有受管进程，才说"很快退出"（措辞也改成不夸大：8 秒不是"立即"）。
-    expect(harnessLaunchOutcome({ availability: 'offline' }, 8_001, { managed: true, running: false })?.message)
+    expect(outcomeText(harnessLaunchOutcome({ availability: 'offline' }, 8_001, { managed: true, running: false })))
       .toContain('很快退出')
-    expect(harnessLaunchOutcome({ availability: 'offline' }, 8_001, { managed: false, running: false })?.message)
+    expect(outcomeText(harnessLaunchOutcome({ availability: 'offline' }, 8_001, { managed: false, running: false })))
       .toContain('很快退出')
   })
 
@@ -91,7 +104,7 @@ describe('launch supervision', () => {
       .toBeNull()
     expect(harnessLaunchOutcome({ availability: 'offline' }, 19_999, { managed: false, running: false }, 45_000, cli))
       .toBeNull()
-    expect(harnessLaunchOutcome({ availability: 'offline' }, 20_001, { managed: false, running: false }, 45_000, cli)?.message)
+    expect(outcomeText(harnessLaunchOutcome({ availability: 'offline' }, 20_001, { managed: false, running: false }, 45_000, cli)))
       .toContain('很快退出')
     // 壳没有"退出"可观察，任何时刻都不该由这条判定发言。
     expect(harnessLaunchOutcome({ availability: 'offline' }, 60_000, { managed: false, running: false }, 45_000, 'embedded-shell'))
@@ -101,7 +114,7 @@ describe('launch supervision', () => {
   it('prefers the most specific cause once the deadline passes', async () => {
     const { harnessLaunchOutcome } = await appModule()
     const late = (availability: 'offline' | 'web-only' | 'bridge-loading' | 'bridge-auth-unavailable' | 'bridge-incompatible') =>
-      harnessLaunchOutcome({ availability }, 45_001, { managed: true, running: true })?.message ?? ''
+      outcomeText(harnessLaunchOutcome({ availability }, 45_001, { managed: true, running: true }))
     // A Bridge that answered but cannot be used needs a different fix from one
     // that never appeared, so the generic timeout must not swallow it.
     expect(late('bridge-auth-unavailable')).toContain('令牌不可用')
@@ -147,7 +160,8 @@ describe('every condition the plan requires an actionable message for', () => {
     const codes = ['root-path-missing', 'root-path-invalid', 'launcher-missing', 'profile-invalid',
       'spawn-failed', 'launch-args-invalid'] as const
     const notices = codes.map((outcome) => dshAutostartNotice({ outcome, external: false }))
-    expect(new Set(notices).size, 'each failure needs its own wording').toBe(codes.length)
+    // "各有各的说法"看的是**词条键**：句子本身现在不求值，两个不同的键才代表两句话。
+    expect(new Set(notices.map((notice) => notice?.key)).size, 'each failure needs its own wording').toBe(codes.length)
     for (const notice of notices) expect(notice).toBeTruthy()
   })
 })

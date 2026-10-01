@@ -1,7 +1,9 @@
 import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { formatMessage, setLanguage } from '../src/i18n/index.ts'
+import { en } from '../src/i18n/en.ts'
 import {
   createProbeScheduler,
   createSettingsProbeController,
@@ -15,6 +17,9 @@ import {
 } from '../src/settings/settingsProbes.ts'
 
 const settingsRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'settings')
+
+// 语言是模块级状态，测试之间必须还原（与 tests/i18n.spec.ts 同一条规矩）。
+afterEach(() => setLanguage('zh'))
 
 /** Collects scheduled callbacks so a test can decide when work actually runs. */
 function manualScheduler() {
@@ -184,7 +189,15 @@ describe('settings probe scheduling', () => {
     await controller.settled('autostartStatus')
     expect(calls).toEqual(['autostartStatus'])
     expect(errors).toEqual([{ probe: 'autostartStatus', error: expect.any(Error) }])
-    expect(settingsProbeErrorMessage('autostartStatus', new Error('系统探测失败'))).toBe('读取开机自启状态失败：Error: 系统探测失败')
+    // 失败那句话现在是**没求值的** `Message`（它要进设置窗口的通知状态），所以断言的是它渲染
+    // 出来的样子 —— 顺便钉住"渲染期才求值"这件事：切到英文，同一份值说的是英文。
+    const failure = settingsProbeErrorMessage('autostartStatus', new Error('系统探测失败'))
+    expect(formatMessage(failure)).toBe('读取开机自启状态失败：Error: 系统探测失败')
+    setLanguage('en')
+    expect(formatMessage(failure)).toBe(en['settings.probe.error']
+      .replace('{message}', en['settings.probe.autostart-status'])
+      .replace('{error}', 'Error: 系统探测失败'))
+    expect(formatMessage(failure)).not.toContain('读取')
   })
 
   it('cancels scheduled probes and stops reporting after disposal', async () => {

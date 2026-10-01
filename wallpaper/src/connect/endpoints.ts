@@ -31,7 +31,7 @@
  * and connecting to it is how the wallpaper used to answer a session the user
  * never chose.
  */
-import { t } from '../i18n/index.ts'
+import { formatMessage, msg, t, type Message } from '../i18n/index.ts'
 import { interpretHarnessBridgeStatus, type HarnessStatus } from './harness.ts'
 import { launchSettingsPort } from './launchArgs.ts'
 
@@ -51,12 +51,21 @@ export interface HarnessEndpointCandidate {
   bridgeFound: boolean
 }
 
-/** A stable, non-sensitive label for the settings dropdown. */
-export function endpointKindLabel(kind: HarnessClientKind): string {
+/**
+ * A stable, non-sensitive label for the settings dropdown.
+ *
+ * 两个形态，真源一份：`...Message` 是**词条**（当别的句子的参数、或存进状态时用它，切语言会跟着
+ * 变），`...Label` 是当场渲染好的字符串（当场显示、当字符串时用它）。
+ */
+export function endpointKindMessage(kind: HarnessClientKind): Message {
   switch (kind) {
-    case 'official-desktop': return t('connect.endpoint.kind.desktop')
-    default: return t('connect.endpoint.kind.web')
+    case 'official-desktop': return msg('connect.endpoint.kind.desktop')
+    default: return msg('connect.endpoint.kind.web')
   }
+}
+
+export function endpointKindLabel(kind: HarnessClientKind): string {
+  return formatMessage(endpointKindMessage(kind))
 }
 
 /**
@@ -121,13 +130,13 @@ export const WALLPAPER_HOST_PORT = 3099
  */
 export function unsupportedShellSubjectFallback(
   subjectId: string | undefined,
-): { subjectId: string; notice: string } | null {
+): { subjectId: string; notice: Message } | null {
   const subject = (subjectId ?? '').trim()
   if (subject === '' || !subject.startsWith(SHELL_SUBJECT_PREFIX)) return null
   if (subjectClientKind(subject) !== undefined) return null
   return {
     subjectId: OFFICIAL_SHELL_SUBJECT_ID,
-    notice: t('connect.endpoint.unsupported-shell'),
+    notice: msg('connect.endpoint.unsupported-shell'),
   }
 }
 
@@ -456,15 +465,15 @@ export function clientRaiseAction(kind: HarnessClientKind): ClientRaiseAction {
  * desktop wallpaper. The window was still restored, so the user's next click
  * reaches it — reporting that as an error would be noise on a working path.
  */
-export function raiseOutcomeNotice(outcome: string, kind: HarnessClientKind): string | null {
+export function raiseOutcomeNotice(outcome: string, kind: HarnessClientKind): Message | null {
   switch (outcome) {
     case 'raised':
     case 'raise-refused':
       return null
     case 'no-window':
-      return t('connect.raise.no-window', { kind: endpointKindLabel(kind) })
+      return msg('connect.raise.no-window', { kind: endpointKindMessage(kind) })
     case 'not-running':
-      return t('connect.raise.not-running', { kind: endpointKindLabel(kind) })
+      return msg('connect.raise.not-running', { kind: endpointKindMessage(kind) })
     default:
       return null
   }

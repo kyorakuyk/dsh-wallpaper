@@ -8,7 +8,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { AutostartStatus } from '../native/runtime.ts'
 import * as liteNative from './native.ts'
 import { assetUrl, DEFAULT_LITE_SETTINGS, LITE_BACKGROUND_OPTIONS, LITE_PORTRAIT_OPTIONS, loadLiteSettings, saveLiteSettings } from './settings.ts'
-import { t, useLanguage } from '../i18n/index.ts'
+import { formatSentence, msg, t, useLanguage, type Sentence } from '../i18n/index.ts'
 import { listenUntilDisposed } from '../runtime/lifecycle.ts'
 import { autostartDetail, autostartRefusalNotice } from '../settings/autostartCopy.ts'
 import { createAutostartQueue, type AutostartQueue } from '../settings/autostartQueue.ts'
@@ -28,7 +28,11 @@ export function LiteSettingsWindow() {
   useLanguage()
   const [settings, setSettings] = useState<LiteSettings>(DEFAULT_LITE_SETTINGS)
   const settingsRef = useRef(settings)
-  const [notice, setNotice] = useState<string>()
+  /**
+   * 通知条上那句话，**没求值**：我们自己写的是 `Message`（渲染期求值 → 切语言会重译），
+   * 原生抛出来的那几句是自由文本（`string`，本批不翻译）。
+   */
+  const [notice, setNotice] = useState<Sentence>()
   // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
   //   const [lockScreenDiagnostics, setLockScreenDiagnostics] = useState<LockScreenDiagnostics>()
   // FREEZE(1B)：随系统集成冻结。
@@ -60,7 +64,7 @@ export function LiteSettingsWindow() {
   const commit = (next: LiteSettings) => {
     settingsRef.current = next
     setSettings(next)
-    void saveLiteSettings(next).catch((error) => setNotice(t('lite.settings.save-failed', { error: String(error) })))
+    void saveLiteSettings(next).catch((error) => setNotice(msg('lite.settings.save-failed', { error: String(error) })))
   }
 
   // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
@@ -93,7 +97,7 @@ export function LiteSettingsWindow() {
       latestAutostartRef.current = status.enabled
       if (status.enabled !== current.autostart) commit({ ...current, autostart: status.enabled })
     } catch (error) {
-      setNotice(t('lite.settings.autostart.read-failed', { error: String(error) }))
+      setNotice(msg('lite.settings.autostart.read-failed', { error: String(error) }))
     }
   }
 
@@ -134,7 +138,7 @@ export function LiteSettingsWindow() {
       setCustomBackground(background)
       setCustomPortrait(portrait)
     } catch (error) {
-      setNotice(t('lite.settings.custom-image.read-failed', { error: String(error) }))
+      setNotice(msg('lite.settings.custom-image.read-failed', { error: String(error) }))
     }
   }
 
@@ -150,7 +154,7 @@ export function LiteSettingsWindow() {
       // FREEZE(1B)：随上面两者冻结。
       // void refreshTranslucentTb()
       void refreshCustomImages()
-    }).catch((error) => setNotice(t('lite.settings.load-failed', { error: String(error) })))
+    }).catch((error) => setNotice(msg('lite.settings.load-failed', { error: String(error) })))
     if (!('__TAURI_INTERNALS__' in window)) return
     const current = getCurrentWindow()
     // The close listener is registered without awaiting the native call, so a
@@ -191,7 +195,7 @@ export function LiteSettingsWindow() {
           const refusal = autostartRefusalNotice(status, requested)
           if (refusal) setNotice(refusal)
         },
-        onError: (error) => setNotice(t('lite.settings.autostart.update-failed', { error: String(error) })),
+        onError: (error) => setNotice(msg('lite.settings.autostart.update-failed', { error: String(error) })),
       })
     }
     return autostartQueueRef.current
@@ -282,12 +286,12 @@ export function LiteSettingsWindow() {
       }
       setNotice(slot === 'background' ? t('lite.settings.custom-image.background-imported') : t('lite.settings.custom-image.portrait-imported'))
     } catch (error) {
-      setNotice(t('lite.settings.custom-image.import-failed', { error: String(error) }))
+      setNotice(msg('lite.settings.custom-image.import-failed', { error: String(error) }))
     }
   }
 
   return <main className="lite-settings-window">
-    {notice && <div className="lite-notice" role="status"><span>{notice}</span><button type="button" aria-label={t('lite.settings.notice.close')} onClick={() => setNotice(undefined)}>×</button></div>}
+    {notice && <div className="lite-notice" role="status"><span>{formatSentence(notice)}</span><button type="button" aria-label={t('lite.settings.notice.close')} onClick={() => setNotice(undefined)}>×</button></div>}
     <header className="lite-titlebar">
       <div className="lite-titlebar-drag" onMouseDown={(event) => { if (event.button === 0) void invoke('start_settings_drag') }} />
       <div className="lite-brand"><span className="lite-brand-mark">DSH</span><div><strong>Wallpaper Lite</strong><small>{t('lite.settings.brand.tagline')}</small></div></div>

@@ -10,22 +10,31 @@
  * that owns them: a checkout's path *is* its identity, and the user asked for it
  * by adopting that directory.
  */
-import { t } from '../i18n/index.ts'
+import { formatMessage, msg, t, type Message } from '../i18n/index.ts'
 import type { HarnessLaunchOutcome, HarnessTarget } from '../native/runtime.ts'
 
-/** The user-facing class name, which is also the reason the classes behave
+/**
+ * The user-facing class name, which is also the reason the classes behave
  * differently: one carries its own checkout, another is a tree of your own, and the
- * third is a CLI installed on this machine. */
-export function subjectKindLabel(kind: HarnessTarget['kind']): string {
+ * third is a CLI installed on this machine.
+ *
+ * 两个形态：`...Message` 是**词条**（要存进状态、或当别的句子的参数时用它，切语言会跟着变），
+ * `...Label` 是当场渲染好的字符串（当场显示、当字符串用时用它）。真源只有一份。
+ */
+export function subjectKindMessage(kind: HarnessTarget['kind']): Message {
   // The design's own terms are 自带检出 / 源码检出, and they are exact: the classes
   // differ in whether the client carries its *own* checkout. Measured against what a
   // user can see, though, "检出" names an implementation detail — what they are
   // choosing between is a client that brings its own runtime, a source directory of
   // their own, and (2026-09-27) a DSH CLI installed on this machine with npm. The
   // labels say that, and the word 检出 never appears in the settings surface.
-  if (kind === 'embedded-shell') return t('harness.subject.kind.embedded-shell')
-  if (kind === 'installed-cli') return t('harness.subject.kind.installed-cli')
-  return t('harness.subject.kind.checkout')
+  if (kind === 'embedded-shell') return msg('harness.subject.kind.embedded-shell')
+  if (kind === 'installed-cli') return msg('harness.subject.kind.installed-cli')
+  return msg('harness.subject.kind.checkout')
+}
+
+export function subjectKindLabel(kind: HarnessTarget['kind']): string {
+  return formatMessage(subjectKindMessage(kind))
 }
 
 /**
@@ -103,10 +112,10 @@ export function reachNeedsBrowser(outcome: string): boolean {
  * More than one source tree means the wallpaper cannot know which one the user
  * means, and guessing would quietly connect the wallpaper to the wrong tree.
  */
-export function subjectChoicePrompt(targets: readonly HarnessTarget[]): string | null {
+export function subjectChoicePrompt(targets: readonly HarnessTarget[]): Message | null {
   const checkouts = targets.filter((target) => target.kind === 'checkout')
   if (checkouts.length < 2) return null
-  return t('harness.subject.choice-prompt', { count: checkouts.length })
+  return msg('harness.subject.choice-prompt', { count: checkouts.length })
 }
 
 /**
@@ -288,42 +297,44 @@ export function launchOutcomeNotice(outcome: {
   outcome: string
   kind: HarnessLaunchOutcome['kind']
   hidden?: boolean
-}): string | null {
+}): Message | null {
   // One noun per class, the same two the subject list uses, so a result line and the
-  // row it refers to cannot read as two different things.
+  // row it refers to cannot read as two different things. 作为**词条**传进去（不是渲染好的
+  // 字符串）：结果这句话会存进设置窗口的通知状态，切语言时连这个名词一起重译。
+  // 映射保持原样（除了壳，其余一律按"源码检出"说）—— 这一批只改求值时机，不改措辞。
   const label = outcome.kind === 'embedded-shell'
-    ? t('harness.subject.kind.embedded-shell')
-    : t('harness.subject.kind.checkout')
+    ? msg('harness.subject.kind.embedded-shell')
+    : msg('harness.subject.kind.checkout')
   switch (outcome.outcome) {
     case 'started':
       // A hidden start is the one case where "started" is not the whole story:
       // the user would otherwise go looking for a window that is deliberately not
       // on screen yet.
       return outcome.hidden
-        ? t('harness.subject.launch.started-hidden', { label })
-        : t('harness.subject.launch.started', { label })
+        ? msg('harness.subject.launch.started-hidden', { label })
+        : msg('harness.subject.launch.started', { label })
     case 'started-unconfirmed':
-      return t('harness.subject.launch.started-unconfirmed', { label })
+      return msg('harness.subject.launch.started-unconfirmed', { label })
     case 'already-running':
-      return t('harness.subject.launch.already-running', { label })
+      return msg('harness.subject.launch.already-running', { label })
     case 'unknown-target':
       // "执行主体" is this plan's word for what runs the Harness; a user has no
       // reason to learn it, so the sentence names the missing act instead.
-      return t('harness.subject.launch.unknown-target')
+      return msg('harness.subject.launch.unknown-target')
     case 'root-path-invalid':
       // Names what is wrong with the *thing the user picked*, and the one action
       // that fixes it. A path is deliberately not repeated here: the row they
       // clicked already shows it.
-      return t('harness.subject.launch.root-path-invalid')
+      return msg('harness.subject.launch.root-path-invalid')
     case 'launcher-missing':
       // The only entry that cannot avoid a system name: the fix is to install one of
       // two programs or point at their location, so naming them is the actionable
       // half, while PATH stays out of the sentence. 这一项**不再**把用户引向「启动命令」——
       // 那个设置已经不在了（现在只有「启动参数」，而它加不了参数以外的任何东西），
       // 指向一个不存在的入口比不说更坏。
-      return t('harness.subject.launch.launcher-missing')
+      return msg('harness.subject.launch.launcher-missing')
     case 'profile-invalid':
-      return t('harness.subject.launch.profile-invalid')
+      return msg('harness.subject.launch.profile-invalid')
     case 'port-occupied-external':
       // The port number is an implementation fact; the user's situation is that
       // something is already running and this application is leaving it alone.
@@ -331,10 +342,10 @@ export function launchOutcomeNotice(outcome: {
       // 一个实例"。本 build 里「启动参数」不在界面上（它随这次冻结一起关掉了），把用户指向一个
       // 不存在的入口比不说更坏 —— 指向不存在的入口正是这个项目一直在修的那种失败。恢复办法：
       // 把原来那半句加回来（它随「启动参数」一起复活）。
-      return t('harness.subject.launch.port-occupied-external')
+      return msg('harness.subject.launch.port-occupied-external')
     default:
       // No code, no path: the log does name both, and that is where a bug report
       // should come from rather than from a dialog.
-      return t('harness.subject.launch.failed')
+      return msg('harness.subject.launch.failed')
   }
 }

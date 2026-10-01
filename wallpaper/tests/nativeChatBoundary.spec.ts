@@ -295,8 +295,9 @@ describe('native chat boundary', () => {
     expect(lib).toContain('本机 3080 端口已被其他进程占用')
     expect(settings).toContain('dshScanBusy')
     // 文案搬进了字典（i18n）：窗口里只剩键，所以那两句话本身要在字典里核对。
-    expect(settings).toContain("t('settings.window.scan.done'")
-    expect(settings).toContain("t('settings.window.scan.none')")
+    // 这两句进的是通知状态，所以取的是 `msg()`（**没求值**的词条，渲染期才求值）。
+    expect(settings).toContain("msg('settings.window.scan.done'")
+    expect(settings).toContain("msg('settings.window.scan.none')")
     const dictionary = await readFile(resolve(wallpaperRoot, 'src/i18n/zh.ts'), 'utf8')
     expect(dictionary).toContain("'settings.window.scan.done': '扫描完成，发现 {count} 个可选执行主体。'")
     expect(dictionary).toContain("'settings.window.scan.none': '未发现 DSH 项目或已安装的客户端；可手动填写 DSH 项目根目录后再扫描。'")

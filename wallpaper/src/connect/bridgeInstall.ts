@@ -8,7 +8,7 @@
  * 一次失败不该被另一条成功掩盖。
  */
 
-import { t } from '../i18n/index.ts'
+import { msg, type Message } from '../i18n/index.ts'
 
 /** 与 Rust 侧 `BridgeInstallOutcome` 字段一一对应（都是单词，不涉及重命名）。 */
 export interface BridgeInstallOutcome {
@@ -21,7 +21,11 @@ export interface BridgeInstallOutcome {
 
 export interface BridgeInstallSummary {
   tone: 'ok' | 'attention' | 'error'
-  text: string
+  /**
+   * 要显示的那句话，**没求值**（`Message`）：它会进设置窗口的通知状态，而语言可能在它挂着的时候
+   * 换过。`detail` 是原生包管理器的自由文本（本批不翻译），它是这句话的一个参数。
+   */
+  text: Message
 }
 
 /** 原文太长时截断，界面不该被包管理日志淹没。 */
@@ -42,10 +46,11 @@ export function summarizeBridgeInstall(outcomes: BridgeInstallOutcome[]): Bridge
   const failed = outcomes.filter((outcome) => outcome.status === 'failed')
   if (failed.length > 0) {
     const first = failed[0]
-    const detail = clip(first.detail) || t('connect.bridge.no-detail')
+    // `detail` 是**原生**的自由文本（包管理器的原话），没得译；"还没有细节"那句才是我们的词条。
+    const detail = clip(first.detail) || msg('connect.bridge.no-detail')
     return {
       tone: 'error',
-      text: t('connect.bridge.failed', { profile: first.profile, detail }),
+      text: msg('connect.bridge.failed', { profile: first.profile, detail }),
     }
   }
 
@@ -55,7 +60,7 @@ export function summarizeBridgeInstall(outcomes: BridgeInstallOutcome[]): Bridge
     const first = needsConfirmation[0]
     return {
       tone: 'attention',
-      text: t('connect.bridge.needs-confirmation', { profile: first.profile, detail: clip(first.detail) }),
+      text: msg('connect.bridge.needs-confirmation', { profile: first.profile, detail: clip(first.detail) }),
     }
   }
 
@@ -64,6 +69,6 @@ export function summarizeBridgeInstall(outcomes: BridgeInstallOutcome[]): Bridge
   if (installed.length === 0) return null
   return {
     tone: 'ok',
-    text: t('connect.bridge.installed', { profiles: profileNames(outcomes) }),
+    text: msg('connect.bridge.installed', { profiles: profileNames(outcomes) }),
   }
 }

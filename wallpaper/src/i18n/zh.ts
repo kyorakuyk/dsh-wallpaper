@@ -627,12 +627,16 @@ export const zh = {
   // ---------------------------------------------------------------------------
 
   // 掉线提示的**共同前缀**。它不是一个完整句子：前缀 + 状态说明（`connect/harnessLabels.ts`
-  // 的 `harness.detail.*`）+ 下面那半句拼成一句，而"这是不是我们自己写的那句提示"也靠它认。
-  // 因此它在 `App.tsx` 里由 `harnessDisconnectedErrorPrefix()` 在**调用时**取，不做模块级常量。
+  // 的 `harness.detail.*`）+ 下面那半句拼成一句。
   'app.bubble.harness.disconnected-prefix': 'DSH 壁纸 Bridge 当前不可用。',
   // 上面那两句的续写（前导空格接在状态说明后面）。
   'app.bubble.harness.selection-unavailable': ' Harness 模式只能在兼容 Bridge 就绪后切换。',
   'app.bubble.harness.session-preserved': ' 已保留当前 Harness 会话和对话记录；Bridge 恢复后可继续，或由你手动切换后端。',
+  // 把上面三段**排成一句**的框。整句会作为 `Message`（键 + 参数）存进运行状态，所以三个 `{...}`
+  // 都是词条而不是句子：切语言时三段一起重译。这里没有空格 —— 该有空格的那两半自己带着（见上）。
+  // 「这句是我们自己写的」不再靠文字认（原来靠前缀 `startsWith`），改成状态里的 `errorKind`。
+  'app.bubble.harness.disconnected-frame': '{prefix}{detail}{preserved}',
+  'app.bubble.harness.selection-frame': '{prefix}{detail}{unavailable}',
 
   // 随壁纸自动启动 DSH 的失败码，一条一句（`dshAutostartNotice`）。`dshAutostart.spec.ts`
   // 逐字钉着其中几个词，所以这些句子不能顺手改写。

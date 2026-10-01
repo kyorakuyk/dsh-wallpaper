@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { getLanguage, setLanguage } from '../src/i18n/index.ts'
+import { formatMessage, getLanguage, setLanguage } from '../src/i18n/index.ts'
 import { t } from '../src/i18n/index.ts'
 import { LITE_BACKGROUND_OPTIONS, LITE_PORTRAIT_OPTIONS } from '../src/lite/settings.ts'
 import { litePersona } from '../src/lite/persona.ts'
@@ -74,13 +74,18 @@ describe('records built at import time follow the current language', () => {
   })
 
   it('hands the notice sentences out per call instead of freezing them at import', async () => {
-    // 这两句曾经是模块级常量：常量在 import 那一刻求值，切语言不会让它变。
+    // 这两句一度是模块级常量：常量在 import 那一刻求值，切语言不会让它变。现在更进一步 ——
+    // 它们返回的是**词条**（键 + 参数，见 `i18n/index.ts` 的 `Message`），连"哪一句"都不在
+    // 那一刻定下来，所以切语言时连已经存进状态的那句都会重译。
     const { archivedSessionNotice, blockedTurnNotice } = await import('../src/chat/nativeAdapter.ts')
     expect(getLanguage()).toBe('zh')
-    expect(archivedSessionNotice()).toBe(t('chat.native.archived-notice'))
+    const archived = archivedSessionNotice()
+    expect(formatMessage(archived)).toBe(t('chat.native.archived-notice'))
     setLanguage('en')
-    expect(archivedSessionNotice()).toBe(t('chat.native.archived-notice'))
-    expect(archivedSessionNotice()).not.toBe('这条会话已被归档，已在今天的新会话里重新发送。')
-    expect(blockedTurnNotice()).toBe(t('chat.native.blocked-notice'))
+    // 同一份值（引用相等），换的是语言。
+    expect(archivedSessionNotice()).toEqual(archived)
+    expect(formatMessage(archived)).toBe(t('chat.native.archived-notice'))
+    expect(formatMessage(archived)).not.toBe('这条会话已被归档，已在今天的新会话里重新发送。')
+    expect(formatMessage(blockedTurnNotice())).toBe(t('chat.native.blocked-notice'))
   })
 })

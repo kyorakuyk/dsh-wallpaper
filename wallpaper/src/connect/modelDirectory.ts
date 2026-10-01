@@ -15,7 +15,7 @@
  * 自己的账号没有模型；把"没有模型"当成"问不到"，又会在可切换时白关掉选择器。
  */
 
-import { t } from '../i18n/index.ts'
+import { msg, type Message } from '../i18n/index.ts'
 
 export interface ModelOption {
   id: string
@@ -27,8 +27,13 @@ export type ModelDirectory =
   | { kind: 'enumerated'; provider?: string; current?: string; models: ModelOption[] }
   /** 问到了，但对方不具备枚举能力：只能显示当前模型，不假装有得选。 */
   | { kind: 'current-only'; provider?: string; current?: string }
-  /** 还没连上 / 读取失败：连当前模型都不该装作知道。 */
-  | { kind: 'unavailable'; reason: string }
+  /**
+   * 还没连上 / 读取失败：连当前模型都不该装作知道。
+   *
+   * `reason` 是一句**没求值的**话（`Message`）：它会被存进运行状态、一路活到选择器渲染的那一刻，
+   * 而语言可能在中间换过 —— 存句子就等于把它钉在写入那一刻的语言上。
+   */
+  | { kind: 'unavailable'; reason: Message }
 
 /** 宿主/端点在"不支持枚举"时也报出的当前模型，用来兜住选择器的显示值。 */
 export function currentModelOf(directory: ModelDirectory, fallback?: string): string | undefined {
@@ -59,10 +64,10 @@ export function canSwitchModel(directory: ModelDirectory): boolean {
 }
 
 /** 禁用时给用户的解释；`undefined` 表示不禁用，无需解释。 */
-export function modelUnavailableReason(directory: ModelDirectory): string | undefined {
+export function modelUnavailableReason(directory: ModelDirectory): Message | undefined {
   if (canSwitchModel(directory)) return undefined
   if (directory.kind === 'unavailable') return directory.reason
-  return t('connect.model.no-options')
+  return msg('connect.model.no-options')
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -89,7 +94,7 @@ function readModels(value: unknown): ModelOption[] {
 export function bridgeModelDirectory(payload: unknown): ModelDirectory {
   const record = asRecord(payload)
   if (!record || typeof record.supported !== 'boolean') {
-    return { kind: 'unavailable', reason: t('connect.model.bridge-empty') }
+    return { kind: 'unavailable', reason: msg('connect.model.bridge-empty') }
   }
   const current = asRecord(record.current)
   const currentModel = typeof current?.model === 'string' && current.model.trim() ? current.model.trim() : undefined
@@ -104,7 +109,7 @@ export function bridgeModelDirectory(payload: unknown): ModelDirectory {
 export function apiModelDirectory(payload: unknown, configured?: string): ModelDirectory {
   const record = asRecord(payload)
   if (!record || typeof record.supported !== 'boolean') {
-    return { kind: 'unavailable', reason: t('connect.model.endpoint-empty') }
+    return { kind: 'unavailable', reason: msg('connect.model.endpoint-empty') }
   }
   const models = readModels(record.models)
   const current = configured?.trim() || undefined
@@ -112,8 +117,8 @@ export function apiModelDirectory(payload: unknown, configured?: string): ModelD
   return { kind: 'enumerated', ...(current ? { current } : {}), models }
 }
 
-/** 读取失败（异常）时的目录：把原因留给选择器解释。 */
-export function unavailableDirectory(reason: string): ModelDirectory {
+/** 读取失败（异常）时的目录：把原因留给选择器解释（原因同样是**没求值的**一句话）。 */
+export function unavailableDirectory(reason: Message): ModelDirectory {
   return { kind: 'unavailable', reason }
 }
 

@@ -1,5 +1,5 @@
 import type { BackendMode, ChatMessage, ScopedChatEvent } from '../domain/types.ts'
-import { t } from '../i18n/index.ts'
+import { formatMessage, msg, type Message, type Sentence } from '../i18n/index.ts'
 import { nativeRuntime, type NativeSendOptions } from '../native/runtime.ts'
 import { EventChatAdapter, type SendOptions } from './adapter.ts'
 
@@ -59,19 +59,20 @@ export function isMissingSessionError(error: unknown): boolean {
  * 在今天的新会话里重发——但"把用户刚说的话挪到另一条会话里"这件事不能静默发生（用户对主体
  * 的同一原则：不允许静默替换），所以这句话就是他看到的凭据。
  *
- * 是函数而不是常量：常量在 import 那一刻求值，会把语言定死（与 `App.tsx` 里
- * `harnessDisconnectedErrorPrefix()` 同一条规矩）。
+ * 返回**词条**（`Message`）而不是句子：它会作为事件进运行状态、一路活到通知条渲染的那一刻，
+ * 而语言可能在中间换过。以前是函数而不是常量（常量在 import 那一刻求值，会把语言定死）——
+ * 现在更进一步：连"哪一句"都不求值。
  */
-export function archivedSessionNotice(): string {
-  return t('chat.native.archived-notice')
+export function archivedSessionNotice(): Message {
+  return msg('chat.native.archived-notice')
 }
 
 /**
  * 宿主拒绝这一轮时说的那句。与归档不同：会话还在、只是不再接受我们的消息（实测：被归档的
  * 会话，`turn/end` 的 `reason.kind` 是 `blocked`）。给用户的动作是同一个 —— 换一条新会话。
  */
-export function blockedTurnNotice(): string {
-  return t('chat.native.blocked-notice')
+export function blockedTurnNotice(): Message {
+  return msg('chat.native.blocked-notice')
 }
 
 export class NativeChatAdapter extends EventChatAdapter {
@@ -312,7 +313,7 @@ export class NativeChatAdapter extends EventChatAdapter {
     const failure = await this.recoverArchivedSession()
     if (failure || !text) {
       if (failure) {
-        this.emit({ type: 'error', code: 'NATIVE_SEND_FAILED', recoverable: true, message: t('chat.native.new-session-failed', { error: failure }) })
+        this.emit({ type: 'error', code: 'NATIVE_SEND_FAILED', recoverable: true, message: msg('chat.native.new-session-failed', { error: failure }) })
       }
       return
     }
@@ -365,9 +366,11 @@ export class NativeChatAdapter extends EventChatAdapter {
         try {
           await this.openEventScope()
         } catch (connectError) {
-          const message = t('chat.native.reconnect-failed', { error: String(error), connectError: String(connectError) })
+          const message = msg('chat.native.reconnect-failed', { error: String(error), connectError: String(connectError) })
           this.emit({ type: 'error', code: 'NATIVE_SEND_FAILED', recoverable: true, message })
-          throw new Error(message)
+          // `Error` 收的是字符串：这条异常只往控制台/上层日志走（用户看到的是上面那条事件），
+          // 所以在**抛出**这一刻渲染。
+          throw new Error(formatMessage(message))
         }
         await this.runTurn(text, options?.model ? { model: options.model } : undefined, false)
         return
@@ -383,9 +386,9 @@ export class NativeChatAdapter extends EventChatAdapter {
           await this.runTurn(text, options?.model ? { model: options.model } : undefined, false)
           return
         }
-        const message = t('chat.native.archived-failed', { error: String(error), failure })
+        const message = msg('chat.native.archived-failed', { error: String(error), failure })
         this.emit({ type: 'error', code: 'NATIVE_SEND_FAILED', recoverable: true, message })
-        throw new Error(message)
+        throw new Error(formatMessage(message))
       }
       this.emit({ type: 'error', code: 'NATIVE_SEND_FAILED', recoverable: true, message: String(error) })
       throw error
@@ -404,7 +407,7 @@ export class NativeChatAdapter extends EventChatAdapter {
    *
    * 返回 `undefined` 表示换成功；否则是给用户看的原因（这时调用方要报错，不能假装换成了）。
    */
-  private async recoverArchivedSession(): Promise<string | undefined> {
+  private async recoverArchivedSession(): Promise<Sentence | undefined> {
     this.sessionId = undefined
     this.resetDeliveredMessageCounts()
     try {
@@ -412,8 +415,10 @@ export class NativeChatAdapter extends EventChatAdapter {
     } catch (error) {
       return String(error)
     }
-    if (this.disposed) return t('chat.native.closed')
-    if (!this.sessionId) return t('chat.native.no-new-session')
+    // 两条我们自己的原因也返回**词条**：它们会被当成参数拼进上面那句通知，而参数是在渲染期
+    // 递归求值的 —— 存成渲染好的字符串，这一小段就会留在当时的语言里。
+    if (this.disposed) return msg('chat.native.closed')
+    if (!this.sessionId) return msg('chat.native.no-new-session')
     return undefined
   }
 

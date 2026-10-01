@@ -9,6 +9,7 @@ import {
   selectedModelFor,
   unavailableDirectory,
 } from '../src/connect/modelDirectory.ts'
+import { formatMessage, msg } from '../src/i18n/index.ts'
 
 /**
  * 三种情况必须分得清：
@@ -56,7 +57,7 @@ describe('harness model directory (bridge payload)', () => {
     })
     expect(modelIdsFor(directory, '', '')).toEqual(['deepseek-flash'])
     expect(currentModelOf(directory, '')).toBe('deepseek-flash')
-    expect(currentModelOf(unavailableDirectory('读取失败'), '')).toBeUndefined()
+    expect(currentModelOf(unavailableDirectory(msg('connect.model.bridge-empty')), '')).toBeUndefined()
   })
 
   it('treats an unsupported host as "current model only", never as "no models"', () => {
@@ -70,7 +71,7 @@ describe('harness model directory (bridge payload)', () => {
     expect(canSwitchModel(directory)).toBe(false)
     // 当前模型仍然显示出来，且不提供第二个选项。
     expect(modelIdsFor(directory, undefined)).toEqual(['deepseek-flash'])
-    expect(modelUnavailableReason(directory)).toBe('当前 Harness 未提供可选模型')
+    expect(formatMessage(modelUnavailableReason(directory)!)).toBe('当前 Harness 未提供可选模型')
   })
 
   it('never offers a switch it cannot honour when the catalog is empty', () => {
@@ -87,8 +88,10 @@ describe('harness model directory (bridge payload)', () => {
   })
 
   it('reports an unrecognised payload as unavailable instead of inventing a list', () => {
-    expect(bridgeModelDirectory(undefined)).toEqual({ kind: 'unavailable', reason: '桥接未返回模型目录' })
-    expect(bridgeModelDirectory({ models: [{ id: 'x' }] })).toEqual({ kind: 'unavailable', reason: '桥接未返回模型目录' })
+    // 原因从"一句话"变成了"词条"（渲染期才求值），断言比对的是它的键 —— 形状变了，意图没变：
+    // 桥接回答的形状不认识时，目录是"问不到"，而且带着一个说得清的原因。
+    expect(bridgeModelDirectory(undefined)).toEqual({ kind: 'unavailable', reason: msg('connect.model.bridge-empty') })
+    expect(bridgeModelDirectory({ models: [{ id: 'x' }] })).toEqual({ kind: 'unavailable', reason: msg('connect.model.bridge-empty') })
   })
 
   it('falls back to the id when the host sends no display name', () => {
@@ -119,11 +122,12 @@ describe('api model directory (endpoint payload)', () => {
   })
 
   it('keeps a previously chosen model visible after a failed read', () => {
-    const directory = unavailableDirectory('端点模型列表读取失败：网络不可达')
+    const directory = unavailableDirectory(msg('app.bubble.model.endpoint-read-failed', { error: '网络不可达' }))
     // 读取失败时不动用户已经选定的值，只是禁用切换并说明原因。
     expect(modelIdsFor(directory, undefined, 'deepseek-reasoner')).toEqual(['deepseek-reasoner'])
     expect(currentModelOf(directory, 'deepseek-chat')).toBe('deepseek-chat')
-    expect(modelUnavailableReason(directory)).toBe('端点模型列表读取失败：网络不可达')
+    // 原因存的是**词条**，渲染出来才是那句话。
+    expect(formatMessage(modelUnavailableReason(directory)!)).toBe('端点模型列表读取失败：网络不可达')
   })
 })
 
@@ -160,7 +164,7 @@ describe('the model a backend shows', () => {
       ids: ['deepseek-flash'],
     })).toBe('deepseek-flash')
     // 但没有任何 Harness 事实时，也绝不会把 API 的配置值当成 Harness 的模型。
-    expect(selectedModelFor({ backend: 'harness', directory: unavailableDirectory('Harness 未运行'), ids: [] }))
+    expect(selectedModelFor({ backend: 'harness', directory: unavailableDirectory(msg('app.bubble.model.harness-not-running')), ids: [] }))
       .toBeUndefined()
     // 网页入口的模型由 DeepSeek 页面决定：给一个 id 就是编的。
     expect(selectedModelFor({ backend: 'deepseek-web', configured: 'deepseek-chat', ids: ['deepseek-chat'] }))
@@ -208,7 +212,7 @@ describe('the model a backend shows', () => {
     // 读取失败时连端点的"当前值"都不摆出来——那时它只是残留。
     expect(selectedModelFor({
       backend: 'deepseek-api',
-      directory: unavailableDirectory('端点模型列表读取失败'),
+      directory: unavailableDirectory(msg('app.bubble.model.endpoint-reading')),
       ids: [],
     })).toBeUndefined()
   })

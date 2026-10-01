@@ -1,5 +1,5 @@
 import { openRoutesFor, selectedOpenRoute } from '../connect/openRoutes.ts'
-import { setLanguage, t, useLanguage, type Language, type MessageKey } from '../i18n/index.ts'
+import { formatMessage, formatSentence, msg, setLanguage, t, useLanguage, type Language, type Message, type MessageKey } from '../i18n/index.ts'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 // `ModelTierRule` 随「模型与形态映射」卡片一起被冻结，解冻时连同上面那行 `updateRule` 一起加回来。
@@ -100,8 +100,12 @@ export interface SettingsPanelProps {
    * client the user has since uninstalled.
    */
   subjectCatalogVerifiedAt?: number
-  /** The §4.3 prompt when several source trees exist, so the user chooses one. */
-  subjectChoice?: string
+  /**
+   * The §4.3 prompt when several source trees exist, so the user chooses one.
+   *
+   * 收 `Message`（没求值）而不是字符串：这句话在渲染期求值，切语言时它跟着变。
+   */
+  subjectChoice?: Message
   onSelectSubject: (targetId: string) => void
   /**
    * Actual Windows autostart state. The "start DSH with the wallpaper" setting
@@ -393,8 +397,9 @@ function displayLabel(display: DesktopDisplayInfo, index: number): string {  con
  * 三个名字都是 getter：语言是启动后才回填的，写成普通字段就会永远停在 import 时那一种。
  */
 export const BACKEND_MODE_LABELS: Record<BackendMode, string> = {
-  get 'deepseek-web'() { return t('settings.connections.backend.deepseek-web') },
-  get 'deepseek-api'() { return t('settings.connections.backend.deepseek-api') },
+  get 'deepseek-web'() { return backendModeLabel('deepseek-web') },
+  get 'deepseek-api'() { return backendModeLabel('deepseek-api') },
+  // Harness 那一格是**产品名**：两种语言里都一样，所以它不是词条（见 `backendModeMessage`）。
   get harness() { return 'DeepSeek Harness' },
 }
 
@@ -406,8 +411,10 @@ export const BACKEND_MODE_LABELS: Record<BackendMode, string> = {
  * 在这里再给一个入口只会让两条路互相打架。
  */
 export const CHAT_MODE_OPTIONS: Array<{ value: BackendMode; label: string }> = [
-  { value: 'deepseek-web', label: BACKEND_MODE_LABELS['deepseek-web'] },
-  { value: 'deepseek-api', label: BACKEND_MODE_LABELS['deepseek-api'] },
+  // `label` 也是 getter：这张表在 import 时建好，普通字段会把语言钉死在那一刻（实测：切到
+  // 英文后这个下拉里仍是中文），而 `BACKEND_MODE_LABELS` 那三个名字本来就是 getter。
+  { value: 'deepseek-web', get label() { return BACKEND_MODE_LABELS['deepseek-web'] } },
+  { value: 'deepseek-api', get label() { return BACKEND_MODE_LABELS['deepseek-api'] } },
 ]
 
 /**
@@ -422,8 +429,22 @@ export function chatModeOptions(): Array<{ value: BackendMode; label: string }> 
   return [...CHAT_MODE_OPTIONS]
 }
 
+/**
+ * 同一句的**词条**形态：当别的句子的参数、或要存进状态时用它 —— 渲染期才求值，切语言跟着变。
+ *
+ * Harness 那一格返回的是**字符串**而不是词条：`DeepSeek Harness` 是产品名，两种语言里一样，
+ * 把它塞进字典只会多一条永远相同的词条。`MessageParam` 本来就收字符串，所以它照样能当参数。
+ */
+export function backendModeMessage(backend: BackendMode): Message | string {
+  if (backend === 'deepseek-web') return msg('settings.connections.backend.deepseek-web')
+  if (backend === 'deepseek-api') return msg('settings.connections.backend.deepseek-api')
+  // 与改动前一样：认不出来的值原样透出，而不是编一个名字。
+  return backend === 'harness' ? 'DeepSeek Harness' : backend
+}
+
 export function backendModeLabel(backend: BackendMode): string {
-  return BACKEND_MODE_LABELS[backend] ?? backend
+  const message = backendModeMessage(backend)
+  return typeof message === 'string' ? message : formatMessage(message)
 }
 
 /**
@@ -503,7 +524,13 @@ export function SettingsPanel(props: SettingsPanelProps) {
   // 语言变了要重渲染：词条是在渲染时取的，所以订阅一下就够。
   const language = useLanguage()
   /** 「清除全部用户数据」的结果（成功后把"删了什么、还剩什么要你手动删"写在这一行里）。 */
-  const [clearDetail, setClearDetail] = useState<string>()
+  /**
+   * 「清空用户数据」那一步的结果：**一组没求值的句子**，不是拼好的一段文字。
+   *
+   * 结果条数不定（删掉的文件 + 手动处理项），所以它是一组 `Message`，渲染期各自求值、再用同一个
+   * 分隔符接起来 —— 存成一段拼好的字符串，语言一换它就留在旧语言里。
+   */
+  const [clearDetail, setClearDetail] = useState<Message[]>()
   const [clearing, setClearing] = useState(false)
   const clearUserData = async () => {
     // 逐项写清会删什么、要你手动删什么：这类操作不可逆，值得在读清之前先拦一下。
@@ -528,13 +555,13 @@ export function SettingsPanel(props: SettingsPanelProps) {
         manual: Array<{ what: string; path: string }>
       }>('clear_user_data')
       const done = [
-        ...result.removed.map((path) => t('settings.system.clear.removed', { path })),
-        result.credentialRemoved ? t('settings.system.clear.credential-removed') : t('settings.system.clear.credential-absent'),
+        ...result.removed.map((path) => msg('settings.system.clear.removed', { path })),
+        result.credentialRemoved ? msg('settings.system.clear.credential-removed') : msg('settings.system.clear.credential-absent'),
       ]
-      const manual = result.manual.map((entry) => t('settings.system.clear.manual', { what: entry.what, path: entry.path }))
-      setClearDetail([...done, ...manual].join(t('settings.system.clear.join')))
+      const manual = result.manual.map((entry) => msg('settings.system.clear.manual', { what: entry.what, path: entry.path }))
+      setClearDetail([...done, ...manual])
     } catch (error) {
-      setClearDetail(t('settings.system.clear.failed', { error: String(error) }))
+      setClearDetail([msg('settings.system.clear.failed', { error: String(error) })])
     } finally {
       setClearing(false)
     }
@@ -696,7 +723,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
               ? t('settings.connections.subject.scanning')
               : props.harnessTargets.length === 0
                 ? t('settings.connections.subject.none')
-                : [props.subjectChoice, t('settings.connections.subject.found', { count: props.harnessTargets.length, age: props.subjectCatalogVerifiedAt ? `（${catalogAgeLabel(props.subjectCatalogVerifiedAt)}）` : '' })].filter(Boolean).join(' ')}
+                : [formatSentence(props.subjectChoice), t('settings.connections.subject.found', { count: props.harnessTargets.length, age: props.subjectCatalogVerifiedAt ? `（${catalogAgeLabel(props.subjectCatalogVerifiedAt)}）` : '' })].filter(Boolean).join(' ')}
           >
             <span className="integration-actions">
               {props.harnessTargets.length > 0 && (
@@ -1031,7 +1058,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
               onClick={() => { void props.onOpenProjectMemory?.() }}
             >{props.openingMemory ? t('settings.system.memory.opening') : t('settings.system.memory.open')}</button>
           </Field>
-          <Field title={t('settings.system.clear.title')} detail={clearDetail ?? t('settings.system.clear.detail')}>
+          <Field title={t('settings.system.clear.title')} detail={clearDetail ? clearDetail.map(formatMessage).join(t('settings.system.clear.join')) : t('settings.system.clear.detail')}>
             <button
               className="settings-action secondary"
               disabled={clearing}

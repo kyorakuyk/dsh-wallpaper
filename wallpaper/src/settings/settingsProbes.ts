@@ -9,7 +9,7 @@
  * starts each group only when its page is actually shown, at most once.
  */
 
-import { t, type MessageKey } from '../i18n/index.ts'
+import { msg, type Message, type MessageKey } from '../i18n/index.ts'
 
 export const SETTINGS_PAGES = ['general', 'connections', 'appearance', 'personas', 'history', 'system'] as const
 export type SettingsPage = (typeof SETTINGS_PAGES)[number]
@@ -204,8 +204,14 @@ const PROBE_ERROR_MESSAGES: Record<SettingsProbe, MessageKey> = {
   apiHistory: 'settings.probe.api-history',
 }
 
-export function settingsProbeErrorMessage(probe: SettingsProbe, error?: unknown): string {
-  const message = t(PROBE_ERROR_MESSAGES[probe])
+/**
+ * 一条探针失败时该说的话。
+ *
+ * 返回 `Message` 而不是句子：它进的是设置窗口的**通知状态**，会一直挂到用户读完之后 ——
+ * 存成字符串就等于把那句话钉在这一刻的语言上（切语言它不会变）。显示的地方在渲染期求值。
+ */
+export function settingsProbeErrorMessage(probe: SettingsProbe, error?: unknown): Message {
+  const message = msg(PROBE_ERROR_MESSAGES[probe])
   if (error === undefined) return message
-  return t('settings.probe.error', { message, error: String(error) })
+  return msg('settings.probe.error', { message, error: String(error) })
 }

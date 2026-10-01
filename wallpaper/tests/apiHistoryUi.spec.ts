@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { nativeRuntime, type ApiConversationListing } from '../src/native/runtime.ts'
+import { formatMessage, setLanguage } from '../src/i18n/index.ts'
 import { PAGE_PROBES, SETTINGS_PAGES, settingsProbeErrorMessage } from '../src/settings/settingsProbes.ts'
 import { formatBytes, formatHistoryTime, historyPressure } from '../src/settings/SettingsPanel.tsx'
 
@@ -37,6 +38,8 @@ const listing: ApiConversationListing = {
 }
 
 afterEach(() => {
+  // 语言是模块级状态，测试之间必须还原（上面那条断言会切到英文）。
+  setLanguage('zh')
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -173,8 +176,13 @@ describe('history page wiring', () => {
   })
 
   it('reports a listing failure as a notice instead of a blank page', () => {
-    expect(settingsProbeErrorMessage('apiHistory', new Error('decrypt failed')))
-      .toBe('读取 API 会话记录失败：Error: decrypt failed')
+    // 那句话现在存成**没求值的** `Message`（进的是设置窗口的通知状态），所以断言它渲染出来的
+    // 样子；切到英文之后同一份值说的是英文 —— 这正是这条断言要的意图。
+    const failure = settingsProbeErrorMessage('apiHistory', new Error('decrypt failed'))
+    expect(formatMessage(failure)).toBe('读取 API 会话记录失败：Error: decrypt failed')
+    setLanguage('en')
+    expect(formatMessage(failure)).not.toContain('读取')
+    expect(formatMessage(failure)).toContain('Error: decrypt failed')
   })
 })
 

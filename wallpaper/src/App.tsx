@@ -18,7 +18,7 @@ import { endpointScopeOf, subjectEndpointPorts } from './connect/endpoints.ts'
 // 它仍然在 `runtime.ts` 里为端点镜子供词（探针与「打开界面」盯同一个端口），分词测试也照常跑。
 // ---------------------------------------------------------------------------
 // import { parseLaunchArgs } from './connect/launchArgs.ts'
-import { HARNESS_STATE_DETAILS } from './connect/harnessLabels.ts'
+import { harnessStateDetail } from './connect/harnessLabels.ts'
 import { isEmbeddedShellSubject, isInstalledCliSubject, reachNeedsBrowser, subjectAlias } from './connect/harnessSubjects.ts'
 import { conversationHostChip } from './connect/conversationHost.ts'
 import { profileForLaunch } from './connect/harnessProfiles.ts'
@@ -54,7 +54,7 @@ import { WidgetHost } from './widgets/WidgetHost.tsx'
 import { displayCssRect, displayTopologySignature, displayUiScale, preferredDisplayId, virtualDesktopBounds } from './runtime/displayLayout.ts'
 import { listenUntilDisposed } from './runtime/lifecycle.ts'
 import { frameSchedulerTarget, StreamTextBuffer } from './features/chat/streamRender.ts'
-import { t, useLanguage } from './i18n/index.ts'
+import { formatSentence, msg, t, useLanguage, type Message, type Sentence } from './i18n/index.ts'
 
 const registry = new PersonaRegistry()
 
@@ -89,16 +89,37 @@ export function isCurrentChatOperation(
 }
 
 /**
- * 掉线提示的**共同前缀**，同时也是"这句提示是我们自己写的"这件事的判据。
+ * 掉线提示（**我们自己写的**一句）：三个词条排成一句，**渲染期**才求值。
  *
- * 它是一个**函数**而不是模块级字符串常量：语言在启动后才从设置文档回填，import 时求值会把语言
- * 定死在那一刻，之后切语言就再也不变（前几批为此返工过）。`t()` 在调用时取，于是它跟着当前语言。
- *
- * 注意它不是一个完整句子：前缀 + `HARNESS_STATE_DETAILS[...]` + 后半句拼成一句，所以它带着
- * 自己的句号（英文还带一个尾随空格，见 `i18n/zh.ts` 的说明）。
+ * 它以前拼成一个字符串，而那个字符串同时还是"这句是我们写的"的判据（`startsWith` 前缀）。
+ * 存进状态之后句子就成了**数据**：切语言它不会重译，而判据在英文界面里也认不出自己写的那句
+ * —— 掉线提示永远清不掉。现在存 `Message`，判据是状态里的 `errorKind`。
  */
-export function harnessDisconnectedErrorPrefix(): string {
-  return t('app.bubble.harness.disconnected-prefix')
+export function harnessDisconnectedNotice(availability: RuntimeState['harness']): Message {
+  return msg('app.bubble.harness.disconnected-frame', {
+    prefix: msg('app.bubble.harness.disconnected-prefix'),
+    detail: harnessStateDetail(availability),
+    preserved: msg('app.bubble.harness.session-preserved'),
+  })
+}
+
+/** "Harness 模式现在不能切"那句，同样是词条拼的（与掉线提示共用前缀，见 `RuntimeNoticeKind`）。 */
+export function harnessSelectionUnavailableNotice(availability: RuntimeState['harness']): Message {
+  return msg('app.bubble.harness.selection-frame', {
+    prefix: msg('app.bubble.harness.disconnected-prefix'),
+    detail: harnessStateDetail(availability),
+    unavailable: msg('app.bubble.harness.selection-unavailable'),
+  })
+}
+
+/**
+ * 通知条上"Bridge 不可用"那一类提示的补丁：标志位随句子一起写，判定不再看文字。
+ *
+ * 它是**唯一**显式写 `errorKind` 的地方；其余补丁换了 `error` 就由 reducer 自动把标志位清掉
+ * （见 `scenes/stateMachine.ts` 的 PATCH）。
+ */
+function bridgeUnavailableNotice(message: Message): Pick<RuntimeState, 'error' | 'errorKind'> {
+  return { error: message, errorKind: 'bridge-unavailable' }
 }
 
 /**
@@ -251,46 +272,44 @@ export function canSelectBackend(
  */
 export { HARNESS_STATE_DETAILS, harnessStateLabel } from './connect/harnessLabels.ts'
 
-export function harnessSelectionUnavailableError(availability: RuntimeState['harness']): string {
-  return `${harnessDisconnectedErrorPrefix()}${HARNESS_STATE_DETAILS[availability]}${t('app.bubble.harness.selection-unavailable')}`
-}
-
 /**
  * Actionable text for a failed automatic DSH start.
  *
  * Each code names the concrete thing the user must fix, and `null` means there
  * is nothing to report (the launch is in progress, or the process was started).
  * No entry may include a path from the OS, a token, or an exception body.
+ *
+ * 返回 `Message` 而不是句子：它进的是运行状态（`error`），而状态里的句子必须留到渲染期才求值。
  */
-export function dshAutostartNotice(result: ManagedDshAutostart): string | null {
+export function dshAutostartNotice(result: ManagedDshAutostart): Message | null {
   switch (result.outcome) {
     case 'started':
     case 'already-attempted':
     case 'port-occupied-external':
       return null
     case 'root-path-missing':
-      return t('app.bubble.autostart.root-path-missing')
+      return msg('app.bubble.autostart.root-path-missing')
     case 'unknown-target':
-      return t('app.bubble.autostart.unknown-target')
+      return msg('app.bubble.autostart.unknown-target')
     case 'started-unconfirmed':
-      return t('app.bubble.autostart.started-unconfirmed')
+      return msg('app.bubble.autostart.started-unconfirmed')
     case 'already-running':
       return null
     case 'root-path-invalid':
-      return t('app.bubble.autostart.root-path-invalid')
+      return msg('app.bubble.autostart.root-path-invalid')
     case 'launcher-missing':
-      return t('app.bubble.autostart.launcher-missing')
+      return msg('app.bubble.autostart.launcher-missing')
     case 'profile-invalid':
-      return t('app.bubble.autostart.profile-invalid')
+      return msg('app.bubble.autostart.profile-invalid')
     // FREEZE 留档（临时冻结，不是删除）：这一条是「启动参数」的失败码。参数冻结之后它到不了这里
     // —— 没有参数就没有"参数无效"这回事 —— 但**必须留着**：那条码仍然在原生侧的结果枚举里
     // (`ManagedDshAutostart`)，删掉这条 case 会让它落进下面那句泛泛的"进程启动失败"，而一句更
     // 具体的、说得出该改哪里的提示比一句泛泛的话更值钱（dshAutostart.spec.ts 也钉着它）。
     // 恢复办法：什么都不用做 —— 它在功能复活的同一天自动重新可达。
     case 'launch-args-invalid':
-      return t('app.bubble.autostart.launch-args-invalid')
+      return msg('app.bubble.autostart.launch-args-invalid')
     default:
-      return t('app.bubble.autostart.spawn-failed')
+      return msg('app.bubble.autostart.spawn-failed')
   }
 }
 
@@ -329,7 +348,7 @@ export function harnessLaunchOutcome(
    * immediately exited" for a client that is running perfectly well.
    */
   launchedKind: 'embedded-shell' | 'checkout' | 'installed-cli' = 'checkout',
-): { message: string } | null {
+): { message: Message } | null {
   if (status.availability === 'bridge-ready') return null
   // "还没被我管起来"不等于"已经退出了"：宿主起来要几秒（实测：启动 22:27:54、端口与门票
   // 22:27:56；已安装 CLI 还要先经过一层 cmd 与批处理）。各类别给各自长度的宽限期，期内不下
@@ -339,21 +358,21 @@ export function harnessLaunchOutcome(
     && elapsedMs > exitGraceMs(launchedKind)
     && (!managed.managed || !managed.running)
   ) {
-    return { message: t('app.bubble.launch.exited-early') }
+    return { message: msg('app.bubble.launch.exited-early') }
   }
   if (elapsedMs <= timeoutMs) return null
   // Past the deadline the most specific available cause wins: a Bridge that
   // answered but cannot be used is a different fix from one that never appeared.
   if (status.availability === 'bridge-auth-unavailable') {
-    return { message: t('app.bubble.launch.token-unavailable') }
+    return { message: msg('app.bubble.launch.token-unavailable') }
   }
   if (status.availability === 'bridge-incompatible') {
-    return { message: t('app.bubble.launch.incompatible') }
+    return { message: msg('app.bubble.launch.incompatible') }
   }
   if (status.availability === 'bridge-loading') {
-    return { message: t('app.bubble.launch.bridge-loading') }
+    return { message: msg('app.bubble.launch.bridge-loading') }
   }
-  return { message: t('app.bubble.launch.timeout') }
+  return { message: msg('app.bubble.launch.timeout') }
 }
 
 /**
@@ -545,20 +564,23 @@ export function shouldIgnoreUnpairedResume(
 export function harnessAvailabilityPatch(
   backend: BackendMode,
   availability: RuntimeState['harness'],
-  currentError?: string,
-): Pick<RuntimeState, 'activity' | 'error'> | undefined {
+  /**
+   * 当前 `error` 的**种类**，不是它的文字。
+   *
+   * 这里原来是 `currentError?: string` + `startsWith(掉线前缀)`：切到英文之后我们写的那句
+   * 不再以中文前缀开头，于是"桥回来了就把这句清掉"这条路在英文界面里失效（提示条永远挂着）。
+   */
+  currentErrorKind?: RuntimeState['errorKind'],
+): Pick<RuntimeState, 'activity' | 'error' | 'errorKind'> | undefined {
   if (backend !== 'harness') return undefined
   if (isHarnessReady(availability)) {
-    return currentError?.startsWith(harnessDisconnectedErrorPrefix())
-      ? { activity: 'idle', error: undefined }
+    return currentErrorKind === 'bridge-unavailable'
+      ? { activity: 'idle', error: undefined, errorKind: undefined }
       : undefined
   }
-  if (currentError?.startsWith(harnessDisconnectedErrorPrefix())) return undefined
+  if (currentErrorKind === 'bridge-unavailable') return undefined
 
-  return {
-    activity: 'idle',
-    error: `${harnessDisconnectedErrorPrefix()}${HARNESS_STATE_DETAILS[availability]}${t('app.bubble.harness.session-preserved')}`,
-  }
+  return { activity: 'idle', ...bridgeUnavailableNotice(harnessDisconnectedNotice(availability)) }
 }
 
 /**
@@ -568,8 +590,11 @@ export function harnessAvailabilityPatch(
  * `error` 是**原生宿主**说的（Bridge 断开等）。必须分开存，因为 `error` 会被**原生快照整体覆写**
  * （`error: snapshot.error`）——以前两者挤在同一个字段里，聊天层的通知刚写进去就被下一条快照擦掉，
  * 用户只看到"顶上闪了一下"（实测）。聊天层那句更新、更针对此刻，所以它在前面。
+ *
+ * 返回的是**没求值的**那一句（`Message`，或原生自由文本）：显示的地方在渲染期用
+ * `formatSentence()` 求值，所以切语言时还挂在屏幕上的通知会跟着重译。
  */
-export function visibleNotice(state: Pick<RuntimeState, 'chatNotice' | 'error'>): string | undefined {
+export function visibleNotice(state: Pick<RuntimeState, 'chatNotice' | 'error'>): Sentence | undefined {
   return state.chatNotice ?? state.error
 }
 
@@ -579,8 +604,9 @@ export function App({ surface = 'combined' }: AppProps) {
   /**
    * 语言变了，这个外壳要重渲染：立绘气泡、通知条、模型下拉的禁用原因与登录浮层里都有词条。
    *
-   * 下面两处 `useMemo` 的**结果里带着句子**，所以它们各自把 `language` 也列进了依赖 ——
-   * 只订阅不列依赖的话，语言一变它们会拿着上一次语言的那句不动。
+   * 这是一次**订阅**，不是一处求值时机：状态里存的是 `Message`（没求值的键 + 参数），
+   * 句子在渲染期由 `formatSentence()` / `formatMessage()` 现取，所以这里只要让组件重渲染，
+   * 屏幕上还挂着的那句通知就会跟着换语言。
    */
   const language = useLanguage()
   const [settings, setSettings] = useState<WallpaperSettings>(() => loadSettings())
@@ -594,10 +620,10 @@ export function App({ surface = 'combined' }: AppProps) {
   const [apiModelChoice, setApiModelChoice] = useState(settings.deepseekApi.model)
   const [harnessModelChoice, setHarnessModelChoice] = useState<string | undefined>()
   // 枚举出来的模型目录。初始是"还没查"，不是"没有模型"——区别见 connect/modelDirectory.ts。
-  const [harnessModelDir, setHarnessModelDir] = useState<ModelDirectory>({ kind: 'unavailable', reason: t('app.bubble.model.harness-reading') })
+  const [harnessModelDir, setHarnessModelDir] = useState<ModelDirectory>({ kind: 'unavailable', reason: msg('app.bubble.model.harness-reading') })
   /** 就绪过的桥接正在失联（黄灯），但还没到"确认掉线"。 */
   const [harnessProbing, setHarnessProbing] = useState(false)
-  const [apiModelDir, setApiModelDir] = useState<ModelDirectory>({ kind: 'unavailable', reason: t('app.bubble.model.endpoint-reading') })
+  const [apiModelDir, setApiModelDir] = useState<ModelDirectory>({ kind: 'unavailable', reason: msg('app.bubble.model.endpoint-reading') })
   const [interactionState, setInteractionState] = useState<'collapsed' | 'expanded'>('collapsed')
   const [interactionEnabled, setInteractionEnabled] = useState(true)
   // The composer draft lives here rather than in the bubble because returning to
@@ -899,9 +925,10 @@ export function App({ surface = 'combined' }: AppProps) {
   }, [runtime.backend, harnessModelDir, apiModelDir])
   const modelSwitchDisabledReason = useMemo(() => {
     // 网页入口的模型由 DeepSeek 页面自己决定，与"枚举不到"是两件事，文案必须分开。
-    if (runtime.backend === 'deepseek-web') return t('app.bubble.model.web-decided')
+    if (runtime.backend === 'deepseek-web') return msg('app.bubble.model.web-decided')
     return modelUnavailableReason(runtime.backend === 'deepseek-api' ? apiModelDir : harnessModelDir)
-    // `language` 在这里不是多余的：返回值是一句话，语言一变它就得重算。
+    // `language` 在这里**不是**为了重算返回值（返回的是 `Message`，渲染期才求值）：它是这个组件的
+    // 语言订阅 —— 语言一变，外壳连同会话气泡一起重渲染。
   }, [runtime.backend, harnessModelDir, apiModelDir, language])
 
   // 枚举当前可切换的模型：Harness 侧问宿主（经桥接转发），API 侧问端点自己的 `/models`。
@@ -914,16 +941,16 @@ export function App({ surface = 'combined' }: AppProps) {
       // 主体不在运行时**不保留旧列表**：选择器要立刻变成"Harness 未运行"并禁用，
       // 这就是"状态刷新之后实时更新模型下拉"的掉线那一半。
       if (!isHarnessReady(runtime.harness)) {
-        setHarnessModelDir(unavailableDirectory(t('app.bubble.model.harness-not-running')))
+        setHarnessModelDir(unavailableDirectory(msg('app.bubble.model.harness-not-running')))
         return () => { disposed = true }
       }
       void nativeRuntime.harnessModels()
         .then((payload) => { if (!disposed) setHarnessModelDir(bridgeModelDirectory(payload)) })
-        .catch((error) => { if (!disposed) setHarnessModelDir(unavailableDirectory(t('app.bubble.model.harness-read-failed', { error: String(error) }))) })
+        .catch((error) => { if (!disposed) setHarnessModelDir(unavailableDirectory(msg('app.bubble.model.harness-read-failed', { error: String(error) }))) })
     } else if (runtime.backend === 'deepseek-api') {
       void nativeRuntime.apiModels(settingsRef.current.deepseekApi.baseUrl)
         .then((payload) => { if (!disposed) setApiModelDir(apiModelDirectory(payload, settingsRef.current.deepseekApi.model)) })
-        .catch((error) => { if (!disposed) setApiModelDir(unavailableDirectory(t('app.bubble.model.endpoint-read-failed', { error: String(error) }))) })
+        .catch((error) => { if (!disposed) setApiModelDir(unavailableDirectory(msg('app.bubble.model.endpoint-read-failed', { error: String(error) }))) })
     }
     return () => { disposed = true }
   }, [runtime.backend, runtime.harness, settings.deepseekApi.baseUrl])
@@ -967,10 +994,10 @@ export function App({ surface = 'combined' }: AppProps) {
           return
         }
         if (ensured.started && ensured.outcome === 'not-running') {
-          patchRuntime({ error: t('app.bubble.launch.subject-failed') })
+          patchRuntime({ error: msg('app.bubble.launch.subject-failed') })
         }
       } catch (error) {
-        patchRuntime({ error: t('app.bubble.notice.raise-window-failed', { error: String(error) }) })
+        patchRuntime({ error: msg('app.bubble.notice.raise-window-failed', { error: String(error) }) })
       }
     })()
   }, [settings.dshLaunch])
@@ -1253,7 +1280,7 @@ const enterInnerWorkspace = () => {
         desktopDisplaysSignatureRef.current = signature
         setDesktopDisplays(next)
       } catch (error) {
-        if (!disposed) patchRuntime({ error: t('app.bubble.notice.display-read-failed', { error: String(error) }) })
+        if (!disposed) patchRuntime({ error: msg('app.bubble.notice.display-read-failed', { error: String(error) }) })
       }
     }
     const delayedRefresh = () => {
@@ -1267,7 +1294,7 @@ const enterInnerWorkspace = () => {
     const displayListener = listenUntilDisposed<unknown>(
       (emit) => listen('display-changed', () => emit(undefined)),
       delayedRefresh,
-      { onError: (error) => patchRuntime({ error: t('app.bubble.notice.display-subscribe-failed', { error: String(error) }) }) },
+      { onError: (error) => patchRuntime({ error: msg('app.bubble.notice.display-subscribe-failed', { error: String(error) }) }) },
     )
     window.addEventListener('resize', delayedRefresh)
     const timer = window.setInterval(() => { void refresh() }, DISPLAY_TOPOLOGY_FALLBACK_INTERVAL_MS)
@@ -1420,7 +1447,7 @@ const enterInnerWorkspace = () => {
         const notice = dshAutostartNotice(result)
         if (notice && !disposed) patchRuntime({ error: notice })
       } catch (error) {
-        if (!disposed) patchRuntime({ error: t('app.bubble.autostart.failed', { error: String(error) }) })
+        if (!disposed) patchRuntime({ error: msg('app.bubble.autostart.failed', { error: String(error) }) })
       }
     })()
     return () => { disposed = true }
@@ -1558,7 +1585,7 @@ const enterInnerWorkspace = () => {
         if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current.activity = 'idle'
         baseDispatch({ type: 'AUTH_REQUIRED' }); dispatchCore('set-activity', { value: 'idle' }); dispatchCore('auth-required')
       }
-      if (event.type === 'approval-required') { patchRuntime({ activity: 'tool', error: t('app.bubble.notice.approval', { summary: event.summary }) }); dispatchCore('set-activity', { value: 'tool' }) }
+      if (event.type === 'approval-required') { patchRuntime({ activity: 'tool', error: msg('app.bubble.notice.approval', { summary: event.summary }) }); dispatchCore('set-activity', { value: 'tool' }) }
       if (event.type === 'question-required') { setQuestionPrompt(event.questions); patchRuntime({ activity: 'tool', error: undefined }); dispatchCore('set-activity', { value: 'tool' }) }
       if (event.type === 'conversation-reset') {
         // 这条会话不能用了（用户归档，或宿主拒绝了这一轮）：轨道上这段记录**立刻**停止看起来
@@ -1643,7 +1670,7 @@ const enterInnerWorkspace = () => {
           if (!appCoreClient.native) baseDispatch({ type: 'UNLOCK', playWake: settingsRef.current.playWakeOnEveryUnlock && settingsRef.current.animationsEnabled && !settingsRef.current.skipWakeAnimation })
         }
       },
-      { onError: (error) => patchRuntime({ error: t('app.bubble.notice.system-subscribe-failed', { error: String(error) }) }) },
+      { onError: (error) => patchRuntime({ error: msg('app.bubble.notice.system-subscribe-failed', { error: String(error) }) }) },
     )
     return () => listener.dispose()
     // Subscription, not a reaction to a preference: the values it reads are taken from
@@ -1691,7 +1718,7 @@ const enterInnerWorkspace = () => {
     const listener = listenUntilDisposed<unknown>(
       (emit) => listen('appearance-changed', () => emit(undefined)),
       () => { void refreshAppearance() },
-      { onError: (error) => patchRuntime({ error: t('app.bubble.notice.appearance-subscribe-failed', { error: String(error) }) }) },
+      { onError: (error) => patchRuntime({ error: msg('app.bubble.notice.appearance-subscribe-failed', { error: String(error) }) }) },
     )
     return () => listener.dispose()
   }, [surface])
@@ -1765,7 +1792,7 @@ const enterInnerWorkspace = () => {
         // 黄灯：就绪过的桥接正在失联但还没判死（`probing`）。此时**不改** availability，
         // 所以滑槽、模型列表、会话都还按"它还在"处理 ✓——只有灯变色 ✓。
         setHarnessProbing(status.probing === true)
-        const disconnected = harnessAvailabilityPatch(runtimeRef.current.backend, status.availability, runtimeRef.current.error)
+        const disconnected = harnessAvailabilityPatch(runtimeRef.current.backend, status.availability, runtimeRef.current.errorKind)
         if (disconnected) patchRuntime(disconnected)
       },
     })
@@ -1791,9 +1818,11 @@ const enterInnerWorkspace = () => {
       markAutoResetFromHarness(true)
       changeBackend(fallback, { keepTranscript: true, automatic: true })
     }
-    const disconnected = harnessAvailabilityPatch(runtime.backend, runtime.harness, runtime.error)
+    const disconnected = harnessAvailabilityPatch(runtime.backend, runtime.harness, runtime.errorKind)
     if (disconnected) patchRuntime(disconnected)
-  }, [runtime.harness, runtime.backend, runtime.error, settings.autoSwitchHarness, settings.defaultBackend])
+    // `runtime.error` 仍然在依赖里：它是"这句话换了"这件事本身。判据用的是 `errorKind`，重跑的
+    // 时机则与改动前一致（那句话换了就要重算一次该不该由掉线提示接管）。
+  }, [runtime.harness, runtime.backend, runtime.error, runtime.errorKind, settings.autoSwitchHarness, settings.defaultBackend])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -1825,7 +1854,7 @@ const enterInnerWorkspace = () => {
       // Do not construct a native Harness adapter or issue a Tauri selection
       // for a bare port-3080 observation. Leave the current transcript and
       // backend intact until the Bridge contract is actually ready.
-      patchRuntime({ activity: 'idle', error: harnessSelectionUnavailableError(runtimeRef.current.harness) })
+      patchRuntime({ activity: 'idle', ...bridgeUnavailableNotice(harnessSelectionUnavailableNotice(runtimeRef.current.harness)) })
       return
     }
     if (!options?.automatic) markAutoResetFromHarness(false)
@@ -2107,13 +2136,13 @@ const enterInnerWorkspace = () => {
           leaveInnerWorkspace()
           return
         }
-        void nativeRuntime.leaveInnerWorkspace().catch((error) => patchRuntime({ error: t('app.bubble.notice.leave-inner-failed', { error: String(error) }) }))
+        void nativeRuntime.leaveInnerWorkspace().catch((error) => patchRuntime({ error: msg('app.bubble.notice.leave-inner-failed', { error: String(error) }) }))
       }}
       // 打开转写里的链接：地址来自模型输出，真正的白名单在 Rust 侧（`external_link::validate`）。
       // 失败要说出来 —— 中键点了没反应，用户只会以为是手势没生效。
       onOpenLink={(href) => {
         void nativeRuntime.openExternalLink(href)
-          .catch((error) => patchRuntime({ chatNotice: t('app.bubble.notice.open-link-failed', { error: String(error) }) }))
+          .catch((error) => patchRuntime({ chatNotice: msg('app.bubble.notice.open-link-failed', { error: String(error) }) }))
       }}
     />
     })()
@@ -2157,7 +2186,7 @@ const enterInnerWorkspace = () => {
     <>
       <WidgetHost workspace={workspace} widgets={[]} />
       {conversationSurface}
-      {visibleNotice(runtime) && runtime.phase !== 'error' && <div className="runtime-notice" role="status">{visibleNotice(runtime)}<button onClick={() => patchRuntime({ error: undefined, chatNotice: undefined })}>×</button></div>}
+      {visibleNotice(runtime) && runtime.phase !== 'error' && <div className="runtime-notice" role="status">{formatSentence(visibleNotice(runtime))}<button onClick={() => patchRuntime({ error: undefined, chatNotice: undefined })}>×</button></div>}
       {runtime.phase === 'auth-required' && <div className="auth-overlay" data-interaction-region="auth"><div className="auth-card"><h2>{t('app.bubble.auth.title')}</h2><p>{t('app.bubble.auth.body')}</p><button onClick={() => { baseDispatch({ type: 'AUTH_READY' }); dispatchCore('auth-ready') }}>{t('app.bubble.auth.confirm')}</button></div></div>}
     </>
   </div>

@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import type { ChatAdapter } from '../src/chat/adapter.ts'
 import { NativeChatAdapter } from '../src/chat/nativeAdapter.ts'
 import type { BackendMode } from '../src/domain/types.ts'
+import { formatMessage, formatSentence } from '../src/i18n/index.ts'
 import { nativeRuntime } from '../src/native/runtime.ts'
 
 // AppCore's browser preview fallback is evaluated when App.tsx is imported.
@@ -40,17 +41,24 @@ describe('App chat lifecycle isolation', () => {
       canAutoSelectHarness,
       canSelectBackend,
       harnessAvailabilityPatch,
-      harnessDisconnectedErrorPrefix,
+      harnessDisconnectedNotice,
       harnessFallbackBackend,
-      harnessSelectionUnavailableError,
+      harnessSelectionUnavailableNotice,
     } = await import('../src/App.tsx')
     const disconnected = harnessAvailabilityPatch('harness', 'offline')
 
     expect(disconnected).toMatchObject({ activity: 'idle' })
-    expect(disconnected?.error).toContain(harnessDisconnectedErrorPrefix())
-    expect(disconnected?.error).toContain('已保留当前 Harness 会话和对话记录')
+    // 那句话存的是**词条**（渲染期求值），所以核对渲染出来的样子。
+    expect(disconnected?.error).toEqual(harnessDisconnectedNotice('offline'))
+    expect(formatSentence(disconnected?.error)).toContain('DSH 壁纸 Bridge 当前不可用。')
+    expect(formatSentence(disconnected?.error)).toContain('已保留当前 Harness 会话和对话记录')
+    // 「这句是我们写的」不再看文字，而是看这个与语言无关的标志位。
+    expect(disconnected?.errorKind).toBe('bridge-unavailable')
     expect(harnessAvailabilityPatch('deepseek-web', 'offline')).toBeUndefined()
-    expect(harnessAvailabilityPatch('harness', 'bridge-ready', disconnected?.error)).toEqual({ activity: 'idle', error: undefined })
+    // 桥回来了就清掉那一句 —— 判据是标志位，所以英文界面里同样清得掉（以前靠中文前缀，
+    // 切到英文就认不出自己写的那句了）。
+    expect(harnessAvailabilityPatch('harness', 'bridge-ready', 'bridge-unavailable'))
+      .toEqual({ activity: 'idle', error: undefined, errorKind: undefined })
     expect(canAutoSelectHarness('bridge-ready', 'deepseek-web', true)).toBe(true)
     expect(canAutoSelectHarness('web-only', 'deepseek-web', true)).toBe(false)
     expect(canAutoSelectHarness('offline', 'harness', true)).toBe(false)
@@ -59,8 +67,8 @@ describe('App chat lifecycle isolation', () => {
     expect(canSelectBackend('web-only', 'harness')).toBe(false)
     expect(canSelectBackend('offline', 'harness')).toBe(false)
     expect(canSelectBackend('web-only', 'deepseek-api')).toBe(true)
-    expect(harnessSelectionUnavailableError('web-only')).toContain('未安装、未启动或不兼容')
-    expect(harnessSelectionUnavailableError('offline')).toContain('未能连接')
+    expect(formatMessage(harnessSelectionUnavailableNotice('web-only'))).toContain('未安装、未启动或不兼容')
+    expect(formatMessage(harnessSelectionUnavailableNotice('offline'))).toContain('未能连接')
     // 主体**彻底退出**后滑槽要复位到左侧（拉起 harness 的入口就在壁纸里，停在死掉的一侧
     // 会让用户不得不再手动切一次）。只在 offline 生效：bridge-loading 是"正在起来"。
     expect(harnessFallbackBackend('offline', 'harness', 'deepseek-web')).toBe('deepseek-web')
