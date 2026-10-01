@@ -435,7 +435,18 @@ export interface UpdateDownloadEvent {
 /** 一次「下载」调用的回执。**不含终局**（终局走 `update-download` 事件）。 */
 export interface UpdateDownloadReport { started: boolean; version: string; destination: string }
 /** 一次「安装」的结果：交给了哪个文件、按后缀分派给了哪一种处理程序（§六）。 */
-export interface UpdateInstallReport { path: string; kind: 'exe' | 'msix' }
+export interface UpdateInstallReport {
+  path: string
+  kind: 'exe' | 'msix'
+  /**
+   * 接下来的那一步。
+   *
+   * 原生先安排一个"等我们退出再启动安装包"的助手，成功就**接着退出应用**（`exiting`：这一条命令
+   * 可能不会再回话，界面现在就说话）；助手起不来时回落到"现在就打开安装包"（`opened`：应用不退出）。
+   * 两种走法用户看到的不一样，所以必须由原生说，而不是界面猜。
+   */
+  nextStep: 'exiting' | 'opened'
+}
 
 export interface NativeRuntime {
   isNative: boolean
