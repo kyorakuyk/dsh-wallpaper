@@ -3,7 +3,8 @@
 //! 流程切成三段，是为了让"不该打网络的时候一次都不打"能被单测钉死：
 //!
 //!  1. [`run_check`] 先读状态，就地给出两种"不检查"的结论：读不到本机版本（§3.1）、或者距上次
-//!     检查不足 6 小时（§五）；
+//!     检查不足 6 小时（§五）。**两条跳过都落盘**（[`persist_skip`]）：跳过不留痕的话，"没触发过"
+//!     与"跑了但跳过"就只能靠日志区分，而日志会被截断；
 //!  2. 只有走到这里才会调用**注入进来的**取数入口（生产是
 //!     [`super::source::fetch_latest_release`]）；
 //!  3. 拿到正文之后全是纯判断：解析、比较、选资产、落盘。
@@ -122,14 +123,23 @@ pub(crate) struct UpdateCheckReport {
     /// `latestVersion` 是否已被忽略。**原生侧算好**：等价比较（`0.4.1` 与 `0.4.1.0` 是同一个
     /// 版本）不该让界面再实现一遍。
     pub dismissed: bool,
-    /// 本次结果是否已经落盘。跳过时没有要落的东西，恒为 `true`；写不进去时是 `false`
-    /// （本次结果照样显示，只是下次启动会再查一次）。
+    /// 本次结果是否已经落盘。**跳过也算落盘**（见 [`persist_skip`]）：跳过会写
+    /// `lastOutcome` + `lastSkipReason`，正是为了事后能区分"没跑过"与"跑了但跳过"；写不进去时是
+    /// `false`（本次结果照样显示，只是下次启动会再查一次）。
     pub state_persisted: bool,
 }
 
 impl UpdateCheckReport {
     /// 没有检查就给出的结果（读不到版本 / 被节流）。
-    fn skipped(state: &UpdateState, skip_reason: SkipReason, installed: Option<&InstalledVersion>) -> Self {
+    ///
+    /// `checked_at_ms` 原样照抄状态里的值，**只有 [`persist_skip`] 写过状态之后**才是这次的状态
+    /// —— 时间戳的语义（真正查过的时刻）不由跳过分支改变。
+    fn skipped(
+        state: &UpdateState,
+        skip_reason: SkipReason,
+        installed: Option<&InstalledVersion>,
+        state_persisted: bool,
+    ) -> Self {
         Self {
             outcome: CheckOutcome::Skipped,
             skip_reason: Some(skip_reason),
@@ -142,7 +152,7 @@ impl UpdateCheckReport {
             checked_at_ms: state.checked_at_ms,
             dismissed_version: state.dismissed_version.clone(),
             dismissed: recorded_version_is_dismissed(state),
-            state_persisted: true,
+            state_persisted,
         }
     }
 
@@ -229,6 +239,37 @@ impl Conclusion {
     }
 }
 
+/// 让"没有检查"这件事留下持久痕迹，并回给界面一条跳过原因。
+///
+/// 真机上踩过一次：跳过分支原先只写一行日志就返回，于是"检查从来没被触发过"与"跑了、命中了跳过
+/// 分支"在证据上**完全一样**，而唯一能区分的那行日志会被截断 ⇒ 事后无法定性。现在两条跳过分支都
+/// 落盘 `lastOutcome = Skipped` + `lastSkipReason = <原因>`。
+///
+/// **不动 `checkedAtMs`**：它代表"真正查过的时刻"，节流靠它。写它会让两种情况都坏掉 ——
+/// "读不到本机版本"的那台机器会把这次跳过当成一次检查、从此永不重查；"被节流"那条则是把时间戳挪
+/// 到不该挪的地方（它本来就有值，且正是把这次挡在门外的那个值）。失败原因也同理不动。
+fn persist_skip(state: &mut UpdateState, state_path: &Path, skip_reason: SkipReason) -> bool {
+    state.last_outcome = Some(CheckOutcome::Skipped);
+    state.last_skip_reason = Some(skip_reason);
+    match state::save(state_path, state) {
+        Ok(()) => {
+            log::info!(
+                "更新检查：跳过（{skip_reason:?}），状态已落盘（{}）",
+                state_path.display()
+            );
+            true
+        }
+        Err(error) => {
+            // 写不进去要**说出来**：这条日志背后正是"这条跳过没有留下任何持久痕迹"。
+            log::warn!(
+                "更新状态写不进去（{}）：{error} —— 本次跳过（{skip_reason:?}）没有留在状态文件里",
+                state_path.display()
+            );
+            false
+        }
+    }
+}
+
 /// 检查更新：决定要不要打网络、打完之后出结论并落盘。
 ///
 /// `fetch` 是**注入进来**的取数入口（§九 2 要求网络层可替换）：生产传
@@ -241,6 +282,8 @@ impl Conclusion {
 ///  - **失败也写** `checkedAtMs`。不写的话，断网时每次启动都会再打一次网络，正好违反 §八 8；
 ///    节流管的是"查了几次"，不是"成功了几次"。
 ///  - 标签读不懂时**不覆盖** `latestVersion`：一个读不懂的标签不该把上一次的结论抹掉。
+///
+/// 还有一处同样刻意：**跳过时不写** `checkedAtMs`（见 [`persist_skip`]），只写"为什么跳过"。
 pub(crate) async fn run_check<F, Fut>(
     installed: Option<InstalledVersion>,
     state_path: &Path,
@@ -254,16 +297,28 @@ where
 {
     let mut state = state::load(state_path);
 
-    // 第一段：两个不打网络的就地结论。
+    // 第一段：两个不打网络的就地结论。两条都落盘（`persist_skip`）。
     let Some(installed) = installed else {
         // 读不到本机版本 ⇒ 不检查，而不是猜一个版本去比（§3.1、§八 9）。
         log::info!("更新检查：读不到本机版本，跳过本次检查");
-        return UpdateCheckReport::skipped(&state, SkipReason::VersionUnavailable, None);
+        let persisted = persist_skip(&mut state, state_path, SkipReason::VersionUnavailable);
+        return UpdateCheckReport::skipped(
+            &state,
+            SkipReason::VersionUnavailable,
+            None,
+            persisted,
+        );
     };
     if !manual && !state::auto_check_due(state.checked_at_ms, now_ms) {
         // 6 小时节流（§五）。手动检查不受限（§四），所以这一支只在自动检查时进得来。
         log::info!("更新检查：距上次检查不足 6 小时，跳过本次（手动检查不受限）");
-        return UpdateCheckReport::skipped(&state, SkipReason::Throttled, Some(&installed));
+        let persisted = persist_skip(&mut state, state_path, SkipReason::Throttled);
+        return UpdateCheckReport::skipped(
+            &state,
+            SkipReason::Throttled,
+            Some(&installed),
+            persisted,
+        );
     }
 
     // 第二段：整条流程里唯一的一次网络。
@@ -287,6 +342,9 @@ where
     }
     state.last_outcome = Some(conclusion.outcome);
     state.last_failure = conclusion.failure;
+    // 真正查过之后就没有"为什么跳过"这回事了：留着它会让 `lastSkipReason` 与 `lastOutcome` 对不上
+    // （后者已经不是 `Skipped`），下次看状态文件的人会把上一次跳过当成这次的解释。
+    state.last_skip_reason = None;
     let state_persisted = match state::save(state_path, &state) {
         Ok(()) => true,
         Err(error) => {
@@ -771,7 +829,76 @@ mod tests {
         assert_eq!(report.current_version, None);
         assert_eq!(report.current_version_source, None);
         assert_eq!(report.latest_version, None);
-        assert!(!path.exists(), "a skipped check writes nothing");
+        // 别的字段一个都没被改动过（节流与"忽略"都读这份状态），只多了"这次为什么跳过"。
+        assert_eq!(
+            state::load(&path),
+            UpdateState {
+                last_outcome: Some(CheckOutcome::Skipped),
+                last_skip_reason: Some(SkipReason::VersionUnavailable),
+                ..Default::default()
+            }
+        );
+    }
+
+    /// 跳过也要留痕：真机上"没被触发过"与"跑了但跳过"曾经不可区分，因为唯一的区别是会被截断的
+    /// 日志。这次跳过必须能从状态文件里读出来，**同时**不许写 `checkedAtMs` —— 写了它，这台读不到
+    /// 版本的机器会把跳过当成一次检查，从此永远不再重查（§3.1 的自愈前提）。
+    #[tokio::test]
+    async fn a_skipped_check_still_leaves_its_reason_in_the_state_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = state_path(&directory);
+        let fetch = Fetch::ok(&published_release());
+
+        let report = run_check(None, &path, NOW, false, || fetch.fetch()).await;
+
+        assert_eq!(report.outcome, CheckOutcome::Skipped);
+        assert!(report.state_persisted, "跳过也要落盘");
+        assert!(path.exists(), "跳过分支必须写出状态文件");
+        assert!(!path.with_extension("json.tmp").exists(), "半截文件不留盘");
+
+        let stored = state::load(&path);
+        assert_eq!(stored.last_outcome, Some(CheckOutcome::Skipped));
+        assert_eq!(
+            stored.last_skip_reason,
+            Some(SkipReason::VersionUnavailable)
+        );
+        assert_eq!(stored.checked_at_ms, None, "没查过就是没查过");
+    }
+
+    /// 状态文件里的形状也是契约：键名 camelCase，值是指出的那几个码。
+    #[tokio::test]
+    async fn a_skipped_state_file_records_the_reason_by_code() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = state_path(&directory);
+        state::save(
+            &path,
+            &UpdateState {
+                checked_at_ms: Some(NOW - 60_000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let fetch = Fetch::ok(&published_release());
+
+        let report = run_check(
+            installed("0.4.0", VersionSource::UninstallEntry),
+            &path,
+            NOW,
+            false,
+            || fetch.fetch(),
+        )
+        .await;
+
+        assert_eq!(report.skip_reason, Some(SkipReason::Throttled));
+        assert_eq!(fetch.calls.get(), 0, "被节流的那次一个网络都不打");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["lastOutcome"], serde_json::json!("skipped"));
+        assert_eq!(value["lastSkipReason"], serde_json::json!("throttled"));
+        // 跳过不是失败：报告里没有 `failure`，状态里也不许冒出上一次的失败原因。
+        assert_eq!(value["lastFailure"], serde_json::json!(null));
+        // 节流靠这个字段，跳过不许动它：还是原来那个"上次真正查过"的时刻。
+        assert_eq!(value["checkedAtMs"], serde_json::json!(NOW - 60_000));
     }
 
     #[tokio::test]
@@ -803,6 +930,8 @@ mod tests {
         assert_eq!(report.current_version.as_deref(), Some("0.4.0"));
         assert_eq!(report.latest_version.as_deref(), Some("0.4.1"));
         assert_eq!(report.checked_at_ms, Some(NOW - 60_000));
+        // 这次跳过也留了痕（见 `a_skipped_check_still_leaves_its_reason_in_the_state_file`）。
+        assert_eq!(state::load(&path).last_skip_reason, Some(SkipReason::Throttled));
 
         let manual = Fetch::ok(&published_release());
         let report = run_check(
@@ -828,6 +957,8 @@ mod tests {
         assert_eq!(asset.size, 31_457_280);
         assert_eq!(report.checked_at_ms, Some(NOW));
         assert!(report.state_persisted);
+        // 真正查过之后，"为什么跳过"就被清掉了：留下的 `Skipped` 解释不该跟着一次成功的检查。
+        assert_eq!(state::load(&path).last_skip_reason, None);
     }
 
     #[tokio::test]

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::version::Version;
-use super::{CheckOutcome, FailureReport, APP_IDENTIFIER};
+use super::{CheckOutcome, FailureReport, SkipReason, APP_IDENTIFIER};
 
 /// 自动检查的最小间隔：6 小时（§五 与 §十）。
 pub(crate) const CHECK_INTERVAL_MS: u64 = 6 * 60 * 60 * 1000;
@@ -38,6 +38,11 @@ pub(crate) fn now_ms() -> u64 {
 /// 不需要迁移，旧版本读到新文件也不会崩。`lastOutcome`/`lastFailure` 是 §五 那句话里的"至少"：
 /// 设置中心要显示"上次结果（已是最新 / 有新版本 x / 检查失败的原因）"（§四），而失败原因无法从
 /// 别的字段推出来。
+///
+/// `lastSkipReason` 是被真机坑出来的一个字段：跳过分支原先只留一行日志，于是"检查从来没被触发过"
+/// 与"跑了、命中了跳过分支"留下的**唯一**区别就是那条日志，而日志会被截断 ⇒ 事后无法定性。
+/// 现在两条跳过分支（`commands::run_check`）也落盘，理由是"先让失败/状态可见"。
+/// 注意它**不代表**一次检查：`checkedAtMs` 的语义（真正查过的时刻）不受影响。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct UpdateState {
@@ -57,7 +62,15 @@ pub(crate) struct UpdateState {
     /// 上一次检查的结论。
     pub last_outcome: Option<CheckOutcome>,
     /// 上一次失败的原因（§十：保留最近一次原因，供设置页显示）。
+    ///
+    /// 跳过时**不动它**（跳过会写 `lastOutcome`，但失败原因是"上一次真正检查"的事）；报告里的
+    /// `failure` 在跳过时照旧是 `null`，界面不会因此显示一句过期的报错。
     pub last_failure: Option<FailureReport>,
+    /// 上一次**跳过**的原因；`lastOutcome` 不是 `Skipped` 时是 `null`。
+    ///
+    /// 没有它的话，"这台机器为什么不检查"在状态文件里读不出来：`Skipped` 只说明"没查"，区分
+    /// 不了"读不到本机版本"（那台机器会一直跳过）与"6 小时节流"（下一次自然会查）。
+    pub last_skip_reason: Option<SkipReason>,
 }
 
 impl UpdateState {
@@ -145,6 +158,7 @@ mod tests {
             downloaded_sha256: Some("ab".repeat(32)),
             last_outcome: Some(CheckOutcome::UpdateAvailable),
             last_failure: None,
+            last_skip_reason: None,
         };
         let value = serde_json::to_value(&state).unwrap();
         let mut keys = value
@@ -163,6 +177,7 @@ mod tests {
                 "downloadedSha256",
                 "lastFailure",
                 "lastOutcome",
+                "lastSkipReason",
                 "latestVersion",
             ]
         );
@@ -182,6 +197,7 @@ mod tests {
             downloaded_sha256: None,
             last_outcome: Some(CheckOutcome::UpdateAvailable),
             last_failure: Some(FailureReport::http_status(403)),
+            last_skip_reason: Some(SkipReason::VersionUnavailable),
         };
         save(&path, &state).expect("the state file is writable");
         assert_eq!(load(&path), state);
@@ -216,6 +232,27 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, r#"{"latestVersion":"0.4.2","somethingNewer":true}"#).unwrap();
         assert_eq!(load(&path).latest_version.as_deref(), Some("0.4.2"));
+    }
+
+    /// 旧版本写下的状态文件**没有** `lastSkipReason` 这个键：读它必须取默认（`None`），而不是报错
+    /// 把整份历史丢掉。方向也是反的：新字段不可能让旧文件失效，否则升级一次就等于清空状态。
+    #[test]
+    fn a_state_file_without_the_new_skip_field_still_reads() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = updates_dir(directory.path()).join(STATE_FILE_NAME);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"latestVersion":"0.4.2","checkedAtMs":1700000000000,"lastOutcome":"upToDate"}"#,
+        )
+        .unwrap();
+
+        let state = load(&path);
+        assert_eq!(state.last_skip_reason, None);
+        // 别的字段一个不少（"缺字段取默认"不该顺手把整份状态换成默认值）。
+        assert_eq!(state.latest_version.as_deref(), Some("0.4.2"));
+        assert_eq!(state.checked_at_ms, Some(1_700_000_000_000));
+        assert_eq!(state.last_outcome, Some(CheckOutcome::UpToDate));
     }
 
     #[test]
