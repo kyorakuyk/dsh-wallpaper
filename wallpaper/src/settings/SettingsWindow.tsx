@@ -1001,14 +1001,19 @@ export function SettingsWindow() {
 
   const close = () => void invoke('hide_settings_window')
   /**
-   * 更新那三个动作（计划书 §四）。全部交给同一个控制器：两个窗口（壁纸气泡 / 这里）与同一份
+   * 更新那几个动作（计划书 §四）。全部交给同一个控制器：两个窗口（壁纸气泡 / 这里）与同一份
    * 原生状态打交道，动作也只有一份实现。失败与"没落盘"由控制器写进 `update.notice`，
    * 卡片就在原地把那句话显示出来 —— 不需要再弹一条窗口通知说同一件事。
+   *
+   * `downloadUpdate` 现在是**真的下载**（第三片）：进度从全局的 `update-download` 事件回来，
+   * 所以在这里按下「下载」，壁纸上的气泡也会跟着走进度条。「打开发布页」留着做回落（§六）。
    */
   const checkForUpdates = async () => {
     await updateRef.current.check(true)
   }
-  const downloadUpdate = () => { void updateRef.current.openReleasePage() }
+  const downloadUpdate = () => { void updateRef.current.startDownload() }
+  const installUpdate = () => { void updateRef.current.install() }
+  const openUpdatePage = () => { void updateRef.current.openReleasePage() }
   const dismissUpdate = (version: string) => { void updateRef.current.dismiss(version) }
   const importAppearance = async () => {
     setAppearanceBusy(true)
@@ -1166,10 +1171,13 @@ export function SettingsWindow() {
       onDeleteApiConversation={(conversationId) => { void deleteApiConversation(conversationId) }}
       onClearApiHistory={() => { void clearApiHistory() }}
       updateReport={update.report}
+      updateDownload={update.download}
       updateBusy={update.busy}
       updateNotice={update.notice}
       onCheckForUpdates={() => { void checkForUpdates() }}
       onDownloadUpdate={downloadUpdate}
+      onInstallUpdate={installUpdate}
+      onOpenUpdatePage={openUpdatePage}
       onDismissUpdate={dismissUpdate}
       onRequestDeepSeekLogin={() => void nativeRuntime.requestDeepSeekLogin().catch((error) => showFailure(msg('settings.window.deepseek-web.open-failed', { error: sentenceOf(error) })))}
       deepseekWebAdapterConfig={deepseekWebAdapterConfig}

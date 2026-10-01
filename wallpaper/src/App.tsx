@@ -1054,17 +1054,23 @@ export function App({ surface = 'combined' }: AppProps) {
    * 出现"，所以"表桌面阶段不出现"这条不会被某个 `&&` 绕过去：条件不成立时这里是 `undefined`，
    * 场景里就什么都不渲染。
    *
-   * 两个按钮：主按钮交给 `update.openReleasePage()`（本片是"打开发布页"，第三片换成真下载），
-   * 「忽略」记下**这一枚**的版本号 —— 点气泡本体不做任何升级动作（规矩 3）。
+   * 状态与下载进度都是外面给的（`update.phase` / `update.download`，源头是原生的检查报告与
+   * `update-download` 事件）：气泡只负责画。主按钮按状态走「下载」→「重试」→「点击安装」，
+   * 「打开发布页」是下载失败与"这次发布没挂安装包"时的回落（§3.1、§六）；「忽略」记下**这一枚**
+   * 的版本号 —— 点气泡本体不做任何升级动作（规矩 3）。
    */
   const updateOffer = update.offer
   const updateBubbleNode = updateBubbleVisible({ workspace, phase: runtime.phase, offer: updateOffer }) && updateOffer
     ? <UpdateBubble
         offer={updateOffer}
+        phase={update.phase}
+        download={update.download}
         theme={persona.theme}
         busy={update.busy}
         notice={update.notice}
-        onDownload={() => { void update.openReleasePage() }}
+        onDownload={() => { void update.startDownload() }}
+        onInstall={() => { void update.install() }}
+        onOpenReleasePage={() => { void update.openReleasePage() }}
         onDismiss={() => { void update.dismiss(updateOffer.version) }}
       />
     : undefined
