@@ -202,6 +202,9 @@
 }
 /* 助手回答与用户那句话之间多留一段（用户要求）：一行挨着一行时，回答读起来像用户话的续行。 */
 .dsh-chat__message--user + .dsh-chat__message--assistant { margin-top: 16px; }
+/* FREEZE（临时冻结，不是删除）：这一条只服务每条消息下面那行用量，而那个元素已经不渲染了
+   （JSX 冻在 `ConversationBubble.tsx` 的 `UsageLine` 处）。规则刻意留着：现在是一组死规则，
+   恢复读数时不必再补样式。同一批的还有下面 `.dsh-chat__usage-rail` 那一组。 */
 .dsh-chat__message-usage { padding: 0 5px; color: var(--dsh-text-faint); font-size: 10px; }
 /*
  * 最小 Markdown 的三样（代码围栏、行内代码、列表）。
@@ -570,6 +573,11 @@
 .dsh-chat__model-option:hover { background: rgba(255,255,255,.07); color: var(--dsh-text); }
 .dsh-chat__model-option.is-current { color: var(--dsh-accent-soft); }
 .dsh-chat__model-option.is-current::after { content: ' ✓'; }
+/* FREEZE（临时冻结，不是删除）：下面这一组（`.dsh-chat__usage-rail`、`.dsh-chat__turn-usage`、
+   `.dsh-chat__session-cost`、`.dsh-chat__billing`，连同 `data-persistent` 与窄屏那几条）规则照旧
+   活着，但它们对应的元素已经不渲染了 —— JSX 整块冻在 `ConversationBubble.tsx` 顶栏那处 FREEZE。
+   现在它们是死规则，刻意保留：恢复读数时样式原样可用。`tests/chatGutter.spec.ts` 的对齐清单也
+   仍把用量串算作"盒子内部的一行"（它的内边距就在下面）。 */
 .dsh-chat__usage-rail { display: flex; min-height: 20px; align-items: center; justify-content: center; gap: 9px; padding: 4px var(--dsh-chat-gutter) 0; color: var(--dsh-text-faint); font-size: 10px; pointer-events: none; }
 .dsh-chat__usage-rail .dsh-chat__turn-usage,
 .dsh-chat__usage-rail .dsh-chat__session-cost { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }

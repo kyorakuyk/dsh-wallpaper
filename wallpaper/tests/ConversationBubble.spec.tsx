@@ -39,15 +39,20 @@ describe('ConversationBubble', () => {
     expect(html).toContain('aria-label="输入消息"')
     expect(html).toContain('aria-label="发送消息"')
     expect(html).not.toContain('当前会话记录')
-    expect(html).toContain('本轮 入 未提供')
-    expect(html).toContain('出 未提供')
-    expect(html).toContain('缓存 未提供')
-    expect(html).toContain('费用未提供')
-    expect(html).toContain('会话费用未提供')
-    expect(html).toContain('dsh-chat__usage-rail')
+    // 用量读数已冻结（见下面「用量与费用读数冻结之后」）：这五条原先断言的是"未提供"那一串
+    // 必须出现，现在钉的是**反面** —— 同样的渲染里一格读数都不许有。
+    expect(html).not.toContain('本轮 入')
+    expect(html).not.toContain('缓存 未提供')
+    expect(html).not.toContain('费用未提供')
+    expect(html).not.toContain('会话费用未提供')
+    expect(html).not.toContain('dsh-chat__usage-rail')
+    // 顶栏本尊还在（否则上面那条"没有读数"会因为整个顶栏都没渲染而假绿）：两枚占位符留着，
+    // 身份在左、Bridge 状态在右的排布不变。
+    expect(html).toContain('dsh-chat__topbar-spacer')
+    expect(html).toContain('dsh-chat__bottom-status')
   })
 
-  it('renders Harness theme, history, streaming state and usage metadata', () => {
+  it('renders Harness theme, history and streaming state, and no usage readout', () => {
     const html = renderToStaticMarkup(<ConversationBubble
       backend="harness"
       activity="streaming"
@@ -62,10 +67,12 @@ describe('ConversationBubble', () => {
     expect(html).toContain('当前会话记录')
     expect(html).toContain('DSH 当前离线')
     expect(html).toContain('role="switch"')
-    expect(html).toContain('本轮 入 10')
-    expect(html).toContain('出 20')
-    expect(html).toContain('缓存 未提供')
-    expect(html).toContain('费用未提供')
+    // 这一条原来还传了 `usage={{ input: 10, output: 20 }}` 并断言「本轮 入 10」「出 20」「缓存 未提供」
+    // 「费用未提供」。冻结之后 `usage` 仍然照传（数据照旧送进来），但一格读数都不再渲染。
+    expect(html).not.toContain('本轮 入 10')
+    expect(html).not.toContain('出 20')
+    expect(html).not.toContain('dsh-chat__usage-rail')
+    expect(html).not.toContain('dsh-chat__turn-usage')
     expect(html).toContain('正在处理')
   })
 
@@ -91,24 +98,36 @@ describe('ConversationBubble', () => {
     expect(custom).toContain('助手')
   })
 
-  it('renders zero-priced API usage as measured rather than unavailable', () => {
+  it('renders no usage readout at all once the readout is frozen, even with a configured zero price', () => {
+    // 这条原先钉的是"零价是**量出来的**，不是'未提供'"：它要求 `费用 约 ¥0.0000` 与 `会话 约 ¥0.0000`
+    // 出现在渲染里，且不许出现"价格未配置"。读数冻结之后，这一层分辨力没有丢，只是换了被测对象：
+    //  - 纯函数那一层（`turnUsageSummary().priceUnconfigured`、`formatCost(0)`）由
+    //    `conversationViewModel.spec.ts` 继续逐条钉住，函数本身一行未改；
+    //  - 界面这一层改成钉**反面** —— 连"配了价、有 usage、零费用"这种最该出数字的输入，
+    //    也不许渲染出任何一格读数。断言不是变松，是"必须显示"换成了"必须已冻结"。
     const html = renderToStaticMarkup(<ConversationBubble
       backend="deepseek-api"
       activity="done"
       messages={[{ id: 'message-1', role: 'assistant', content: '完成', createdAt: 1, usage: { input: 2, output: 3, cacheRead: 0, cost: 0, estimated: true } }]}
       streamingText=""
-      historyExpanded={false}
+      historyExpanded
       usage={{ input: 2, output: 3, cacheRead: 0, cost: 0, estimated: true }}
       apiPricingConfigured
       {...callbacks}
     />)
 
-    expect(html).toContain('本轮 入 2')
-    expect(html).toContain('出 3')
-    expect(html).toContain('缓存 0')
-    expect(html).toContain('费用 约 ¥0.0000')
-    expect(html).toContain('会话 约 ¥0.0000')
+    // 转写本身照常渲染 —— 冻的只是读数，不是消息。
+    expect(html).toContain('完成')
+    expect(html).not.toContain('dsh-chat__usage-rail')
+    expect(html).not.toContain('dsh-chat__turn-usage')
+    expect(html).not.toContain('dsh-chat__session-cost')
+    expect(html).not.toContain('dsh-chat__message-usage')
+    expect(html).not.toContain('本轮 入')
     expect(html).not.toContain('价格未配置')
+    // 钱与 tokens 的痕迹一个不留：符号、费用字样、以及每条消息下面那行"输入 x · 输出 y"。
+    expect(html).not.toContain('¥')
+    expect(html).not.toContain('费用')
+    expect(html).not.toContain('输入 2 · 输出 3')
   })
 
   it('places a functional model picker beside conversation history', () => {
@@ -409,6 +428,67 @@ describe('ConversationBubble', () => {
     />)
     const after = new Date()
     expect([before, after].map((now) => formatBubbleDate(now, 'en')).some((text) => html.includes(text))).toBe(true)
+  })
+})
+
+/**
+ * 用量与费用读数冻结之后（用户要求界面上不再出现"计价"与"tokens 消耗"）。
+ *
+ * 上面那些渲染断言只能证明"这一次渲染里没有它"。这一组钉的是**源码里的形状**：
+ * 两块读数还在文件里（注释着，连恢复用的 import 原样都留着），而活着的代码里一行都不剩。
+ * 写法与 `launchArgsAndInstances.spec.ts` 的「启动参数冻结之后：没有参数流出去」同源 ——
+ * 不是把断言删掉，而是把"必须显示"换成"必须已被冻结、且留了复活的话"。
+ */
+describe('用量与费用读数冻结之后', () => {
+  async function bubbleSource(): Promise<string> {
+    return (await readFile(resolve(dirname(fileURLToPath(import.meta.url)), '../src/features/chat/ConversationBubble.tsx'), 'utf8'))
+      .replace(/\r\n?/g, '\n')
+  }
+
+  /** 剥掉注释之后还剩什么 —— 与 `noHardcodedCopy.spec.ts` 同一个剥法（注释里的中文是允许的）。 */
+  function withoutComments(source: string): string {
+    return source.replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .map((line) => {
+        const at = line.search(/(^|\s)\/\//)
+        return at >= 0 ? line.slice(0, at) : line
+      })
+      .join('\n')
+  }
+
+  it('keeps both frozen blocks in the file, so reviving them needs no git archaeology', async () => {
+    const source = await bubbleSource()
+    // 两块读数都还在（在注释里）：顶栏那条用量串，与每条消息下面那行。
+    expect(source).toContain('className="dsh-chat__usage-rail"')
+    expect(source).toContain('className="dsh-chat__message-usage"')
+    // 恢复用的原始 import 逐字留着（照 `// args: parseLaunchArgs` 那条先例）。
+    expect(source).toMatch(/^\s*\/\/ import \{ composerPlaceholder, formatCost/m)
+    // 每一处冻结都有说明：import、两个 prop、两个派生值、`UsageLine`、调用处、顶栏。
+    expect((source.match(/FREEZE/g) ?? []).length).toBeGreaterThanOrEqual(6)
+  })
+
+  it('leaves nothing alive that could render a usage or cost readout', async () => {
+    const alive = withoutComments(await bubbleSource())
+    for (const symbol of [
+      'dsh-chat__usage-rail',
+      'dsh-chat__turn-usage',
+      'dsh-chat__session-cost',
+      'dsh-chat__billing',
+      'dsh-chat__message-usage',
+      'UsageLine',
+      'turnUsageSummary',
+      'sessionCostSummary',
+      'formatCost',
+      'chat.bubble.turn-usage',
+      'chat.bubble.session-cost',
+      'chat.bubble.usage.',
+    ]) {
+      expect(alive, `${symbol} 仍然活在代码里`).not.toContain(symbol)
+    }
+    // 但冻结的是**读数**，不是整个气泡：其余部分照常活着（否则上面那两条会自动变成假绿）。
+    expect(alive).toContain('composerPlaceholder')
+    expect(alive).toContain('isBusyActivity')
+    expect(alive).toContain('dsh-chat__topbar-spacer')
   })
 })
 

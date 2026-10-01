@@ -10,6 +10,9 @@ const GUTTER_ROWS = [
   'dsh-chat__composer',
   'dsh-chat__topbar',
   'dsh-chat__footer',
+  // FREEZE（临时冻结，不是删除）：用量串的 JSX 冻住了（见 `ConversationBubble.tsx` 里那处
+  // FREEZE），但它的 CSS 规则**一行没删** —— 恢复时一起复活。所以它仍然算"盒子内部的一行"，
+  // 这份清单不动：真删掉这一项，下面的 `checked >= 5` 也会跟着少一行。
   'dsh-chat__usage-rail',
   'dsh-chat__island-toolbar',
 ]

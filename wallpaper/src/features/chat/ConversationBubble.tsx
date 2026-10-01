@@ -2,7 +2,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { Activity, BackendMode, ChatMessage, RuntimeState, TokenUsage } from '../../domain/types.ts'
 import { formatMessage, getLanguage, t, useLanguage, type Language, type Message } from '../../i18n/index.ts'
 import { Button, Glass, Icon } from '../../ui/primitives/index.ts'
-import { composerPlaceholder, formatCost, isBusyActivity, sessionCostSummary, turnUsageSummary } from './conversationViewModel.ts'
+// FREEZE（临时冻结，不是删除）：用量／费用读数整块退出（见本文件下面 `UsageLine`、顶栏
+// `dsh-chat__usage-rail`、`turnUsage`/`totalCost` 三处 FREEZE），所以这三个只喂那两块读数的函数
+// 不再被这个文件取用。它们仍在 `conversationViewModel.ts` 里（各自还有单元测试），恢复办法：
+// 还原下面这一行、删掉它下面那行。
+// import { composerPlaceholder, formatCost, isBusyActivity, sessionCostSummary, turnUsageSummary } from './conversationViewModel.ts'
+import { composerPlaceholder, isBusyActivity } from './conversationViewModel.ts'
 import { growHistoryWindow, historyWindow, HISTORY_RENDER_WINDOW } from './streamRender.ts'
 import { harnessStateLabel, harnessFailureVisible } from '../../connect/harnessLabels.ts'
 import type { ConversationHostChip } from '../../connect/conversationHost.ts'
@@ -39,6 +44,13 @@ export interface ConversationBubbleProps {
   onDraftChange?: (draft: string) => void
   /** Hidden by default; callers may opt into custom role names. */
   speakerLabels?: ConversationSpeakerLabels
+  /**
+   * 当前这一轮的量。
+   *
+   * FREEZE（临时冻结，不是删除）：这一格现在**没人读**了 —— 它唯一的读法是顶栏那条用量串
+   * （下面的 FREEZE）。`App.tsx` 照常把它传进来：数据留着不显示没有成本，恢复时不必再接一遍线。
+   * 关掉之后：传进来的值不影响渲染。恢复办法：打开下面那两处 FREEZE，这里一个字都不用改。
+   */
   usage?: TokenUsage
   disabled?: boolean
   collapsed?: boolean
@@ -48,7 +60,13 @@ export interface ConversationBubbleProps {
   acrylicOpacity?: number
   acrylicBlur?: number
   expandedBottomInset?: number
-  /** Both API rates are explicitly configured; zero is still configured. */
+  /**
+   * Both API rates are explicitly configured; zero is still configured.
+   *
+   * FREEZE（临时冻结，不是删除）：它只喂 `turnUsageSummary` 里"价格未配置"那一格，用量串冻住后
+   * 这一格也没了，于是这个 prop 同样没人读。`App.tsx` 仍在传（读了设置里的价格，值仍然正确）。
+   * 恢复办法：与 `usage` 一起打开顶栏那处 FREEZE，这里不用改。
+   */
   apiPricingConfigured?: boolean
   /** Bridge availability drives the DSH indicator and mode switch. */
   harnessAvailability?: RuntimeState['harness']
@@ -165,6 +183,18 @@ export function formatBubbleDate(date: Date, language: Language = getLanguage())
   return new Intl.DateTimeFormat(bubbleDateLocale(language), { month: 'long', day: 'numeric', weekday: 'short' }).format(date)
 }
 
+/*
+ * FREEZE（临时冻结，不是删除）：每条消息下面那一行用量（输入 / 输出 / 缓存 / 费用）整块退出。
+ *
+ * 为什么关：用户要求界面上不再出现"计价"与"tokens 消耗"（2026-10-04）。这一行是这两样东西最密集
+ * 的落点 —— 一条消息下面就写着输入、输出、缓存命中与折算出来的钱。
+ *
+ * 关掉之后：气泡里的消息不再带 `.dsh-chat__message-usage` 这一行。`message.usage` 这份数据仍由
+ * 上游照常送进转写并持久化（`App.tsx`、`nativeAdapter.ts`、`domain/types.ts` 一行未动），只是没有
+ * 人再渲染它。词条 `chat.bubble.usage.tokens` / `chat.bubble.usage.cache` 原样留在两份词典里。
+ *
+ * 恢复办法：去掉这对块注释，把文件顶部那行 import 还原成带 `formatCost` 的版本（见那里的 FREEZE），
+ * 再去掉 `<article>` 里 `<UsageLine usage={message.usage} />` 那行的 FREEZE 注释。
 function UsageLine({ usage }: { usage?: TokenUsage }) {
   // 每条消息下面那一小行也有词条，所以它自己也订阅语言（钩子必须在提前返回之前）。
   useLanguage()
@@ -175,6 +205,7 @@ function UsageLine({ usage }: { usage?: TokenUsage }) {
     {usage.cost !== undefined ? ` · ${formatCost(usage.cost, usage.estimated)}` : ''}
   </small>
 }
+*/
 
 export function ConversationBubble(props: ConversationBubbleProps) {
   // 这片界面上有词条（标签、提示、用量），语言一变就要重渲染；下面那格日期也读它。
@@ -204,8 +235,12 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const streamText = props.streamingText
   const [historyLimit, setHistoryLimit] = useState(HISTORY_RENDER_WINDOW)
   const busy = isBusyActivity(props.activity)
-  const totalCost = sessionCostSummary(props.messages)
-  const turnUsage = turnUsageSummary(props.usage, props.backend, Boolean(props.apiPricingConfigured))
+  // FREEZE（临时冻结，不是删除）：顶栏用量串的两个派生值 —— 会话累计费用与单轮折算。
+  // 为什么关：它们只喂那条读数（用户要求界面上不再出现"计价"与"tokens 消耗"）。
+  // 关掉之后：渲染期不再做这两次折算。`props.messages` / `props.usage` 里的原始数据照常留着。
+  // 恢复办法：取消下面两行的注释，并打开顶栏 `dsh-chat__usage-rail` 那处 FREEZE。
+  // const totalCost = sessionCostSummary(props.messages)
+  // const turnUsage = turnUsageSummary(props.usage, props.backend, Boolean(props.apiPricingConfigured))
   const harnessAvailability = props.harnessAvailability ?? 'offline'
   const harnessReady = harnessAvailability === 'bridge-ready'
   const harnessLabel = harnessFailureVisible(props.harnessFailed, harnessAvailability)
@@ -342,7 +377,9 @@ export function ConversationBubble(props: ConversationBubbleProps) {
             // 逐个核对上游，不如把这条规矩说死：只有用户输入是不可改写的）。
             ? <p className="dsh-chat__message-body">{message.content}</p>
             : <MarkdownBody text={message.content} onOpenLink={props.onOpenLink} />}
-          <UsageLine usage={message.usage} />
+          {/* FREEZE（临时冻结，不是删除）：每条消息下面那一行用量。恢复办法：取消这行注释，并打开
+              `UsageLine`（同一个文件）与顶部 import 两处 FREEZE。 */}
+          {/* <UsageLine usage={message.usage} /> */}
         </article>)}
         {streamText && <article className="dsh-chat__message dsh-chat__message--assistant">
           {props.speakerLabels?.assistant?.trim() && <span className="dsh-chat__message-label">{props.speakerLabels.assistant}</span>}
@@ -362,6 +399,15 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           <span className="dsh-chat__backend-detail">{today}</span>
         </div>
         <span className="dsh-chat__topbar-spacer" />
+        {/* FREEZE（临时冻结，不是删除）：输入岛顶栏这一整条用量串（`dsh-chat__usage-rail`，里面是
+          `dsh-chat__turn-usage` 与 `dsh-chat__session-cost`）。
+          为什么关：用户要求界面上不再出现"计价"与"tokens 消耗"（2026-10-04）—— 这里写着本轮的
+          输入／输出／缓存命中／费用，旁边还有整个会话的累计费用，是全界面最显眼的那处读数。
+          关掉之后：顶栏只剩左右两枚 `dsh-chat__topbar-spacer`（两枚都留着，所以"身份在左、Bridge
+          状态在右"的排布不变），中间不再有读数；`turnUsage` / `totalCost` 的调用处一并冻住，
+          渲染期也不再折算费用。词条 `chat.bubble.turn-usage.*` 与 `chat.bubble.session-cost*`
+          原样留在 `i18n/zh.ts` / `i18n/en.ts` 里；CSS 规则也一行没删（成了死规则，见该文件）。
+          恢复办法：去掉这对注释，并把上面两行派生值与顶部那行 import 的 FREEZE 一起打开。
         <div className="dsh-chat__usage-rail">
           <span className="dsh-chat__turn-usage" data-usage-available={turnUsage.available ? 'true' : 'false'} aria-label={turnUsage.available ? t('chat.bubble.turn-usage.label') : t('chat.bubble.turn-usage.label-unavailable')}>
             <span>{t('chat.bubble.turn-usage.input', { input: turnUsage.input })}</span>
@@ -373,6 +419,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
             <span>{totalCost ? t('chat.bubble.session-cost', { cost: formatCost(totalCost.cost, totalCost.estimated) }) : t('chat.bubble.session-cost.unavailable')}</span>
           </span>
         </div>
+        */}
         <span className="dsh-chat__topbar-spacer" />
         <div className="dsh-chat__bottom-status">
         <span className={`dsh-chat__status dsh-chat__status--harness dsh-chat__status--${harnessAvailability}`} title={harnessLabel}>
