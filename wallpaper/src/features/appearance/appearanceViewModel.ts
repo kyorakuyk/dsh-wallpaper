@@ -1,4 +1,5 @@
 import { APPEARANCE_SLOTS, isAssetExposedInComponentLibrary, type AppearanceSlot, type AssetMediaType, type AssetRecord, type ThemeRecord } from '../../appearance/theme/index.ts'
+import { t } from '../../i18n/index.ts'
 
 export interface AppearanceThemeSummary extends ThemeRecord {
   name: string
@@ -24,19 +25,71 @@ export interface AssetClassificationRequest {
   slots: AppearanceSlot[]
 }
 
+/**
+ * The wording is read through getters rather than filled in once at module load: the language is
+ * restored from the settings document after startup, so a record evaluated at import time would
+ * keep showing the Chinese it saw then. `acceptedMedia` is a fact about the slot rather than a
+ * sentence, so it stays a plain field — and `SLOT_PRESENTATION[slot].label` still reads the same at
+ * every call site.
+ */
 export const SLOT_PRESENTATION: Record<AppearanceSlot, AppearanceSlotPresentation> = {
-  'desktop.background': { label: '桌面背景', shortLabel: '背景', description: '桌面场景的底图', acceptedMedia: ['image'] },
+  'desktop.background': {
+    get label() { return t('appearance.slot.desktop.background.label') },
+    get shortLabel() { return t('appearance.slot.desktop.background.short') },
+    get description() { return t('appearance.slot.desktop.background.description') },
+    acceptedMedia: ['image'],
+  },
   // The library can retain a future lock-screen image selection, but the
   // native MSIX takeover intentionally uses the bundled, audited sleep frame
   // until a selected asset has a verified native hand-off path.
-  'lockscreen.image': { label: '锁屏图片（预留）', shortLabel: '锁屏', description: '素材库可预先归类；当前锁屏接管固定使用内置熟睡画面', acceptedMedia: ['image'] },
-  'wake.sequence': { label: '苏醒动画', shortLabel: '苏醒', description: '解锁后播放的有序帧组', acceptedMedia: ['sequence'] },
-  'persona.deepseek.flash': { label: 'DeepSeek Flash 立绘', shortLabel: '蓝色幼年', description: 'DeepSeek Flash 模型形态', acceptedMedia: ['image'] },
-  'persona.deepseek.pro': { label: 'DeepSeek Pro 立绘', shortLabel: '蓝色成年', description: 'DeepSeek Pro 模型形态', acceptedMedia: ['image'] },
-  'persona.harness.flash': { label: 'Harness Flash 立绘', shortLabel: '黑红幼年', description: 'Harness Flash 模型形态', acceptedMedia: ['image'] },
-  'persona.harness.pro': { label: 'Harness Pro 立绘', shortLabel: '黑红成年', description: 'Harness Pro 模型形态', acceptedMedia: ['image'] },
-  'chat.skin': { label: '对话气泡皮肤', shortLabel: '气泡', description: '声明式玻璃材质与纹理', acceptedMedia: ['skin'] },
-  'ui.font': { label: '界面字体', shortLabel: '字体', description: '聊天和菜单使用的字体', acceptedMedia: ['font'] },
+  'lockscreen.image': {
+    get label() { return t('appearance.slot.lockscreen.image.label') },
+    get shortLabel() { return t('appearance.slot.lockscreen.image.short') },
+    get description() { return t('appearance.slot.lockscreen.image.description') },
+    acceptedMedia: ['image'],
+  },
+  'wake.sequence': {
+    get label() { return t('appearance.slot.wake.sequence.label') },
+    get shortLabel() { return t('appearance.slot.wake.sequence.short') },
+    get description() { return t('appearance.slot.wake.sequence.description') },
+    acceptedMedia: ['sequence'],
+  },
+  'persona.deepseek.flash': {
+    get label() { return t('appearance.slot.persona.deepseek.flash.label') },
+    get shortLabel() { return t('appearance.slot.persona.deepseek.flash.short') },
+    get description() { return t('appearance.slot.persona.deepseek.flash.description') },
+    acceptedMedia: ['image'],
+  },
+  'persona.deepseek.pro': {
+    get label() { return t('appearance.slot.persona.deepseek.pro.label') },
+    get shortLabel() { return t('appearance.slot.persona.deepseek.pro.short') },
+    get description() { return t('appearance.slot.persona.deepseek.pro.description') },
+    acceptedMedia: ['image'],
+  },
+  'persona.harness.flash': {
+    get label() { return t('appearance.slot.persona.harness.flash.label') },
+    get shortLabel() { return t('appearance.slot.persona.harness.flash.short') },
+    get description() { return t('appearance.slot.persona.harness.flash.description') },
+    acceptedMedia: ['image'],
+  },
+  'persona.harness.pro': {
+    get label() { return t('appearance.slot.persona.harness.pro.label') },
+    get shortLabel() { return t('appearance.slot.persona.harness.pro.short') },
+    get description() { return t('appearance.slot.persona.harness.pro.description') },
+    acceptedMedia: ['image'],
+  },
+  'chat.skin': {
+    get label() { return t('appearance.slot.chat.skin.label') },
+    get shortLabel() { return t('appearance.slot.chat.skin.short') },
+    get description() { return t('appearance.slot.chat.skin.description') },
+    acceptedMedia: ['skin'],
+  },
+  'ui.font': {
+    get label() { return t('appearance.slot.ui.font.label') },
+    get shortLabel() { return t('appearance.slot.ui.font.short') },
+    get description() { return t('appearance.slot.ui.font.description') },
+    acceptedMedia: ['font'],
+  },
 }
 
 export function compatibleSlots(asset: AppearanceAssetSummary): AppearanceSlot[] {
@@ -83,9 +136,9 @@ export function overrideCount(overrides: Partial<Record<AppearanceSlot, string>>
 }
 
 export function assetMeta(asset: AppearanceAssetSummary): string {
-  if (asset.mediaType === 'font') return '字体'
-  if (asset.mediaType === 'sequence') return '动画序列'
-  if (asset.mediaType === 'skin') return '气泡皮肤'
-  const dimensions = asset.width && asset.height ? `${asset.width} × ${asset.height}` : '图片'
-  return `${dimensions}${asset.hasAlpha ? ' · 透明背景' : ''}`
+  if (asset.mediaType === 'font') return t('appearance.asset.meta.font')
+  if (asset.mediaType === 'sequence') return t('appearance.asset.meta.sequence')
+  if (asset.mediaType === 'skin') return t('appearance.asset.meta.skin')
+  const dimensions = asset.width && asset.height ? `${asset.width} × ${asset.height}` : t('appearance.asset.meta.image')
+  return `${dimensions}${asset.hasAlpha ? t('appearance.asset.meta.transparent') : ''}`
 }

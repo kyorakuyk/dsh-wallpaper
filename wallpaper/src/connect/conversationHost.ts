@@ -17,6 +17,7 @@
  * （壁纸在后台起的）还是壳自己（用户点「打开」之后），服务的都是"客户端那个 DSH"，
  * 所以 `Desktop` 两种情况都对。
  */
+import { t } from '../i18n/index.ts'
 import type { BackendMode } from '../domain/types.ts'
 import { subjectKindLabel, subjectKindOf } from './harnessSubjects.ts'
 
@@ -47,23 +48,26 @@ export interface ConversationHostInput {
  */
 export function conversationHostChip(input: ConversationHostInput): ConversationHostChip {
   const alias = (input.alias ?? '').trim()
+  // The parenthetical is its own entry rather than a template around the sentence: it is appended,
+  // and the two languages punctuate an aside differently (Chinese full-width brackets, English
+  // brackets with a leading space).
   const withAlias = (sentence: string): string =>
-    alias.length > 0 ? `${sentence}（别名：${alias}）` : sentence
+    alias.length > 0 ? `${sentence}${t('chat.host.alias', { alias })}` : sentence
 
   if (input.backend === 'deepseek-api') {
-    return { text: 'API', title: '你自己的 DeepSeek API key，按 token 计费。' }
+    return { text: 'API', title: t('chat.host.deepseek-api') }
   }
   if (input.backend !== 'harness') {
-    return { text: 'Web', title: 'DeepSeek 网页额度，不产生 API 费用。' }
+    return { text: 'Web', title: t('chat.host.deepseek-web') }
   }
 
   const kind = subjectKindOf(input.subjectId)
   if (kind === 'embedded-shell') {
     // 客户端自带窗口，所以它没有"界面在浏览器里"这一层可讲。
-    return { text: 'Desktop', title: withAlias('本机 DeepSeek Harness 客户端，它带自己的窗口。') }
+    return { text: 'Desktop', title: withAlias(t('chat.host.embedded-shell')) }
   }
   if (kind === 'installed-cli' && input.window === 'tui') {
-    return { text: 'TUI', title: withAlias(`${subjectKindLabel(kind)}，界面在终端里。`) }
+    return { text: 'TUI', title: withAlias(t('chat.host.terminal', { label: subjectKindLabel(kind) })) }
   }
-  return { text: 'Web', title: withAlias(`${subjectKindLabel(kind)}，界面在浏览器里。`) }
+  return { text: 'Web', title: withAlias(t('chat.host.browser', { label: subjectKindLabel(kind) })) }
 }

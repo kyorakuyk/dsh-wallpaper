@@ -1,3 +1,4 @@
+import { t } from '../../i18n/index.ts'
 import {
   APPEARANCE_SLOTS,
   type AppearanceSlot,
@@ -80,13 +81,13 @@ function validateComponent(
   issues: ThemeValidationIssue[],
 ): value is ThemeComponent {
   if (!isRecord(value) || !isNonEmptyString(value.kind)) {
-    issues.push({ code: 'invalid-component', severity: 'error', message: `${slot} 的组件声明无效` })
+    issues.push({ code: 'invalid-component', severity: 'error', message: t('appearance.validation.component-invalid', { slot }) })
     return false
   }
 
   if (SINGLE_ASSET_SLOTS.has(slot)) {
     if (value.kind !== 'asset' || !isNonEmptyString(value.path)) {
-      issues.push({ code: 'invalid-component', severity: 'error', message: `${slot} 必须声明为单文件 asset` })
+      issues.push({ code: 'invalid-component', severity: 'error', message: t('appearance.validation.single-asset-required', { slot }) })
       return false
     }
     return true
@@ -94,7 +95,7 @@ function validateComponent(
 
   if (slot === 'wake.sequence') {
     if (value.kind !== 'sequence' || !Array.isArray(value.frames) || value.frames.length === 0) {
-      issues.push({ code: 'invalid-component', severity: 'error', message: 'wake.sequence 必须包含至少一帧' })
+      issues.push({ code: 'invalid-component', severity: 'error', message: t('appearance.validation.wake-sequence-frames-required') })
       return false
     }
     const valid = value.frames.every(
@@ -106,17 +107,17 @@ function validateComponent(
         (frame.fadeMs === undefined || (Number.isFinite(frame.fadeMs) && Number(frame.fadeMs) >= 0)),
     )
     if (!valid) {
-      issues.push({ code: 'invalid-component', severity: 'error', message: 'wake.sequence 包含无效帧或时长' })
+      issues.push({ code: 'invalid-component', severity: 'error', message: t('appearance.validation.wake-sequence-frame-invalid') })
     }
     return valid
   }
 
   if (value.kind !== 'skin' || !isNonEmptyString(value.definition)) {
-    issues.push({ code: 'invalid-component', severity: 'error', message: 'chat.skin 必须声明为 skin' })
+    issues.push({ code: 'invalid-component', severity: 'error', message: t('appearance.validation.skin-required') })
     return false
   }
   if (value.textures !== undefined && (!Array.isArray(value.textures) || !value.textures.every(isNonEmptyString))) {
-    issues.push({ code: 'invalid-component', severity: 'error', message: 'chat.skin textures 必须是路径数组' })
+    issues.push({ code: 'invalid-component', severity: 'error', message: t('appearance.validation.skin-textures') })
     return false
   }
   return true
@@ -124,30 +125,30 @@ function validateComponent(
 
 function parseManifest(input: unknown, issues: ThemeValidationIssue[]): ThemeManifest | undefined {
   if (!isRecord(input)) {
-    issues.push({ code: 'invalid-manifest', severity: 'error', message: 'theme.json 必须是对象' })
+    issues.push({ code: 'invalid-manifest', severity: 'error', message: t('appearance.validation.manifest-object') })
     return undefined
   }
   if (input.schemaVersion !== 1) {
-    issues.push({ code: 'unsupported-schema', severity: 'error', message: `不支持 schemaVersion ${String(input.schemaVersion)}` })
+    issues.push({ code: 'unsupported-schema', severity: 'error', message: t('appearance.validation.schema-version', { version: String(input.schemaVersion) }) })
     return undefined
   }
   if (input.kind !== 'theme') {
-    issues.push({ code: 'invalid-manifest', severity: 'error', message: 'kind 必须为 theme' })
+    issues.push({ code: 'invalid-manifest', severity: 'error', message: t('appearance.validation.kind-theme') })
   }
   if (!isNonEmptyString(input.id) || !ID_PATTERN.test(input.id)) {
-    issues.push({ code: 'invalid-manifest', severity: 'error', message: '主题 id 格式无效' })
+    issues.push({ code: 'invalid-manifest', severity: 'error', message: t('appearance.validation.id-format') })
   }
   if (!isNonEmptyString(input.version) || !VERSION_PATTERN.test(input.version)) {
-    issues.push({ code: 'invalid-manifest', severity: 'error', message: '主题 version 必须是语义版本' })
+    issues.push({ code: 'invalid-manifest', severity: 'error', message: t('appearance.validation.version-format') })
   }
   if (!isNonEmptyString(input.name)) {
-    issues.push({ code: 'invalid-manifest', severity: 'error', message: '主题 name 不能为空' })
+    issues.push({ code: 'invalid-manifest', severity: 'error', message: t('appearance.validation.name-empty') })
   }
   if (!isOptionalString(input.author) || !isOptionalString(input.description) || !isOptionalString(input.preview)) {
-    issues.push({ code: 'invalid-manifest', severity: 'error', message: '可选文本字段类型无效' })
+    issues.push({ code: 'invalid-manifest', severity: 'error', message: t('appearance.validation.optional-text-type') })
   }
   if (!isRecord(input.compatibility) || !isNonEmptyString(input.compatibility.minAppVersion) || !VERSION_PATTERN.test(input.compatibility.minAppVersion)) {
-    issues.push({ code: 'invalid-manifest', severity: 'error', message: 'compatibility.minAppVersion 格式无效' })
+    issues.push({ code: 'invalid-manifest', severity: 'error', message: t('appearance.validation.min-app-version') })
   }
   if (
     !isRecord(input.baseline) ||
@@ -156,30 +157,30 @@ function parseManifest(input: unknown, issues: ThemeValidationIssue[]): ThemeMan
     !isNonEmptyString(input.baseline.version) ||
     !VERSION_PATTERN.test(input.baseline.version)
   ) {
-    issues.push({ code: 'invalid-manifest', severity: 'error', message: 'baseline 必须锁定有效的 id 和版本' })
+    issues.push({ code: 'invalid-manifest', severity: 'error', message: t('appearance.validation.baseline-lock') })
   }
   if (!isRecord(input.components)) {
-    issues.push({ code: 'invalid-manifest', severity: 'error', message: 'components 必须是对象' })
+    issues.push({ code: 'invalid-manifest', severity: 'error', message: t('appearance.validation.components-object') })
   } else {
     for (const [slot, component] of Object.entries(input.components)) {
       if (!APPEARANCE_SLOTS.includes(slot as AppearanceSlot)) {
-        issues.push({ code: 'invalid-component', severity: 'error', message: `未知外观槽位 ${slot}` })
+        issues.push({ code: 'invalid-component', severity: 'error', message: t('appearance.validation.unknown-slot', { slot }) })
       } else {
         validateComponent(slot as AppearanceSlot, component, issues)
       }
     }
   }
   if (!Array.isArray(input.files)) {
-    issues.push({ code: 'invalid-manifest', severity: 'error', message: 'files 必须是文件清单数组' })
+    issues.push({ code: 'invalid-manifest', severity: 'error', message: t('appearance.validation.files-array') })
   } else {
     for (const entry of input.files) {
       if (!isRecord(entry) || !isNonEmptyString(entry.path) || !isNonEmptyString(entry.sha256) || !Number.isSafeInteger(entry.size) || Number(entry.size) < 0) {
-        issues.push({ code: 'invalid-manifest', severity: 'error', message: 'files 中存在无效条目' })
+        issues.push({ code: 'invalid-manifest', severity: 'error', message: t('appearance.validation.file-entry') })
       }
     }
   }
   if (input.ui !== undefined && (!isRecord(input.ui) || !isOptionalString(input.ui.tokens) || !isOptionalString(input.ui.text) || !isOptionalString(input.ui.layout))) {
-    issues.push({ code: 'invalid-manifest', severity: 'error', message: 'ui 声明无效' })
+    issues.push({ code: 'invalid-manifest', severity: 'error', message: t('appearance.validation.ui-declaration') })
   }
 
   if (issues.some((issue) => issue.severity === 'error')) return undefined
@@ -211,14 +212,14 @@ export function validateThemeManifest(input: unknown, packageFiles: readonly Pac
   const listedCanonicalPaths = new Set<string>()
   for (const entry of manifest.files) {
     if (!isSafePackagePath(entry.path)) {
-      issues.push({ code: 'unsafe-path', severity: 'error', path: entry.path, message: `文件清单路径不安全：${entry.path}` })
+      issues.push({ code: 'unsafe-path', severity: 'error', path: entry.path, message: t('appearance.validation.listed-path-unsafe', { path: entry.path }) })
     }
     if (!SHA256_PATTERN.test(entry.sha256)) {
-      issues.push({ code: 'invalid-hash', severity: 'error', path: entry.path, message: `SHA-256 格式无效：${entry.path}` })
+      issues.push({ code: 'invalid-hash', severity: 'error', path: entry.path, message: t('appearance.validation.listed-hash-format', { path: entry.path }) })
     }
     const canonicalPath = entry.path.toLocaleLowerCase('en-US')
     if (listedCanonicalPaths.has(canonicalPath)) {
-      issues.push({ code: 'duplicate-file', severity: 'error', path: entry.path, message: `文件清单重复：${entry.path}` })
+      issues.push({ code: 'duplicate-file', severity: 'error', path: entry.path, message: t('appearance.validation.listed-duplicate', { path: entry.path }) })
     } else {
       listed.set(entry.path, entry)
       listedCanonicalPaths.add(canonicalPath)
@@ -229,17 +230,17 @@ export function validateThemeManifest(input: unknown, packageFiles: readonly Pac
   const actualCanonicalPaths = new Set<string>()
   for (const file of packageFiles) {
     if (!isSafePackagePath(file.path)) {
-      issues.push({ code: 'unsafe-path', severity: 'error', path: file.path, message: `包内路径不安全：${file.path}` })
+      issues.push({ code: 'unsafe-path', severity: 'error', path: file.path, message: t('appearance.validation.package-path-unsafe', { path: file.path }) })
       continue
     }
     if (file.kind === 'symlink') {
-      issues.push({ code: 'symlink-not-allowed', severity: 'error', path: file.path, message: `主题包不允许符号链接：${file.path}` })
+      issues.push({ code: 'symlink-not-allowed', severity: 'error', path: file.path, message: t('appearance.validation.package-symlink', { path: file.path }) })
       continue
     }
     if (file.kind === 'directory') continue
     const canonicalPath = file.path.toLocaleLowerCase('en-US')
     if (actualCanonicalPaths.has(canonicalPath)) {
-      issues.push({ code: 'duplicate-file', severity: 'error', path: file.path, message: `包内文件重复：${file.path}` })
+      issues.push({ code: 'duplicate-file', severity: 'error', path: file.path, message: t('appearance.validation.package-duplicate', { path: file.path }) })
     } else {
       actual.set(file.path, file)
       actualCanonicalPaths.add(canonicalPath)
@@ -248,29 +249,29 @@ export function validateThemeManifest(input: unknown, packageFiles: readonly Pac
 
   for (const path of referencedPaths(manifest)) {
     if (!isSafePackagePath(path)) {
-      issues.push({ code: 'unsafe-path', severity: 'error', path, message: `资源引用路径不安全：${path}` })
+      issues.push({ code: 'unsafe-path', severity: 'error', path, message: t('appearance.validation.reference-path-unsafe', { path }) })
     } else if (!listed.has(path)) {
-      issues.push({ code: 'unlisted-reference', severity: 'error', path, message: `资源引用未列入 files：${path}` })
+      issues.push({ code: 'unlisted-reference', severity: 'error', path, message: t('appearance.validation.reference-unlisted', { path }) })
     }
   }
 
   for (const [path, entry] of listed) {
     const file = actual.get(path)
     if (!file) {
-      issues.push({ code: 'missing-file', severity: 'error', path, message: `主题包缺少文件：${path}` })
+      issues.push({ code: 'missing-file', severity: 'error', path, message: t('appearance.validation.missing-file', { path }) })
       continue
     }
     if (file.size !== entry.size) {
-      issues.push({ code: 'size-mismatch', severity: 'error', path, message: `文件大小不匹配：${path}` })
+      issues.push({ code: 'size-mismatch', severity: 'error', path, message: t('appearance.validation.size-mismatch', { path }) })
     }
     if (file.sha256.toLowerCase() !== entry.sha256) {
-      issues.push({ code: 'hash-mismatch', severity: 'error', path, message: `文件哈希不匹配：${path}` })
+      issues.push({ code: 'hash-mismatch', severity: 'error', path, message: t('appearance.validation.hash-mismatch', { path }) })
     }
   }
 
   for (const path of actual.keys()) {
     if (path !== 'theme.json' && !listed.has(path)) {
-      issues.push({ code: 'unexpected-file', severity: 'error', path, message: `主题包包含未声明文件：${path}` })
+      issues.push({ code: 'unexpected-file', severity: 'error', path, message: t('appearance.validation.unexpected-file', { path }) })
     }
   }
 

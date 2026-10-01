@@ -16,20 +16,8 @@
     33
   ],
   [
-    "src/appearance/theme/validation.ts",
-    32
-  ],
-  [
     "src/lite/LiteSettingsWindow.tsx",
     25
-  ],
-  [
-    "src/features/appearance/AppearanceDrawer.tsx",
-    22
-  ],
-  [
-    "src/features/appearance/appearanceViewModel.ts",
-    14
   ],
   [
     "src/native/runtime.ts",
@@ -54,10 +42,6 @@
   [
     "src/native/appearance.ts",
     7
-  ],
-  [
-    "src/connect/conversationHost.ts",
-    6
   ],
   [
     "src/persona/types.ts",
