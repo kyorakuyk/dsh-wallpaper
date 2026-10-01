@@ -13,6 +13,26 @@ export const zh = {
   'language.hint': '切换后立即生效，选择会保存。',
   'language.zh': '简体中文',
   'language.en': 'English',
+
+  // 设置中心：六个页签。label 是页签上的字，hint 是它下面那行小字（也是页标题右侧的说明）。
+  'nav.general.label': '常规',
+  'nav.general.hint': '启动与使用方式',
+  'nav.connections.label': '连接',
+  'nav.connections.hint': 'DeepSeek 与 DSH',
+  'nav.appearance.label': '外观',
+  'nav.appearance.hint': '背景与动画',
+  'nav.personas.label': '形态',
+  'nav.personas.hint': '模型映射规则',
+  'nav.history.label': '历史',
+  'nav.history.hint': 'API 会话记录',
+  'nav.system.label': '系统',
+  'nav.system.hint': 'Windows 集成',
+
+  // 状态栏
+  'statusbar.autosave': '设置会自动保存',
+
+  // 语言卡片
+  'language.card': '语言',
 }
 
 /** 所有可用键。写错键名在编译期就会被挡住。 */

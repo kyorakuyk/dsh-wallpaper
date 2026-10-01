@@ -1,4 +1,5 @@
 import { openRoutesFor, selectedOpenRoute } from '../connect/openRoutes.ts'
+import { setLanguage, t, useLanguage, type Language, type MessageKey } from '../i18n/index.ts'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 // `ModelTierRule` 随「模型与形态映射」卡片一起被冻结，解冻时连同上面那行 `updateRule` 一起加回来。
@@ -202,13 +203,13 @@ const componentSlots: Array<{ slot: AppearanceSlot; label: string; detail: strin
   { slot: 'persona.harness.pro', label: 'Harness Pro 立绘', detail: '黑红成年形态' },
 ]
 
-const pages: Array<{ id: Page; icon: string; label: string; hint: string }> = [
-  { id: 'general', icon: '⌂', label: '常规', hint: '启动与使用方式' },
-  { id: 'connections', icon: '⌁', label: '连接', hint: 'DeepSeek 与 DSH' },
-  { id: 'appearance', icon: '◐', label: '外观', hint: '背景与动画' },
-  { id: 'personas', icon: '◇', label: '形态', hint: '模型映射规则' },
-  { id: 'history', icon: '☰', label: '历史', hint: 'API 会话记录' },
-  { id: 'system', icon: '⚙', label: '系统', hint: 'Windows 集成' },
+const pages: Array<{ id: Page; icon: string; labelKey: MessageKey; hintKey: MessageKey }> = [
+  { id: 'general', icon: '⌂', labelKey: 'nav.general.label', hintKey: 'nav.general.hint' },
+  { id: 'connections', icon: '⌁', labelKey: 'nav.connections.label', hintKey: 'nav.connections.hint' },
+  { id: 'appearance', icon: '◐', labelKey: 'nav.appearance.label', hintKey: 'nav.appearance.hint' },
+  { id: 'personas', icon: '◇', labelKey: 'nav.personas.label', hintKey: 'nav.personas.hint' },
+  { id: 'history', icon: '☰', labelKey: 'nav.history.label', hintKey: 'nav.history.hint' },
+  { id: 'system', icon: '⚙', labelKey: 'nav.system.label', hintKey: 'nav.system.hint' },
 ]
 
 /** `18.4 MB`-style size for the history rows. */
@@ -484,6 +485,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
   // const { settings, harnessStatus, onChange, onClose, translucentTb, page } = props
   const { settings, harnessStatus, onChange, onClose, page } = props
   const set = (patch: Partial<WallpaperSettings>) => onChange({ ...settings, ...patch })
+  // 语言变了要重渲染：词条是在渲染时取的，所以订阅一下就够。
+  const language = useLanguage()
   /** 「清除全部用户数据」的结果（成功后把"删了什么、还剩什么要你手动删"写在这一行里）。 */
   const [clearDetail, setClearDetail] = useState<string>()
   const [clearing, setClearing] = useState(false)
@@ -582,7 +585,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
     </header>
 
     <aside className="settings-sidebar">
-      <nav>{pages.map((item) => <button key={item.id} className={page === item.id ? 'is-active' : ''} onClick={() => props.onPageChange(item.id)}><span className="settings-nav__icon">{item.icon}</span><span><strong>{item.label}</strong><small>{item.hint}</small></span></button>)}</nav>
+      <nav>{pages.map((item) => <button key={item.id} className={page === item.id ? 'is-active' : ''} onClick={() => props.onPageChange(item.id)}><span className="settings-nav__icon">{item.icon}</span><span><strong>{t(item.labelKey)}</strong><small>{t(item.hintKey)}</small></span></button>)}</nav>
       <div className="settings-sidebar__status">
         <i className={harnessStatus === 'bridge-ready' ? 'is-online' : harnessStatus === 'offline' ? '' : 'is-pending'} />
         <span>{harnessStateLabel(harnessStatus)}</span>
@@ -590,7 +593,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
     </aside>
 
     <main className="settings-content">
-      <div className="settings-page-heading"><div><span>设置 / {pageMeta.label}</span><h1>{pageMeta.label}</h1></div><p>{pageMeta.hint}</p></div>
+      <div className="settings-page-heading"><div><span>设置 / {t(pageMeta.labelKey)}</span><h1>{t(pageMeta.labelKey)}</h1></div><p>{t(pageMeta.hintKey)}</p></div>
 
       {page === 'general' && <>
         <Card title="交互方式" description="决定会话气泡如何出现在桌面上。">
@@ -598,6 +601,11 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <Field title="气泡布局" detail="中央悬浮始终展开；任务栏停靠以胶囊按钮唤起。"><Choice label="气泡布局" value={settings.interactionLayout} onChange={(value) => set({ interactionLayout: value as WallpaperSettings['interactionLayout'] })} options={[{ value: 'floating', label: '中央玻璃悬浮' }, { value: 'taskbar-docked', label: '任务栏停靠胶囊' }]} /></Field>
           <Field title="历史抽屉默认展开" detail="启动或解锁后直接显示最近的对话。"><Toggle label="历史抽屉默认展开" checked={settings.historyStartsExpanded} onChange={(value) => set({ historyStartsExpanded: value })} /></Field>
           <Field title="发送消息快捷键" detail="想防止误触发送的开发者可切换为 Ctrl+Enter 发送。"><Choice label="发送消息快捷键" value={settings.sendShortcut} onChange={(value) => set({ sendShortcut: value as WallpaperSettings['sendShortcut'] })} options={[{ value: 'Enter', label: 'Enter 发送，Ctrl+Enter 换行' }, { value: 'Ctrl+Enter', label: 'Ctrl+Enter 发送，Enter 换行' }]} /></Field>
+        </Card>
+        <Card title={t('language.card')}>
+          <Field title={t('language.label')} detail={t('language.hint')}>
+            <Choice label={t('language.label')} value={language} options={[{ value: 'zh', label: t('language.zh') }, { value: 'en', label: t('language.en') }]} onChange={(value) => { const next = value as Language; set({ language: next }); setLanguage(next) }} />
+          </Field>
         </Card>
         {props.desktopDisplays.length > 1 && <Card title={`多屏桌面 · 已检测 ${props.desktopDisplays.length} 个屏幕`} description="每块屏幕独立铺满自己的背景；对话窗和立绘可以分别指定目标屏幕。未单独指定的屏幕跟随全局背景。">
           <Field title="启用独立多屏背景" detail={settings.multiScreen.enabled ? '已按屏幕分别渲染；修改某一屏不会改变其他屏幕的背景选择。' : '关闭时保持现有跨虚拟桌面的单一场景；开启后才显示逐屏选择。'}><Toggle label="启用独立多屏背景" checked={settings.multiScreen.enabled} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, enabled: value } })} /></Field>
@@ -1026,6 +1034,6 @@ export function SettingsPanel(props: SettingsPanelProps) {
       </>}
     </main>
 
-    <footer className="settings-statusbar"><span>dsh-wallpaper · v0.3.2</span><span><i />设置会自动保存</span></footer>
+    <footer className="settings-statusbar"><span>dsh-wallpaper · v0.3.2</span><span><i />{t('statusbar.autosave')}</span></footer>
   </div>
 }

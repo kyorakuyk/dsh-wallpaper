@@ -121,7 +121,10 @@ describe('history page wiring', () => {
     const window = await readSource('src/settings/SettingsWindow.tsx')
     const nav = panel.slice(panel.indexOf('const pages:'), panel.indexOf(']\n\n/** `18.4 MB`'))
     expect(nav).toContain("id: 'history'")
-    expect(nav).toContain("label: '历史'")
+    expect(nav).toContain("labelKey: 'nav.history.label'")
+    // 文案搬进了字典（i18n）：面板里只剩键，所以"这页叫什么"要在字典里核对。
+    const dictionary = await readSource('src/i18n/zh.ts')
+    expect(dictionary).toContain("'nav.history.label': '历史'")
     // The listing is a page probe, so it starts when the page opens. It must
     // never be polled: an archive management view has no live state.
     expect(window).toMatch(/apiHistory: async \(\) => \{[\s\S]*?listApiConversations\(\)/)

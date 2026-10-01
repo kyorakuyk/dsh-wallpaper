@@ -13,4 +13,21 @@ export const en: Dict = {
   'language.hint': 'Takes effect immediately, and the choice is saved.',
   'language.zh': '简体中文',
   'language.en': 'English',
+
+  'nav.general.label': 'General',
+  'nav.general.hint': 'Startup and usage',
+  'nav.connections.label': 'Connections',
+  'nav.connections.hint': 'DeepSeek and DSH',
+  'nav.appearance.label': 'Appearance',
+  'nav.appearance.hint': 'Background and animation',
+  'nav.personas.label': 'Personas',
+  'nav.personas.hint': 'Model mapping rules',
+  'nav.history.label': 'History',
+  'nav.history.hint': 'API conversations',
+  'nav.system.label': 'System',
+  'nav.system.hint': 'Windows integration',
+
+  'statusbar.autosave': 'Changes are saved automatically',
+
+  'language.card': 'Language',
 }

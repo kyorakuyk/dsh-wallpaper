@@ -13,6 +13,9 @@ import { useSyncExternalStore } from 'react'
 import { en } from './en'
 import { zh, type Dict, type MessageKey } from './zh'
 
+// 词条类型统一从这一处取，消费方不需要知道真源在哪个文件。
+export type { Dict, MessageKey } from './zh'
+
 export type Language = 'zh' | 'en'
 
 /** 界面上能选的语言，顺序即下拉里的顺序。 */
