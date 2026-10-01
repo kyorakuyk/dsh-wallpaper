@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ConversationBubble, bubbleDateLocale, formatBubbleDate, insertNewlineAtSelection, shouldRevealHistory } from '../src/features/chat/ConversationBubble.tsx'
+import { conversationHostChip } from '../src/connect/conversationHost.ts'
 import { setLanguage } from '../src/i18n/index.ts'
 
 const callbacks = {
@@ -363,14 +364,20 @@ describe('ConversationBubble', () => {
       historyExpanded: false,
       ...callbacks,
     }
-    // 网页与 API 两侧都要有：用户分不清的正是这两个（免费额度还是自己的钱）。
-    const web = renderToStaticMarkup(<ConversationBubble {...props} backend="deepseek-web" hostChip={{ text: 'Web', title: 'DeepSeek 网页额度，不产生 API 费用。' }} />)
+    // 网页与 API 两侧都要有：用户分不清的正是这两个。花钱那半句已经冻结（见
+    // `conversationHost.spec.ts` 的「宿主徽章不再提钱之后」，以及 `i18n/zh.ts` / `en.ts` 里那两条
+    // 逐字留档的 FREEZE）—— 所以这里喂的是**真的**那一枚徽章（`conversationHostChip`），不是手抄
+    // 一份文案：手抄的那份会在词条被改回去时继续绿着。
+    const web = renderToStaticMarkup(<ConversationBubble {...props} backend="deepseek-web" hostChip={conversationHostChip({ backend: 'deepseek-web', subjectId: undefined, window: undefined })} />)
     expect(web).toContain('dsh-chat__host')
     expect(web).toContain('>Web</span>')
-    expect(web).toContain('title="DeepSeek 网页额度，不产生 API 费用。"')
+    expect(web).toContain('title="DeepSeek 网页额度。"')
+    expect(web).not.toContain('费用')
 
-    const api = renderToStaticMarkup(<ConversationBubble {...props} backend="deepseek-api" hostChip={{ text: 'API', title: '你自己的 DeepSeek API key，按 token 计费。' }} />)
+    const api = renderToStaticMarkup(<ConversationBubble {...props} backend="deepseek-api" hostChip={conversationHostChip({ backend: 'deepseek-api', subjectId: undefined, window: undefined })} />)
     expect(api).toContain('>API</span>')
+    expect(api).toContain('title="你自己的 DeepSeek API key。"')
+    expect(api).not.toContain('计费')
 
     // 之前这个位置是"模型不可切换时显示模型名"的只读盒子，harness 模式里干脆不渲染。
     // 现在两侧都有，而且它替换掉了那个盒子。

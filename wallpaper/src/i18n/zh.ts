@@ -191,6 +191,10 @@ export const zh = {
   'settings.connections.api.model.age.minutes': '（{minutes} 分钟前拉取）',
   'settings.connections.api.model.age.hours': '（{hours} 小时前拉取）',
   'settings.connections.api.model.age.days': '（{days} 天前拉取）',
+  // FREEZE（临时冻结，不是删除）：价格这一组词条的**显示**随两个价格输入一起冻结（见
+  // `settings/SettingsPanel.tsx` 里那两行 Field 的 FREEZE）：标题／说明／标签／占位原文一字未改，
+  // 恢复时把那两行取消注释即可。其中「输入价格」那句说明（"……才会显示本轮和会话估算费用"）
+  // 说的显示面上一批已经冻结，所以它暂时不会渲染出来。
   'settings.connections.api.price-input.title': '输入价格',
   'settings.connections.api.price-input.detail': '人民币／每百万 input tokens。输入、输出价格都配置后，才会显示本轮和会话估算费用。',
   'settings.connections.api.price-input.label': '输入价格（人民币每百万 tokens）',
@@ -588,8 +592,19 @@ export const zh = {
   // 元素上那四个短词（`Web` / `API` / `Desktop` / `TUI`）**不是**词条：它们是两种语言里都一样的
   // 产品与形态名，见那个文件顶部的说明。
   'chat.host.alias': '（别名：{alias}）',
-  'chat.host.deepseek-api': '你自己的 DeepSeek API key，按 token 计费。',
-  'chat.host.deepseek-web': 'DeepSeek 网页额度，不产生 API 费用。',
+  // FREEZE（临时冻结，不是删除）：只去掉"花钱"的那半句（用户要求界面上不再出现"计价"），
+  // 保留"这条通道是谁"的身份说明。删掉的原文逐字抄在下面，恢复时不必翻 git 历史：
+  //   'chat.host.deepseek-api': '你自己的 DeepSeek API key，按 token 计费。'
+  // 为什么关：这半句渲染成页脚那枚宿主徽章的 `title`（见 `connect/conversationHost.ts`），
+  // 而它报的"计费"读数已经在上一批冻结了（`ConversationBubble.tsx` 的用量与费用两处 FREEZE）
+  // —— 悬停里再提一次"按 token 计费"，说的是一个界面上已经看不到的东西。
+  // 关掉之后：悬停只说明这条通道是谁，不再提钱。
+  // 怎么恢复：把上面那句原文接回下面这行的句尾（中文用全角逗号，见那句原文的标点）。
+  'chat.host.deepseek-api': '你自己的 DeepSeek API key。',
+  // FREEZE（临时冻结，不是删除）：同上，去掉的是"不产生 API 费用"那半句。删掉的原文逐字：
+  //   'chat.host.deepseek-web': 'DeepSeek 网页额度，不产生 API 费用。'
+  // 关掉之后：悬停只说这条通道是谁（网页额度）。怎么恢复：把原文接回下面这行的句尾。
+  'chat.host.deepseek-web': 'DeepSeek 网页额度。',
   'chat.host.embedded-shell': '本机 DeepSeek Harness 客户端，它带自己的窗口。',
   'chat.host.terminal': '{label}，界面在终端里。',
   'chat.host.browser': '{label}，界面在浏览器里。',

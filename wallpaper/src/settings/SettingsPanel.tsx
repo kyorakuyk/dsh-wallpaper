@@ -931,8 +931,25 @@ export function SettingsPanel(props: SettingsPanelProps) {
               emptyMessage={props.apiModelCatalog && props.apiModelCatalog.length > 0 ? undefined : t('settings.connections.api.model.empty')}
             />
           </Field>
-          <Field title={t('settings.connections.api.price-input.title')} detail={t('settings.connections.api.price-input.detail')}><PriceInput label={t('settings.connections.api.price-input.label')} value={settings.deepseekApi.priceInputPerMillion} onChange={(priceInputPerMillion) => set({ deepseekApi: { ...settings.deepseekApi, priceInputPerMillion } })} /></Field>
-          <Field title={t('settings.connections.api.price-output.title')} detail={t('settings.connections.api.price-output.detail')}><PriceInput label={t('settings.connections.api.price-output.label')} value={settings.deepseekApi.priceOutputPerMillion} onChange={(priceOutputPerMillion) => set({ deepseekApi: { ...settings.deepseekApi, priceOutputPerMillion } })} /></Field>
+          {/* ---------------------------------------------------------------------------
+          FREEZE（临时冻结，不是删除）：价格输入（「输入价格」/「输出价格」）与它们那两句说明。
+          为什么关：用户要求界面上不再出现"计价"。这两项的**唯一**去处就是喂本轮／会话的估算读数，
+          而那两个显示面上一批已经冻结（见 `ConversationBubble.tsx` 里 `UsageLine`、顶栏
+          `dsh-chat__usage-rail` 与 `turnUsage`/`totalCost` 那几处 FREEZE）。于是「输入价格」那句
+          说明 ——"输入、输出价格都配置后，才会显示本轮和会话估算费用"—— 说的显示面已经不在了，
+          把它留在页面上就是留一句**假话**；而两个改了也看不见任何变化的输入框，比它们不在更坏
+          （与「起别名」「启动参数」冻结时同一条理由）。
+          关掉之后：连接页不再有这两个输入项，两条 `detail` 也一并停止渲染 —— 界面上不再出现
+          `价格`／`费用`／估算数字／`price-input` 这些痕迹（渲染结果由 `settingsPricing.spec.ts`
+          钉住）。
+          数据与结构一行没动：`store.ts` 的 `priceInputPerMillion` / `priceOutputPerMillion` 字段、
+          归一化与设置文档迁移全部照旧，`App.tsx` 照常读取并传给气泡（`apiPricingConfigured`）与
+          原生侧；写进设置里的值只是暂时不显示。
+          怎么恢复：取消下面这两行的注释即可，别处一个字都不用改 —— `PriceInput` 组件本身、
+          `MAX_PRICE_PER_MILLION`、以及四条词条（标题／说明／标签／占位）都还在原位。
+          --------------------------------------------------------------------------- */}
+          {/* <Field title={t('settings.connections.api.price-input.title')} detail={t('settings.connections.api.price-input.detail')}><PriceInput label={t('settings.connections.api.price-input.label')} value={settings.deepseekApi.priceInputPerMillion} onChange={(priceInputPerMillion) => set({ deepseekApi: { ...settings.deepseekApi, priceInputPerMillion } })} /></Field> */}
+          {/* <Field title={t('settings.connections.api.price-output.title')} detail={t('settings.connections.api.price-output.detail')}><PriceInput label={t('settings.connections.api.price-output.label')} value={settings.deepseekApi.priceOutputPerMillion} onChange={(priceOutputPerMillion) => set({ deepseekApi: { ...settings.deepseekApi, priceOutputPerMillion } })} /></Field> */}
         </Card>
       </>}
 

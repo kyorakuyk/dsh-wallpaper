@@ -169,6 +169,10 @@ export const en: Dict = {
   'settings.connections.api.model.age.minutes': ' (pulled {minutes} min ago)',
   'settings.connections.api.model.age.hours': ' (pulled {hours} h ago)',
   'settings.connections.api.model.age.days': ' (pulled {days} d ago)',
+  // FREEZE（临时冻结，不是删除）: the display of this price group goes with the two price inputs
+  // (see the FREEZE on those two Field rows in `settings/SettingsPanel.tsx`). The wording of the
+  // title / detail / label / placeholder entries is untouched, so uncommenting those rows is the
+  // whole restore. The "input price" detail promised estimates that are frozen, hence not rendered.
   'settings.connections.api.price-input.title': 'Input price',
   'settings.connections.api.price-input.detail': 'CNY per million input tokens. Estimates for a turn or a conversation appear only once both prices are set.',
   'settings.connections.api.price-input.label': 'Input price (CNY per million tokens)',
@@ -553,8 +557,19 @@ export const en: Dict = {
   // user gave that subject. The four short words on the element itself (`Web` / `API` / `Desktop` /
   // `TUI`) are not entries: they read the same in both languages.
   'chat.host.alias': ' (alias: {alias})',
-  'chat.host.deepseek-api': 'Your own DeepSeek API key, billed per token.',
-  'chat.host.deepseek-web': 'DeepSeek Web quota; no API charges.',
+  // FREEZE（临时冻结，不是删除）: the billing half of the tooltip is gone (the interface must no
+  // longer show "pricing"), while the sentence saying which channel this is stays. The deleted
+  // wording is copied here verbatim, so restoring it needs no git archaeology:
+  //   'chat.host.deepseek-api': 'Your own DeepSeek API key, billed per token.'
+  // Why: this renders as the `title` of the host badge in the footer (`connect/conversationHost.ts`),
+  // and the readout that half described was frozen in the previous batch (the two readouts in
+  // `ConversationBubble.tsx`). Naming a price in a tooltip points at something no longer on screen.
+  // After: the tooltip only says which channel this is. Restore: append the sentence above.
+  'chat.host.deepseek-api': 'Your own DeepSeek API key.',
+  // FREEZE（临时冻结，不是删除）: same, minus "no API charges". The deleted wording, verbatim:
+  //   'chat.host.deepseek-web': 'DeepSeek Web quota; no API charges.'
+  // After: the tooltip only says which channel this is (Web quota). Restore: append it again.
+  'chat.host.deepseek-web': 'DeepSeek Web quota.',
   'chat.host.embedded-shell': 'The DeepSeek Harness client on this machine, which brings its own window.',
   'chat.host.terminal': '{label}, with its interface in a terminal.',
   'chat.host.browser': '{label}, with its interface in a browser.',
