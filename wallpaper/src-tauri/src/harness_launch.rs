@@ -989,7 +989,7 @@ pub(crate) fn shell_host_cli(subject_id: &str) -> Option<PathBuf> {
 
 /// 装进档案的桥包与版本。**只此一处**：壁纸启动宿主后校验它回报的 build 时也用这个常量，
 /// 免得"钉的版本"与"校验的版本"各写一份、慢慢漂开。
-pub(crate) const BRIDGE_PACKAGE: &str = "dsh-wallpaper-bridge@0.1.5";
+pub(crate) const BRIDGE_PACKAGE: &str = "dsh-wallpaper-bridge@0.1.6";
 
 /// 把桥装进某个档案该怎么跑（纯函数，只算不执行）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1044,7 +1044,7 @@ pub(crate) fn plan_bridge_install(
 
 /// 桥的版本号（`BRIDGE_PACKAGE` 里的那一段）。与包名分开写，是为了让"校验宿主回报的版本"
 /// 有东西可比；两者是否一致由一个测试钉住，免得改一处忘另一处。
-pub(crate) const BRIDGE_VERSION: &str = "0.1.5";
+pub(crate) const BRIDGE_VERSION: &str = "0.1.6";
 
 /// 一个主体需要装桥的档案。
 ///
@@ -2811,7 +2811,7 @@ let root = std::env::temp_dir().join(format!("dsh-bridge-test-{}-{}", std::proce
 
     #[test]
     fn an_exemption_about_the_bridge_itself_is_handed_to_the_user() {
-        let warning = "dsh: warning: Plugin dsh-wallpaper-bridge@0.1.5 is incompatible with dsh 0.1.0-rc.4\n\
+        let warning = "dsh: warning: Plugin dsh-wallpaper-bridge@0.1.6 is incompatible with dsh 0.1.0-rc.4\n\
                        To accept this risk explicitly, grant the exact-version exemption with `dsh plugin allow-version`";
         let (status, detail) = interpret_install_output(Some(0), warning, "");
         assert_eq!(status, BRIDGE_STATUS_NEEDS_CONFIRMATION);
