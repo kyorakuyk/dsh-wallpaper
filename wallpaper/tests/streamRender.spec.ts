@@ -9,6 +9,7 @@ import {
   HISTORY_RENDER_WINDOW,
   StreamTextBuffer,
 } from '../src/features/chat/streamRender.ts'
+import { dictionarySource } from './i18nSource.ts'
 
 const wallpaperRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -167,7 +168,7 @@ describe('streaming render wiring', () => {
     // 「加载更早」那一枚按钮还在（文案已搬进字典，所以这里钉的是调用处 + 词条本身 ——
     // 与 dshAutostart.spec.ts 里"面板只剩键，句子去字典里核对"同一条规矩）。
     expect(bubble).toContain("t('chat.bubble.history.load-earlier'")
-    const dictionary = (await readFile(resolve(wallpaperRoot, 'src/i18n/zh.ts'), 'utf8')).replace(/\r\n?/g, '\n')
+    const dictionary = (await dictionarySource('zh')).replace(/\r\n?/g, '\n')
     expect(dictionary).toContain('加载更早的 {hidden} 条记录')
     expect(bubble).toContain('props.messages.slice(props.messages.length - historyView.visible)')
     // The live answer still renders straight from the prop.

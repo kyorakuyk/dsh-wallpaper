@@ -1,5 +1,10 @@
 /**
- * 界面语言的运行时。
+ * 界面语言的运行时 —— **纯机制**：语言状态、订阅、取词条与"还没求值的一句话"。
+ *
+ * 这个文件**不认识任何一份词典**（连中文那份也不认识）。词条由两个入口在启动时登记：
+ * 完整版 `i18n/full.ts`、Lite `i18n/lite.ts`。原因是产物边界：机制是两个版本共用的，一旦这里
+ * `import` 了完整版的词典，Lite 的 bundle 就会带上完整版每一条键名与文案
+ * （`scripts/verify-lite-bundle.ps1` 拦的正是这个，边界另由 `tests/liteI18nBoundary.spec.ts` 钉住）。
  *
  * 为什么是**模块级的当前语言 + 订阅**，而不是 React Context：
  * 需要出文案的不止组件 —— `native/runtime.ts`、`connect/*`、`features/*` 里的纯函数也会返回
@@ -10,18 +15,52 @@
  */
 import { useEffect, useSyncExternalStore } from 'react'
 
-import { en } from './en'
-import { zh, type Dict, type MessageKey } from './zh'
+// 词条类型统一从这一处取，消费方不需要知道真源在哪个文件。**只取类型**：类型在编译后就被擦掉，
+// 所以上面那条"机制不认识词典"依然成立。
+import type { Dict, MessageKey } from './zh.ts'
 
-// 词条类型统一从这一处取，消费方不需要知道真源在哪个文件。
-export type { Dict, MessageKey } from './zh'
+export type { Dict, MessageKey } from './zh.ts'
 
 export type Language = 'zh' | 'en'
 
 /** 界面上能选的语言，顺序即下拉里的顺序。 */
 export const LANGUAGES: readonly Language[] = ['zh', 'en']
 
-const DICTS: Record<Language, Dict> = { zh, en }
+/**
+ * 运行时手里的词典：由入口登记（见 `registerDictionaries`），登记之前是空的。
+ *
+ * 存成**一份一份的引用**（不是合并出来的副本），因为：
+ * 1. 值可能后加 —— `tests/i18n.spec.ts` 会往 `zh` 里临时塞一条键验证插值规则，那一条必须能被
+ *    `t()` 看见；
+ * 2. 登记是**累加**的，先登记的先说话。一个版本只登记自己那一份，产物里的行为与"只有一份"完全
+ *    一样；测试里先登记完整版、再 import Lite 那一份（为了读它的键）时，也不会反过来把完整版的
+ *    话弄丢。
+ */
+const registered: Record<Language, Array<Partial<Dict>>> = { zh: [], en: [] }
+
+/**
+ * 登记这一版**有**的词条。
+ *
+ * 完整版交两份合起来的（`zh.ts` / `en.ts`），Lite 只交 `zh.shared.ts` / `en.shared.ts` —— 这是
+ * "Lite 产物里只有 Lite 用得上的词条"的第一半；另一半（Lite 用到的键必须都在 shared 里）由
+ * `tests/liteI18nBoundary.spec.ts` 钉住。入口在**第一次渲染之前**调用它（见 `src/main.tsx` /
+ * `src/main-lite.tsx` 的第一行 import），所以这里不通知订阅者。
+ */
+export function registerDictionaries(next: Record<Language, Partial<Dict>>): void {
+  for (const language of LANGUAGES) {
+    const dictionary = next[language]
+    if (!registered[language].includes(dictionary)) registered[language].push(dictionary)
+  }
+}
+
+/** 按登记顺序找一条词条；两份都没有就是 `undefined`（`t()` 决定那意味着什么）。 */
+function lookup(language: Language, key: MessageKey): string | undefined {
+  for (const dictionary of registered[language]) {
+    const raw = dictionary[key]
+    if (raw !== undefined) return raw
+  }
+  return undefined
+}
 
 let current: Language = 'zh'
 
@@ -52,11 +91,13 @@ export function subscribe(listener: () => void): () => void {
 /**
  * 取词条。
  *
- * 缺失时回落到中文并在控制台留一行 —— 类型上不该发生（`Dict` 保证了键齐全），但真发生时
- * 宁可显示中文句子加一条警告，也不要显示键名或者空白，那会让人以为界面坏了。
+ * 缺失时回落到中文那一份；两边都没有（Lite 遇到一条只在完整版里存在的键，或者入口忘了登记）时
+ * 回落到**键名**并在控制台留一行 —— 类型上不该发生（`Dict` 保证了键齐全，边界由
+ * `tests/liteI18nBoundary.spec.ts` 保证），但真发生时宁可显示键名加一条警告，也不要显示空白，
+ * 那会让人以为界面坏了。**不**为了回落去 import 全量词典：那正是要拆掉的东西。
  */
 export function t(key: MessageKey, params?: Record<string, string | number>): string {
-  const raw = DICTS[current][key] ?? zh[key]
+  const raw = lookup(current, key) ?? lookup('zh', key)
   if (raw === undefined) {
     console.warn(`i18n: 缺少词条 ${key}`)
     return key

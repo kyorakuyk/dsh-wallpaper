@@ -48,3 +48,19 @@
 - 中文文案**搬迁**而不是重写：`zh.ts` 里的值应当与今天界面上的字**逐字一致**，这样"中文界面没有变化"是可以验证的（对比截图）；
 - 新增的**英文文案**是写出来的，不是机翻；
 - 提交信息：英文、叙事、带证据（沿用本仓库既有风格）。
+
+## 五、后续修正：词条按"面"拆成两半（Lite 产物的边界）
+
+第一版把**整本**词典放在 `i18n/index.ts` 依赖的模块里，而 Lite 入口也走那个模块 —— 于是完整版的每条
+键名与文案都进了 `dist-lite`（CI 的 `scripts/verify-lite-bundle.ps1` 拦住了 `DeepSeek Harness`、
+`会话生命周期`、`deepseek-web` 三个字样）。修正如下，**不改任何一条文案与键名**：
+
+- `i18n/index.ts` 变成**纯机制**（语言状态、订阅、`t` / `msg` / `formatMessage` / `SentenceError`），
+  不再 import 任何词典；词条由入口**登记**：`i18n/full.ts`（完整版）与 `i18n/lite.ts`（Lite）；
+- 词条按面分家：`zh.shared.ts`（两版都要的）/ `zh.full.ts`（只有完整版会说的），英文同样；
+  `zh.ts` / `en.ts` 只负责把两份合起来当全量真源（`Dict` 与 `MessageKey` 仍从那里推导）；
+- 边界由**类型与测试**钉住，不靠人记：`SharedDict` 让"少一条英文"编译不过，
+  `tests/liteI18nBoundary.spec.ts` 走一遍 Lite 入口可达的 import 图，断言"用到的键都在 shared 里、
+  shared 里没有用不到的键、完整版的词典不在图里"；
+- 缺键时的做派不变：不崩、不显示空白，回落成键名并留一条 `console.warn`；**不**为了回落去 import
+  全量词典。

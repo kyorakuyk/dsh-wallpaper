@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { formatMessage, type Message } from '../src/i18n/index.ts'
 import { DEFAULT_SETTINGS, normalizeSettings } from '../src/settings/store.ts'
+import { dictionarySource } from './i18nSource.ts'
 
 // AppCore's browser preview fallback is evaluated when App.tsx is imported, and
 // App.tsx evaluates a frame scheduler against `window`. These are pure-logic
@@ -254,7 +255,7 @@ describe('DSH autostart wiring', () => {  it('starts DSH from the background hos
     // the page that owns the setting instead of introducing 系统自启设置 as well.
     // 文案搬进了字典（i18n）：面板里只剩键，所以那句话本身要在字典里核对。
     expect(panel).toContain("t('settings.connections.launch-with-wallpaper.checkout')")
-    const dictionary = await source('src/i18n/zh.ts')
+    const dictionary = await dictionarySource('zh')
     expect(dictionary).toContain('还需要在「常规」里开启壁纸开机自启')
     // The warning is driven by the real Windows state, not by a guess.
     expect(panel).toContain('props.autostart.enabled')

@@ -1,19 +1,13 @@
-import { readFile } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { conversationHostChip } from '../src/connect/conversationHost.ts'
 import { en } from '../src/i18n/en.ts'
 import { setLanguage } from '../src/i18n/index.ts'
 import { zh } from '../src/i18n/zh.ts'
+import { dictionarySource } from './i18nSource.ts'
 
 const SHELL = 'shell:com.deepseek.dsh'
 const CLI = 'cli:C:\\Users\\someone\\AppData\\Roaming\\npm\\dsh.cmd'
 const CHECKOUT = 'D:\\Family\\DeepSeekHarness\\deepseek-harness'
-
-const wallpaperRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const dictionarySource = async (relative: string): Promise<string> =>
-  (await readFile(resolve(wallpaperRoot, relative), 'utf8')).replace(/\r\n?/g, '\n')
 
 /** 剥掉注释之后还剩什么 —— 与 `noHardcodedCopy.spec.ts` 同一个剥法（注释里的中文是允许的）。 */
 function withoutComments(source: string): string {
@@ -111,7 +105,6 @@ describe('宿主徽章不再提钱之后', () => {
   const deleted = [
     {
       language: 'zh',
-      file: 'src/i18n/zh.ts',
       originals: [
         "'chat.host.deepseek-api': '你自己的 DeepSeek API key，按 token 计费。'",
         "'chat.host.deepseek-web': 'DeepSeek 网页额度，不产生 API 费用。'",
@@ -121,7 +114,6 @@ describe('宿主徽章不再提钱之后', () => {
     },
     {
       language: 'en',
-      file: 'src/i18n/en.ts',
       originals: [
         "'chat.host.deepseek-api': 'Your own DeepSeek API key, billed per token.'",
         "'chat.host.deepseek-web': 'DeepSeek Web quota; no API charges.'",
@@ -157,8 +149,8 @@ describe('宿主徽章不再提钱之后', () => {
   })
 
   it('keeps the deleted half-sentences in FREEZE notes, so reviving them needs no git archaeology', async () => {
-    for (const { language, file, originals, restore } of deleted) {
-      const source = await dictionarySource(file)
+    for (const { language, originals, restore } of deleted) {
+      const source = await dictionarySource(language)
       expect(source, `${language} 的注释里没有 FREEZE`).toContain('FREEZE')
       expect(source, `${language} 的注释里没写恢复办法`).toContain(restore)
       for (const original of originals) {

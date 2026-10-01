@@ -1,15 +1,11 @@
-import { readFile } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { openRoutesFor, selectedOpenRoute, type OpenRouteInput } from '../src/connect/openRoutes.ts'
 import { t } from '../src/i18n/index.ts'
+import { dictionarySource } from './i18nSource.ts'
 
-const wallpaperRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-
-/** 文案搬进了字典（i18n）：路由里只剩键，所以那些话要在字典里核对。 */
+/** 文案搬进了字典（i18n）：路由里只剩键，所以那些话要在字典里核对（两份合起来看）。 */
 async function dictionary(): Promise<string> {
-  return readFile(resolve(wallpaperRoot, 'src/i18n/zh.ts'), 'utf8')
+  return dictionarySource('zh')
 }
 
 function input(patch: Partial<OpenRouteInput>): OpenRouteInput {

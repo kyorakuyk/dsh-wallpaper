@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { cp, mkdir, rename, rm } from 'node:fs/promises'
@@ -97,6 +98,11 @@ export default defineConfig(({ mode }) => {
       watch: {
         ignored: ['**/*.tmp', '**/.tmpdir/**', '**/*.tsx.*', '**/src-tauri/**', '**/target/**'],
       },
+    },
+    // 词条由入口登记（`src/i18n/full.ts`，见 `src/main.tsx`），单测没有入口，所以在这里登记一次：
+    // 不装 setup，`t()` 就只有机制、没有词条，每条断言看到的都是键名。
+    test: {
+      setupFiles: ['./tests/i18nSetup.ts'],
     },
   }
 })

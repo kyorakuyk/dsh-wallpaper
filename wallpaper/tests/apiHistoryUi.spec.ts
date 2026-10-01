@@ -6,6 +6,7 @@ import { nativeRuntime, type ApiConversationListing } from '../src/native/runtim
 import { formatMessage, setLanguage } from '../src/i18n/index.ts'
 import { PAGE_PROBES, SETTINGS_PAGES, settingsProbeErrorMessage } from '../src/settings/settingsProbes.ts'
 import { formatBytes, formatHistoryTime, historyPressure } from '../src/settings/SettingsPanel.tsx'
+import { dictionarySource } from './i18nSource.ts'
 
 const wallpaperRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -126,7 +127,7 @@ describe('history page wiring', () => {
     expect(nav).toContain("id: 'history'")
     expect(nav).toContain("labelKey: 'nav.history.label'")
     // 文案搬进了字典（i18n）：面板里只剩键，所以"这页叫什么"要在字典里核对。
-    const dictionary = await readSource('src/i18n/zh.ts')
+    const dictionary = await dictionarySource('zh')
     expect(dictionary).toContain("'nav.history.label': '历史'")
     // The listing is a page probe, so it starts when the page opens. It must
     // never be polled: an archive management view has no live state.
@@ -146,7 +147,7 @@ describe('history page wiring', () => {
     expect(panel).toContain("t('settings.history.row-delete'")
     expect(panel).toContain("t('settings.history.active')")
     expect(panel).toContain("t('settings.history.empty.title')")
-    const dictionary = await readSource('src/i18n/zh.ts')
+    const dictionary = await dictionarySource('zh')
     expect(dictionary).toContain("'settings.history.clear': '清空全部 API 历史'")
     expect(dictionary).toContain("'settings.history.row-meta': '{messages} 条消息 · {size} · 最后活动 {time}'")
     expect(dictionary).toContain("'settings.history.active': '当前会话'")

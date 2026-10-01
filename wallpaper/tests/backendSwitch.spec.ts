@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { BACKEND_MODE_LABELS, CHAT_MODE_OPTIONS, backendModeLabel, catalogAgeSuffix, chatModeOptions } from '../src/settings/SettingsPanel.tsx'
+import { dictionarySource } from './i18nSource.ts'
 
 const wallpaperRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const source = async (relative: string): Promise<string> =>
@@ -35,7 +36,7 @@ describe('the chat-mode switch in the settings centre', () => {
     const [settings, panel, dictionary] = await Promise.all([
       source('src/settings/SettingsWindow.tsx'),
       source('src/settings/SettingsPanel.tsx'),
-      source('src/i18n/zh.ts'),
+      dictionarySource('zh'),
     ])
 
     // 走原生的 AppCore：背景端就是靠 `app-snapshot` 改 `runtime.backend` 的（托盘同一条路）。

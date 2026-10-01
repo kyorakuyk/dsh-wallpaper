@@ -1,4 +1,7 @@
 /** 完整版壁纸前端入口 */
+// 词条先于一切：完整版的词典由入口登记（Lite 走 `i18n/lite.ts` 那一份），
+// 而下面这些模块在 import 期就可能要句子。
+import './i18n/full.ts'
 import { createRoot } from 'react-dom/client'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { App } from './App.tsx'

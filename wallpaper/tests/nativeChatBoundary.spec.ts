@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { dictionarySource } from './i18nSource.ts'
 
 const wallpaperRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const nativeRoot = resolve(wallpaperRoot, 'src-tauri')
@@ -298,7 +299,7 @@ describe('native chat boundary', () => {
     // 这两句进的是通知状态，所以取的是 `msg()`（**没求值**的词条，渲染期才求值）。
     expect(settings).toContain("msg('settings.window.scan.done'")
     expect(settings).toContain("msg('settings.window.scan.none')")
-    const dictionary = await readFile(resolve(wallpaperRoot, 'src/i18n/zh.ts'), 'utf8')
+    const dictionary = await dictionarySource('zh')
     expect(dictionary).toContain("'settings.window.scan.done': '扫描完成，发现 {count} 个可选执行主体。'")
     expect(dictionary).toContain("'settings.window.scan.none': '未发现 DSH 项目或已安装的客户端；可手动填写 DSH 项目根目录后再扫描。'")
     expect(runtime).toContain('scanDshPaths(hintPath?: string, deepScan?: boolean)')
