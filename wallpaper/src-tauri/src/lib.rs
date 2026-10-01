@@ -29,6 +29,10 @@ mod floating_ball;
 mod lock_screen_backup;
 mod native_bootstrap;
 mod native_handoff;
+// 更新检测（第一片：原生侧）：版本读取、GitHub 检查、状态文件与 6 小时节流。完整版专属 ——
+// 取数用的是 `reqwest`，那是 `full` 特性后面的依赖，Lite 只给提示（计划书 §七）。
+#[cfg(not(feature = "lite"))]
+mod update;
 mod windows_integration;
 
 #[cfg(not(feature = "lite"))]
@@ -4989,7 +4993,10 @@ macro_rules! register_edition_commands {
             appearance::commands::appearance_classify_asset,
             appearance::commands::appearance_export_current_theme,
             appearance::commands::appearance_resolve_asset,
-            appearance::commands::appearance_resolve_library_asset
+            appearance::commands::appearance_resolve_library_asset,
+            // 更新检测：壁纸宿主（立绘气泡）与设置中心（系统页）各调一次；返回值只有结构化码与
+            // 数字，文案由界面按语言说。
+            update::commands::update_check
         ])
     };
 }

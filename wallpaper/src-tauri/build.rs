@@ -115,6 +115,9 @@ fn main() {
             "appearance_export_current_theme",
             "appearance_resolve_asset",
             "appearance_resolve_library_asset",
+            // 更新检测（完整版专属，见 src/update/ 的模块说明）。没登记在这里，命令就不会有
+            // ACL 条目，界面每一次调用都会被能力系统拒掉 —— 0.3.1 那次就是这么发出去的。
+            "update_check",
         ]),
     ))
     .expect("failed to build Tauri application manifest")

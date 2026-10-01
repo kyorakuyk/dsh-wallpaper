@@ -3434,6 +3434,88 @@ fn has_package_identity() -> Result<bool, String> {
     ))
 }
 
+/// 当前进程的 MSIX 包版本，按"有没有包身份、读不读得到版本"分三种答案。
+///
+/// 更新检测要用它（计划书 `docs/plans/wallpaper-update-detection-plan.md` §3.1），但它是
+/// Windows 集成的事，所以类型留在这里：
+///
+///  - `NotPackaged`：进程没有包身份（`tauri dev`，或 NSIS 安装）⇒ 调用方换别的读取器；
+///  - `Unavailable`：**有**包身份却读不出包版本 ⇒ 调用方必须**不检查**，不许退到别的读取器去猜
+///    —— 猜出来的数字会让设置里显示的当前版本与 `Get-AppxPackage` 对不上（同计划书 §八 10）；
+///  - `Version`：包版本。
+#[cfg(not(feature = "lite"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PackageVersionProbe {
+    NotPackaged,
+    Unavailable,
+    Version(String),
+}
+
+/// 读当前进程的 MSIX 包版本（`Package.Current.Id.Version` 的等价物）。
+///
+/// 走 `GetCurrentPackageFullName` 而不是 WinRT 的 `Package.Current`：包全名的第二段就是版本
+/// （`<Name>_<Version>_<Arch>_<PublisherId>`），这条路上不需要 WinRT 初始化，判据与
+/// [`has_package_identity`] 完全同一处 —— "任何 WinRT 调用之前先要包身份"那条纪律照旧。
+#[cfg(all(windows, not(feature = "lite")))]
+pub(crate) fn current_package_version() -> PackageVersionProbe {
+    match has_package_identity() {
+        Ok(false) => PackageVersionProbe::NotPackaged,
+        // 判断不了就不检查：当作"没打包"会退去读注册表，那是在猜一个版本。
+        Err(error) => {
+            log::warn!("更新检查：{error}");
+            PackageVersionProbe::Unavailable
+        }
+        Ok(true) => {
+            let Some(full_name) = current_package_full_name() else {
+                log::warn!("更新检查：读不到当前应用的 MSIX 包全名，本次不检查");
+                return PackageVersionProbe::Unavailable;
+            };
+            match package_version_in_full_name(&full_name) {
+                Some(version) => PackageVersionProbe::Version(version.to_string()),
+                None => {
+                    log::warn!("更新检查：包全名的形状不认识（{full_name}），本次不检查");
+                    PackageVersionProbe::Unavailable
+                }
+            }
+        }
+    }
+}
+
+/// 包全名。长度先探一次再读，与 [`current_run_entry_command`] 里读包族名同一写法。
+#[cfg(all(windows, not(feature = "lite")))]
+fn current_package_full_name() -> Option<String> {
+    let mut length = 0u32;
+    let probe = unsafe { GetCurrentPackageFullName(&mut length, None) };
+    if probe != ERROR_INSUFFICIENT_BUFFER || length == 0 {
+        return None;
+    }
+    // 长度含结尾的 0；多留一个元素，并把容量显式传回去。
+    let mut buffer = vec![0u16; length as usize + 1];
+    let mut capacity = buffer.len() as u32;
+    let read = unsafe { GetCurrentPackageFullName(&mut capacity, Some(PWSTR(buffer.as_mut_ptr()))) };
+    if !read.is_ok() || capacity == 0 {
+        return None;
+    }
+    let full_name = String::from_utf16_lossy(&buffer[..capacity as usize]);
+    let full_name = full_name.trim_end_matches('\0').to_string();
+    (!full_name.is_empty()).then_some(full_name)
+}
+
+/// 包全名里的版本段：`<Name>_<Version>_<Arch>[_<ResourceId>]_<PublisherId>` 的第二段。
+///
+/// 纯函数，形状不认识就返回 `None`（调用方据此不检查）。
+#[cfg(not(feature = "lite"))]
+fn package_version_in_full_name(full_name: &str) -> Option<&str> {
+    let version = full_name.split('_').nth(1)?.trim();
+    (!version.is_empty()).then_some(version)
+}
+
+#[cfg(all(not(windows), not(feature = "lite")))]
+pub(crate) fn current_package_version() -> PackageVersionProbe {
+    // 非 Windows 没有"包身份"这回事。
+    PackageVersionProbe::NotPackaged
+}
+
 /// Per-user autostart location for builds Windows will not start through a
 /// package StartupTask.
 ///
@@ -3610,6 +3692,125 @@ fn run_entry_command() -> Result<Option<String>, String> {
         .collect::<Vec<u16>>();
     let value = String::from_utf16_lossy(&units);
     Ok(Some(value.trim_end_matches('\0').to_string()))
+}
+
+/// 卸载项的子键名候选，按"最可能先试"排序。
+///
+/// 计划书写的是 `<app>_is1`；本机实测（2026-10-01，NSIS 装的是 0.4.0）真名就是产品名
+/// `dsh-wallpaper` —— 没有后缀。两种拼法都试，先试实测到的那个：将来 Tauri 的模板改回带后缀、
+/// 或者产品名改成包标识符，这条读取器都不用动。
+#[cfg(all(windows, not(feature = "lite")))]
+const UNINSTALL_KEY_CANDIDATES: [&str; 4] = [
+    "dsh-wallpaper",
+    "dsh-wallpaper_is1",
+    "com.dsh.wallpaper",
+    "com.dsh.wallpaper_is1",
+];
+
+/// 非打包安装写在卸载项里的 `DisplayVersion`（NSIS 等）。
+///
+/// 更新检测的第二顺位读取器：打包态走包版本，这里只给没有包身份的进程用（计划书 §3.1）。
+/// 与开机自启那条读取器不同，这条不必把失败原因给用户看 —— 键不在、值不在、读不出来，三者都是
+/// "没读到"，细节留在日志里，由调用方决定不检查。
+#[cfg(all(windows, not(feature = "lite")))]
+pub(crate) fn uninstall_display_version() -> Option<String> {
+    for subkey in UNINSTALL_KEY_CANDIDATES {
+        let path = format!(r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{subkey}");
+        match read_hkcu_string(&path, "DisplayVersion") {
+            Ok(Some(value)) => {
+                let value = value.trim().to_string();
+                if !value.is_empty() {
+                    return Some(value);
+                }
+            }
+            Ok(None) => {}
+            Err(status) => log::warn!("更新检查：读卸载项 {subkey} 失败（Windows 错误码 {status}）"),
+        }
+    }
+    None
+}
+
+/// 读 `HKCU` 下的一个 `REG_SZ` 值。`Ok(None)` 是"键或值不在"，`Err(错误码)` 是别的失败。
+#[cfg(all(windows, not(feature = "lite")))]
+fn read_hkcu_string(subkey: &str, value_name: &str) -> Result<Option<String>, u32> {
+    let wide = |text: &str| -> Vec<u16> {
+        text.encode_utf16().chain(std::iter::once(0)).collect()
+    };
+    let subkey = wide(subkey);
+    let value_name = wide(value_name);
+    let mut key = windows::Win32::System::Registry::HKEY::default();
+    let open_status = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(subkey.as_ptr()),
+            None,
+            KEY_READ,
+            &mut key,
+        )
+    };
+    if open_status == ERROR_FILE_NOT_FOUND {
+        return Ok(None);
+    }
+    if open_status != ERROR_SUCCESS {
+        return Err(open_status.0);
+    }
+
+    let mut value_size = 0u32;
+    let query_status = unsafe {
+        RegQueryValueExW(
+            key,
+            PCWSTR(value_name.as_ptr()),
+            None,
+            None,
+            None,
+            Some(&mut value_size),
+        )
+    };
+    if query_status == ERROR_FILE_NOT_FOUND {
+        let _ = unsafe { RegCloseKey(key) };
+        return Ok(None);
+    }
+    if query_status != ERROR_SUCCESS && query_status != ERROR_MORE_DATA {
+        let _ = unsafe { RegCloseKey(key) };
+        return Err(query_status.0);
+    }
+    if value_size == 0 {
+        let _ = unsafe { RegCloseKey(key) };
+        return Ok(Some(String::new()));
+    }
+
+    // 值是 UTF-16 的 `REG_SZ`：多要两个字节，免得"长度不计结尾 0"让第二次读失败。
+    let mut buffer = vec![0u8; value_size as usize + 2];
+    let mut read_size = buffer.len() as u32;
+    let read_status = unsafe {
+        RegQueryValueExW(
+            key,
+            PCWSTR(value_name.as_ptr()),
+            None,
+            None,
+            Some(buffer.as_mut_ptr()),
+            Some(&mut read_size),
+        )
+    };
+    let _ = unsafe { RegCloseKey(key) };
+    if read_status != ERROR_SUCCESS {
+        return Err(read_status.0);
+    }
+    let units = buffer[..read_size as usize]
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect::<Vec<u16>>();
+    Ok(Some(
+        String::from_utf16_lossy(&units)
+            .trim_end_matches('\0')
+            .to_string(),
+    ))
+}
+
+#[cfg(all(not(windows), not(feature = "lite")))]
+pub(crate) fn uninstall_display_version() -> Option<String> {
+    // 非 Windows 没有 HKCU 卸载项。
+    None
 }
 
 /// The value line `reg query` prints, pulled out of its report.
@@ -4539,6 +4740,37 @@ mod tests {
     #[test]
     fn unpackaged_lock_screen_takeover_is_never_eligible() {
         assert!(!can_attempt_lock_screen_takeover(false));
+    }
+
+    /// 包全名的第二段就是版本（`<Name>_<Version>_<Arch>_<PublisherId>`）；形状不认识就返回
+    /// `None`，由调用方决定"不检查"。
+    #[cfg(not(feature = "lite"))]
+    #[test]
+    fn the_package_version_is_the_second_field_of_the_full_name() {
+        assert_eq!(
+            package_version_in_full_name("com.dsh.wallpaper_0.2.0.202_x64__pdxj8y3r6rm5g"),
+            Some("0.2.0.202")
+        );
+        // 带资源 id 的形状（`<Name>_<Version>_<Arch>_<ResourceId>_<PublisherId>`）同样是第二段。
+        assert_eq!(
+            package_version_in_full_name("com.dsh.wallpaper_1.0.0.0_neutral_~_pdxj8y3r6rm5g"),
+            Some("1.0.0.0")
+        );
+        for broken in ["", "com.dsh.wallpaper", "com.dsh.wallpaper_"] {
+            assert!(
+                package_version_in_full_name(broken).is_none(),
+                "{broken:?} has no version field"
+            );
+        }
+    }
+
+    /// 卸载项键名的候选表里必须留着**实测到过**的那两个：计划书的 `<app>_is1` 在这台机器上
+    /// 并不存在，真名是产品名本身（见 `UNINSTALL_KEY_CANDIDATES` 的说明）。
+    #[cfg(not(feature = "lite"))]
+    #[test]
+    fn the_measured_uninstall_key_stays_in_the_candidate_list() {
+        assert!(UNINSTALL_KEY_CANDIDATES.contains(&"dsh-wallpaper"));
+        assert!(UNINSTALL_KEY_CANDIDATES.contains(&"dsh-wallpaper_is1"));
     }
 
     #[test]

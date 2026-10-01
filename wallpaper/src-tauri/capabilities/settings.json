@@ -57,6 +57,7 @@
     "allow-appearance-export-current-theme",
     "allow-appearance-resolve-asset",
     "allow-appearance-resolve-library-asset",
+    "allow-update-check",
       "allow-ensure-profile-bridge"
   ]
 }

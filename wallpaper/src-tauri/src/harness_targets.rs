@@ -650,8 +650,11 @@ fn installed_cli_version(launcher: &Path) -> Option<String> {
 ///
 /// Best effort in every step: no resource, an unreadable string table or a missing
 /// value all return `None`, and the subject keeps its version-less label.
+///
+/// `pub(crate)` 是给更新检测用的：NSIS 安装的兜底读取器问的就是同一个问题（`update::version`），
+/// 同一条读法不写第二份。
 #[cfg(windows)]
-fn file_version(path: &Path) -> Option<String> {
+pub(crate) fn file_version(path: &Path) -> Option<String> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::{
@@ -734,7 +737,7 @@ fn file_version(path: &Path) -> Option<String> {
 }
 
 #[cfg(not(windows))]
-fn file_version(_path: &Path) -> Option<String> {
+pub(crate) fn file_version(_path: &Path) -> Option<String> {
     // No shell targets exist off Windows (`scan_shell_shortcuts` finds none), so
     // this source has nothing to answer.
     None
