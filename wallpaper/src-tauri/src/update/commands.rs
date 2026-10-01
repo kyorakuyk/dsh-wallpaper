@@ -1173,6 +1173,35 @@ mod tests {
     }
 
     /// 「忽略」记下的是**具体版本**：同一个版本不再提示，更晚的版本仍然提示（§四、§八 3）。
+    /// 真机：把**系统的版本探针**与**真实的网络**接在一起跑一次完整判定 —— 生产路径上
+    /// `update_check` 做的就是这件事，这条测试只是把输入换成真机、输出写到临时文件里。
+    /// 默认 ignore（要网络、要读本机安装）；手动跑：
+    /// `cargo test --lib -- --ignored this_machine_checking --nocapture`
+    #[tokio::test]
+    #[ignore = "hits the network and reads the local install"]
+    async fn this_machine_checking_against_the_real_release_concludes_something() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = state_path(&directory);
+        let installed = crate::update::version::installed_version(
+            &crate::update::version::VersionProbes::system(),
+        );
+        println!("  本机版本: {installed:?}");
+        let report = run_check(
+            installed,
+            &path,
+            1_700_000_000_000,
+            true,
+            crate::update::source::fetch_latest_release,
+        )
+        .await;
+        println!("  结论: {:?}", report.outcome);
+        println!("  最新: {:?}", report.latest_version);
+        println!("  失败: {:?}", report.failure);
+        println!("  状态文件: {}", std::fs::read_to_string(&path).unwrap_or_default());
+        assert_ne!(report.outcome, CheckOutcome::Failed, "真机 + 真实网络不该失败");
+        assert!(report.latest_version.is_some(), "应该读到最新版本号");
+    }
+
     /// 真机：真的向 GitHub 发一次请求，验证"请求 + 解析"这段胶水（单测里它被注入的取数入口替掉了）。
     /// 默认 ignore（CI 不该依赖网络）；手动跑：
     /// `cargo test --lib -- --ignored a_real_fetch_from_github --nocapture`
