@@ -654,3 +654,19 @@
   .dsh-chat::before { display: none; }
   .dsh-chat__card, .dsh-chat__history-wrap { border: 1px solid ButtonBorder; }
 }
+
+/*
+ * 英文界面的顶栏比中文长得多（`Not reported` 对 `未提供`），过去一行放不下时会把内容直接顶出圆角：
+ * 2026-10-01 实机反馈，切到 English 后输入岛右侧的 Bridge 状态被裁掉。
+ *
+ * 这里让顶栏**可换行、可收缩**，并且**换行优先于截断** —— 数字与状态宁可占两行，也不要被切掉一半。
+ * 只在放不下时才真的换行，中文界面的排布不受影响（它本来就放得下）。
+ */
+.dsh-chat__topbar { flex-wrap: wrap; min-width: 0; row-gap: 2px; }
+.dsh-chat__topbar .dsh-chat__usage-rail { flex: 1 1 auto; min-width: 0; flex-wrap: wrap; justify-content: flex-end; row-gap: 2px; }
+.dsh-chat__topbar .dsh-chat__turn-usage,
+.dsh-chat__topbar .dsh-chat__session-cost,
+.dsh-chat__topbar .dsh-chat__bottom-status { min-width: 0; }
+.dsh-chat__backend,
+.dsh-chat__backend-detail,
+.dsh-chat__status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
