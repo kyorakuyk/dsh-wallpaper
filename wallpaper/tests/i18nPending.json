@@ -1,9 +1,5 @@
 [
   [
-    "src/settings/SettingsPanel.tsx",
-    130
-  ],
-  [
     "src/settings/SettingsWindow.tsx",
     55
   ],

@@ -32,9 +32,10 @@ describe('the chat-mode switch in the settings centre', () => {
   })
 
   it('switches the running wallpaper, not just the next launch', async () => {
-    const [settings, panel] = await Promise.all([
+    const [settings, panel, dictionary] = await Promise.all([
       source('src/settings/SettingsWindow.tsx'),
       source('src/settings/SettingsPanel.tsx'),
+      source('src/i18n/zh.ts'),
     ])
 
     // 走原生的 AppCore：背景端就是靠 `app-snapshot` 改 `runtime.backend` 的（托盘同一条路）。
@@ -48,7 +49,9 @@ describe('the chat-mode switch in the settings centre', () => {
     // 候选恒为两项，且调用时不传"当前值"——没有"必要时追加一项"这回事了。
     expect(panel).toContain('chatModeOptions()')
     // 文案只说这一栏自己管什么，不再解释滑槽（那句解释会制造一个用户本来没有的问题）。
-    expect(panel).toContain('滑槽在左边时，聊天走这里选的通道')
+    // 文案搬进了字典（i18n）：面板里只剩键，所以那句话本身要在字典里核对。
+    expect(panel).toContain("t('settings.connections.chat-mode.field-detail')")
+    expect(dictionary).toContain("'settings.connections.chat-mode.field-detail': '滑槽在左边时，聊天走这里选的通道；改动会记作下次启动的默认值。'")
     expect(panel).not.toContain('Harness 由桌面上的那个开关切换')
     expect(panel).not.toContain('Harness 不在这里切换')
     expect(panel).not.toContain('title="启动时使用"')

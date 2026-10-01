@@ -238,7 +238,10 @@ describe('DSH autostart wiring', () => {  it('starts DSH from the background hos
     const panel = await source('src/settings/SettingsPanel.tsx')
     // The requirement itself, not the old second name for it: the toggle now points at
     // the page that owns the setting instead of introducing 系统自启设置 as well.
-    expect(panel).toContain('还需要在「常规」里开启壁纸开机自启')
+    // 文案搬进了字典（i18n）：面板里只剩键，所以那句话本身要在字典里核对。
+    expect(panel).toContain("t('settings.connections.launch-with-wallpaper.checkout')")
+    const dictionary = await source('src/i18n/zh.ts')
+    expect(dictionary).toContain('还需要在「常规」里开启壁纸开机自启')
     // The warning is driven by the real Windows state, not by a guess.
     expect(panel).toContain('props.autostart.enabled')
     expect(panel).toContain('disabled-by-policy')

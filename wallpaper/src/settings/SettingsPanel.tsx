@@ -195,12 +195,19 @@ export interface SettingsPanelProps {
   onClearApiHistory: () => void
 }
 
-const componentSlots: Array<{ slot: AppearanceSlot; label: string; detail: string }> = [
-  { slot: 'desktop.background', label: '桌面背景', detail: '工作室场景的底图' },
-  { slot: 'persona.deepseek.flash', label: 'DeepSeek Flash 立绘', detail: '蓝色幼年形态' },
-  { slot: 'persona.deepseek.pro', label: 'DeepSeek Pro 立绘', detail: '蓝色成年形态' },
-  { slot: 'persona.harness.flash', label: 'Harness Flash 立绘', detail: '黑红幼年形态' },
-  { slot: 'persona.harness.pro', label: 'Harness Pro 立绘', detail: '黑红成年形态' },
+/**
+ * 素材库里可以挂单项素材的那几个槽位，以及它们在这个页面上的名字与说明。
+ *
+ * 存的是**键**而不是文字：语言是启动之后才从设置文档回填的，模块加载时就求值的记录会永远停在
+ * 中文（这一条在 `appearanceViewModel.ts` 的 `SLOT_PRESENTATION` 上踩过，那里用的是 getter）。
+ * 所以文字在渲染处用 `t(...)` 取，这里只留"哪个槽位、用哪两条键"。
+ */
+const componentSlots: Array<{ slot: AppearanceSlot; labelKey: MessageKey; detailKey: MessageKey }> = [
+  { slot: 'desktop.background', labelKey: 'settings.appearance.component.desktop-background.label', detailKey: 'settings.appearance.component.desktop-background.detail' },
+  { slot: 'persona.deepseek.flash', labelKey: 'settings.appearance.component.persona-deepseek-flash.label', detailKey: 'settings.appearance.component.persona-deepseek-flash.detail' },
+  { slot: 'persona.deepseek.pro', labelKey: 'settings.appearance.component.persona-deepseek-pro.label', detailKey: 'settings.appearance.component.persona-deepseek-pro.detail' },
+  { slot: 'persona.harness.flash', labelKey: 'settings.appearance.component.persona-harness-flash.label', detailKey: 'settings.appearance.component.persona-harness-flash.detail' },
+  { slot: 'persona.harness.pro', labelKey: 'settings.appearance.component.persona-harness-pro.label', detailKey: 'settings.appearance.component.persona-harness-pro.detail' },
 ]
 
 const pages: Array<{ id: Page; icon: string; labelKey: MessageKey; hintKey: MessageKey }> = [
@@ -220,7 +227,11 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-/** Local timestamp for one history row; `—` when the value is unknown. */
+/**
+ * Local timestamp for one history row; `—` when the value is unknown.
+ *
+ * 同一天那半句是词条（`今天 09:05`），比较早的那些直接写完整日期 —— 那是一串数字格式，不是句子。
+ */
 export function formatHistoryTime(timestamp: number, now: Date = new Date()): string {
   if (!Number.isFinite(timestamp) || timestamp <= 0) return '—'
   const date = new Date(timestamp)
@@ -230,7 +241,7 @@ export function formatHistoryTime(timestamp: number, now: Date = new Date()): st
     && date.getDate() === now.getDate()
   const time = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
   return sameDay
-    ? `今天 ${time}`
+    ? t('settings.history.today', { time })
     : `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${time}`
 }
 
@@ -257,10 +268,10 @@ function Toggle({ checked, onChange, label, disabled = false }: { checked: boole
   return <button type="button" role="switch" aria-checked={checked} aria-label={label} disabled={disabled} className={`settings-toggle ${checked ? 'is-on' : ''}`} onClick={() => onChange(!checked)}><span /></button>
 }
 
-function Choice({ value, options, onChange, label, disabled = false, emptyMessage }: { value: string; options: Array<{ value: string; label: string }>; onChange: (value: string) => void; label: string; disabled?: boolean; emptyMessage?: string }) {
+function Choice({ value, options, onChange, label, disabled = false, emptyMessage, emptyLabel }: { value: string; options: Array<{ value: string; label: string }>; onChange: (value: string) => void; label: string; disabled?: boolean; emptyMessage?: string; emptyLabel: string }) {
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLDivElement>(null)
-  const current = options.find((option) => option.value === value)?.label ?? options[0]?.label ?? '请选择'
+  const current = options.find((option) => option.value === value)?.label ?? options[0]?.label ?? emptyLabel
   useEffect(() => {
     const close = (event: MouseEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false) }
     window.addEventListener('mousedown', close)
@@ -277,7 +288,7 @@ function Choice({ value, options, onChange, label, disabled = false, emptyMessag
 /** Local copy of the kind label so the panel does not import the connect layer. */
 export function harnessEndpointKindLabel(kind: HarnessEndpointScan['kind']): string {
   switch (kind) {
-    case 'official-desktop': return '桌面客户端'
+    case 'official-desktop': return t('harness.subject.kind.embedded-shell')
     default: return 'Web / CLI'
   }
 }
@@ -370,17 +381,21 @@ export function harnessEndpointKindLabel(kind: HarnessEndpointScan['kind']): str
 // ---------------------------------------------------------------------------
 
 function displayLabel(display: DesktopDisplayInfo, index: number): string {  const number = /DISPLAY(\d+)/i.exec(display.id)?.[1]
-  return number ? `显示器 ${number}` : display.name.trim() || `显示器 ${index + 1}`
+  return number
+    ? t('settings.general.display.number', { number })
+    : display.name.trim() || t('settings.general.display.fallback', { index: index + 1 })
 }
 
 /**
  * 后端 → 显示名。三种都在：提示语与"此刻在用哪一格"仍然会遇到 Harness（托盘、自动切换、
  * 主体退出后的复位都可能把壁纸切过去），缺一个就会退化成内部 id。
+ *
+ * 三个名字都是 getter：语言是启动后才回填的，写成普通字段就会永远停在 import 时那一种。
  */
 export const BACKEND_MODE_LABELS: Record<BackendMode, string> = {
-  'deepseek-web': 'DeepSeek 网页入口（实验）',
-  'deepseek-api': 'DeepSeek API（付费）',
-  harness: 'DeepSeek Harness',
+  get 'deepseek-web'() { return t('settings.connections.backend.deepseek-web') },
+  get 'deepseek-api'() { return t('settings.connections.backend.deepseek-api') },
+  get harness() { return 'DeepSeek Harness' },
 }
 
 /**
@@ -422,11 +437,11 @@ export function catalogAgeSuffix(fetchedAt: string | undefined, now = Date.now()
   const at = Date.parse(fetchedAt)
   if (!Number.isFinite(at)) return ''
   const minutes = Math.max(0, Math.round((now - at) / 60_000))
-  if (minutes < 1) return '（刚刚拉取）'
-  if (minutes < 60) return `（${minutes} 分钟前拉取）`
+  if (minutes < 1) return t('settings.connections.api.model.age.just-now')
+  if (minutes < 60) return t('settings.connections.api.model.age.minutes', { minutes })
   const hours = Math.round(minutes / 60)
-  if (hours < 48) return `（${hours} 小时前拉取）`
-  return `（${Math.round(hours / 24)} 天前拉取）`
+  if (hours < 48) return t('settings.connections.api.model.age.hours', { hours })
+  return t('settings.connections.api.model.age.days', { days: Math.round(hours / 24) })
 }
 
 /**
@@ -448,7 +463,7 @@ export function apiModelOptions(
   }))
   const trimmed = current.trim()
   if (trimmed && !options.some((option) => option.value === trimmed)) {
-    options.push({ value: trimmed, label: `${trimmed}（不在当前目录里）` })
+    options.push({ value: trimmed, label: t('settings.connections.api.model.stale', { model: trimmed }) })
   }
   return options
 }
@@ -470,7 +485,7 @@ export function PriceInput({
     max={MAX_PRICE_PER_MILLION}
     step="0.0001"
     inputMode="decimal"
-    placeholder="未配置"
+    placeholder={t('settings.connections.api.price.placeholder')}
     value={value ?? ''}
     onChange={(event) => {
       const raw = event.target.value.trim()
@@ -493,15 +508,15 @@ export function SettingsPanel(props: SettingsPanelProps) {
   const clearUserData = async () => {
     // 逐项写清会删什么、要你手动删什么：这类操作不可逆，值得在读清之前先拦一下。
     const confirmed = window.confirm([
-      '将删除：',
-      '· 桌面会话工作区（' + (props.desktopWorkspace?.workspaceDirectory ?? '数据目录下的「桌面会话」') + '）',
-      '· 凭据管理器里保存的 DeepSeek API Key',
+      t('settings.system.clear.confirm.intro'),
+      t('settings.system.clear.confirm.workspace', { workspace: props.desktopWorkspace?.workspaceDirectory ?? t('settings.system.clear.confirm.workspace-fallback') }),
+      t('settings.system.clear.confirm.credentials'),
       '',
-      '需要你自己删（本应用正在运行，删不干净）：',
-      '· 设置与网页登录态：' + (props.desktopWorkspace?.dataDirectory ?? '%LOCALAPPDATA%\\com.dsh.wallpaper（退出后删除）'),
-      '· 桥接凭据：~/.dsh/wallpaper',
+      t('settings.system.clear.confirm.manual-heading'),
+      t('settings.system.clear.confirm.settings', { data: props.desktopWorkspace?.dataDirectory ?? t('settings.system.clear.confirm.data-fallback') }),
+      t('settings.system.clear.confirm.bridge'),
       '',
-      '继续？',
+      t('settings.system.clear.confirm.continue'),
     ].join('\n'))
     if (!confirmed) return
     setClearing(true)
@@ -513,13 +528,13 @@ export function SettingsPanel(props: SettingsPanelProps) {
         manual: Array<{ what: string; path: string }>
       }>('clear_user_data')
       const done = [
-        ...result.removed.map((path) => `已删除 ${path}`),
-        result.credentialRemoved ? '已删除凭据管理器里的 API Key' : '凭据管理器里没有这条 Key（无需删除）',
+        ...result.removed.map((path) => t('settings.system.clear.removed', { path })),
+        result.credentialRemoved ? t('settings.system.clear.credential-removed') : t('settings.system.clear.credential-absent'),
       ]
-      const manual = result.manual.map((entry) => `退出应用后手动删除：${entry.what} → ${entry.path}`)
-      setClearDetail([...done, ...manual].join('；'))
+      const manual = result.manual.map((entry) => t('settings.system.clear.manual', { what: entry.what, path: entry.path }))
+      setClearDetail([...done, ...manual].join(t('settings.system.clear.join')))
     } catch (error) {
-      setClearDetail(`清除失败：${String(error)}`)
+      setClearDetail(t('settings.system.clear.failed', { error: String(error) }))
     } finally {
       setClearing(false)
     }
@@ -580,8 +595,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
       <div className="settings-titlebar__drag" aria-hidden="true" onMouseDown={(event) => {
         if (event.button === 0) void invoke('start_settings_drag')
       }} />
-      <div className="settings-brand"><img className="settings-brand__mark" src="/brand/persona-mark.png" alt="" draggable={false} /><div><strong>Wallpaper</strong><small>个性化控制中心</small></div></div>
-      <button className="settings-window-close" aria-label="关闭设置" onClick={onClose}>×</button>
+      <div className="settings-brand"><img className="settings-brand__mark" src="/brand/persona-mark.png" alt="" draggable={false} /><div><strong>Wallpaper</strong><small>{t('settings.brand.subtitle')}</small></div></div>
+      <button className="settings-window-close" aria-label={t('settings.window.close')} onClick={onClose}>×</button>
     </header>
 
     <aside className="settings-sidebar">
@@ -593,46 +608,46 @@ export function SettingsPanel(props: SettingsPanelProps) {
     </aside>
 
     <main className="settings-content">
-      <div className="settings-page-heading"><div><span>设置 / {t(pageMeta.labelKey)}</span><h1>{t(pageMeta.labelKey)}</h1></div><p>{t(pageMeta.hintKey)}</p></div>
+      <div className="settings-page-heading"><div><span>{t('settings.page.heading', { page: t(pageMeta.labelKey) })}</span><h1>{t(pageMeta.labelKey)}</h1></div><p>{t(pageMeta.hintKey)}</p></div>
 
       {page === 'general' && <>
-        <Card title="交互方式" description="决定会话气泡如何出现在桌面上。">
-          <Field title="中央会话窗" detail="关闭后仅可通过托盘右键或此处重新打开"><Toggle label="显示中央会话窗" checked={props.interactionEnabled} onChange={props.onSetInteractionEnabled} /></Field>
-          <Field title="气泡布局" detail="中央悬浮始终展开；任务栏停靠以胶囊按钮唤起。"><Choice label="气泡布局" value={settings.interactionLayout} onChange={(value) => set({ interactionLayout: value as WallpaperSettings['interactionLayout'] })} options={[{ value: 'floating', label: '中央玻璃悬浮' }, { value: 'taskbar-docked', label: '任务栏停靠胶囊' }]} /></Field>
-          <Field title="历史抽屉默认展开" detail="启动或解锁后直接显示最近的对话。"><Toggle label="历史抽屉默认展开" checked={settings.historyStartsExpanded} onChange={(value) => set({ historyStartsExpanded: value })} /></Field>
-          <Field title="发送消息快捷键" detail="想防止误触发送的开发者可切换为 Ctrl+Enter 发送。"><Choice label="发送消息快捷键" value={settings.sendShortcut} onChange={(value) => set({ sendShortcut: value as WallpaperSettings['sendShortcut'] })} options={[{ value: 'Enter', label: 'Enter 发送，Ctrl+Enter 换行' }, { value: 'Ctrl+Enter', label: 'Ctrl+Enter 发送，Enter 换行' }]} /></Field>
+        <Card title={t('settings.general.interaction.title')} description={t('settings.general.interaction.description')}>
+          <Field title={t('settings.general.conversation-window.title')} detail={t('settings.general.conversation-window.detail')}><Toggle label={t('settings.general.conversation-window.toggle')} checked={props.interactionEnabled} onChange={props.onSetInteractionEnabled} /></Field>
+          <Field title={t('settings.general.bubble-layout.title')} detail={t('settings.general.bubble-layout.detail')}><Choice emptyLabel={t('settings.choice.empty')} label={t('settings.general.bubble-layout.title')} value={settings.interactionLayout} onChange={(value) => set({ interactionLayout: value as WallpaperSettings['interactionLayout'] })} options={[{ value: 'floating', label: t('settings.general.bubble-layout.floating') }, { value: 'taskbar-docked', label: t('settings.general.bubble-layout.taskbar-docked') }]} /></Field>
+          <Field title={t('settings.general.history-drawer.title')} detail={t('settings.general.history-drawer.detail')}><Toggle label={t('settings.general.history-drawer.toggle')} checked={settings.historyStartsExpanded} onChange={(value) => set({ historyStartsExpanded: value })} /></Field>
+          <Field title={t('settings.general.shortcut.title')} detail={t('settings.general.shortcut.detail')}><Choice emptyLabel={t('settings.choice.empty')} label={t('settings.general.shortcut.title')} value={settings.sendShortcut} onChange={(value) => set({ sendShortcut: value as WallpaperSettings['sendShortcut'] })} options={[{ value: 'Enter', label: t('settings.general.shortcut.enter') }, { value: 'Ctrl+Enter', label: t('settings.general.shortcut.ctrl-enter') }]} /></Field>
         </Card>
         <Card title={t('language.card')}>
           <Field title={t('language.label')} detail={t('language.hint')}>
-            <Choice label={t('language.label')} value={language} options={[{ value: 'zh', label: t('language.zh') }, { value: 'en', label: t('language.en') }]} onChange={(value) => { const next = value as Language; set({ language: next }); setLanguage(next) }} />
+            <Choice emptyLabel={t('settings.choice.empty')} label={t('language.label')} value={language} options={[{ value: 'zh', label: t('language.zh') }, { value: 'en', label: t('language.en') }]} onChange={(value) => { const next = value as Language; set({ language: next }); setLanguage(next) }} />
           </Field>
         </Card>
-        {props.desktopDisplays.length > 1 && <Card title={`多屏桌面 · 已检测 ${props.desktopDisplays.length} 个屏幕`} description="每块屏幕独立铺满自己的背景；对话窗和立绘可以分别指定目标屏幕。未单独指定的屏幕跟随全局背景。">
-          <Field title="启用独立多屏背景" detail={settings.multiScreen.enabled ? '已按屏幕分别渲染；修改某一屏不会改变其他屏幕的背景选择。' : '关闭时保持现有跨虚拟桌面的单一场景；开启后才显示逐屏选择。'}><Toggle label="启用独立多屏背景" checked={settings.multiScreen.enabled} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, enabled: value } })} /></Field>
+        {props.desktopDisplays.length > 1 && <Card title={t('settings.general.multi-screen.title', { count: props.desktopDisplays.length })} description={t('settings.general.multi-screen.description')}>
+          <Field title={t('settings.general.multi-screen.toggle')} detail={settings.multiScreen.enabled ? t('settings.general.multi-screen.on') : t('settings.general.multi-screen.off')}><Toggle label={t('settings.general.multi-screen.toggle')} checked={settings.multiScreen.enabled} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, enabled: value } })} /></Field>
           {settings.multiScreen.enabled && <>
-            {props.desktopDisplays.map((display, index) => <Field key={display.id} title={displayOptions[index]?.label ?? `显示器 ${index + 1}`} detail={`${display.bounds.width} × ${display.bounds.height} 像素 · 缩放 ${Math.round(display.scaleFactor * 100)}%${display.primary ? ' · 主显示器' : ''}`}><Choice label={`${displayOptions[index]?.label ?? display.id} 背景`} value={settings.multiScreen.backgrounds[display.id] ?? ''} onChange={(value) => setDisplayBackground(display.id, value)} options={[{ value: '', label: '跟随全局背景' }, ...BACKGROUND_OPTIONS.map((background) => ({ value: background.id, label: background.name }))]} /></Field>)}
-            <Field title="对话窗所在屏幕" detail="只移动会话层，不重新加载其他屏幕的背景。"><Choice label="对话窗所在屏幕" value={preferredDisplayId(props.desktopDisplays, settings.multiScreen.conversationDisplayId) ?? ''} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, conversationDisplayId: value || undefined } })} options={displayOptions} /></Field>
-            <Field title="立绘所在屏幕" detail="立绘和头顶气泡只挂载到选中的屏幕。"><Choice label="立绘所在屏幕" value={preferredDisplayId(props.desktopDisplays, settings.multiScreen.portraitDisplayId) ?? ''} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, portraitDisplayId: value || undefined } })} options={displayOptions} /></Field>
+            {props.desktopDisplays.map((display, index) => <Field key={display.id} title={displayOptions[index]?.label ?? t('settings.general.display.fallback', { index: index + 1 })} detail={`${t('settings.general.display.metrics', { width: display.bounds.width, height: display.bounds.height, scale: Math.round(display.scaleFactor * 100) })}${display.primary ? t('settings.general.display.primary') : ''}`}><Choice emptyLabel={t('settings.choice.empty')} label={t('settings.general.display.background', { display: displayOptions[index]?.label ?? display.id })} value={settings.multiScreen.backgrounds[display.id] ?? ''} onChange={(value) => setDisplayBackground(display.id, value)} options={[{ value: '', label: t('settings.general.display.follow-global') }, ...BACKGROUND_OPTIONS.map((background) => ({ value: background.id, label: background.name }))]} /></Field>)}
+            <Field title={t('settings.general.display.conversation.title')} detail={t('settings.general.display.conversation.detail')}><Choice emptyLabel={t('settings.choice.empty')} label={t('settings.general.display.conversation.title')} value={preferredDisplayId(props.desktopDisplays, settings.multiScreen.conversationDisplayId) ?? ''} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, conversationDisplayId: value || undefined } })} options={displayOptions} /></Field>
+            <Field title={t('settings.general.display.portrait.title')} detail={t('settings.general.display.portrait.detail')}><Choice emptyLabel={t('settings.choice.empty')} label={t('settings.general.display.portrait.title')} value={preferredDisplayId(props.desktopDisplays, settings.multiScreen.portraitDisplayId) ?? ''} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, portraitDisplayId: value || undefined } })} options={displayOptions} /></Field>
           </>}
-          <div className="integration-actions"><button className="settings-action secondary" onClick={() => void props.onRefreshDesktopDisplays()}>刷新显示器检测</button></div>
+          <div className="integration-actions"><button className="settings-action secondary" onClick={() => void props.onRefreshDesktopDisplays()}>{t('settings.general.display.refresh')}</button></div>
         </Card>}
-        <Card title="会话生命周期"><Field title="新会话策略" detail="网页模式会固定到同一个 DeepSeek 会话地址；其他后端分别保留自己的最近会话。"><Choice label="新会话策略" value={settings.conversationPolicy} onChange={(value) => set({ conversationPolicy: value as WallpaperSettings['conversationPolicy'] })} options={[{ value: 'resume-last', label: '恢复最近会话' }, { value: 'new-on-unlock', label: '每次解锁新建' }, { value: 'daily', label: '每日新建' }]} /></Field></Card>
-        <Card title="高级外观（测试中）" description="环境渐变只作用于立绘；会话窗使用独立的亚克力透明度。">
-          <Field title="环境渐变长度" detail={`从暗侧向亮侧延伸至 ${settings.portraitAmbientLength}%`}><input type="range" min="35" max="100" step="1" value={settings.portraitAmbientLength} onChange={(event) => set({ portraitAmbientLength: Number(event.target.value) })} /></Field>
-          <Field title="环境渐变强度" detail={`${Math.round(settings.portraitAmbientStrength * 100)}%`}><input type="range" min="0" max="1" step="0.01" value={settings.portraitAmbientStrength} onChange={(event) => set({ portraitAmbientStrength: Number(event.target.value) })} /></Field>
-          <Field title="中央会话窗透明度" detail={`${Math.round(settings.conversationOpacity * 100)}% · 仅影响亚克力底色，不影响文字可读性`}><input type="range" min="0.2" max="0.96" step="0.01" value={settings.conversationOpacity} onChange={(event) => set({ conversationOpacity: Number(event.target.value) })} /></Field>
-          <Field title="中央会话窗磨砂" detail={`${settings.conversationBlur}px · 0 为纯透明玻璃，数值越高背景越柔和`}><input type="range" min="0" max="40" step="1" value={settings.conversationBlur} onChange={(event) => set({ conversationBlur: Number(event.target.value) })} /></Field>
+        <Card title={t('settings.general.conversation-lifecycle.title')}><Field title={t('settings.general.conversation-policy.title')} detail={t('settings.general.conversation-policy.detail')}><Choice emptyLabel={t('settings.choice.empty')} label={t('settings.general.conversation-policy.title')} value={settings.conversationPolicy} onChange={(value) => set({ conversationPolicy: value as WallpaperSettings['conversationPolicy'] })} options={[{ value: 'resume-last', label: t('settings.general.conversation-policy.resume-last') }, { value: 'new-on-unlock', label: t('settings.general.conversation-policy.new-on-unlock') }, { value: 'daily', label: t('settings.general.conversation-policy.daily') }]} /></Field></Card>
+        <Card title={t('settings.general.advanced.title')} description={t('settings.general.advanced.description')}>
+          <Field title={t('settings.general.ambient-length.title')} detail={t('settings.general.ambient-length.detail', { percent: settings.portraitAmbientLength })}><input type="range" min="35" max="100" step="1" value={settings.portraitAmbientLength} onChange={(event) => set({ portraitAmbientLength: Number(event.target.value) })} /></Field>
+          <Field title={t('settings.general.ambient-strength.title')} detail={`${Math.round(settings.portraitAmbientStrength * 100)}%`}><input type="range" min="0" max="1" step="0.01" value={settings.portraitAmbientStrength} onChange={(event) => set({ portraitAmbientStrength: Number(event.target.value) })} /></Field>
+          <Field title={t('settings.general.conversation-opacity.title')} detail={t('settings.general.conversation-opacity.detail', { percent: Math.round(settings.conversationOpacity * 100) })}><input type="range" min="0.2" max="0.96" step="0.01" value={settings.conversationOpacity} onChange={(event) => set({ conversationOpacity: Number(event.target.value) })} /></Field>
+          <Field title={t('settings.general.conversation-blur.title')} detail={t('settings.general.conversation-blur.detail', { pixels: settings.conversationBlur })}><input type="range" min="0" max="40" step="1" value={settings.conversationBlur} onChange={(event) => set({ conversationBlur: Number(event.target.value) })} /></Field>
         </Card>
       </>}
 
       {page === 'connections' && <>
-        <Card title="聊天模式" description="二选一。更改会话的通道，会记作下次启动的默认值；网页桥接不会在失败时自动切到付费 API。">
-          <Field title="当前使用" detail="滑槽在左边时，聊天走这里选的通道；改动会记作下次启动的默认值。">
+        <Card title={t('settings.connections.chat-mode.title')} description={t('settings.connections.chat-mode.description')}>
+          <Field title={t('settings.connections.chat-mode.field-title')} detail={t('settings.connections.chat-mode.field-detail')}>
             {/* 值是**启动默认值**：这个控件给"滑槽在左边"这个位置赋予含义。滑槽在右端时一定是
                 Harness，那由滑槽自己表达，这里不描述、也不需要一个不可选但可见的 Harness 项。 */}
-            <Choice label="当前使用" value={settings.defaultBackend} onChange={(value) => props.onSelectBackend(value as BackendMode)} options={chatModeOptions()} />
+            <Choice emptyLabel={t('settings.choice.empty')} label={t('settings.connections.chat-mode.field-title')} value={settings.defaultBackend} onChange={(value) => props.onSelectBackend(value as BackendMode)} options={chatModeOptions()} />
           </Field>
-          <Field title="DSH 就绪时自动切换" detail="当 harness 就绪时自动切换到 harness 模式。"><Toggle label="DSH 自动切换" checked={settings.autoSwitchHarness} onChange={(value) => set({ autoSwitchHarness: value })} /></Field>
+          <Field title={t('settings.connections.chat-mode.auto-switch.title')} detail={t('settings.connections.chat-mode.auto-switch.detail')}><Toggle label={t('settings.connections.chat-mode.auto-switch.toggle')} checked={settings.autoSwitchHarness} onChange={(value) => set({ autoSwitchHarness: value })} /></Field>
         </Card>
                 {/*
           Wording rules for this card, applied to every sentence in it:
@@ -649,8 +664,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
             the toggle points at that page instead of introducing a second.
         */}
         <Card
-          title="DeepSeek Harness 连接"
-          description="当第一次使用与本机含有多个不同dsh时使用"
+          title={t('settings.connections.harness.title')}
+          description={t('settings.connections.harness.description')}
           // FREEZE（临时冻结，不是删除）：卡片标题右上角的「当前已启动实例」下拉。它随
           // 「启动参数」一起冻住（本 build 回到单实例行为，停止入口只有下面那行）。恢复办法：
           // 取消注释下面这个 `action`，并恢复 `RunningInstances` 组件（本文件内，注释里留着）
@@ -676,17 +691,18 @@ export function SettingsPanel(props: SettingsPanelProps) {
             directory is discovery work the scan already does.
           */}
           <Field
-            title="运行方式"
+            title={t('settings.connections.subject.title')}
             detail={props.dshScanBusy
-              ? '正在后台搜索可识别的运行方式，请稍候。'
+              ? t('settings.connections.subject.scanning')
               : props.harnessTargets.length === 0
-                ? '点「扫描」找出本机可以运行的 DSH。'
-                : [props.subjectChoice, `已发现 ${props.harnessTargets.length} 个可选项${props.subjectCatalogVerifiedAt ? `（${catalogAgeLabel(props.subjectCatalogVerifiedAt)}）` : ''}。`].filter(Boolean).join(' ')}
+                ? t('settings.connections.subject.none')
+                : [props.subjectChoice, t('settings.connections.subject.found', { count: props.harnessTargets.length, age: props.subjectCatalogVerifiedAt ? `（${catalogAgeLabel(props.subjectCatalogVerifiedAt)}）` : '' })].filter(Boolean).join(' ')}
           >
             <span className="integration-actions">
               {props.harnessTargets.length > 0 && (
                 <Choice
-                  label="运行方式"
+                  emptyLabel={t('settings.choice.empty')}
+                  label={t('settings.connections.subject.title')}
                   value={settings.dshLaunch.subjectId ?? ''}
                   onChange={props.onSelectSubject}
                   options={[
@@ -696,7 +712,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
                       "looks empty" failure the catalogue exists to prevent.
                     */
                     ...(settings.dshLaunch.subjectId && !props.harnessTargets.some((target) => sameSubject(target.id, settings.dshLaunch.subjectId))
-                      ? [{ value: settings.dshLaunch.subjectId, label: `当前：${displaySubjectPath(settings.dshLaunch.subjectId)}` }]
+                      ? [{ value: settings.dshLaunch.subjectId, label: t('settings.connections.subject.current', { path: displaySubjectPath(settings.dshLaunch.subjectId) }) }]
                       : []),
                     // FREEZE（临时冻结，不是删除）：这一行原来把别名表传进去（`subjectOptionLabel(
                     // target, props.harnessTargets, settings.dshLaunch.aliases)`）。不传就是"用目录名
@@ -708,7 +724,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
                 />
               )}
               <button className="settings-action secondary" disabled={props.dshScanBusy} onClick={props.onScanDsh}>
-                {props.dshScanBusy ? '扫描中…' : props.harnessTargets.length > 0 ? '重新扫描' : '扫描'}
+                {props.dshScanBusy ? t('settings.connections.subject.scanning-button') : props.harnessTargets.length > 0 ? t('settings.connections.subject.rescan') : t('settings.connections.subject.scan')}
               </button>
             </span>
           </Field>
@@ -722,7 +738,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
               启动器后面加词，于是"自动启动要不要用这个自定义命令"那一次授权也不再需要）。本 build
               把这一项整个冻住，见下面那个输入框上的 FREEZE 注释。
             */}
-            {!cliSelected && <Field title="源码目录" detail="这份源码的位置；扫描会用它作为下一次查找的提示路径。"><span className="settings-static">{displaySubjectPath(selectedSubject?.identity.rootPath ?? settings.dshLaunch.rootPath)}</span></Field>}
+            {!cliSelected && <Field title={t('settings.connections.root-path.title')} detail={t('settings.connections.root-path.detail')}><span className="settings-static">{displaySubjectPath(selectedSubject?.identity.rootPath ?? settings.dshLaunch.rootPath)}</span></Field>}
             {/* FREEZE（临时冻结，不是删除）：「起别名」输入框。
                 为什么关：别名唯一的作用就是顶替「运行方式」和实例下拉里的"上级目录名"那一段，而
                 那个下拉现在按目录名走、实例下拉整个冻住了 —— 留着这个框就是多一个改了也不影响
@@ -776,20 +792,21 @@ export function SettingsPanel(props: SettingsPanelProps) {
             the pair rather than in either label.
           */}
           <Field
-            title="打开界面"
+            title={t('settings.connections.open.title')}
             detail={!selectedSubject
-              ? '先在上面选定运行方式。'
+              ? t('settings.connections.open.detail.no-subject')
               : shellSelected
-                ? '会把它自己的窗口调到前台；如果它没在运行，会先把它启动起来。'
+                ? t('settings.connections.open.detail.shell')
                 : openRoutes.length > 1
-                  ? '浏览器用它的网页界面；TUI 会在一个新的终端窗口里打开。没在运行时都会先把它启动起来。'
-                  : '会用它的网页界面（默认浏览器）；如果它没在运行，会先把它启动起来。'}
+                  ? t('settings.connections.open.detail.multi')
+                  : t('settings.connections.open.detail.single')}
           >
             {/* 两条路才给下拉；只有一条路就写一行字，而不是做一个改不动、点了也没反应的控件。 */}
             {openRoutes.length > 1
               ? (
                   <Choice
-                    label="拉起的窗口"
+                    emptyLabel={t('settings.choice.empty')}
+                    label={t('settings.connections.open.window-label')}
                     value={openRoute}
                     onChange={(value) => props.onSelectWindow(value === 'tui' ? 'tui' : 'browser')}
                     options={openRoutes}
@@ -799,17 +816,17 @@ export function SettingsPanel(props: SettingsPanelProps) {
                 ? <span className="settings-static">{openRoutes[0]!.label}</span>
                 : null}
             <button className="settings-action" disabled={!settings.dshLaunch.subjectId || props.openBusy} onClick={openRoute === 'tui' ? props.onOpenTui : props.onOpenClient}>
-              {props.openBusy ? '处理中…' : '打开'}
+              {props.openBusy ? t('settings.connections.open.busy') : t('settings.connections.open.action')}
             </button>
           </Field>
           <Field
-            title="随壁纸启动 DSH"
+            title={t('settings.connections.launch-with-wallpaper.title')}
             detail={shellSelected
-              ? '壁纸启动时自动把该客户端跑起来（它不支持静默启动时会直接出现窗口）。要让它随登录生效，还需要在「常规」里开启壁纸开机自启。已经在运行的实例不会被接管或重启。'
-              : '壁纸启动时自动把该源码目录跑起来。要让它随登录生效，还需要在「常规」里开启壁纸开机自启。已经在运行的实例不会被接管或停止。'}
+              ? t('settings.connections.launch-with-wallpaper.shell')
+              : t('settings.connections.launch-with-wallpaper.checkout')}
           >
             <Toggle
-              label="随壁纸启动 DSH"
+              label={t('settings.connections.launch-with-wallpaper.title')}
               checked={settings.dshLaunch.autoStartWithWallpaper}
               onChange={(value) => set({ dshLaunch: { ...settings.dshLaunch, autoStartWithWallpaper: value } })}
             />
@@ -817,12 +834,12 @@ export function SettingsPanel(props: SettingsPanelProps) {
           {/* 未读到不等于没开：状态由「系统」页的 probe 读取，占位值的 enabled 也是 false，
               所以这条警告只在确实读到是关的时候出现，否则它会为开着的自启报错。 */}
           {settings.dshLaunch.autoStartWithWallpaper && autostartKnown(props.autostart) && !props.autostart.enabled && (
-            <Field title="壁纸开机自启未生效" detail="开机后自动启动 DSH 依赖壁纸自身的开机自启。">{
+            <Field title={t('settings.connections.autostart-warning.title')} detail={t('settings.connections.autostart-warning.detail')}>{
               props.autostart.source === 'disabled-by-user'
-                ? 'Windows 任务管理器已禁用本应用的自启项，因此「随壁纸启动 DSH」只会在你手动打开壁纸后生效。'
+                ? t('settings.connections.autostart-warning.disabled-by-user')
                 : props.autostart.source === 'disabled-by-policy'
-                  ? '系统策略禁用了本应用的自启项，因此「随壁纸启动 DSH」只会在你手动打开壁纸后生效。'
-                  : '壁纸自身尚未设置开机自启，因此「随壁纸启动 DSH」只会在你手动打开壁纸后生效。请在「常规」中开启壁纸自启。'
+                  ? t('settings.connections.autostart-warning.disabled-by-policy')
+                  : t('settings.connections.autostart-warning.not-configured')
             }</Field>
           )}
           {/* 官壳不显示这一项（用户要求）：它的退出方式是托盘菜单，用户手里本来就有；
@@ -834,78 +851,81 @@ export function SettingsPanel(props: SettingsPanelProps) {
               本应用启动的实例。动作与从前逐字相同：`stop_managed_dsh` 不给 instanceKey 就是
               "停全部"，也就是 `App.tsx` / `SettingsWindow.tsx` 里 `onStopAllManagedDsh` 那一个。
               用 `managedDshBusy` 挡住重复点击（停止要起 taskkill 并等它结束）。 */}
-          {!shellSelected && <Field title="本应用启动的 DSH" detail={props.managedDsh.managed
-            ? '该 DSH 由本应用启动，可以在这里停止它。'
-            : '本应用没有启动 DSH；其他人启动的实例不会被停止。'}><span className="integration-actions"><button className="settings-action secondary" disabled={props.managedDshBusy} onClick={props.onRefreshManagedDsh}>刷新</button>{/* 启用条件跟**是不是本应用启动的**走，不跟"有没有在跑"走：只要 3080 上有别的东西在跑，
+          {!shellSelected && <Field title={t('settings.connections.managed.title')} detail={props.managedDsh.managed
+            ? t('settings.connections.managed.yes')
+            : t('settings.connections.managed.no')}><span className="integration-actions"><button className="settings-action secondary" disabled={props.managedDshBusy} onClick={props.onRefreshManagedDsh}>{t('settings.refresh')}</button>{/* 启用条件跟**是不是本应用启动的**走，不跟"有没有在跑"走：只要 3080 上有别的东西在跑，
               旧写法就会点亮一个点了没反应的按钮（实测：装机重启后壁纸丢了"这是我的孩子"的记录）。 */}
-            <button className="settings-action secondary" disabled={!props.managedDsh.managed || props.managedDshBusy} onClick={props.onStopAllManagedDsh}>停止本应用启动的 DSH</button></span></Field>}
+            <button className="settings-action secondary" disabled={!props.managedDsh.managed || props.managedDshBusy} onClick={props.onStopAllManagedDsh}>{t('settings.connections.managed.stop')}</button></span></Field>}
         </Card>
-        <Card title="DeepSeek 网页入口（实验）" description="在壁纸里用你的网页版账号对话；登录后直连。"><Field title="页面" detail="页面和登录状态由独立 WebView2 配置目录保存；本应用不读取、复制或记录 Cookie。"><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>打开应用内页面</button></Field>{/* 适配器那行的说明里**不再显示本地 override 的文件路径**（用户要求）：那是一串
+        <Card title={t('settings.connections.web.title')} description={t('settings.connections.web.description')}><Field title={t('settings.connections.web.page.title')} detail={t('settings.connections.web.page.detail')}><button className="settings-action" onClick={props.onRequestDeepSeekLogin}>{t('settings.connections.web.page.open')}</button></Field>{/* 适配器那行的说明里**不再显示本地 override 的文件路径**（用户要求）：那是一串
             `%APPDATA%\com.dsh.wallpaper\deepseek-web-adapter.override.json`，对"网页结构变了才需要动它"
             这件事没有任何帮助，只会把一行说明压成三行。路径仍然在原生侧读得到
             （`deepseekWebAdapterConfig.path`），「打开配置」按钮就是照着它打开文件的 —— 需要它的人
             按那个按钮，不需要它的人不必看见。 */}
-        <Field title="网页适配（高级）" detail={props.deepseekWebAdapterConfig ? `网页结构变化时才需要动它，平常不用管。${props.deepseekWebAdapterConfig.source === 'local' ? '本地 override' : '内置默认'} · ${props.deepseekWebAdapterConfig.adapterVersion}${props.deepseekWebAdapterConfig.warning ? ` · ${props.deepseekWebAdapterConfig.warning}` : ''}` : '正在读取配置状态…'}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshDeepSeekWebAdapterConfig}>刷新</button><button className="settings-action secondary" onClick={props.onOpenDeepSeekWebAdapterConfig}>打开配置</button><button className="settings-action secondary" onClick={props.onResetDeepSeekWebAdapterConfig}>恢复默认</button></span></Field></Card>
-        <Card title="DeepSeek API" description="API 模式会产生实际费用，密钥只保存在 Windows 凭据管理器。">
+        <Field title={t('settings.connections.web.adapter.title')} detail={props.deepseekWebAdapterConfig ? `${t('settings.connections.web.adapter.detail')}${props.deepseekWebAdapterConfig.source === 'local' ? t('settings.connections.web.adapter.source-local') : t('settings.connections.web.adapter.source-bundled')} · ${props.deepseekWebAdapterConfig.adapterVersion}${props.deepseekWebAdapterConfig.warning ? ` · ${props.deepseekWebAdapterConfig.warning}` : ''}` : t('settings.connections.web.adapter.reading')}><span className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshDeepSeekWebAdapterConfig}>{t('settings.refresh')}</button><button className="settings-action secondary" onClick={props.onOpenDeepSeekWebAdapterConfig}>{t('settings.connections.web.adapter.open')}</button><button className="settings-action secondary" onClick={props.onResetDeepSeekWebAdapterConfig}>{t('settings.connections.web.adapter.reset')}</button></span></Field></Card>
+        <Card title={t('settings.connections.api.title')} description={t('settings.connections.api.description')}>
           {/* 只深耕 DeepSeek：地址不再暴露成设置项（值仍是默认的官方地址），少一个能填错的地方。
               用户的原话是"API 网址可以省略"。 */}
           <Field
-            title="访问密钥"
-            detail="在这里填入 DeepSeek API Key，按测试确认连通性，自动拉取可用模型。"
+            title={t('settings.connections.api.key.title')}
+            detail={t('settings.connections.api.key.detail')}
           >
             <span className="api-key-actions">
               <input
                 type="password"
-                aria-label="DeepSeek API Key"
-                placeholder={props.apiKeyStatus?.present ? '填入新的 Key 以替换' : 'sk-…'}
+                aria-label={t('settings.connections.api.key.aria')}
+                placeholder={props.apiKeyStatus?.present ? t('settings.connections.api.key.replace') : t('settings.connections.api.key.placeholder')}
                 value={props.apiKeyDraft}
                 onChange={(event) => props.onApiKeyDraftChange(event.target.value)}
                 onKeyDown={(event) => { if (event.key === 'Enter') props.onTestApiKey() }}
                 autoComplete="off"
                 spellCheck={false}
               />
-              <button className="settings-action secondary" disabled={props.apiKeyBusy} onClick={props.onTestApiKey}>测试</button>
+              <button className="settings-action secondary" disabled={props.apiKeyBusy} onClick={props.onTestApiKey}>{t('settings.connections.api.key.test')}</button>
             </span>
           </Field>
-          <Field title="已保存" detail={props.apiKeyStatus?.present ? '这是凭据管理器里那一条的脱敏形态。' : '还没有保存过 API Key。'}>
+          <Field title={t('settings.connections.api.saved.title')} detail={props.apiKeyStatus?.present ? t('settings.connections.api.saved.present') : t('settings.connections.api.saved.absent')}>
             <span className="api-key-actions">
-              <code className="api-key-masked" aria-label="已保存的 API Key（脱敏）">{props.apiKeyStatus?.present ? props.apiKeyStatus.masked ?? '••••' : '未配置'}</code>
-              <button className="settings-action secondary" disabled={props.apiKeyBusy} onClick={props.onRefreshApiModels}>刷新</button>
+              <code className="api-key-masked" aria-label={t('settings.connections.api.saved.aria')}>{props.apiKeyStatus?.present ? props.apiKeyStatus.masked ?? '••••' : t('settings.connections.api.saved.unconfigured')}</code>
+              <button className="settings-action secondary" disabled={props.apiKeyBusy} onClick={props.onRefreshApiModels}>{t('settings.refresh')}</button>
             </span>
           </Field>
-          <Field title="模型" detail={props.apiModelCatalog && props.apiModelCatalog.length > 0 ? `可用模型 ${props.apiModelCatalog.length} 项${catalogAgeSuffix(props.apiModelCatalogFetchedAt)}。换了一批名字就按「刷新」。` : '按「刷新」拉取可用模型；拉到的列表会记下来，下次打开设置直接显示。'}>
+          <Field title={t('settings.connections.api.model.title')} detail={props.apiModelCatalog && props.apiModelCatalog.length > 0 ? t('settings.connections.api.model.available', { count: props.apiModelCatalog.length, age: catalogAgeSuffix(props.apiModelCatalogFetchedAt) }) : t('settings.connections.api.model.hint')}>
             {/* 用面板自己的 `Choice`，**不用** `input list` + `datalist` 那套原生下拉：用户实测
                 它在设置窗里根本展不开（只有箭头在那儿摆着，点不动）。`Choice` 是本窗口里已经在用
                 的下拉（显示器背景、素材用途），展开由自己控制。
                 （这里刻意不写出标签原文，测试用"源码里不许出现该标签"来钉住这条。） */}
             <Choice
-              label="DeepSeek API 模型"
+              emptyLabel={t('settings.choice.empty')}
+              label={t('settings.connections.api.model.label')}
               value={settings.deepseekApi.model}
               onChange={(model) => set({ deepseekApi: { ...settings.deepseekApi, model } })}
               options={apiModelOptions(props.apiModelCatalog ?? [], settings.deepseekApi.model)}
-              emptyMessage={props.apiModelCatalog && props.apiModelCatalog.length > 0 ? undefined : '还没有拉取到模型列表，先按「刷新」。'}
+              emptyMessage={props.apiModelCatalog && props.apiModelCatalog.length > 0 ? undefined : t('settings.connections.api.model.empty')}
             />
           </Field>
-          <Field title="输入价格" detail="人民币／每百万 input tokens。输入、输出价格都配置后，才会显示本轮和会话估算费用。"><PriceInput label="输入价格（人民币每百万 tokens）" value={settings.deepseekApi.priceInputPerMillion} onChange={(priceInputPerMillion) => set({ deepseekApi: { ...settings.deepseekApi, priceInputPerMillion } })} /></Field>
-          <Field title="输出价格" detail="人民币／每百万 output tokens。留空不会伪造零费用；缓存 token 没有单独价格时会标为估算。"><PriceInput label="输出价格（人民币每百万 tokens）" value={settings.deepseekApi.priceOutputPerMillion} onChange={(priceOutputPerMillion) => set({ deepseekApi: { ...settings.deepseekApi, priceOutputPerMillion } })} /></Field>
+          <Field title={t('settings.connections.api.price-input.title')} detail={t('settings.connections.api.price-input.detail')}><PriceInput label={t('settings.connections.api.price-input.label')} value={settings.deepseekApi.priceInputPerMillion} onChange={(priceInputPerMillion) => set({ deepseekApi: { ...settings.deepseekApi, priceInputPerMillion } })} /></Field>
+          <Field title={t('settings.connections.api.price-output.title')} detail={t('settings.connections.api.price-output.detail')}><PriceInput label={t('settings.connections.api.price-output.label')} value={settings.deepseekApi.priceOutputPerMillion} onChange={(priceOutputPerMillion) => set({ deepseekApi: { ...settings.deepseekApi, priceOutputPerMillion } })} /></Field>
         </Card>
       </>}
 
       {page === 'appearance' && <>
-        <Card title="桌面背景" description="内置背景与你的素材将保持独立。"><div className="background-grid">{BACKGROUND_OPTIONS.map((background) => <button key={background.id} data-background={background.id} className={settings.background === background.id ? 'is-active' : ''} onClick={() => set({ background: background.id })}><span style={background.path ? { backgroundImage: `url(${background.path})` } : undefined} /><strong>{background.name}</strong>{settings.background === background.id && <i>当前</i>}</button>)}</div></Card>
-        <Card title="素材库（导入功能测试中）" description="导入的单张素材先选择用途，再出现在对应组件的枚举菜单中。主题包和插件将在后续版本单独处理。">
-          <div className="asset-library-toolbar"><button className="settings-action" onClick={props.onImportAppearance} disabled={props.appearanceBusy}>导入图片素材</button><span>{props.appearanceAssets.filter((asset) => asset.status === 'inbox').length} 项待分类 · {props.appearanceAssets.filter((asset) => asset.status === 'classified').length} 项可用</span></div>
-          {props.appearanceAssets.filter((asset) => asset.status === 'inbox').length > 0 && <div className="asset-inbox">{props.appearanceAssets.filter((asset) => asset.status === 'inbox').map((asset) => <div className="asset-inbox-row" key={asset.id}><span><strong>{asset.originalName}</strong><small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : '图片'}{asset.hasAlpha ? ' · 透明背景' : ''}</small></span><Choice label={`${asset.originalName} 的用途`} value="" onChange={(slot) => props.onClassifyAppearance(asset.id, slot as AppearanceSlot)} disabled={props.appearanceBusy} options={[{ value: '', label: '选择用途…' }, ...componentSlots.map(({ slot, label }) => ({ value: slot, label }))]} /></div>)}</div>}
-          <div className="asset-component-list">{componentSlots.map(({ slot, label, detail }) => {
+        <Card title={t('settings.appearance.background.title')} description={t('settings.appearance.background.description')}><div className="background-grid">{BACKGROUND_OPTIONS.map((background) => <button key={background.id} data-background={background.id} className={settings.background === background.id ? 'is-active' : ''} onClick={() => set({ background: background.id })}><span style={background.path ? { backgroundImage: `url(${background.path})` } : undefined} /><strong>{background.name}</strong>{settings.background === background.id && <i>{t('settings.appearance.background.current')}</i>}</button>)}</div></Card>
+        <Card title={t('settings.appearance.library.title')} description={t('settings.appearance.library.description')}>
+          <div className="asset-library-toolbar"><button className="settings-action" onClick={props.onImportAppearance} disabled={props.appearanceBusy}>{t('settings.appearance.library.import')}</button><span>{t('settings.appearance.library.counts', { inbox: props.appearanceAssets.filter((asset) => asset.status === 'inbox').length, usable: props.appearanceAssets.filter((asset) => asset.status === 'classified').length })}</span></div>
+          {props.appearanceAssets.filter((asset) => asset.status === 'inbox').length > 0 && <div className="asset-inbox">{props.appearanceAssets.filter((asset) => asset.status === 'inbox').map((asset) => <div className="asset-inbox-row" key={asset.id}><span><strong>{asset.originalName}</strong><small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : t('settings.appearance.asset.image')}{asset.hasAlpha ? t('settings.appearance.asset.transparent') : ''}</small></span><Choice emptyLabel={t('settings.choice.empty')} label={t('settings.appearance.asset.purpose', { name: asset.originalName })} value="" onChange={(slot) => props.onClassifyAppearance(asset.id, slot as AppearanceSlot)} disabled={props.appearanceBusy} options={[{ value: '', label: t('settings.appearance.asset.choose-purpose') }, ...componentSlots.map(({ slot, labelKey }) => ({ value: slot, label: t(labelKey) }))]} /></div>)}</div>}
+          <div className="asset-component-list">{componentSlots.map(({ slot, labelKey, detailKey }) => {
+            const label = t(labelKey)
+            const detail = t(detailKey)
             const candidates = props.appearanceAssets.filter((asset) => asset.status === 'classified' && asset.slots.includes(slot))
             const selected = props.appearanceOverrides[slot] ?? ''
-            return <div className="asset-component-row" key={slot}><span><strong>{label}</strong><small>{detail} · {candidates.length} 项可选</small></span><Choice label={label} value={selected} onChange={(id) => { if (id) props.onSelectAppearance(slot, id); else props.onClearAppearance(slot) }} disabled={props.appearanceBusy} emptyMessage={candidates.length === 0 ? '暂无此类素材，请先导入并指定用途' : undefined} options={[{ value: '', label: '使用默认' }, ...candidates.map((asset) => ({ value: asset.id, label: `${asset.originalName}${asset.width && asset.height ? ` (${asset.width} × ${asset.height})` : ''}` }))]} /></div>
+            return <div className="asset-component-row" key={slot}><span><strong>{label}</strong><small>{t('settings.appearance.component.detail', { detail, count: candidates.length })}</small></span><Choice emptyLabel={t('settings.choice.empty')} label={label} value={selected} onChange={(id) => { if (id) props.onSelectAppearance(slot, id); else props.onClearAppearance(slot) }} disabled={props.appearanceBusy} emptyMessage={candidates.length === 0 ? t('settings.appearance.component.none') : undefined} options={[{ value: '', label: t('settings.appearance.component.use-default') }, ...candidates.map((asset) => ({ value: asset.id, label: `${asset.originalName}${asset.width && asset.height ? ` (${asset.width} × ${asset.height})` : ''}` }))]} /></div>
           })}</div>
         </Card>
-        <Card title="苏醒动画（开发中）">
-          <Field title="启用动画"><Toggle label="启用苏醒动画" checked={settings.animationsEnabled} onChange={(value) => set({ animationsEnabled: value })} /></Field>
-          <Field title="每次解锁播放"><Toggle label="每次解锁播放" checked={settings.playWakeOnEveryUnlock} onChange={(value) => set({ playWakeOnEveryUnlock: value })} /></Field>
-          <Field title="跳过苏醒过程"><Toggle label="跳过苏醒过程" checked={settings.skipWakeAnimation} onChange={(value) => set({ skipWakeAnimation: value })} /></Field>
+        <Card title={t('settings.appearance.wake.title')}>
+          <Field title={t('settings.appearance.wake.enabled.title')}><Toggle label={t('settings.appearance.wake.enabled.toggle')} checked={settings.animationsEnabled} onChange={(value) => set({ animationsEnabled: value })} /></Field>
+          <Field title={t('settings.appearance.wake.every-unlock.title')}><Toggle label={t('settings.appearance.wake.every-unlock.toggle')} checked={settings.playWakeOnEveryUnlock} onChange={(value) => set({ playWakeOnEveryUnlock: value })} /></Field>
+          <Field title={t('settings.appearance.wake.skip.title')}><Toggle label={t('settings.appearance.wake.skip.toggle')} checked={settings.skipWakeAnimation} onChange={(value) => set({ skipWakeAnimation: value })} /></Field>
           {/* 动画速度与氛围强度先冻结前端（用户要求）：这两项还在开发中，暴露出来只会让设置显得
               比实际能用的多。设置字段与后端行为都保留着（见 store.ts 的 animationSpeed /
               animationIntensity），将来解冻时把这两行还原即可，不需要重新接线。 */}
@@ -915,7 +935,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
       </>}
 
       {page === 'personas' && <>
-        <Card title="人物列表" description="四张正式立绘是固定的后端／模型层级映射。此处只用于审阅；如需替换某张图，请到“外观 → 素材库”为对应槽位指定素材。">
+        <Card title={t('settings.personas.list.title')} description={t('settings.personas.list.description')}>
           <OfficialPersonaCards assets={props.appearanceAssets} overrides={props.appearanceOverrides} />
         </Card>
         {/* 模型与形态映射：前端先冻结（用户要求）。规则的**存储与应用都保留**（settings.modelTierRules
@@ -929,28 +949,30 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
       {page === 'history' && <>
         <Card
-          title="API 会话记录"
-          description="DeepSeek API 模式的历史记录以当前 Windows 用户的加密档案保存在本机。删除只影响这份档案，不影响 DeepSeek 网页入口或 Harness 会话。"
+          title={t('settings.history.title')}
+          description={t('settings.history.description')}
         >
           <div className="asset-library-toolbar">
             <span>
-              共 {props.apiHistory?.conversations.length ?? 0} 个会话 ·{' '}
-              {props.apiHistory?.totalMessages ?? 0} 条消息 ·{' '}
-              {formatBytes(props.apiHistory?.totalBytes ?? 0)}
+              {t('settings.history.summary', {
+                conversations: props.apiHistory?.conversations.length ?? 0,
+                messages: props.apiHistory?.totalMessages ?? 0,
+                size: formatBytes(props.apiHistory?.totalBytes ?? 0),
+              })}
               {props.apiHistory && props.apiHistory.budgetBytes > 0
-                ? `（预算 ${formatBytes(props.apiHistory.budgetBytes)}，超过后自动淘汰最旧记录）`
+                ? t('settings.history.budget', { size: formatBytes(props.apiHistory.budgetBytes) })
                 : ''}
             </span>
             <span className="integration-actions">
               <button className="settings-action secondary" disabled={props.apiHistoryBusy} onClick={props.onRefreshApiHistory}>
-                {props.apiHistoryBusy ? '读取中…' : '刷新'}
+                {props.apiHistoryBusy ? t('settings.history.refreshing') : t('settings.refresh')}
               </button>
               <button
                 className="settings-action secondary"
                 disabled={props.apiHistoryBusy || (props.apiHistory?.conversations.length ?? 0) === 0}
                 onClick={props.onClearApiHistory}
               >
-                清空全部 API 历史
+                {t('settings.history.clear')}
               </button>
             </span>
           </div>
@@ -958,16 +980,18 @@ export function SettingsPanel(props: SettingsPanelProps) {
           {props.apiHistory && props.apiHistory.budgetBytes > 0 && <div className="history-usage" role="presentation">
             <div className="history-usage__bar"><i style={{ width: `${historyPressure(props.apiHistory.totalBytes, props.apiHistory.budgetBytes)}%` }} /></div>
             <small>
-              已用 {historyPressure(props.apiHistory.totalBytes, props.apiHistory.budgetBytes)}% 的应用预算；
-              硬上限 {formatBytes(props.apiHistory.maxBytes)}，达到上限时本次运行会停止写入磁盘而不是覆盖已有记录。
+              {t('settings.history.usage', {
+                percent: historyPressure(props.apiHistory.totalBytes, props.apiHistory.budgetBytes),
+                limit: formatBytes(props.apiHistory.maxBytes),
+              })}
             </small>
           </div>}
 
-          {props.apiHistory === undefined && <div className="settings-empty"><strong>正在读取 API 会话记录…</strong><span>首次读取需要解密本机档案。</span></div>}
+          {props.apiHistory === undefined && <div className="settings-empty"><strong>{t('settings.history.loading.title')}</strong><span>{t('settings.history.loading.detail')}</span></div>}
 
           {props.apiHistory?.conversations.length === 0 && <div className="settings-empty">
-            <strong>没有可删除的 API 会话记录</strong>
-            <span>使用 DeepSeek API 模式发送过消息后，这里会出现可管理的会话。</span>
+            <strong>{t('settings.history.empty.title')}</strong>
+            <span>{t('settings.history.empty.detail')}</span>
           </div>}
 
           {(props.apiHistory?.conversations.length ?? 0) > 0 && <div className="history-list">
@@ -975,19 +999,19 @@ export function SettingsPanel(props: SettingsPanelProps) {
               <span className="history-row__main">
                 <strong title={conversation.id}>
                   {conversation.id}
-                  {conversation.active && <i className="history-row__badge">当前会话</i>}
+                  {conversation.active && <i className="history-row__badge">{t('settings.history.active')}</i>}
                 </strong>
                 <small>
-                  {conversation.messageCount} 条消息 · {formatBytes(conversation.bytes)} · 最后活动 {formatHistoryTime(conversation.lastMessageAt)}
+                  {t('settings.history.row-meta', { messages: conversation.messageCount, size: formatBytes(conversation.bytes), time: formatHistoryTime(conversation.lastMessageAt) })}
                 </small>
               </span>
               <button
                 className="settings-action secondary history-row__delete"
                 disabled={props.apiHistoryBusy}
-                aria-label={`删除 API 会话 ${conversation.id}`}
+                aria-label={t('settings.history.row-delete', { id: conversation.id })}
                 onClick={() => props.onDeleteApiConversation(conversation.id)}
               >
-                删除
+                {t('settings.history.delete')}
               </button>
             </div>)}
           </div>}
@@ -995,28 +1019,28 @@ export function SettingsPanel(props: SettingsPanelProps) {
       </>}
 
       {page === 'system' && <>
-        <Card title="数据与目录" description="「桌面会话」的工作区落在壁纸自己的数据目录里：升级安装会保留，卸载之后也留得下。若想彻底删除数据，在卸载前请先点击下面的“清除全部用户数据”。">
-          <Field title="工作区" detail={props.desktopWorkspace ? (props.desktopWorkspace.workspaceExists ? props.desktopWorkspace.workspaceDirectory : props.desktopWorkspace.workspaceDirectory + '（还没创建；桥第一次用到时会在这里建出来）') : '正在读取…'}><span /></Field>
+        <Card title={t('settings.system.data.title')} description={t('settings.system.data.description')}>
+          <Field title={t('settings.system.workspace.title')} detail={props.desktopWorkspace ? (props.desktopWorkspace.workspaceExists ? props.desktopWorkspace.workspaceDirectory : props.desktopWorkspace.workspaceDirectory + t('settings.system.workspace.missing')) : t('settings.system.reading')}><span /></Field>
           {/* 卸载时问不了（MSIX 没有自定义卸载界面），所以"想清干净的时候能清干净"这个入口放在这里。
               原生只做它能证明做完的两件：工作区目录 + 凭据管理器里那条 Key；WebView2 配置目录正被
               运行中的进程占用，删不干净，所以如实回报路径让用户退出后自己删。 */}
-          <Field title="项目记忆" detail={props.desktopWorkspace ? props.desktopWorkspace.memoryFile + (props.desktopWorkspace.memoryExists ? '（助手维护；说话人格等长期要求就写在这里）' : '（还没有：你或助手第一次「记下来」时会出现）') : '正在读取…'}>
+          <Field title={t('settings.system.memory.title')} detail={props.desktopWorkspace ? props.desktopWorkspace.memoryFile + (props.desktopWorkspace.memoryExists ? t('settings.system.memory.present') : t('settings.system.memory.absent')) : t('settings.system.reading')}>
             <button
               className="settings-action secondary"
               disabled={props.openingMemory}
               onClick={() => { void props.onOpenProjectMemory?.() }}
-            >{props.openingMemory ? '正在打开…' : '打开项目记忆'}</button>
+            >{props.openingMemory ? t('settings.system.memory.opening') : t('settings.system.memory.open')}</button>
           </Field>
-          <Field title="清除全部用户数据" detail={clearDetail ?? '删除本应用的桌面会话工作区，以及凭据管理器里保存的 API Key。设置与网页登录态在 WebView2 配置目录里，需要退出应用后手动删除（下面会给出路径）。'}>
+          <Field title={t('settings.system.clear.title')} detail={clearDetail ?? t('settings.system.clear.detail')}>
             <button
               className="settings-action secondary"
               disabled={clearing}
               onClick={() => { void clearUserData() }}
-            >{clearing ? '正在清除…' : '清除全部用户数据'}</button>
+            >{clearing ? t('settings.system.clear.clearing') : t('settings.system.clear.action')}</button>
           </Field>
         </Card>
-        <Card title="Windows 集成">
-          <Field title="登录后自动启动" detail={props.autostartBusy ? '正在更新 Windows 启动任务，请稍候；设置中心仍可继续使用。' : autostartDetail(props.autostart)}><Toggle label="登录后自动启动" checked={settings.autostart} onChange={(value) => set({ autostart: value })} disabled={props.autostartBusy} /></Field>
+        <Card title={t('settings.system.windows.title')}>
+          <Field title={t('settings.system.autostart.title')} detail={props.autostartBusy ? t('settings.system.autostart.busy') : autostartDetail(props.autostart)}><Toggle label={t('settings.system.autostart.toggle')} checked={settings.autostart} onChange={(value) => set({ autostart: value })} disabled={props.autostartBusy} /></Field>
           {/* FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30）。恢复办法：还原这段，并恢复接口里的 6 个 prop 与 SettingsWindow 的传参。
           <Field title="接管锁屏图片" detail={props.lockScreenBusy ? '正在应用系统锁屏设置，请稍候。' : '使用内置且已审计的熟睡画面；密码界面仍由 Windows 原生安全桌面处理。正式版需要 MSIX 包身份。'}><Toggle label="接管锁屏图片" checked={settings.lockScreenEnabled} onChange={props.onSetLockScreenEnabled} disabled={props.lockScreenBusy} /></Field>
           <div className="lockscreen-diagnostics">

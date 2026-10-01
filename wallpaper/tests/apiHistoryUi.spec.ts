@@ -137,18 +137,25 @@ describe('history page wiring', () => {
 
     expect(panel).toContain('onDeleteApiConversation(conversation.id)')
     expect(panel).toContain('onClearApiHistory')
-    expect(panel).toContain('清空全部 API 历史')
+    // 文案搬进了字典（i18n）：面板里只剩键，所以每一句话都要在字典里核对。
+    expect(panel).toContain("t('settings.history.clear')")
+    expect(panel).toContain("t('settings.history.row-meta'")
+    expect(panel).toContain("t('settings.history.row-delete'")
+    expect(panel).toContain("t('settings.history.active')")
+    expect(panel).toContain("t('settings.history.empty.title')")
+    const dictionary = await readSource('src/i18n/zh.ts')
+    expect(dictionary).toContain("'settings.history.clear': '清空全部 API 历史'")
+    expect(dictionary).toContain("'settings.history.row-meta': '{messages} 条消息 · {size} · 最后活动 {time}'")
+    expect(dictionary).toContain("'settings.history.active': '当前会话'")
     // The page shows metadata only, never a message body.
-    expect(panel).toContain('conversation.messageCount} 条消息')
     expect(panel).not.toMatch(/conversation\.messages/)
     // Destructive actions must say what they do not affect.
-    expect(panel).toContain('不影响 DeepSeek 网页入口或 Harness 会话')
+    expect(dictionary).toContain('不影响 DeepSeek 网页入口或 Harness 会话')
     // An empty archive must render an explanation, not a blank card.
-    expect(panel).toContain('没有可删除的 API 会话记录')
+    expect(dictionary).toContain("'settings.history.empty.title': '没有可删除的 API 会话记录'")
     // The currently active transcript is marked so the user does not delete it
     // blind.
     expect(panel).toContain('history-row__badge')
-    expect(panel).toContain('当前会话')
   })
 
   it('confirms before deleting and re-reads the archive afterwards', async () => {
