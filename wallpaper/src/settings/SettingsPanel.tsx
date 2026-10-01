@@ -287,8 +287,18 @@ function Card({ title, description, action, children }: { title: string; descrip
   return <section className="settings-card"><header><div className="settings-card__heading"><h2>{title}</h2>{description && <p>{description}</p>}</div>{action && <div className="settings-card__action">{action}</div>}</header><div className="settings-card__body">{children}</div></section>
 }
 
-function Field({ title, detail, children }: { title: string; detail?: string; children: ReactNode }) {
-  return <div className="settings-field"><div className="settings-field__copy"><strong>{title}</strong>{detail && <span>{detail}</span>}</div><div className="settings-field__control">{children}</div></div>
+/**
+ * 一行设置：左边是文案列（标题 + 说明 + 备注），右边是控件列。
+ *
+ * `note` 和 `detail` 一样住在**文案列**里；`children` 只放真的控件（开关、下拉、按钮）。
+ * 这条界线是踩过一次才划出来的：一句话当 `children` 传进来会落进**控件列**，而控件列按
+ * max-content 定宽、不收缩也不折行（`.settings-field__control`），于是那句话横穿卡片、被
+ * `.settings-card` 的 `overflow: hidden` 裁掉；唯一能收缩的文案列被挤到只剩一个词宽，
+ * 标题与说明都变成一词一行 —— 「壁纸自启未生效」那条警告就是这么坏的（它没有控件，
+ * 唯一的内容就是那句话）。没有控件的那一行，请把话交给 `detail` / `note`，别塞进 `children`。
+ */
+function Field({ title, detail, note, children }: { title: string; detail?: string; note?: string; children?: ReactNode }) {
+  return <div className="settings-field"><div className="settings-field__copy"><strong>{title}</strong>{detail && <span>{detail}</span>}{note && <span className="settings-field__note">{note}</span>}</div>{children !== undefined && children !== null && <div className="settings-field__control">{children}</div>}</div>
 }
 
 function Toggle({ checked, onChange, label, disabled = false }: { checked: boolean; onChange: (value: boolean) => void; label: string; disabled?: boolean }) {
@@ -902,14 +912,19 @@ export function SettingsPanel(props: SettingsPanelProps) {
           </Field>
           {/* 未读到不等于没开：状态由「系统」页的 probe 读取，占位值的 enabled 也是 false，
               所以这条警告只在确实读到是关的时候出现，否则它会为开着的自启报错。 */}
+          {/* 这条警告**没有控件**：那句话是文案，不是控件 —— 走 `note` 落在文案列里。
+              以前它是 `children`（见 `Field` 的注释），于是落进右边不收缩也不折行的控件列，
+              把左边的标题与说明挤成一词一行，自己还横穿卡片被裁掉。 */}
           {settings.dshLaunch.autoStartWithWallpaper && autostartKnown(props.autostart) && !props.autostart.enabled && (
-            <Field title={t('settings.connections.autostart-warning.title')} detail={t('settings.connections.autostart-warning.detail')}>{
-              props.autostart.source === 'disabled-by-user'
+            <Field
+              title={t('settings.connections.autostart-warning.title')}
+              detail={t('settings.connections.autostart-warning.detail')}
+              note={props.autostart.source === 'disabled-by-user'
                 ? t('settings.connections.autostart-warning.disabled-by-user')
                 : props.autostart.source === 'disabled-by-policy'
                   ? t('settings.connections.autostart-warning.disabled-by-policy')
-                  : t('settings.connections.autostart-warning.not-configured')
-            }</Field>
+                  : t('settings.connections.autostart-warning.not-configured')}
+            />
           )}
           {/* 官壳不显示这一项（用户要求）：它的退出方式是托盘菜单，用户手里本来就有；
               而停它会当场关掉用户自己的客户端、并弹一条"宿主意外退出"的报错框 —— 与其预告这个

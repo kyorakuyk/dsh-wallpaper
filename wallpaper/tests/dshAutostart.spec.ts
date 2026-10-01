@@ -256,7 +256,10 @@ describe('DSH autostart wiring', () => {  it('starts DSH from the background hos
     // 文案搬进了字典（i18n）：面板里只剩键，所以那句话本身要在字典里核对。
     expect(panel).toContain("t('settings.connections.launch-with-wallpaper.checkout')")
     const dictionary = await dictionarySource('zh')
-    expect(dictionary).toContain('还需要在「常规」里开启壁纸开机自启')
+    // 页面名是「系统」而不是「常规」：壁纸自启的开关在 `page === 'system'` 那张 Windows 集成卡片里
+    // （`settings.system.autostart.title`）。旧文案指的那一页上根本没有这个开关，照着做只会找不到；
+    // 指路的这三句与"那一页真的放着开关"一起钉在 `settingsFieldLayout.spec.tsx` 里。
+    expect(dictionary).toContain('还需要在「系统」里开启壁纸开机自启')
     // The warning is driven by the real Windows state, not by a guess.
     expect(panel).toContain('props.autostart.enabled')
     expect(panel).toContain('disabled-by-policy')
