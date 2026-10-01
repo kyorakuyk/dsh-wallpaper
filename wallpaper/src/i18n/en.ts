@@ -583,4 +583,170 @@ export const en: Dict = {
   'runtime.web-adapter.preview-reset': 'A browser preview cannot restore the web adapter configuration',
   // A browser preview has no real displays; this names the placeholder one.
   'runtime.display.preview-name': 'Preview display',
+
+  // ---------------------------------------------------------------------------
+  // The desktop surfaces (plan step 4). Keys are named by **position**:
+  // `app.bubble.*` is `App.tsx` (the wallpaper shell: the portrait bubble, the notice bar, the
+  // conversation window, the sign-in overlay), `chat.bubble.*` is
+  // `features/chat/ConversationBubble.tsx` (the bubble itself), and `lite.settings.*` is
+  // `lite/LiteSettingsWindow.tsx`.
+  //
+  // Some entries carry a leading (or trailing) space: they are the half-sentence that follows
+  // another one, and English needs the space where Chinese does not - the same reason as
+  // `chat.cost.approx`.
+  // ---------------------------------------------------------------------------
+
+  // The **shared prefix** of the disconnected notice. It is not a whole sentence: prefix + state
+  // detail (the `harness.detail.*` entries) + the half-sentence below make one, and the same prefix
+  // is how the app recognises a notice it wrote itself. That is why `App.tsx` reads it through
+  // `harnessDisconnectedErrorPrefix()` at call time instead of holding a module-level constant.
+  'app.bubble.harness.disconnected-prefix': 'The DSH wallpaper Bridge is currently unavailable. ',
+  // The continuation of the two sentences above (leading space, so it follows the state detail).
+  'app.bubble.harness.selection-unavailable': ' Harness mode can only be selected once a compatible Bridge is ready.',
+  'app.bubble.harness.session-preserved': ' The current Harness session and its transcript are kept; once the Bridge is back you can carry on, or switch backend yourself.',
+
+  // One sentence per autostart failure code (`dshAutostartNotice`). `dshAutostart.spec.ts` pins
+  // several of these words verbatim, so they are not to be reworded casually.
+  'app.bubble.autostart.root-path-missing': 'DSH is set to start with the wallpaper, but no execution subject has been chosen yet; scan and pick one in the settings centre.',
+  'app.bubble.autostart.unknown-target': 'DSH is set to start with the wallpaper, but the chosen execution subject is unavailable; scan again and pick one in the settings centre.',
+  'app.bubble.autostart.started-unconfirmed': 'The chosen client was asked to start, but it did not answer within the timeout; if its interface never appears, check that the client is still installed.',
+  'app.bubble.autostart.root-path-invalid': 'DSH is set to start with the wallpaper, but the configured source folder is not a recognisable DSH project; fix it in the settings centre.',
+  'app.bubble.autostart.launcher-missing': 'DSH is set to start with the wallpaper, but neither Node.js nor pnpm was found. Check in the settings centre that both are installed and can be run straight from a command prompt.',
+  'app.bubble.autostart.profile-invalid': 'DSH is set to start with the wallpaper, but the configured profile name is invalid (letters, digits, hyphens, and underscores only); fix it in the settings centre.',
+  'app.bubble.autostart.launch-args-invalid': 'DSH is set to start with the wallpaper, but the launch arguments are invalid. Fix them in the settings centre and try again.',
+  'app.bubble.autostart.spawn-failed': 'DSH is set to start with the wallpaper, but the process failed to start. Check the source folder and the launch arguments in the settings centre.',
+  'app.bubble.autostart.failed': 'Could not start DSH automatically: {error}',
+
+  // Launch supervision (`harnessLaunchOutcome`): the "it exited" verdict, and the four specific
+  // causes a timeout is resolved to.
+  'app.bubble.launch.exited-early': 'DSH exited soon after starting; check the DSH configuration or its startup log.',
+  'app.bubble.launch.token-unavailable': 'DSH started, but the Bridge\u2019s local token is unavailable; restart the wallpaper app or check the permissions on the token folder.',
+  'app.bubble.launch.incompatible': 'DSH started, but the Bridge version or capability is incompatible; update the Bridge and try again.',
+  'app.bubble.launch.bridge-loading': 'DSH started, but the Bridge is still loading the session service; if it stays there, check the DSH log.',
+  'app.bubble.launch.timeout': 'Starting DSH timed out; the process is still running but the Bridge has not come up.',
+  'app.bubble.launch.subject-failed': 'The DSH subject failed to start; see the launch record in the log.',
+
+  // Why the model directory has nothing to show (`reason` on `connect/modelDirectory.ts`).
+  'app.bubble.model.harness-reading': 'Reading the Harness model directory…',
+  'app.bubble.model.endpoint-reading': 'Reading the endpoint model directory…',
+  'app.bubble.model.web-decided': 'The Web entry\u2019s model is decided by the DeepSeek page',
+  'app.bubble.model.harness-not-running': 'Harness is not running',
+  'app.bubble.model.harness-read-failed': 'Could not read the Harness model directory: {error}',
+  'app.bubble.model.endpoint-read-failed': 'Could not read the endpoint model list: {error}',
+
+  // The notice bar and the overlays: a failure is always said out loud, one sentence each.
+  'app.bubble.notice.raise-window-failed': 'Could not open the client window: {error}',
+  'app.bubble.notice.display-read-failed': 'Could not read the display layout: {error}',
+  'app.bubble.notice.display-subscribe-failed': 'Could not subscribe to display events: {error}',
+  'app.bubble.notice.system-subscribe-failed': 'Could not subscribe to session events: {error}',
+  'app.bubble.notice.appearance-subscribe-failed': 'Could not subscribe to appearance changes: {error}',
+  'app.bubble.notice.leave-inner-failed': 'Could not leave the inner desktop: {error}',
+  'app.bubble.notice.open-link-failed': 'Could not open the link: {error}',
+  // What follows the approval summary the host itself produced (that summary is runtime text,
+  // not an entry).
+  'app.bubble.notice.approval': '{summary}; open Harness to handle it.',
+
+  // What the bubble above the portrait says.
+  'app.bubble.question.prompt': 'I would like your opinion: {question}',
+  'app.bubble.question.options': ' ({options})',
+  'app.bubble.thinking': 'Thinking it over…',
+
+  // The overlay shown when the Web entry needs a sign-in.
+  'app.bubble.auth.title': 'Sign in to the DeepSeek Web entry',
+  'app.bubble.auth.body': 'The official page is already open inside the app; sign in there. The sign-in state is kept only in a separate WebView2 profile, and this app never reads or copies cookies. Once you are signed in, come back to the desktop to keep sending.',
+  'app.bubble.auth.confirm': 'I have signed in',
+
+  // ---------------------------------------------------------------------------
+  // The conversation bubble itself (`features/chat/ConversationBubble.tsx`): labels, hints, the
+  // accessible names of its buttons, and the usage row in the footer.
+  // ---------------------------------------------------------------------------
+  'chat.bubble.surface.label': 'AI conversation',
+  'chat.bubble.session-title': 'Desktop session',
+  'chat.bubble.raise-window': 'Open the client window',
+  'chat.bubble.close': 'Collapse the conversation',
+  'chat.bubble.history.label': 'Current transcript',
+  'chat.bubble.history.kept-note': 'The previous Harness session (that backend has exited). It returns to this transcript automatically once it is back online; you can also carry on from the left right now.',
+  'chat.bubble.history.load-earlier': 'Load {hidden} earlier messages',
+  // The two directions of one button: expanded it says "Hide transcript", collapsed "Transcript".
+  'chat.bubble.history.toggle-expanded': 'Hide transcript',
+  'chat.bubble.history.toggle-collapsed': 'Transcript',
+  // The status dot and the mode switch: failure, starting, and the label/tooltip each way.
+  'chat.bubble.harness.failed': 'Connection failed',
+  'chat.bubble.harness.starting': 'DSH is starting',
+  'chat.bubble.mode-switch.to-deepseek': 'Switch to DeepSeek mode',
+  'chat.bubble.mode-switch.to-harness': 'Switch to Harness mode',
+  'chat.bubble.mode-switch.start': 'Start DSH',
+  'chat.bubble.mode-switch.configure': 'Configure DSH',
+  'chat.bubble.mode-switch.title-to-deepseek': 'Current: Harness, click to switch back to DeepSeek',
+  'chat.bubble.mode-switch.title-to-harness': 'Current: DeepSeek, click to switch to Harness',
+  'chat.bubble.mode-switch.start-title': 'Start the configured DSH backend',
+  'chat.bubble.mode-switch.configure-title': 'Configure the DSH source folder and profile first',
+  // The agent preset dropdown: its name, the fallback entry, and the suffix for a broken preset.
+  'chat.bubble.preset.label': 'Choose the DSH mode',
+  'chat.bubble.preset.standard': 'Standard mode',
+  'chat.bubble.preset.unavailable': ' (unavailable)',
+  // The composer and the command/permission menus.
+  'chat.bubble.composer.label': 'Message',
+  'chat.bubble.composer.send': 'Send message',
+  'chat.bubble.composer.stop': 'Stop generating',
+  'chat.bubble.command-menu': 'Commands',
+  'chat.bubble.command-menu.label': 'Choose a command',
+  'chat.bubble.permission.label': 'Choose a permission',
+  // The model picker (a dropdown drawn inside the island).
+  'chat.bubble.model.label': 'Choose a model',
+  'chat.bubble.model.switch': 'Switch model',
+  'chat.bubble.model.unsupported': 'This backend cannot switch models inside the wallpaper',
+  'chat.bubble.model.unavailable': 'No model to switch to',
+  // The footer usage row: the small line under each message (` · Cache N` carries a leading
+  // space), then the two cells for this turn and the session.
+  'chat.bubble.usage.tokens': 'Input {input} · Output {output}',
+  'chat.bubble.usage.cache': ' · Cache {cacheRead}',
+  'chat.bubble.turn-usage.label': 'This turn',
+  'chat.bubble.turn-usage.label-unavailable': 'This turn is not reported',
+  'chat.bubble.turn-usage.input': 'In {input}',
+  'chat.bubble.turn-usage.output': 'Out {output}',
+  'chat.bubble.turn-usage.cache': 'Cache {cacheRead}',
+  'chat.bubble.turn-usage.cost': 'Cost {cost}',
+  'chat.bubble.session-cost': 'Session {cost}',
+  'chat.bubble.session-cost.unavailable': 'Session cost not reported',
+
+  // ---------------------------------------------------------------------------
+  // The Lite settings window (`lite/LiteSettingsWindow.tsx`): the line under the brand, three
+  // cards, the option tiles, and the notice bar. `Wallpaper Lite`, `DSH`, and `Windows 11` are
+  // product names and read the same in both languages, so they are not entries. The frozen cards
+  // (lock screen, sign-in wallpaper, TranslucentTB) live entirely in comments and take no entries.
+  // ---------------------------------------------------------------------------
+  'lite.settings.brand.tagline': 'A lightweight desktop wallpaper',
+  'lite.settings.window.close': 'Close settings',
+  'lite.settings.notice.close': 'Dismiss the notice',
+  'lite.settings.hero.title': 'Let the desktop wake up quietly',
+  'lite.settings.hero.description': 'Only the lock screen, the wake animation, the wallpaper, and the portrait. The Windows password page stays with Windows.',
+  'lite.settings.system.title': 'Lock screen and startup',
+  'lite.settings.autostart.title': 'Start at sign-in',
+  'lite.settings.autostart.busy': 'Updating the startup task.',
+  'lite.settings.wake.title': 'Wake animation',
+  'lite.settings.wake.enabled.title': 'Play the wake animation',
+  'lite.settings.wake.enabled.detail': 'Plays the four official frames after an unlock.',
+  'lite.settings.wake.every-unlock.title': 'Play on every unlock',
+  'lite.settings.wake.every-unlock.detail': 'With this off it plays once, when the app starts.',
+  'lite.settings.wake.skip.title': 'Skip the animation',
+  'lite.settings.wake.skip.detail': 'Go straight to the static wallpaper and portrait.',
+  'lite.settings.wake.speed.title': 'Animation speed',
+  'lite.settings.scene.title': 'Wallpaper and portrait',
+  'lite.settings.scene.background': 'Wallpaper background',
+  'lite.settings.scene.portrait': 'Portrait on the right',
+  'lite.settings.scene.custom-background': 'Custom background · choose a file',
+  'lite.settings.scene.custom-portrait': 'Custom portrait · choose a file',
+  'lite.settings.scene.current': 'Current',
+  'lite.settings.scene.footnote': 'The first release uses the official built-in assets by default, and you can import one background and one portrait of your own. Theme packages, plug-ins, and per-slot replacement arrive in the full edition.',
+  'lite.settings.footer.autosave': 'Settings save automatically',
+  // What the notice bar says (failures carry `{error}`; a successful import has one per slot).
+  'lite.settings.save-failed': 'Could not save the settings: {error}',
+  'lite.settings.load-failed': 'Could not read the local settings: {error}',
+  'lite.settings.autostart.read-failed': 'Could not read the autostart state: {error}',
+  'lite.settings.autostart.update-failed': 'Could not update autostart: {error}',
+  'lite.settings.custom-image.read-failed': 'Could not read your custom assets: {error}',
+  'lite.settings.custom-image.import-failed': 'Could not import the image: {error}',
+  'lite.settings.custom-image.background-imported': 'Imported the custom wallpaper background.',
+  'lite.settings.custom-image.portrait-imported': 'Imported the custom portrait.',
 }

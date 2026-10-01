@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Activity, BackendMode, ChatMessage, RuntimeState, TokenUsage } from '../../domain/types.ts'
+import { getLanguage, t, useLanguage, type Language } from '../../i18n/index.ts'
 import { Button, Glass, Icon } from '../../ui/primitives/index.ts'
 import { composerPlaceholder, formatCost, isBusyActivity, sessionCostSummary, turnUsageSummary } from './conversationViewModel.ts'
 import { growHistoryWindow, historyWindow, HISTORY_RENDER_WINDOW } from './streamRender.ts'
@@ -143,15 +144,36 @@ export function insertNewlineAtSelection(value: string, start: number, end: numb
   }
 }
 
-function UsageLine({ usage }: { usage?: TokenUsage }) {  if (!usage) return null
+/** 日期用哪一套 locale：中文 `zh-CN`，英文 `en-US`。 */
+export function bubbleDateLocale(language: Language): string {
+  return language === 'en' ? 'en-US' : 'zh-CN'
+}
+
+/**
+ * 「桌面会话」旁边那一格日期。
+ *
+ * formatter **每次调用新建**，绝不能提到模块级常量上：那会在 import 那一刻把语言定死，之后切语言
+ * 日期就不再变（前几批为同一类问题返工过）。组件用 `useLanguage()` 订阅语言，语言一变即重渲染，
+ * 于是这里重新算一遍、日期跟着换 locale。不传 `language` 时取当下这一份（与 `t()` 同一条规矩）。
+ */
+export function formatBubbleDate(date: Date, language: Language = getLanguage()): string {
+  return new Intl.DateTimeFormat(bubbleDateLocale(language), { month: 'long', day: 'numeric', weekday: 'short' }).format(date)
+}
+
+function UsageLine({ usage }: { usage?: TokenUsage }) {
+  // 每条消息下面那一小行也有词条，所以它自己也订阅语言（钩子必须在提前返回之前）。
+  useLanguage()
+  if (!usage) return null
   return <small className="dsh-chat__message-usage">
-    输入 {usage.input} · 输出 {usage.output}
-    {usage.cacheRead !== undefined ? ` · 缓存 ${usage.cacheRead}` : ''}
+    {t('chat.bubble.usage.tokens', { input: usage.input, output: usage.output })}
+    {usage.cacheRead !== undefined ? t('chat.bubble.usage.cache', { cacheRead: usage.cacheRead }) : ''}
     {usage.cost !== undefined ? ` · ${formatCost(usage.cost, usage.estimated)}` : ''}
   </small>
 }
 
 export function ConversationBubble(props: ConversationBubbleProps) {
+  // 这片界面上有词条（标签、提示、用量），语言一变就要重渲染；下面那格日期也读它。
+  const language = useLanguage()
   // Seeded from the parent so the deliberate rebuild that restores keyboard
   // focus does not discard a half-typed message.
   const [draft, setDraft] = useState(() => props.initialDraft ?? '')
@@ -177,14 +199,14 @@ export function ConversationBubble(props: ConversationBubbleProps) {
   const harnessAvailability = props.harnessAvailability ?? 'offline'
   const harnessReady = harnessAvailability === 'bridge-ready'
   const harnessLabel = harnessFailureVisible(props.harnessFailed, harnessAvailability)
-    ? '连接失败'
+    ? t('chat.bubble.harness.failed')
     : props.harnessStarting
-      ? 'DSH 正在启动'
+      ? t('chat.bubble.harness.starting')
       // 黄灯（正在连/装载/失联待判）一律由 `harnessStateLabel` 说"连接中"：那句"已连接"属于上一条
       // 连接，写在呼吸灯旁边就是自相矛盾（实测过：灯在呼吸，文案却说已连接，一发消息就说没有会话）。
       : harnessStateLabel({ availability: harnessAvailability, probing: props.harnessSuspect === true })
   const showHistory = props.historyExpanded
-  const today = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(new Date())
+  const today = formatBubbleDate(new Date(), language)
   const historyView = useMemo(() => historyWindow(props.messages.length, historyLimit), [props.messages.length, historyLimit])
   // Only the newest slice is in the DOM. The full transcript stays in memory,
   // and the live streaming article is rendered separately, so an in-progress
@@ -275,7 +297,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
     style={{ ['--dsh-chat-acrylic-opacity' as string]: (props.acrylicOpacity ?? .74).toFixed(2), ['--dsh-chat-acrylic-blur' as string]: `${props.acrylicBlur ?? 19}px`, ['--dsh-chat-expanded-bottom' as string]: `${props.expandedBottomInset ?? 48}px` }}
     data-dsh-theme={props.backend === 'harness' ? 'harness' : 'deepseek'}
     data-interaction-region="chat"
-    aria-label="AI 对话"
+    aria-label={t('chat.bubble.surface.label')}
   >
     {/* 调试量尺：需要时与上面的 import 一起打开（本程序不给入口）。 */}
     {/* {showHistory && <LayoutProbe />} */}
@@ -284,7 +306,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
         className="dsh-chat__history"
         ref={historyRef}
         data-interaction-region="chat-history"
-        aria-label="当前会话记录"
+        aria-label={t('chat.bubble.history.label')}
         aria-live="polite"
         onScroll={() => {
           const element = historyRef.current
@@ -294,10 +316,10 @@ export function ConversationBubble(props: ConversationBubbleProps) {
         onWheel={(event) => event.stopPropagation()}
       >
         {props.keptTranscript && props.messages.length > 0 && <p className="dsh-chat__history-note">
-          上次的 Harness 会话（后端已退出）。它重新上线后会自动回到这段记录；你也可以现在就在左侧继续对话。
+          {t('chat.bubble.history.kept-note')}
         </p>}
         {historyView.hasEarlier && <button type="button" className="dsh-chat__history-earlier" onClick={loadEarlier}>
-          加载更早的 {historyView.hidden} 条记录
+          {t('chat.bubble.history.load-earlier', { hidden: historyView.hidden })}
         </button>}
         {renderedMessages.map((message, index) => <article key={message.id} className={`dsh-chat__message dsh-chat__message--${message.role}`} style={{ ['--message-index' as string]: String(Math.max(0, renderedMessages.length - index - 1)) }}>
           {props.speakerLabels?.[message.role]?.trim() && <span className="dsh-chat__message-label">{props.speakerLabels[message.role]}</span>}
@@ -324,21 +346,21 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           {/* 这枚小图标同时是「打开当前主体的可视化窗口」的按钮。视觉刻意与原样一致：
               没有回调时仍渲染 `<span>`，有回调才变 `<button>`，两者共用同一个 class。 */}
           {props.onRaiseClientWindow
-            ? <button type="button" className="dsh-chat__sigil" title="打开可视化窗口" aria-label="打开可视化窗口" onClick={props.onRaiseClientWindow}><Icon name="spark" size={14} /></button>
+            ? <button type="button" className="dsh-chat__sigil" title={t('chat.bubble.raise-window')} aria-label={t('chat.bubble.raise-window')} onClick={props.onRaiseClientWindow}><Icon name="spark" size={14} /></button>
             : <span className="dsh-chat__sigil"><Icon name="spark" size={14} /></span>}
-          <span className="dsh-chat__backend">桌面会话</span>
+          <span className="dsh-chat__backend">{t('chat.bubble.session-title')}</span>
           <span className="dsh-chat__backend-detail">{today}</span>
         </div>
         <span className="dsh-chat__topbar-spacer" />
         <div className="dsh-chat__usage-rail">
-          <span className="dsh-chat__turn-usage" data-usage-available={turnUsage.available ? 'true' : 'false'} aria-label={turnUsage.available ? '本轮用量' : '本轮用量未提供'}>
-            <span>本轮 入 {turnUsage.input}</span>
-            <span>出 {turnUsage.output}</span>
-            <span>缓存 {turnUsage.cacheRead}</span>
-            <span className={turnUsage.cost === '价格未配置' ? 'dsh-chat__billing' : undefined}>费用 {turnUsage.cost}</span>
+          <span className="dsh-chat__turn-usage" data-usage-available={turnUsage.available ? 'true' : 'false'} aria-label={turnUsage.available ? t('chat.bubble.turn-usage.label') : t('chat.bubble.turn-usage.label-unavailable')}>
+            <span>{t('chat.bubble.turn-usage.input', { input: turnUsage.input })}</span>
+            <span>{t('chat.bubble.turn-usage.output', { output: turnUsage.output })}</span>
+            <span>{t('chat.bubble.turn-usage.cache', { cacheRead: turnUsage.cacheRead })}</span>
+            <span className={turnUsage.priceUnconfigured ? 'dsh-chat__billing' : undefined}>{t('chat.bubble.turn-usage.cost', { cost: turnUsage.cost })}</span>
           </span>
           <span className="dsh-chat__session-cost">
-            <span>{totalCost ? `会话 ${formatCost(totalCost.cost, totalCost.estimated)}` : '会话费用未提供'}</span>
+            <span>{totalCost ? t('chat.bubble.session-cost', { cost: formatCost(totalCost.cost, totalCost.estimated) }) : t('chat.bubble.session-cost.unavailable')}</span>
           </span>
         </div>
         <span className="dsh-chat__topbar-spacer" />
@@ -353,8 +375,8 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           className={`dsh-chat__mode-switch ${props.backend === 'harness' ? 'is-harness' : ''}`}
           role="switch"
           aria-checked={props.backend === 'harness'}
-          aria-label={harnessReady ? `切换至${props.backend === 'harness' ? ' DeepSeek' : ' Harness'} 模式` : props.harnessStarting ? harnessLabel : props.onStartHarness ? '启动 DSH' : '配置 DSH'}
-          title={harnessReady ? `当前：${props.backend === 'harness' ? 'Harness，点击切回 DeepSeek' : 'DeepSeek，点击切换 Harness'}` : props.harnessStarting ? harnessLabel : props.onStartHarness ? '启动已配置的 DSH 后端' : '先配置 DSH 根目录与 profile'}
+          aria-label={harnessReady ? t(props.backend === 'harness' ? 'chat.bubble.mode-switch.to-deepseek' : 'chat.bubble.mode-switch.to-harness') : props.harnessStarting ? harnessLabel : props.onStartHarness ? t('chat.bubble.mode-switch.start') : t('chat.bubble.mode-switch.configure')}
+          title={harnessReady ? t(props.backend === 'harness' ? 'chat.bubble.mode-switch.title-to-deepseek' : 'chat.bubble.mode-switch.title-to-harness') : props.harnessStarting ? harnessLabel : props.onStartHarness ? t('chat.bubble.mode-switch.start-title') : t('chat.bubble.mode-switch.configure-title')}
           // Deliberately never disabled. A start can take up to the whole 45-second
           // readiness window, and dimming the only switch on the island for that long
           // is what made it look stuck: the user could neither switch back nor try
@@ -369,7 +391,7 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           <span className="dsh-chat__mode-switch-label" aria-hidden="true">DSH</span>
         </button>
         </div>
-        {!props.persistent && <Button variant="ghost" iconOnly onClick={props.onClose} aria-label="收起对话"><Icon name="close" /></Button>}
+        {!props.persistent && <Button variant="ghost" iconOnly onClick={props.onClose} aria-label={t('chat.bubble.close')}><Icon name="close" /></Button>}
       </header>
 
     <Glass
@@ -384,14 +406,14 @@ export function ConversationBubble(props: ConversationBubbleProps) {
       <div className="dsh-chat__island-toolbar">
         <div className="dsh-chat__island-toolbar-left">
           <label className="dsh-chat__preset">
-            <select aria-label="选择 DSH 模式" value={props.selectedPreset ?? ''} disabled={!props.onSelectPreset || props.messages.length > 0} onChange={(event) => props.onSelectPreset?.(event.target.value)}>
-              {!props.presetOptions?.length && <option value="">标准模式</option>}
-              {props.presetOptions?.map((preset) => <option key={preset.id} value={preset.id} disabled={Boolean(preset.broken)}>{preset.name ?? preset.id}{preset.broken ? '（不可用）' : ''}</option>)}
+            <select aria-label={t('chat.bubble.preset.label')} value={props.selectedPreset ?? ''} disabled={!props.onSelectPreset || props.messages.length > 0} onChange={(event) => props.onSelectPreset?.(event.target.value)}>
+              {!props.presetOptions?.length && <option value="">{t('chat.bubble.preset.standard')}</option>}
+              {props.presetOptions?.map((preset) => <option key={preset.id} value={preset.id} disabled={Boolean(preset.broken)}>{preset.name ?? preset.id}{preset.broken ? t('chat.bubble.preset.unavailable') : ''}</option>)}
             </select>
           </label>
         </div>
         <Button className="dsh-chat__history-button" variant="ghost" onClick={props.onToggleHistory} aria-expanded={showHistory}>
-          <Icon name="history" size={14} />{showHistory ? '收起记录' : '会话记录'}<Icon name="chevron-up" size={13} />
+          <Icon name="history" size={14} />{showHistory ? t('chat.bubble.history.toggle-expanded') : t('chat.bubble.history.toggle-collapsed')}<Icon name="chevron-up" size={13} />
         </Button>
       </div>
       <form className="dsh-chat__composer" onSubmit={(event) => { event.preventDefault(); submit() }}>
@@ -426,36 +448,36 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           }}
           placeholder={composerPlaceholder(Boolean(props.disabled), props.activity)}
           rows={3}
-          aria-label="输入消息"
+          aria-label={t('chat.bubble.composer.label')}
         />
         {busy
-          ? <Button className="dsh-chat__stop" variant="secondary" iconOnly onClick={props.onStop} aria-label="停止生成"><Icon name="stop" /></Button>
-          : <Button className="dsh-chat__send" variant="primary" iconOnly type="submit" disabled={!draft.trim() || props.disabled} aria-label="发送消息"><Icon name="arrow-up" /></Button>}
+          ? <Button className="dsh-chat__stop" variant="secondary" iconOnly onClick={props.onStop} aria-label={t('chat.bubble.composer.stop')}><Icon name="stop" /></Button>
+          : <Button className="dsh-chat__send" variant="primary" iconOnly type="submit" disabled={!draft.trim() || props.disabled} aria-label={t('chat.bubble.composer.send')}><Icon name="arrow-up" /></Button>}
       </form>
 
       <footer className="dsh-chat__footer">
         {props.commands?.length ? <div className="dsh-chat__command-menu">
           <button type="button" className="dsh-chat__command-menu-button" aria-haspopup="menu" aria-expanded={commandMenuOpen} onClick={() => setCommandMenuOpen((value) => !value)}>
-            <span aria-hidden="true">⌘</span> 命令 <span aria-hidden="true">⌄</span>
+            <span aria-hidden="true">⌘</span> {t('chat.bubble.command-menu')} <span aria-hidden="true">⌄</span>
           </button>
-          {commandMenuOpen && <div className="dsh-chat__command-menu-list" role="menu" aria-label="选择命令">
+          {commandMenuOpen && <div className="dsh-chat__command-menu-list" role="menu" aria-label={t('chat.bubble.command-menu.label')}>
             {props.commands.map((command) => <button key={command.name} type="button" role="menuitem" className="dsh-chat__command-menu-item" onClick={() => { setDraft(`/${command.name} `); setCommandMenuOpen(false) }}>
               <strong>/{command.name}</strong><span>{command.description}</span>
             </button>)}
           </div>}
         </div> : null}
-        {props.permission && <label className="dsh-chat__permission-picker">◈<select aria-label="选择权限" value={props.permission.current} onChange={(event) => props.onSelectPermission?.(event.target.value)}>{props.permission.options.map((permission) => <option key={permission} value={permission}>{permission}</option>)}</select></label>}
+        {props.permission && <label className="dsh-chat__permission-picker">◈<select aria-label={t('chat.bubble.permission.label')} value={props.permission.current} onChange={(event) => props.onSelectPermission?.(event.target.value)}>{props.permission.options.map((permission) => <option key={permission} value={permission}>{permission}</option>)}</select></label>}
         {props.hostChip && <span className="dsh-chat__meta" title={props.hostChip.title}><Icon name="host" size={13} /><span className="dsh-chat__host">{props.hostChip.text}</span></span>}
         {/* 模型选择器是**岛内自绘**的下拉，不是原生 `<select>`。
             原生 `<select>` 的弹层是 Chromium 创建的独立窗口，在这个窗口里弹不出来——实测
             框里已经显示 `DeepSeek-V41-Flash`（枚举成功、有多个选项），点开却没有任何列表。
             自绘列表不依赖系统弹层，也顺带和岛里的命令菜单保持同一套外观。 */}
-        <label className="dsh-chat__model-picker" title={props.modelSwitchDisabledReason ?? (props.onSelectModel ? '切换模型' : '当前后端不支持在壁纸中切换模型')}>
+        <label className="dsh-chat__model-picker" title={props.modelSwitchDisabledReason ?? (props.onSelectModel ? t('chat.bubble.model.switch') : t('chat.bubble.model.unsupported'))}>
           <Icon name="model" size={13} />
           <button
             type="button"
             className="dsh-chat__model-button"
-            aria-label="切换模型"
+            aria-label={t('chat.bubble.model.switch')}
             aria-haspopup="listbox"
             aria-expanded={modelMenuOpen}
             disabled={!props.onSelectModel || !props.modelOptions?.length || Boolean(props.modelSwitchDisabledReason)}
@@ -463,9 +485,9 @@ export function ConversationBubble(props: ConversationBubbleProps) {
           >
             {props.modelSwitchDisabledReason && !props.modelOptions?.length
               ? props.modelSwitchDisabledReason
-              : props.modelLabels?.[props.selectedModel ?? ''] ?? props.selectedModel ?? '模型不可切换'}
+              : props.modelLabels?.[props.selectedModel ?? ''] ?? props.selectedModel ?? t('chat.bubble.model.unavailable')}
           </button>
-          {modelMenuOpen && props.modelOptions?.length ? <div className="dsh-chat__model-menu" role="listbox" aria-label="选择模型">
+          {modelMenuOpen && props.modelOptions?.length ? <div className="dsh-chat__model-menu" role="listbox" aria-label={t('chat.bubble.model.label')}>
             {props.modelOptions.map((model) => <button
               key={model}
               type="button"

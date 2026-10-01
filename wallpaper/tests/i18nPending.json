@@ -1,17 +1,5 @@
 [
   [
-    "src/App.tsx",
-    35
-  ],
-  [
-    "src/features/chat/ConversationBubble.tsx",
-    33
-  ],
-  [
-    "src/lite/LiteSettingsWindow.tsx",
-    25
-  ],
-  [
     "src/widgets/sdk.ts",
     8
   ],

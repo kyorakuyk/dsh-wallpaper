@@ -614,6 +614,166 @@ export const zh = {
   'runtime.web-adapter.preview-reset': '浏览器预览不支持恢复网页适配器配置',
   // 浏览器预览没有真实显示器，这是那块占位屏幕的名字。
   'runtime.display.preview-name': '预览屏幕',
+
+  // ---------------------------------------------------------------------------
+  // 本批（计划第 4 步）：桌面侧的三处界面文案。
+  //
+  // 键按**位置**命名：`app.bubble.*` 是 `App.tsx`（壁纸外壳：立绘气泡、通知条、会话窗、登录浮层），
+  // `chat.bubble.*` 是 `features/chat/ConversationBubble.tsx`（会话气泡本体），
+  // `lite.settings.*` 是 `lite/LiteSettingsWindow.tsx`（Lite 设置窗口）。
+  //
+  // 三处都有**带前导空格**的词条：它们是拼在别的句子后面的半句（中文不加空格，英文要加），
+  // 与 `chat.cost.approx` 同一条理由 —— 空格是句子的一部分，所以它也在词条里。
+  // ---------------------------------------------------------------------------
+
+  // 掉线提示的**共同前缀**。它不是一个完整句子：前缀 + 状态说明（`connect/harnessLabels.ts`
+  // 的 `harness.detail.*`）+ 下面那半句拼成一句，而"这是不是我们自己写的那句提示"也靠它认。
+  // 因此它在 `App.tsx` 里由 `harnessDisconnectedErrorPrefix()` 在**调用时**取，不做模块级常量。
+  'app.bubble.harness.disconnected-prefix': 'DSH 壁纸 Bridge 当前不可用。',
+  // 上面那两句的续写（前导空格接在状态说明后面）。
+  'app.bubble.harness.selection-unavailable': ' Harness 模式只能在兼容 Bridge 就绪后切换。',
+  'app.bubble.harness.session-preserved': ' 已保留当前 Harness 会话和对话记录；Bridge 恢复后可继续，或由你手动切换后端。',
+
+  // 随壁纸自动启动 DSH 的失败码，一条一句（`dshAutostartNotice`）。`dshAutostart.spec.ts`
+  // 逐字钉着其中几个词，所以这些句子不能顺手改写。
+  'app.bubble.autostart.root-path-missing': '已开启「随壁纸启动 DSH」，但尚未选择执行主体；请在设置中心扫描并选择一个。',
+  'app.bubble.autostart.unknown-target': '已开启「随壁纸启动 DSH」，但所选执行主体不可用；请在设置中心重新扫描后选择。',
+  'app.bubble.autostart.started-unconfirmed': '已请求启动所选客户端，但它在超时时间内没有应答；若界面始终没有出现，请确认该客户端仍已安装。',
+  'app.bubble.autostart.root-path-invalid': '已开启「随壁纸启动 DSH」，但配置的根目录不是可识别的 DSH 项目；请在设置中心修正。',
+  'app.bubble.autostart.launcher-missing': '已开启「随壁纸启动 DSH」，但未找到 Node.js 或 pnpm。请在设置中心确认这两个程序已安装，并能在命令提示符里直接运行。',
+  'app.bubble.autostart.profile-invalid': '已开启「随壁纸启动 DSH」，但配置的 profile 名称无效（只能包含字母、数字、连字符或下划线）。请在设置中心修正。',
+  'app.bubble.autostart.launch-args-invalid': '已开启「随壁纸启动 DSH」，但「启动参数」无效。请在设置中心修正后重试。',
+  'app.bubble.autostart.spawn-failed': '已开启「随壁纸启动 DSH」，但进程启动失败。请在设置中心检查根目录与启动参数。',
+  'app.bubble.autostart.failed': '自动启动 DSH 失败：{error}',
+
+  // 启动监督（`harnessLaunchOutcome`）：宽限期后的"退出了"、超时后按最具体成因给的四句。
+  'app.bubble.launch.exited-early': 'DSH 启动后很快退出；请检查 DSH 配置或启动日志。',
+  'app.bubble.launch.token-unavailable': 'DSH 已启动，但 Bridge 本机令牌不可用；请重启壁纸应用或检查令牌目录权限。',
+  'app.bubble.launch.incompatible': 'DSH 已启动，但 Bridge 版本或能力不兼容；请更新 Bridge 后重试。',
+  'app.bubble.launch.bridge-loading': 'DSH 已启动，Bridge 仍在装载会话服务；若长期停留，请检查 DSH 日志。',
+  'app.bubble.launch.timeout': 'DSH 启动超时；进程仍在运行但 Bridge 尚未上线。',
+  'app.bubble.launch.subject-failed': 'DSH 主体启动失败，请查看日志中的启动记录。',
+
+  // 模型目录"还没查"与"查不到"的原因（`connect/modelDirectory.ts` 的 `reason`）。
+  'app.bubble.model.harness-reading': '正在读取 Harness 模型目录…',
+  'app.bubble.model.endpoint-reading': '正在读取端点模型目录…',
+  'app.bubble.model.web-decided': '网页入口的模型由 DeepSeek 页面决定',
+  'app.bubble.model.harness-not-running': 'Harness 未运行',
+  'app.bubble.model.harness-read-failed': 'Harness 模型目录读取失败：{error}',
+  'app.bubble.model.endpoint-read-failed': '端点模型列表读取失败：{error}',
+
+  // 通知条与浮层：失败都要说出来（一条一句，`{error}` 填异常原文）。
+  'app.bubble.notice.raise-window-failed': '打开可视化窗口失败：{error}',
+  'app.bubble.notice.display-read-failed': '读取显示器布局失败：{error}',
+  'app.bubble.notice.display-subscribe-failed': '显示器事件订阅失败：{error}',
+  'app.bubble.notice.system-subscribe-failed': '系统会话事件订阅失败：{error}',
+  'app.bubble.notice.appearance-subscribe-failed': '外观变更订阅失败：{error}',
+  'app.bubble.notice.leave-inner-failed': '离开里桌面失败：{error}',
+  'app.bubble.notice.open-link-failed': '打开链接失败：{error}',
+  // 宿主发来的"需要批准"摘要后面接的那半句（摘要本身是运行时的字，不在词条里）。
+  'app.bubble.notice.approval': '{summary}；请打开 Harness 处理。',
+
+  // 立绘头顶那颗气泡里的话。
+  'app.bubble.question.prompt': '想听听你的意见：{question}',
+  'app.bubble.question.options': '（{options}）',
+  'app.bubble.thinking': '正在认真思考…',
+
+  // 需要登录网页入口时的浮层。
+  'app.bubble.auth.title': '需要登录 DeepSeek 网页入口',
+  'app.bubble.auth.body': '应用内官方页面已经打开，请在其中完成登录。登录状态只保存在独立 WebView2 配置目录，本应用不会读取或复制 Cookie；登录完成后回到桌面即可继续发送。',
+  'app.bubble.auth.confirm': '我已完成登录',
+
+  // ---------------------------------------------------------------------------
+  // 会话气泡本体（`features/chat/ConversationBubble.tsx`）。标签、提示、按钮的无障碍名，
+  // 以及页脚那一行用量 —— 用法与中文界面上的字逐字一致。
+  // ---------------------------------------------------------------------------
+  'chat.bubble.surface.label': 'AI 对话',
+  'chat.bubble.session-title': '桌面会话',
+  'chat.bubble.raise-window': '打开可视化窗口',
+  'chat.bubble.close': '收起对话',
+  'chat.bubble.history.label': '当前会话记录',
+  'chat.bubble.history.kept-note': '上次的 Harness 会话（后端已退出）。它重新上线后会自动回到这段记录；你也可以现在就在左侧继续对话。',
+  'chat.bubble.history.load-earlier': '加载更早的 {hidden} 条记录',
+  // 同一枚按钮的两个方向：展开时它说"收起记录"（含 `chevron-up`），收起时说"会话记录"。
+  'chat.bubble.history.toggle-expanded': '收起记录',
+  'chat.bubble.history.toggle-collapsed': '会话记录',
+  // 状态点与滑槽：失败、启动中，以及滑槽两个方向上的标签/提示（`{...}` 之外的都是键）。
+  'chat.bubble.harness.failed': '连接失败',
+  'chat.bubble.harness.starting': 'DSH 正在启动',
+  'chat.bubble.mode-switch.to-deepseek': '切换至 DeepSeek 模式',
+  'chat.bubble.mode-switch.to-harness': '切换至 Harness 模式',
+  'chat.bubble.mode-switch.start': '启动 DSH',
+  'chat.bubble.mode-switch.configure': '配置 DSH',
+  'chat.bubble.mode-switch.title-to-deepseek': '当前：Harness，点击切回 DeepSeek',
+  'chat.bubble.mode-switch.title-to-harness': '当前：DeepSeek，点击切换 Harness',
+  'chat.bubble.mode-switch.start-title': '启动已配置的 DSH 后端',
+  'chat.bubble.mode-switch.configure-title': '先配置 DSH 根目录与 profile',
+  // agent 预设下拉：控件名、没有预设时的兜底项、宿主说某个预设坏了时的后缀。
+  'chat.bubble.preset.label': '选择 DSH 模式',
+  'chat.bubble.preset.standard': '标准模式',
+  'chat.bubble.preset.unavailable': '（不可用）',
+  // 输入框与命令/权限菜单。
+  'chat.bubble.composer.label': '输入消息',
+  'chat.bubble.composer.send': '发送消息',
+  'chat.bubble.composer.stop': '停止生成',
+  'chat.bubble.command-menu': '命令',
+  'chat.bubble.command-menu.label': '选择命令',
+  'chat.bubble.permission.label': '选择权限',
+  // 模型选择器（岛内自绘的下拉）。
+  'chat.bubble.model.label': '选择模型',
+  'chat.bubble.model.switch': '切换模型',
+  'chat.bubble.model.unsupported': '当前后端不支持在壁纸中切换模型',
+  'chat.bubble.model.unavailable': '模型不可切换',
+  // 页脚那一行用量：每条消息下面那一小行（` · 缓存 N` 含前导空格），以及本轮/会话两格。
+  'chat.bubble.usage.tokens': '输入 {input} · 输出 {output}',
+  'chat.bubble.usage.cache': ' · 缓存 {cacheRead}',
+  'chat.bubble.turn-usage.label': '本轮用量',
+  'chat.bubble.turn-usage.label-unavailable': '本轮用量未提供',
+  'chat.bubble.turn-usage.input': '本轮 入 {input}',
+  'chat.bubble.turn-usage.output': '出 {output}',
+  'chat.bubble.turn-usage.cache': '缓存 {cacheRead}',
+  'chat.bubble.turn-usage.cost': '费用 {cost}',
+  'chat.bubble.session-cost': '会话 {cost}',
+  'chat.bubble.session-cost.unavailable': '会话费用未提供',
+
+  // ---------------------------------------------------------------------------
+  // Lite 设置窗口（`lite/LiteSettingsWindow.tsx`）：品牌下一行、三张卡片、选项格子与提示条。
+  // `Wallpaper Lite` / `DSH` / `Windows 11` 是产品名，两种语言里一样，所以不在这里。
+  // FREEZE 冻结的那几张卡（锁屏、登录过渡底图、TranslucentTB）整块在注释里，不占词条。
+  // ---------------------------------------------------------------------------
+  'lite.settings.brand.tagline': '轻量桌面壁纸',
+  'lite.settings.window.close': '关闭设置',
+  'lite.settings.notice.close': '关闭通知',
+  'lite.settings.hero.title': '让桌面安静地醒来',
+  'lite.settings.hero.description': '只保留锁屏、苏醒动画、壁纸与立绘。Windows 密码页仍由系统负责。',
+  'lite.settings.system.title': '锁屏与启动',
+  'lite.settings.autostart.title': '登录后自动启动',
+  'lite.settings.autostart.busy': '正在更新启动任务。',
+  'lite.settings.wake.title': '苏醒动画',
+  'lite.settings.wake.enabled.title': '启用苏醒动画',
+  'lite.settings.wake.enabled.detail': '解锁后播放正式四帧素材。',
+  'lite.settings.wake.every-unlock.title': '每次解锁播放',
+  'lite.settings.wake.every-unlock.detail': '关闭后只在应用启动时播放一次。',
+  'lite.settings.wake.skip.title': '跳过动画',
+  'lite.settings.wake.skip.detail': '直接进入静态壁纸与立绘。',
+  'lite.settings.wake.speed.title': '动画速度',
+  'lite.settings.scene.title': '壁纸与立绘',
+  'lite.settings.scene.background': '壁纸背景',
+  'lite.settings.scene.portrait': '右侧立绘',
+  'lite.settings.scene.custom-background': '自定义背景 · 选择文件',
+  'lite.settings.scene.custom-portrait': '自定义立绘 · 选择文件',
+  'lite.settings.scene.current': '当前',
+  'lite.settings.scene.footnote': '首发版默认使用正式内置素材，也可分别导入一张背景和一张立绘；主题包、插件和逐项替换会在完整版中提供。',
+  'lite.settings.footer.autosave': '设置会自动保存',
+  // 提示条里那几句（失败都带上 `{error}`；导入成功按槽位分两句）。
+  'lite.settings.save-failed': '设置保存失败：{error}',
+  'lite.settings.load-failed': '读取本地设置失败：{error}',
+  'lite.settings.autostart.read-failed': '读取开机自启状态失败：{error}',
+  'lite.settings.autostart.update-failed': '开机自启更新失败：{error}',
+  'lite.settings.custom-image.read-failed': '读取自定义素材失败：{error}',
+  'lite.settings.custom-image.import-failed': '导入图片失败：{error}',
+  'lite.settings.custom-image.background-imported': '已导入自定义壁纸背景。',
+  'lite.settings.custom-image.portrait-imported': '已导入自定义立绘。',
 }
 
 /** 所有可用键。写错键名在编译期就会被挡住。 */

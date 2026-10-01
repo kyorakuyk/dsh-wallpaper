@@ -90,6 +90,14 @@ export interface TurnUsageSummary {
   output: string
   cacheRead: string
   cost: string
+  /**
+   * 这一格的费用是不是"价格未配置"。
+   *
+   * 它是**结构化状态**，不是一句文案：界面原先靠"费用那串字等于 `价格未配置`"来决定加不加
+   * `dsh-chat__billing`，而那句字是**被翻译过**的 —— 英文界面里这个比较永远不成立，样式就悄悄
+   * 丢了。标志位与语言无关，两种语言里表现一致（中文下的表现与改动前逐字相同）。
+   */
+  priceUnconfigured: boolean
 }
 
 export function turnUsageSummary(
@@ -98,13 +106,15 @@ export function turnUsageSummary(
   apiPricingConfigured: boolean,
 ): TurnUsageSummary {
   const unavailable = t('chat.usage.unavailable')
+  const priceMissing = backend === 'deepseek-api' && !apiPricingConfigured
   if (!usage) {
     return {
       available: false,
       input: unavailable,
       output: unavailable,
       cacheRead: unavailable,
-      cost: backend === 'deepseek-api' && !apiPricingConfigured
+      priceUnconfigured: priceMissing,
+      cost: priceMissing
         ? t('chat.usage.price-unconfigured')
         : t('chat.usage.cost-unavailable'),
     }
@@ -114,8 +124,9 @@ export function turnUsageSummary(
     input: String(usage.input),
     output: String(usage.output),
     cacheRead: usage.cacheRead === undefined ? unavailable : String(usage.cacheRead),
+    priceUnconfigured: usage.cost === undefined && priceMissing,
     cost: usage.cost === undefined
-      ? backend === 'deepseek-api' && !apiPricingConfigured
+      ? priceMissing
         ? t('chat.usage.price-unconfigured')
         : t('chat.usage.cost-unavailable')
       : formatCost(usage.cost, usage.estimated),

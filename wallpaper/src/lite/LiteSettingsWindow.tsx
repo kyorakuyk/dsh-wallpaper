@@ -8,6 +8,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { AutostartStatus } from '../native/runtime.ts'
 import * as liteNative from './native.ts'
 import { assetUrl, DEFAULT_LITE_SETTINGS, LITE_BACKGROUND_OPTIONS, LITE_PORTRAIT_OPTIONS, loadLiteSettings, saveLiteSettings } from './settings.ts'
+import { t, useLanguage } from '../i18n/index.ts'
 import { listenUntilDisposed } from '../runtime/lifecycle.ts'
 import { autostartDetail, autostartRefusalNotice } from '../settings/autostartCopy.ts'
 import { createAutostartQueue, type AutostartQueue } from '../settings/autostartQueue.ts'
@@ -23,6 +24,8 @@ function SettingRow({ title, detail, children }: { title: string; detail?: strin
 }
 
 export function LiteSettingsWindow() {
+  // 这个窗口的 JSX 与提示条里都有词条，所以语言一变就要重渲染一次。
+  useLanguage()
   const [settings, setSettings] = useState<LiteSettings>(DEFAULT_LITE_SETTINGS)
   const settingsRef = useRef(settings)
   const [notice, setNotice] = useState<string>()
@@ -57,7 +60,7 @@ export function LiteSettingsWindow() {
   const commit = (next: LiteSettings) => {
     settingsRef.current = next
     setSettings(next)
-    void saveLiteSettings(next).catch((error) => setNotice(`设置保存失败：${String(error)}`))
+    void saveLiteSettings(next).catch((error) => setNotice(t('lite.settings.save-failed', { error: String(error) })))
   }
 
   // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
@@ -90,7 +93,7 @@ export function LiteSettingsWindow() {
       latestAutostartRef.current = status.enabled
       if (status.enabled !== current.autostart) commit({ ...current, autostart: status.enabled })
     } catch (error) {
-      setNotice(`读取开机自启状态失败：${String(error)}`)
+      setNotice(t('lite.settings.autostart.read-failed', { error: String(error) }))
     }
   }
 
@@ -131,7 +134,7 @@ export function LiteSettingsWindow() {
       setCustomBackground(background)
       setCustomPortrait(portrait)
     } catch (error) {
-      setNotice(`读取自定义素材失败：${String(error)}`)
+      setNotice(t('lite.settings.custom-image.read-failed', { error: String(error) }))
     }
   }
 
@@ -147,7 +150,7 @@ export function LiteSettingsWindow() {
       // FREEZE(1B)：随上面两者冻结。
       // void refreshTranslucentTb()
       void refreshCustomImages()
-    }).catch((error) => setNotice(`读取本地设置失败：${String(error)}`))
+    }).catch((error) => setNotice(t('lite.settings.load-failed', { error: String(error) })))
     if (!('__TAURI_INTERNALS__' in window)) return
     const current = getCurrentWindow()
     // The close listener is registered without awaiting the native call, so a
@@ -188,7 +191,7 @@ export function LiteSettingsWindow() {
           const refusal = autostartRefusalNotice(status, requested)
           if (refusal) setNotice(refusal)
         },
-        onError: (error) => setNotice(`开机自启更新失败：${String(error)}`),
+        onError: (error) => setNotice(t('lite.settings.autostart.update-failed', { error: String(error) })),
       })
     }
     return autostartQueueRef.current
@@ -277,51 +280,51 @@ export function LiteSettingsWindow() {
         setCustomPortrait(preview)
         commit({ ...settingsRef.current, portrait: 'custom' })
       }
-      setNotice(slot === 'background' ? '已导入自定义壁纸背景。' : '已导入自定义立绘。')
+      setNotice(slot === 'background' ? t('lite.settings.custom-image.background-imported') : t('lite.settings.custom-image.portrait-imported'))
     } catch (error) {
-      setNotice(`导入图片失败：${String(error)}`)
+      setNotice(t('lite.settings.custom-image.import-failed', { error: String(error) }))
     }
   }
 
   return <main className="lite-settings-window">
-    {notice && <div className="lite-notice" role="status"><span>{notice}</span><button type="button" aria-label="关闭通知" onClick={() => setNotice(undefined)}>×</button></div>}
+    {notice && <div className="lite-notice" role="status"><span>{notice}</span><button type="button" aria-label={t('lite.settings.notice.close')} onClick={() => setNotice(undefined)}>×</button></div>}
     <header className="lite-titlebar">
       <div className="lite-titlebar-drag" onMouseDown={(event) => { if (event.button === 0) void invoke('start_settings_drag') }} />
-      <div className="lite-brand"><span className="lite-brand-mark">DSH</span><div><strong>Wallpaper Lite</strong><small>轻量桌面壁纸</small></div></div>
-      <button type="button" className="lite-close" aria-label="关闭设置" onClick={() => void invoke('hide_settings_window')}>×</button>
+      <div className="lite-brand"><span className="lite-brand-mark">DSH</span><div><strong>Wallpaper Lite</strong><small>{t('lite.settings.brand.tagline')}</small></div></div>
+      <button type="button" className="lite-close" aria-label={t('lite.settings.window.close')} onClick={() => void invoke('hide_settings_window')}>×</button>
     </header>
 
     <div className="lite-content">
       <section className="lite-hero">
-        <div><span className="lite-eyebrow">FIRST RELEASE</span><h1>让桌面安静地醒来</h1><p>只保留锁屏、苏醒动画、壁纸与立绘。Windows 密码页仍由系统负责。</p></div>
+        <div><span className="lite-eyebrow">FIRST RELEASE</span><h1>{t('lite.settings.hero.title')}</h1><p>{t('lite.settings.hero.description')}</p></div>
         <div className="lite-hero-orbit" aria-hidden="true"><span /><span /><span /></div>
       </section>
 
       <section className="lite-card">
         {/* FREEZE(1A)：这张卡里的"锁屏"状态点随锁屏一起冻结（卡内还留着登录过渡底图与自动启动，所以标题保留）。 */}
-        <div className="lite-card-heading"><div><span className="lite-kicker">01 · SYSTEM</span><h2>锁屏与启动</h2></div></div>
+        <div className="lite-card-heading"><div><span className="lite-kicker">01 · SYSTEM</span><h2>{t('lite.settings.system.title')}</h2></div></div>
         {/* FREEZE(1A)：锁屏退出，这一行随之冻结。<SettingRow title="接管 Windows 锁屏图片" detail={lockScreenBusy ? '正在应用系统设置，请稍候。' : '密码输入页仍由 Windows 原生处理。'}><Toggle label="接管 Windows 锁屏图片" checked={settings.lockScreenEnabled} disabled={lockScreenBusy} onChange={(value) => void setLockScreen(value)} /></SettingRow> */}
         {/* FREEZE(1B)：登录过渡底图随系统集成一起冻结。<SettingRow title="登录过渡底图" detail={desktopFallbackBusy ? '正在更新 Explorer 桌面底图。' : desktopFallbackStatus?.managedActive ? '已确认 Explorer 正在使用睡眠画面；重启后可减少解锁空档。' : desktopFallbackStatus?.warning ?? '让 Explorer 在应用启动前先显示睡眠画面，减少解锁后的原壁纸空档。'}><Toggle label="登录过渡底图" checked={settings.desktopWallpaperFallback} disabled={desktopFallbackBusy} onChange={(value) => void setDesktopFallback(value)} /></SettingRow> */}
-        <SettingRow title="登录后自动启动" detail={autostartBusy ? '正在更新启动任务。' : autostartDetail(autostartState)}><Toggle label="登录后自动启动" checked={settings.autostart} disabled={autostartBusy} onChange={(value) => setAutostart(value)} /></SettingRow>
+        <SettingRow title={t('lite.settings.autostart.title')} detail={autostartBusy ? t('lite.settings.autostart.busy') : autostartDetail(autostartState)}><Toggle label={t('lite.settings.autostart.title')} checked={settings.autostart} disabled={autostartBusy} onChange={(value) => setAutostart(value)} /></SettingRow>
         {/* FREEZE(1A)：锁屏退出，这一行随之冻结。<div className="lite-actions"><button type="button" onClick={() => void openLockScreenSettings()}>打开 Windows 锁屏设置</button><button type="button" onClick={() => void refreshDiagnostics()}>刷新诊断</button></div> */}
         {/* FREEZE(1A)：锁屏退出，这一行随之冻结。{lockScreenDiagnostics && <div className="lite-diagnostics"><strong>{lockScreenDiagnostics.takeoverAvailable ? '锁屏接管可用' : '当前暂不可接管锁屏'}</strong>{lockScreenDiagnostics.warnings.slice(0, 2).map((warning) => <span key={warning}>{warning}</span>)}{desktopFallbackStatus?.backupExists && desktopFallbackStatus.warning && <span>{desktopFallbackStatus.warning}</span>}{lockScreenDiagnostics.staleBackup && <button type="button" className="lite-diagnostics-action" disabled={lockScreenBusy} onClick={() => void clearStaleLockScreenBackup()}>清理过期恢复点（删除原图副本）</button>}</div>} */}
       </section>
 
       <section className="lite-card">
-        <div className="lite-card-heading"><div><span className="lite-kicker">02 · WAKE</span><h2>苏醒动画</h2></div><span className="lite-card-caption">4 FRAME SEQUENCE</span></div>
-        <SettingRow title="启用苏醒动画" detail="解锁后播放正式四帧素材。"><Toggle label="启用苏醒动画" checked={settings.animationsEnabled} onChange={(value) => commit({ ...settingsRef.current, animationsEnabled: value })} /></SettingRow>
-        <SettingRow title="每次解锁播放" detail="关闭后只在应用启动时播放一次。"><Toggle label="每次解锁播放" checked={settings.playWakeOnEveryUnlock} onChange={(value) => commit({ ...settingsRef.current, playWakeOnEveryUnlock: value })} /></SettingRow>
-        <SettingRow title="跳过动画" detail="直接进入静态壁纸与立绘。"><Toggle label="跳过动画" checked={settings.skipWakeAnimation} onChange={(value) => commit({ ...settingsRef.current, skipWakeAnimation: value })} /></SettingRow>
-        <SettingRow title="动画速度" detail={`${settings.animationSpeed.toFixed(1)}×`}><input className="lite-range" type="range" min="0.5" max="2" step="0.1" value={settings.animationSpeed} onChange={(event) => commit({ ...settingsRef.current, animationSpeed: Number(event.target.value) })} /></SettingRow>
+        <div className="lite-card-heading"><div><span className="lite-kicker">02 · WAKE</span><h2>{t('lite.settings.wake.title')}</h2></div><span className="lite-card-caption">4 FRAME SEQUENCE</span></div>
+        <SettingRow title={t('lite.settings.wake.enabled.title')} detail={t('lite.settings.wake.enabled.detail')}><Toggle label={t('lite.settings.wake.enabled.title')} checked={settings.animationsEnabled} onChange={(value) => commit({ ...settingsRef.current, animationsEnabled: value })} /></SettingRow>
+        <SettingRow title={t('lite.settings.wake.every-unlock.title')} detail={t('lite.settings.wake.every-unlock.detail')}><Toggle label={t('lite.settings.wake.every-unlock.title')} checked={settings.playWakeOnEveryUnlock} onChange={(value) => commit({ ...settingsRef.current, playWakeOnEveryUnlock: value })} /></SettingRow>
+        <SettingRow title={t('lite.settings.wake.skip.title')} detail={t('lite.settings.wake.skip.detail')}><Toggle label={t('lite.settings.wake.skip.title')} checked={settings.skipWakeAnimation} onChange={(value) => commit({ ...settingsRef.current, skipWakeAnimation: value })} /></SettingRow>
+        <SettingRow title={t('lite.settings.wake.speed.title')} detail={`${settings.animationSpeed.toFixed(1)}×`}><input className="lite-range" type="range" min="0.5" max="2" step="0.1" value={settings.animationSpeed} onChange={(event) => commit({ ...settingsRef.current, animationSpeed: Number(event.target.value) })} /></SettingRow>
       </section>
 
       <section className="lite-card">
-        <div className="lite-card-heading"><div><span className="lite-kicker">03 · SCENE</span><h2>壁纸与立绘</h2></div><span className="lite-card-caption">BUILT-IN CATALOG</span></div>
-        <div className="lite-choice-label">壁纸背景</div>
-        <div className="lite-option-grid lite-background-grid">{LITE_BACKGROUND_OPTIONS.map((option) => <button type="button" key={option.id} className={settings.background === option.id ? 'is-selected' : ''} onClick={() => commit({ ...settingsRef.current, background: option.id })}><img src={assetUrl(option.path)} alt="" draggable={false} /><span>{option.label}</span>{settings.background === option.id && <i>当前</i>}</button>)}<button type="button" className={settings.background === 'custom' ? 'is-selected' : ''} onClick={() => void chooseCustomImage('background')}><img src={customBackground ?? assetUrl(LITE_BACKGROUND_OPTIONS[0].path)} alt="" draggable={false} /><span>自定义背景 · 选择文件</span>{settings.background === 'custom' && <i>当前</i>}</button></div>
-        <div className="lite-choice-label">右侧立绘</div>
-        <div className="lite-option-grid lite-portrait-grid">{LITE_PORTRAIT_OPTIONS.map((option) => <button type="button" key={option.id} className={settings.portrait === option.id ? 'is-selected' : ''} onClick={() => commit({ ...settingsRef.current, portrait: option.id })}><img src={assetUrl(option.path)} alt="" draggable={false} /><span>{option.label}</span>{settings.portrait === option.id && <i>当前</i>}</button>)}<button type="button" className={settings.portrait === 'custom' ? 'is-selected' : ''} onClick={() => void chooseCustomImage('portrait')}><img src={customPortrait ?? assetUrl(LITE_PORTRAIT_OPTIONS[0].path)} alt="" draggable={false} /><span>自定义立绘 · 选择文件</span>{settings.portrait === 'custom' && <i>当前</i>}</button></div>
-        <p className="lite-footnote">首发版默认使用正式内置素材，也可分别导入一张背景和一张立绘；主题包、插件和逐项替换会在完整版中提供。</p>
+        <div className="lite-card-heading"><div><span className="lite-kicker">03 · SCENE</span><h2>{t('lite.settings.scene.title')}</h2></div><span className="lite-card-caption">BUILT-IN CATALOG</span></div>
+        <div className="lite-choice-label">{t('lite.settings.scene.background')}</div>
+        <div className="lite-option-grid lite-background-grid">{LITE_BACKGROUND_OPTIONS.map((option) => <button type="button" key={option.id} className={settings.background === option.id ? 'is-selected' : ''} onClick={() => commit({ ...settingsRef.current, background: option.id })}><img src={assetUrl(option.path)} alt="" draggable={false} /><span>{option.label}</span>{settings.background === option.id && <i>{t('lite.settings.scene.current')}</i>}</button>)}<button type="button" className={settings.background === 'custom' ? 'is-selected' : ''} onClick={() => void chooseCustomImage('background')}><img src={customBackground ?? assetUrl(LITE_BACKGROUND_OPTIONS[0].path)} alt="" draggable={false} /><span>{t('lite.settings.scene.custom-background')}</span>{settings.background === 'custom' && <i>{t('lite.settings.scene.current')}</i>}</button></div>
+        <div className="lite-choice-label">{t('lite.settings.scene.portrait')}</div>
+        <div className="lite-option-grid lite-portrait-grid">{LITE_PORTRAIT_OPTIONS.map((option) => <button type="button" key={option.id} className={settings.portrait === option.id ? 'is-selected' : ''} onClick={() => commit({ ...settingsRef.current, portrait: option.id })}><img src={assetUrl(option.path)} alt="" draggable={false} /><span>{option.label}</span>{settings.portrait === option.id && <i>{t('lite.settings.scene.current')}</i>}</button>)}<button type="button" className={settings.portrait === 'custom' ? 'is-selected' : ''} onClick={() => void chooseCustomImage('portrait')}><img src={customPortrait ?? assetUrl(LITE_PORTRAIT_OPTIONS[0].path)} alt="" draggable={false} /><span>{t('lite.settings.scene.custom-portrait')}</span>{settings.portrait === 'custom' && <i>{t('lite.settings.scene.current')}</i>}</button></div>
+        <p className="lite-footnote">{t('lite.settings.scene.footnote')}</p>
       </section>
 
       {/* FREEZE(1B)：TranslucentTB 卡片随系统集成一起冻结。恢复办法：去掉这对注释，并恢复状态与刷新函数。
@@ -332,7 +335,7 @@ export function LiteSettingsWindow() {
       </section>
       */}
 
-      <footer className="lite-footer"><span>DSH Wallpaper Lite · Windows 11</span><span>设置会自动保存</span></footer>
+      <footer className="lite-footer"><span>DSH Wallpaper Lite · Windows 11</span><span>{t('lite.settings.footer.autosave')}</span></footer>
     </div>
   </main>
 }

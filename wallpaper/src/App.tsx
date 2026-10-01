@@ -54,6 +54,7 @@ import { WidgetHost } from './widgets/WidgetHost.tsx'
 import { displayCssRect, displayTopologySignature, displayUiScale, preferredDisplayId, virtualDesktopBounds } from './runtime/displayLayout.ts'
 import { listenUntilDisposed } from './runtime/lifecycle.ts'
 import { frameSchedulerTarget, StreamTextBuffer } from './features/chat/streamRender.ts'
+import { t, useLanguage } from './i18n/index.ts'
 
 const registry = new PersonaRegistry()
 
@@ -87,7 +88,18 @@ export function isCurrentChatOperation(
     && candidateAdapter.mode === candidateBackend
 }
 
-export const HARNESS_DISCONNECTED_ERROR_PREFIX = 'DSH 壁纸 Bridge 当前不可用。'
+/**
+ * 掉线提示的**共同前缀**，同时也是"这句提示是我们自己写的"这件事的判据。
+ *
+ * 它是一个**函数**而不是模块级字符串常量：语言在启动后才从设置文档回填，import 时求值会把语言
+ * 定死在那一刻，之后切语言就再也不变（前几批为此返工过）。`t()` 在调用时取，于是它跟着当前语言。
+ *
+ * 注意它不是一个完整句子：前缀 + `HARNESS_STATE_DETAILS[...]` + 后半句拼成一句，所以它带着
+ * 自己的句号（英文还带一个尾随空格，见 `i18n/zh.ts` 的说明）。
+ */
+export function harnessDisconnectedErrorPrefix(): string {
+  return t('app.bubble.harness.disconnected-prefix')
+}
 
 /**
  * Process-wide record that the automatic DSH start has been requested.
@@ -240,7 +252,7 @@ export function canSelectBackend(
 export { HARNESS_STATE_DETAILS, harnessStateLabel } from './connect/harnessLabels.ts'
 
 export function harnessSelectionUnavailableError(availability: RuntimeState['harness']): string {
-  return `${HARNESS_DISCONNECTED_ERROR_PREFIX}${HARNESS_STATE_DETAILS[availability]} Harness 模式只能在兼容 Bridge 就绪后切换。`
+  return `${harnessDisconnectedErrorPrefix()}${HARNESS_STATE_DETAILS[availability]}${t('app.bubble.harness.selection-unavailable')}`
 }
 
 /**
@@ -257,28 +269,28 @@ export function dshAutostartNotice(result: ManagedDshAutostart): string | null {
     case 'port-occupied-external':
       return null
     case 'root-path-missing':
-      return '已开启「随壁纸启动 DSH」，但尚未选择执行主体；请在设置中心扫描并选择一个。'
+      return t('app.bubble.autostart.root-path-missing')
     case 'unknown-target':
-      return '已开启「随壁纸启动 DSH」，但所选执行主体不可用；请在设置中心重新扫描后选择。'
+      return t('app.bubble.autostart.unknown-target')
     case 'started-unconfirmed':
-      return '已请求启动所选客户端，但它在超时时间内没有应答；若界面始终没有出现，请确认该客户端仍已安装。'
+      return t('app.bubble.autostart.started-unconfirmed')
     case 'already-running':
       return null
     case 'root-path-invalid':
-      return '已开启「随壁纸启动 DSH」，但配置的根目录不是可识别的 DSH 项目；请在设置中心修正。'
+      return t('app.bubble.autostart.root-path-invalid')
     case 'launcher-missing':
-      return '已开启「随壁纸启动 DSH」，但未找到 Node.js 或 pnpm。请在设置中心确认这两个程序已安装，并能在命令提示符里直接运行。'
+      return t('app.bubble.autostart.launcher-missing')
     case 'profile-invalid':
-      return '已开启「随壁纸启动 DSH」，但配置的 profile 名称无效（只能包含字母、数字、连字符或下划线）。请在设置中心修正。'
+      return t('app.bubble.autostart.profile-invalid')
     // FREEZE 留档（临时冻结，不是删除）：这一条是「启动参数」的失败码。参数冻结之后它到不了这里
     // —— 没有参数就没有"参数无效"这回事 —— 但**必须留着**：那条码仍然在原生侧的结果枚举里
     // (`ManagedDshAutostart`)，删掉这条 case 会让它落进下面那句泛泛的"进程启动失败"，而一句更
     // 具体的、说得出该改哪里的提示比一句泛泛的话更值钱（dshAutostart.spec.ts 也钉着它）。
     // 恢复办法：什么都不用做 —— 它在功能复活的同一天自动重新可达。
     case 'launch-args-invalid':
-      return '已开启「随壁纸启动 DSH」，但「启动参数」无效。请在设置中心修正后重试。'
+      return t('app.bubble.autostart.launch-args-invalid')
     default:
-      return '已开启「随壁纸启动 DSH」，但进程启动失败。请在设置中心检查根目录与启动参数。'
+      return t('app.bubble.autostart.spawn-failed')
   }
 }
 
@@ -327,21 +339,21 @@ export function harnessLaunchOutcome(
     && elapsedMs > exitGraceMs(launchedKind)
     && (!managed.managed || !managed.running)
   ) {
-    return { message: 'DSH 启动后很快退出；请检查 DSH 配置或启动日志。' }
+    return { message: t('app.bubble.launch.exited-early') }
   }
   if (elapsedMs <= timeoutMs) return null
   // Past the deadline the most specific available cause wins: a Bridge that
   // answered but cannot be used is a different fix from one that never appeared.
   if (status.availability === 'bridge-auth-unavailable') {
-    return { message: 'DSH 已启动，但 Bridge 本机令牌不可用；请重启壁纸应用或检查令牌目录权限。' }
+    return { message: t('app.bubble.launch.token-unavailable') }
   }
   if (status.availability === 'bridge-incompatible') {
-    return { message: 'DSH 已启动，但 Bridge 版本或能力不兼容；请更新 Bridge 后重试。' }
+    return { message: t('app.bubble.launch.incompatible') }
   }
   if (status.availability === 'bridge-loading') {
-    return { message: 'DSH 已启动，Bridge 仍在装载会话服务；若长期停留，请检查 DSH 日志。' }
+    return { message: t('app.bubble.launch.bridge-loading') }
   }
-  return { message: 'DSH 启动超时；进程仍在运行但 Bridge 尚未上线。' }
+  return { message: t('app.bubble.launch.timeout') }
 }
 
 /**
@@ -537,15 +549,15 @@ export function harnessAvailabilityPatch(
 ): Pick<RuntimeState, 'activity' | 'error'> | undefined {
   if (backend !== 'harness') return undefined
   if (isHarnessReady(availability)) {
-    return currentError?.startsWith(HARNESS_DISCONNECTED_ERROR_PREFIX)
+    return currentError?.startsWith(harnessDisconnectedErrorPrefix())
       ? { activity: 'idle', error: undefined }
       : undefined
   }
-  if (currentError?.startsWith(HARNESS_DISCONNECTED_ERROR_PREFIX)) return undefined
+  if (currentError?.startsWith(harnessDisconnectedErrorPrefix())) return undefined
 
   return {
     activity: 'idle',
-    error: `${HARNESS_DISCONNECTED_ERROR_PREFIX}${HARNESS_STATE_DETAILS[availability]} 已保留当前 Harness 会话和对话记录；Bridge 恢复后可继续，或由你手动切换后端。`,
+    error: `${harnessDisconnectedErrorPrefix()}${HARNESS_STATE_DETAILS[availability]}${t('app.bubble.harness.session-preserved')}`,
   }
 }
 
@@ -564,6 +576,13 @@ export function visibleNotice(state: Pick<RuntimeState, 'chatNotice' | 'error'>)
 export interface AppProps { surface?: AppSurface }
 
 export function App({ surface = 'combined' }: AppProps) {
+  /**
+   * 语言变了，这个外壳要重渲染：立绘气泡、通知条、模型下拉的禁用原因与登录浮层里都有词条。
+   *
+   * 下面两处 `useMemo` 的**结果里带着句子**，所以它们各自把 `language` 也列进了依赖 ——
+   * 只订阅不列依赖的话，语言一变它们会拿着上一次语言的那句不动。
+   */
+  const language = useLanguage()
   const [settings, setSettings] = useState<WallpaperSettings>(() => loadSettings())
   const [runtime, baseDispatch] = useReducer(reduceRuntime, { ...INITIAL_RUNTIME_STATE, backend: settings.defaultBackend })
   const [resolvedAssets, setResolvedAssets] = useState<Partial<Record<AppearanceSlot, string>>>({})
@@ -575,10 +594,10 @@ export function App({ surface = 'combined' }: AppProps) {
   const [apiModelChoice, setApiModelChoice] = useState(settings.deepseekApi.model)
   const [harnessModelChoice, setHarnessModelChoice] = useState<string | undefined>()
   // 枚举出来的模型目录。初始是"还没查"，不是"没有模型"——区别见 connect/modelDirectory.ts。
-  const [harnessModelDir, setHarnessModelDir] = useState<ModelDirectory>({ kind: 'unavailable', reason: '正在读取 Harness 模型目录…' })
+  const [harnessModelDir, setHarnessModelDir] = useState<ModelDirectory>({ kind: 'unavailable', reason: t('app.bubble.model.harness-reading') })
   /** 就绪过的桥接正在失联（黄灯），但还没到"确认掉线"。 */
   const [harnessProbing, setHarnessProbing] = useState(false)
-  const [apiModelDir, setApiModelDir] = useState<ModelDirectory>({ kind: 'unavailable', reason: '正在读取端点模型目录…' })
+  const [apiModelDir, setApiModelDir] = useState<ModelDirectory>({ kind: 'unavailable', reason: t('app.bubble.model.endpoint-reading') })
   const [interactionState, setInteractionState] = useState<'collapsed' | 'expanded'>('collapsed')
   const [interactionEnabled, setInteractionEnabled] = useState(true)
   // The composer draft lives here rather than in the bubble because returning to
@@ -880,9 +899,10 @@ export function App({ surface = 'combined' }: AppProps) {
   }, [runtime.backend, harnessModelDir, apiModelDir])
   const modelSwitchDisabledReason = useMemo(() => {
     // 网页入口的模型由 DeepSeek 页面自己决定，与"枚举不到"是两件事，文案必须分开。
-    if (runtime.backend === 'deepseek-web') return '网页入口的模型由 DeepSeek 页面决定'
+    if (runtime.backend === 'deepseek-web') return t('app.bubble.model.web-decided')
     return modelUnavailableReason(runtime.backend === 'deepseek-api' ? apiModelDir : harnessModelDir)
-  }, [runtime.backend, harnessModelDir, apiModelDir])
+    // `language` 在这里不是多余的：返回值是一句话，语言一变它就得重算。
+  }, [runtime.backend, harnessModelDir, apiModelDir, language])
 
   // 枚举当前可切换的模型：Harness 侧问宿主（经桥接转发），API 侧问端点自己的 `/models`。
   // 读取失败不打扰用户（没有 toast）：目录进入 `unavailable`，选择器禁用并把原因写在选项里。
@@ -894,16 +914,16 @@ export function App({ surface = 'combined' }: AppProps) {
       // 主体不在运行时**不保留旧列表**：选择器要立刻变成"Harness 未运行"并禁用，
       // 这就是"状态刷新之后实时更新模型下拉"的掉线那一半。
       if (!isHarnessReady(runtime.harness)) {
-        setHarnessModelDir(unavailableDirectory('Harness 未运行'))
+        setHarnessModelDir(unavailableDirectory(t('app.bubble.model.harness-not-running')))
         return () => { disposed = true }
       }
       void nativeRuntime.harnessModels()
         .then((payload) => { if (!disposed) setHarnessModelDir(bridgeModelDirectory(payload)) })
-        .catch((error) => { if (!disposed) setHarnessModelDir(unavailableDirectory(`Harness 模型目录读取失败：${String(error)}`)) })
+        .catch((error) => { if (!disposed) setHarnessModelDir(unavailableDirectory(t('app.bubble.model.harness-read-failed', { error: String(error) }))) })
     } else if (runtime.backend === 'deepseek-api') {
       void nativeRuntime.apiModels(settingsRef.current.deepseekApi.baseUrl)
         .then((payload) => { if (!disposed) setApiModelDir(apiModelDirectory(payload, settingsRef.current.deepseekApi.model)) })
-        .catch((error) => { if (!disposed) setApiModelDir(unavailableDirectory(`端点模型列表读取失败：${String(error)}`)) })
+        .catch((error) => { if (!disposed) setApiModelDir(unavailableDirectory(t('app.bubble.model.endpoint-read-failed', { error: String(error) }))) })
     }
     return () => { disposed = true }
   }, [runtime.backend, runtime.harness, settings.deepseekApi.baseUrl])
@@ -947,10 +967,10 @@ export function App({ surface = 'combined' }: AppProps) {
           return
         }
         if (ensured.started && ensured.outcome === 'not-running') {
-          patchRuntime({ error: 'DSH 主体启动失败，请查看日志中的启动记录。' })
+          patchRuntime({ error: t('app.bubble.launch.subject-failed') })
         }
       } catch (error) {
-        patchRuntime({ error: `打开可视化窗口失败：${String(error)}` })
+        patchRuntime({ error: t('app.bubble.notice.raise-window-failed', { error: String(error) }) })
       }
     })()
   }, [settings.dshLaunch])
@@ -1233,7 +1253,7 @@ const enterInnerWorkspace = () => {
         desktopDisplaysSignatureRef.current = signature
         setDesktopDisplays(next)
       } catch (error) {
-        if (!disposed) patchRuntime({ error: `读取显示器布局失败：${String(error)}` })
+        if (!disposed) patchRuntime({ error: t('app.bubble.notice.display-read-failed', { error: String(error) }) })
       }
     }
     const delayedRefresh = () => {
@@ -1247,7 +1267,7 @@ const enterInnerWorkspace = () => {
     const displayListener = listenUntilDisposed<unknown>(
       (emit) => listen('display-changed', () => emit(undefined)),
       delayedRefresh,
-      { onError: (error) => patchRuntime({ error: `显示器事件订阅失败：${String(error)}` }) },
+      { onError: (error) => patchRuntime({ error: t('app.bubble.notice.display-subscribe-failed', { error: String(error) }) }) },
     )
     window.addEventListener('resize', delayedRefresh)
     const timer = window.setInterval(() => { void refresh() }, DISPLAY_TOPOLOGY_FALLBACK_INTERVAL_MS)
@@ -1400,7 +1420,7 @@ const enterInnerWorkspace = () => {
         const notice = dshAutostartNotice(result)
         if (notice && !disposed) patchRuntime({ error: notice })
       } catch (error) {
-        if (!disposed) patchRuntime({ error: `自动启动 DSH 失败：${String(error)}` })
+        if (!disposed) patchRuntime({ error: t('app.bubble.autostart.failed', { error: String(error) }) })
       }
     })()
     return () => { disposed = true }
@@ -1538,7 +1558,7 @@ const enterInnerWorkspace = () => {
         if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current.activity = 'idle'
         baseDispatch({ type: 'AUTH_REQUIRED' }); dispatchCore('set-activity', { value: 'idle' }); dispatchCore('auth-required')
       }
-      if (event.type === 'approval-required') { patchRuntime({ activity: 'tool', error: `${event.summary}；请打开 Harness 处理。` }); dispatchCore('set-activity', { value: 'tool' }) }
+      if (event.type === 'approval-required') { patchRuntime({ activity: 'tool', error: t('app.bubble.notice.approval', { summary: event.summary }) }); dispatchCore('set-activity', { value: 'tool' }) }
       if (event.type === 'question-required') { setQuestionPrompt(event.questions); patchRuntime({ activity: 'tool', error: undefined }); dispatchCore('set-activity', { value: 'tool' }) }
       if (event.type === 'conversation-reset') {
         // 这条会话不能用了（用户归档，或宿主拒绝了这一轮）：轨道上这段记录**立刻**停止看起来
@@ -1623,7 +1643,7 @@ const enterInnerWorkspace = () => {
           if (!appCoreClient.native) baseDispatch({ type: 'UNLOCK', playWake: settingsRef.current.playWakeOnEveryUnlock && settingsRef.current.animationsEnabled && !settingsRef.current.skipWakeAnimation })
         }
       },
-      { onError: (error) => patchRuntime({ error: `系统会话事件订阅失败：${String(error)}` }) },
+      { onError: (error) => patchRuntime({ error: t('app.bubble.notice.system-subscribe-failed', { error: String(error) }) }) },
     )
     return () => listener.dispose()
     // Subscription, not a reaction to a preference: the values it reads are taken from
@@ -1671,7 +1691,7 @@ const enterInnerWorkspace = () => {
     const listener = listenUntilDisposed<unknown>(
       (emit) => listen('appearance-changed', () => emit(undefined)),
       () => { void refreshAppearance() },
-      { onError: (error) => patchRuntime({ error: `外观变更订阅失败：${String(error)}` }) },
+      { onError: (error) => patchRuntime({ error: t('app.bubble.notice.appearance-subscribe-failed', { error: String(error) }) }) },
     )
     return () => listener.dispose()
   }, [surface])
@@ -1889,15 +1909,18 @@ const enterInnerWorkspace = () => {
     }
     const question = questionPrompt?.[0]
     const questionOptions = question?.options?.map((option) => option.label).join(' / ')
+    // 括起来的那段候选也是词条：中文用全角括号，英文半角外加一个前导空格，所以整段随语言走。
+    const questionChoices = questionOptions ? t('app.bubble.question.options', { options: questionOptions }) : ''
     const bubbleText = question
-      ? `想听听你的意见：${question.question}${questionOptions ? `（${questionOptions}）` : ''}`
-      : runtime.activity === 'thinking' ? '正在认真思考…' : bubbles.morning
+      ? t('app.bubble.question.prompt', { question: `${question.question}${questionChoices}` })
+      : runtime.activity === 'thinking' ? t('app.bubble.thinking') : bubbles.morning
     const scenePersona = { ...persona, bubbles, assets: { ...persona.assets, portrait: resolvedPersona ?? persona.assets.portrait } }
     if (multiScreenActive) {
       return <MultiScreenIdleScene displays={desktopDisplays} backgroundUrls={screenBackgroundUrls} portraitDisplayId={portraitDisplayId} persona={scenePersona} bubbleText={workspace === 'front' ? bubbleText : ''} portraitAmbientLength={settings.portraitAmbientLength} portraitAmbientStrength={settings.portraitAmbientStrength} onOpenChat={enterInnerWorkspace} />
     }
     return <IdleScene persona={scenePersona} bubbleText={bubbleText} backgroundUrl={resolvedBackground ?? (background?.path ? assetUrl(background.path) : undefined)} portraitAmbientLength={settings.portraitAmbientLength} portraitAmbientStrength={settings.portraitAmbientStrength} hideBubble={workspace !== 'front'} onOpenChat={enterInnerWorkspace} />
-  }, [background?.path, bubbles, desktopDisplays, multiScreenActive, persona, portraitDisplayId, questionPrompt, resolvedBackground, resolvedPersona, runtime, screenBackgroundUrls, settings, workspace])
+    // 依赖里为什么有 `language`：这一幕里那颗气泡的句子是算出来的，语言一变它就得重算。
+  }, [background?.path, bubbles, desktopDisplays, language, multiScreenActive, persona, portraitDisplayId, questionPrompt, resolvedBackground, resolvedPersona, runtime, screenBackgroundUrls, settings, workspace])
 
   const conversationBubble = interactionEnabled
     && runtime.phase !== 'booting'
@@ -2084,13 +2107,13 @@ const enterInnerWorkspace = () => {
           leaveInnerWorkspace()
           return
         }
-        void nativeRuntime.leaveInnerWorkspace().catch((error) => patchRuntime({ error: `离开里桌面失败：${String(error)}` }))
+        void nativeRuntime.leaveInnerWorkspace().catch((error) => patchRuntime({ error: t('app.bubble.notice.leave-inner-failed', { error: String(error) }) }))
       }}
       // 打开转写里的链接：地址来自模型输出，真正的白名单在 Rust 侧（`external_link::validate`）。
       // 失败要说出来 —— 中键点了没反应，用户只会以为是手势没生效。
       onOpenLink={(href) => {
         void nativeRuntime.openExternalLink(href)
-          .catch((error) => patchRuntime({ chatNotice: `打开链接失败：${String(error)}` }))
+          .catch((error) => patchRuntime({ chatNotice: t('app.bubble.notice.open-link-failed', { error: String(error) }) }))
       }}
     />
     })()
@@ -2135,7 +2158,7 @@ const enterInnerWorkspace = () => {
       <WidgetHost workspace={workspace} widgets={[]} />
       {conversationSurface}
       {visibleNotice(runtime) && runtime.phase !== 'error' && <div className="runtime-notice" role="status">{visibleNotice(runtime)}<button onClick={() => patchRuntime({ error: undefined, chatNotice: undefined })}>×</button></div>}
-      {runtime.phase === 'auth-required' && <div className="auth-overlay" data-interaction-region="auth"><div className="auth-card"><h2>需要登录 DeepSeek 网页入口</h2><p>应用内官方页面已经打开，请在其中完成登录。登录状态只保存在独立 WebView2 配置目录，本应用不会读取或复制 Cookie；登录完成后回到桌面即可继续发送。</p><button onClick={() => { baseDispatch({ type: 'AUTH_READY' }); dispatchCore('auth-ready') }}>我已完成登录</button></div></div>}
+      {runtime.phase === 'auth-required' && <div className="auth-overlay" data-interaction-region="auth"><div className="auth-card"><h2>{t('app.bubble.auth.title')}</h2><p>{t('app.bubble.auth.body')}</p><button onClick={() => { baseDispatch({ type: 'AUTH_READY' }); dispatchCore('auth-ready') }}>{t('app.bubble.auth.confirm')}</button></div></div>}
     </>
   </div>
 }

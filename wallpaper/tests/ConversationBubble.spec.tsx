@@ -2,8 +2,9 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
-import { ConversationBubble, insertNewlineAtSelection, shouldRevealHistory } from '../src/features/chat/ConversationBubble.tsx'
+import { afterEach, describe, expect, it } from 'vitest'
+import { ConversationBubble, bubbleDateLocale, formatBubbleDate, insertNewlineAtSelection, shouldRevealHistory } from '../src/features/chat/ConversationBubble.tsx'
+import { setLanguage } from '../src/i18n/index.ts'
 
 const callbacks = {
   onToggleHistory: () => undefined,
@@ -11,6 +12,12 @@ const callbacks = {
   onStop: () => undefined,
   onClose: () => undefined,
 }
+
+// 语言是模块级状态：这个文件里有一条切到英文的用例，跑完必须还原，否则后面按中文写的期望会跟着变
+// （与 tests/i18n.spec.ts 同一条规矩）。
+afterEach(() => {
+  setLanguage('zh')
+})
 
 describe('ConversationBubble', () => {
   it('inserts a newline at the selected range without submitting', () => {
@@ -371,6 +378,37 @@ describe('ConversationBubble', () => {
       {...callbacks}
     />)
     expect(html).not.toContain('dsh-chat__host')
+  })
+
+  it('formats the session date in the language on screen', () => {
+    // 「桌面会话」旁边那一格日期原先写死 `Intl.DateTimeFormat('zh-CN', …)`：切到英文之后
+    // 界面是英文、日期还是中文格式。locale 现在由当前语言推出（计划第 4 步明确要求这一条），
+    // 而 formatter 每次调用新建 —— 提到模块级常量上就会在 import 那一刻把语言定死。
+    expect(bubbleDateLocale('zh')).toBe('zh-CN')
+    expect(bubbleDateLocale('en')).toBe('en-US')
+
+    // 同一个时间戳，两种语言：格式必须不同，而且各自就是那套 locale 的结果。
+    const date = new Date(2026, 2, 5, 12)
+    expect(formatBubbleDate(date, 'zh')).toBe('3月5日周四')
+    expect(formatBubbleDate(date, 'en')).toBe('Thu, March 5')
+
+    setLanguage('en')
+    const english = formatBubbleDate(date) // 不传语言 → 取当下这一份（与 `t()` 同一条规矩）
+    expect(english).toBe('Thu, March 5')
+    expect(english).not.toBe(formatBubbleDate(date, 'zh'))
+
+    // 组件真的用它算了那一格：英文下渲染出来的是英文格式（跨零点的一瞬间两个候选都认）。
+    const before = new Date()
+    const html = renderToStaticMarkup(<ConversationBubble
+      backend="deepseek-web"
+      activity="idle"
+      messages={[]}
+      streamingText=""
+      historyExpanded={false}
+      {...callbacks}
+    />)
+    const after = new Date()
+    expect([before, after].map((now) => formatBubbleDate(now, 'en')).some((text) => html.includes(text))).toBe(true)
   })
 })
 
