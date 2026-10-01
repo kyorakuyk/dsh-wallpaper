@@ -46,6 +46,7 @@ import {
 import { chooseAppearanceImportPaths, nativeAppearance } from '../native/appearance.ts'
 import type { AppearanceAssetSummary } from '../features/appearance/appearanceViewModel.ts'
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
+import { t, useLanguage } from '../i18n/index.ts'
 import './SettingsWindow.css'
 
 
@@ -54,6 +55,19 @@ import './SettingsWindow.css'
  * 所以从 API 自身推导，避免抄一份联合类型再跟它漂移。
  */
 type ResizeDirection = Parameters<ReturnType<typeof getCurrentWindow>['startResizeDragging']>[0]
+
+/**
+ * 提示条上的那一条：**内容与语气一起**存。
+ *
+ * 这里原来靠一条正则去猜"这条提示是不是失败"（`/失败|错误|拒绝|无法|不允许/`）来决定它停留
+ * 8200 还是 4200 毫秒。句子搬进词条之后，那个猜法在英文下立刻失效 —— 文字已经不是那几个字了。
+ * 语气本来就是**调用点知道的事实**（它就是"这一步失败了"这件事本身），所以由调用点给出来，
+ * 不再从渲染出来的文字里反推。
+ */
+interface SettingsNotice {
+  text: string
+  failure: boolean
+}
 
 /**
  * 缩放边条：窗口的非客户区已被去掉（原生 `WM_NCCALCSIZE` 归零），Windows 因此不再提供
@@ -95,6 +109,8 @@ function ResizeHandles() {
 
 
 export function SettingsWindow() {
+  // 这个窗口的 JSX 里有词条（提示条的关闭按钮），所以语言一变就要重渲染一次。
+  useLanguage()
   const [settings, setSettings] = useState<WallpaperSettings>(() => loadSettings())
   const [page, setPage] = useState<SettingsPage>('general')
   const [harness, setHarness] = useState<SettingsPanelHarnessStatus>('offline')
@@ -147,7 +163,7 @@ export function SettingsWindow() {
   const [endpointScanDone, setEndpointScanDone] = useState(false)
   const [reachBusy, setReachBusy] = useState(false)
   const [dshScanBusy, setDshScanBusy] = useState(false)
-  const [notice, setNotice] = useState<string>()
+  const [notice, setNotice] = useState<SettingsNotice>()
   const [appearanceAssets, setAppearanceAssets] = useState<AppearanceAssetSummary[]>([])
   const [appearanceOverrides, setAppearanceOverrides] = useState<Partial<Record<AppearanceSlot, string>>>({})
   const [appearanceBusy, setAppearanceBusy] = useState(false)
@@ -209,6 +225,11 @@ export function SettingsWindow() {
   // result update an unmounted component.
   const mountedRef = useRef(true)
 
+  /** 一条"说事"的提示：走完了一步、看到了什么、接下来会怎样。 */
+  const showNotice = (text: string) => setNotice({ text, failure: false })
+  /** 一条失败提示：停留时间长一些，因为它通常带着下一步（去哪看、改什么）。 */
+  const showFailure = (text: string) => setNotice({ text, failure: true })
+
   useEffect(() => {
     // Push the stored endpoint scope on mount, not only when the user changes it.
     // The native monitor holds its own endpoint state, so without this a saved
@@ -232,7 +253,7 @@ export function SettingsWindow() {
     // settings through Rust so this renderer cannot emit to arbitrary Tauri
     // event targets; Rust delivers the snapshot only to the background host.
     void invoke('publish_settings', { settings: next })
-      .catch((error) => setNotice(`设置同步失败：${String(error)}`))
+      .catch((error) => showFailure(t('settings.window.notice.sync-failed', { error: String(error) })))
   }
 
   useEffect(() => {
@@ -240,7 +261,7 @@ export function SettingsWindow() {
     // Notices are transient feedback, not a second persistent UI layer.
     // Failures stay long enough to read; every notice still has a keyboard-
     // and pointer-accessible dismissal control below.
-    const delay = /失败|错误|拒绝|无法|不允许/.test(notice) ? 8200 : 4200
+    const delay = notice.failure ? 8200 : 4200
     const timer = window.setTimeout(() => setNotice(undefined), delay)
     return () => window.clearTimeout(timer)
   }, [notice])
@@ -268,7 +289,7 @@ export function SettingsWindow() {
       setAppearanceOverrides(snapshot.overrides)
       setAppearanceAssets(assets)
     })
-    .catch((error) => setNotice(`素材库读取失败：${String(error)}`))
+    .catch((error) => showFailure(t('settings.window.notice.appearance-read-failed', { error: String(error) })))
 
   /**
    * The manual scan is the *only* place that walks the disk for DSH projects, and
@@ -295,21 +316,21 @@ export function SettingsWindow() {
       const fallback = unsupportedShellSubjectFallback(settingsRef.current.dshLaunch.subjectId)
       if (fallback) {
         change({ ...settingsRef.current, dshLaunch: { ...settingsRef.current.dshLaunch, subjectId: fallback.subjectId } })
-        setNotice(fallback.notice)
+        showNotice(fallback.notice)
       } else if (staleEndpointPort(settingsRef.current.dshLaunch) !== undefined) {
         // 存量的自相矛盾：显式端点是**上一个主体的**端口。留着它，"用户 pin 优先"这条正确的规则
         // 就会按旧主体的端口去开新主体的界面（实测：主体是只该用 3080 的已安装 CLI，pin 还是官方
         // 客户端的 19387，点「打开」把官方客户端的窗口拉到了前台）。清掉并说出来。
         const stale = staleEndpointPort(settingsRef.current.dshLaunch)!
         change({ ...settingsRef.current, dshLaunch: { ...settingsRef.current.dshLaunch, endpointPort: undefined } })
-        setNotice(`设置里选定的端口 ${stale} 不属于当前主体，已清除；「打开」会按该主体自己的端口来。`)
+        showNotice(t('settings.window.endpoints.stale-port', { port: stale }))
       } else if (announce) {
-        setNotice(subjectChoicePrompt(scan.targets) ?? (scan.targets.length > 0
-          ? `扫描完成，发现 ${scan.targets.length} 个可选执行主体。`
-          : '未发现 DSH 项目或已安装的客户端；可手动填写 DSH 项目根目录后再扫描。'))
+        showNotice(subjectChoicePrompt(scan.targets) ?? (scan.targets.length > 0
+          ? t('settings.window.scan.done', { count: scan.targets.length })
+          : t('settings.window.scan.none')))
       }
     } catch (error) {
-      setNotice(`扫描 DSH 失败：${String(error)}`)
+      showFailure(t('settings.window.scan.failed', { error: String(error) }))
     } finally {
       dshScanOperationRef.current = false
       setDshScanBusy(false)
@@ -353,7 +374,7 @@ export function SettingsWindow() {
       const displays = await nativeRuntime.desktopDisplays()
       if (mountedRef.current) setDesktopDisplays(displays)
     } catch (error) {
-      setNotice(`显示器列表读取失败：${String(error)}`)
+      showFailure(t('settings.window.notice.displays-read-failed', { error: String(error) }))
     }
   }
 
@@ -374,14 +395,14 @@ export function SettingsWindow() {
       await nativeRuntime.setHarnessEndpointScope(endpointScopeOf(settingsRef.current.dshLaunch)).catch(() => null)
       const bridges = found.filter((item) => item.bridgeFound)
       if (bridges.length === 0) {
-        setNotice('未发现可接入的 Harness。请先启动官方桌面客户端，或让本机的 DSH CLI 起来（dsh web）后重新扫描。')
+        showNotice(t('settings.window.endpoints.none'))
       } else if (bridges.every((item) => item.status.availability !== 'bridge-ready')) {
-        setNotice(`发现 ${bridges.length} 个 Harness，但当前都不可对话；详情见端点下拉。`)
+        showNotice(t('settings.window.endpoints.unavailable', { count: bridges.length }))
       } else {
-        setNotice(`发现 ${bridges.length} 个可接入的 Harness。`)
+        showNotice(t('settings.window.endpoints.found', { count: bridges.length }))
       }
     } catch (error) {
-      setNotice(`扫描接入端点失败：${String(error)}`)
+      showFailure(t('settings.window.endpoints.failed', { error: String(error) }))
     } finally {
       if (mountedRef.current) setEndpointScanBusy(false)
     }
@@ -426,8 +447,8 @@ export function SettingsWindow() {
       })
       // A start that failed is the actionable half: it names what to fix.
       if (ensured.started && ensured.outcome === 'not-running') {
-        setNotice(launchOutcomeNotice({ outcome: ensured.startOutcome ?? 'spawn-failed', kind: ensured.kind })
-          ?? '启动失败，请查看日志中的启动记录。')
+        showFailure(launchOutcomeNotice({ outcome: ensured.startOutcome ?? 'spawn-failed', kind: ensured.kind })
+          ?? t('settings.window.reach.start-failed'))
         return
       }
       if (reachNeedsBrowser(ensured.outcome)) {
@@ -439,7 +460,7 @@ export function SettingsWindow() {
           ? port
           : (await nativeRuntime.scanHarnessEndpoints([...ports])).find((item) => item.bridgeFound)?.port
         if (!live) {
-          setNotice('没有可打开的界面：主体没有在本机监听任何端口。')
+          showNotice(t('settings.window.reach.no-port'))
           return
         }
         // 门票是**按端口**存的（`known_web_handoff(port)`）。
@@ -447,15 +468,15 @@ export function SettingsWindow() {
         // FREEZE（临时冻结，不是删除）：这里原来刷新标题右上角那份实例清单（"刚才可能启动了一个
         // 新实例，免得它还停在上一秒的样子"）。下拉冻住了，没有清单可刷。恢复办法：取消下面这一行。
         // refreshManagedDsh()
-        setNotice(`已在默认浏览器中打开 127.0.0.1:${live}。`)
+        showNotice(t('settings.window.reach.browser-opened', { port: live }))
         return
       }
-      const notice = raiseOutcomeNotice(ensured.outcome, kind)
-      if (notice) setNotice(notice)
-      else if (ensured.outcome === 'raised') setNotice(`已把 ${endpointKindLabel(kind)} 的窗口拉到前台。`)
-      else setNotice(`${endpointKindLabel(kind)} 的窗口已恢复；Windows 拒绝了前台切换，点一下它即可。`)
+      const outcomeNotice = raiseOutcomeNotice(ensured.outcome, kind)
+      if (outcomeNotice) showNotice(outcomeNotice)
+      else if (ensured.outcome === 'raised') showNotice(t('settings.window.reach.raised', { label: endpointKindLabel(kind) }))
+      else showNotice(t('settings.window.reach.restored', { label: endpointKindLabel(kind) }))
     } catch (error) {
-      setNotice(`打开客户端界面失败：${String(error)}`)
+      showFailure(t('settings.window.reach.failed', { error: String(error) }))
     } finally {
       if (mountedRef.current) setReachBusy(false)
     }
@@ -477,9 +498,9 @@ export function SettingsWindow() {
     setManagedDshBusy(true)
     try {
       await nativeRuntime.stopManagedDsh(instanceKey)
-      setNotice(instanceKey === undefined ? '已停止本应用启动的全部 DSH。' : '已停止该 DSH 实例。')
+      showNotice(instanceKey === undefined ? t('settings.window.managed.stopped-all') : t('settings.window.managed.stopped-one'))
     } catch (error) {
-      setNotice(String(error))
+      showFailure(String(error))
     } finally {
       if (mountedRef.current) setManagedDshBusy(false)
       // 成功失败都刷一次：成功了那一行该消失，失败了清单也该说出**现在**的真相（也许它本来就
@@ -504,12 +525,12 @@ export function SettingsWindow() {
         settingsRef.current = next
         setSettings(next)
         saveSettings(next)
-        void invoke('publish_settings', { settings: next }).catch((error) => setNotice(`设置同步失败：${String(error)}`))
+        void invoke('publish_settings', { settings: next }).catch((error) => showFailure(t('settings.window.notice.sync-failed', { error: String(error) })))
       }
-      if (status.source === 'disabled-by-user') setNotice('Windows 已禁用 DSH Wallpaper 开机启动，请在系统设置中允许。')
-      if (status.source === 'disabled-by-policy') setNotice('Windows 策略禁止 DSH Wallpaper 开机启动。')
+      if (status.source === 'disabled-by-user') showNotice(t('settings.window.autostart.disabled-by-user'))
+      if (status.source === 'disabled-by-policy') showNotice(t('settings.window.autostart.disabled-by-policy'))
     } catch (error) {
-      setNotice(`读取开机自启状态失败：${String(error)}`)
+      showFailure(t('settings.window.autostart.read-failed', { error: String(error) }))
     }
   }
 
@@ -525,9 +546,9 @@ export function SettingsWindow() {
     try {
       const outcomes = await nativeRuntime.ensureProfileBridge(subjectId, profile)
       const summary = summarizeBridgeInstall(outcomes)
-      if (summary) setNotice(summary.text)
+      if (summary) showNotice(summary.text)
     } catch (error) {
-      setNotice(`装桥失败：${String(error)}`)
+      showFailure(t('settings.window.bridge.failed', { error: String(error) }))
     }
   }
 
@@ -579,7 +600,7 @@ export function SettingsWindow() {
   const probeController = useMemo(() => createSettingsProbeController({
     runProbe: (probe) => probeRunners[probe](),
     schedule: createProbeScheduler(window),
-    onError: (probe, error) => setNotice(settingsProbeErrorMessage(probe, error)),
+    onError: (probe, error) => showFailure(settingsProbeErrorMessage(probe, error)),
   }), [probeRunners])
   probeControllerHolder.current = probeController
 
@@ -596,18 +617,18 @@ export function SettingsWindow() {
   const openDeepSeekWebAdapterConfig = async () => {
     try {
       setDeepseekWebAdapterConfig(await nativeRuntime.openDeepSeekWebAdapterConfig())
-      setNotice('已打开网页适配器配置；保存后下一次网页状态、历史或发送操作会读取新配置。')
+      showNotice(t('settings.window.adapter.opened'))
     } catch (error) {
-      setNotice(`网页适配器配置打开失败：${String(error)}`)
+      showFailure(t('settings.window.adapter.open-failed', { error: String(error) }))
     }
   }
   const resetDeepSeekWebAdapterConfig = async () => {
-    if (!window.confirm('恢复默认网页适配器配置会覆盖当前本地 override 文件。确定继续吗？')) return
+    if (!window.confirm(t('settings.window.adapter.reset-confirm'))) return
     try {
       setDeepseekWebAdapterConfig(await nativeRuntime.resetDeepSeekWebAdapterConfig())
-      setNotice('网页适配器配置已恢复默认。')
+      showNotice(t('settings.window.adapter.reset-done'))
     } catch (error) {
-      setNotice(`网页适配器配置恢复失败：${String(error)}`)
+      showFailure(t('settings.window.adapter.reset-failed', { error: String(error) }))
     }
   }
 
@@ -625,7 +646,7 @@ export function SettingsWindow() {
       const status = await nativeRuntime.apiKeyStatus()
       if (mountedRef.current) setApiKeyStatus(status)
     } catch (error) {
-      if (mountedRef.current) setNotice(`读取访问密钥状态失败：${String(error)}`)
+      if (mountedRef.current) showFailure(t('settings.window.api-key.read-failed', { error: String(error) }))
     }
   }
 
@@ -635,7 +656,7 @@ export function SettingsWindow() {
       const catalog = await nativeRuntime.apiModels(baseUrl)
       if (!mountedRef.current) return true
       if (!catalog.supported) {
-        setNotice('该 API 地址不提供模型列表（HTTP 404/405）。')
+        showNotice(t('settings.window.api-key.models-unsupported'))
         return false
       }
       const models = catalog.models ?? []
@@ -651,7 +672,7 @@ export function SettingsWindow() {
       })
       return true
     } catch (error) {
-      if (mountedRef.current) setNotice(`读取模型列表失败：${String(error)}`)
+      if (mountedRef.current) showFailure(t('settings.window.api-key.models-read-failed', { error: String(error) }))
       return false
     }
   }
@@ -660,7 +681,7 @@ export function SettingsWindow() {
     if (apiKeyBusy) return
     const draft = apiKeyDraft.trim()
     if (!draft && !apiKeyStatus?.present) {
-      setNotice('请先填入 DeepSeek API Key。')
+      showNotice(t('settings.window.api-key.missing'))
       return
     }
     setApiKeyBusy(true)
@@ -675,9 +696,9 @@ export function SettingsWindow() {
       const catalog = settingsRef.current.deepseekApi.modelCatalog
       if (catalog) setApiModelCatalogFetchedAt(catalog.fetchedAt)
       await readApiKeyStatus()
-      setNotice(draft ? 'API Key 已保存到 Windows 凭据管理器，模型列表已更新。' : '已保存的 API Key 可用，模型列表已更新。')
+      showNotice(draft ? t('settings.window.api-key.saved') : t('settings.window.api-key.usable'))
     } catch (error) {
-      setNotice(`API Key 保存失败：${String(error)}`)
+      showFailure(t('settings.window.api-key.save-failed', { error: String(error) }))
     } finally {
       if (mountedRef.current) setApiKeyBusy(false)
     }
@@ -694,7 +715,7 @@ export function SettingsWindow() {
       if (await refreshApiModelCatalog()) {
         const catalog = settingsRef.current.deepseekApi.modelCatalog
         if (catalog?.baseUrl === baseUrl) setApiModelCatalogFetchedAt(catalog.fetchedAt)
-        setNotice('模型列表已刷新。')
+        showNotice(t('settings.window.api-key.models-refreshed'))
       }
     } finally {
       if (mountedRef.current) setApiKeyBusy(false)
@@ -716,9 +737,9 @@ export function SettingsWindow() {
     try {
       const snapshot = await appCoreClient.selectBackend(backend)
       if (mountedRef.current) setLiveBackend(snapshot.backend)
-      setNotice(`已切换为${backendModeLabel(backend)}，正在运行的壁纸立即生效。`)
+      showNotice(t('settings.window.backend.switched', { label: backendModeLabel(backend) }))
     } catch (error) {
-      setNotice(`切换后端失败：${String(error)}`)
+      showFailure(t('settings.window.backend.failed', { error: String(error) }))
     }
   }
 
@@ -736,7 +757,7 @@ export function SettingsWindow() {
       const listing = await nativeRuntime.listApiConversations()
       if (mountedRef.current) setApiHistory(listing)
     } catch (error) {
-      if (mountedRef.current) setNotice(settingsProbeErrorMessage('apiHistory', error))
+      if (mountedRef.current) showFailure(settingsProbeErrorMessage('apiHistory', error))
     } finally {
       apiHistoryOperationRef.current = false
       if (mountedRef.current) setApiHistoryBusy(false)
@@ -746,14 +767,16 @@ export function SettingsWindow() {
   const deleteApiConversation = async (conversationId: string) => {
     if (apiHistoryOperationRef.current) return
     // Deleting a transcript is irreversible and cannot be undone from here.
-    if (!window.confirm(`删除 API 会话 ${conversationId} 的本地记录？此操作无法撤销。`)) return
+    if (!window.confirm(t('settings.window.history.delete-confirm', { id: conversationId }))) return
     apiHistoryOperationRef.current = true
     setApiHistoryBusy(true)
     try {
       const removed = await nativeRuntime.deleteApiConversation(conversationId)
-      setNotice(removed ? `已删除 API 会话 ${conversationId} 的本地记录。` : '该会话已不存在，列表已刷新。')
+      showNotice(removed
+        ? t('settings.window.history.deleted', { id: conversationId })
+        : t('settings.window.history.gone'))
     } catch (error) {
-      setNotice(`删除 API 会话失败：${String(error)}`)
+      showFailure(t('settings.window.history.delete-failed', { error: String(error) }))
     } finally {
       apiHistoryOperationRef.current = false
       if (mountedRef.current) setApiHistoryBusy(false)
@@ -766,14 +789,16 @@ export function SettingsWindow() {
   const clearApiHistory = async () => {
     if (apiHistoryOperationRef.current) return
     const count = apiHistory?.conversations.length ?? 0
-    if (!window.confirm(`清空全部 ${count} 个 API 会话的本地记录？此操作无法撤销，但不会影响 DeepSeek 网页入口或 Harness 会话。`)) return
+    if (!window.confirm(t('settings.window.history.clear-confirm', { count }))) return
     apiHistoryOperationRef.current = true
     setApiHistoryBusy(true)
     try {
       const cleared = await nativeRuntime.clearApiHistory()
-      setNotice(cleared > 0 ? `已清空 ${cleared} 个 API 会话的本地记录。` : '没有可清空的 API 会话记录。')
+      showNotice(cleared > 0
+        ? t('settings.window.history.cleared', { count: cleared })
+        : t('settings.window.history.nothing-to-clear'))
     } catch (error) {
-      setNotice(`清空 API 历史失败：${String(error)}`)
+      showFailure(t('settings.window.history.clear-failed', { error: String(error) }))
     } finally {
       apiHistoryOperationRef.current = false
       if (mountedRef.current) setApiHistoryBusy(false)
@@ -845,7 +870,7 @@ export function SettingsWindow() {
       setHarness(snapshot.harness)
       setInteractionEnabled(snapshot.interaction.enabled)
       setLiveBackend(snapshot.backend)
-    }).catch((error) => setNotice(String(error)))
+    }).catch((error) => showFailure(String(error)))
   }, [])
 
   // The single native event subscription this window owns. It is registered
@@ -861,7 +886,7 @@ export function SettingsWindow() {
     }).then((dispose) => {
       if (disposed) dispose()
       else unsubscribe = dispose
-    }).catch((error) => setNotice(String(error)))
+    }).catch((error) => showFailure(String(error)))
     return () => {
       disposed = true
       unsubscribe?.()
@@ -914,10 +939,10 @@ export function SettingsWindow() {
           latestAutostartRef.current = status.enabled
           commitSettings({ ...settingsRef.current, autostart: status.enabled })
           const refusal = autostartRefusalNotice(status, requested)
-          if (refusal) setNotice(refusal)
+          if (refusal) showNotice(refusal)
         },
         onError: (error) => {
-          if (mountedRef.current) setNotice(`开机自启更新失败：${String(error)}`)
+          if (mountedRef.current) showFailure(t('settings.window.autostart.update-failed', { error: String(error) }))
         },
       })
     }
@@ -956,24 +981,24 @@ export function SettingsWindow() {
       if (paths.length === 0) return
       await nativeAppearance.importPaths(paths)
       refreshAppearance()
-    } catch (error) { setNotice(`导入失败：${String(error)}`) } finally { setAppearanceBusy(false) }
+    } catch (error) { showFailure(t('settings.window.appearance.import-failed', { error: String(error) })) } finally { setAppearanceBusy(false) }
   }
   const classifyAppearance = async (assetId: string, slot: AppearanceSlot) => {
     setAppearanceBusy(true)
-    try { await nativeAppearance.classifyAsset(assetId, [slot]); refreshAppearance() } catch (error) { setNotice(`素材分类失败：${String(error)}`) } finally { setAppearanceBusy(false) }
+    try { await nativeAppearance.classifyAsset(assetId, [slot]); refreshAppearance() } catch (error) { showFailure(t('settings.window.appearance.classify-failed', { error: String(error) })) } finally { setAppearanceBusy(false) }
   }
   const selectAppearance = async (slot: AppearanceSlot, assetId: string) => {
     setAppearanceBusy(true)
-    try { setAppearanceOverrides((await nativeAppearance.setOverride(slot, assetId)).overrides); void invoke('notify_appearance_changed').catch((error) => setNotice(`外观同步失败：${String(error)}`)) } catch (error) { setNotice(`应用素材失败：${String(error)}`) } finally { setAppearanceBusy(false) }
+    try { setAppearanceOverrides((await nativeAppearance.setOverride(slot, assetId)).overrides); void invoke('notify_appearance_changed').catch((error) => showFailure(t('settings.window.appearance.sync-failed', { error: String(error) }))) } catch (error) { showFailure(t('settings.window.appearance.apply-failed', { error: String(error) })) } finally { setAppearanceBusy(false) }
   }
   const clearAppearance = async (slot: AppearanceSlot) => {
     setAppearanceBusy(true)
-    try { setAppearanceOverrides((await nativeAppearance.clearOverride(slot)).overrides); void invoke('notify_appearance_changed').catch((error) => setNotice(`外观同步失败：${String(error)}`)) } catch (error) { setNotice(`恢复默认失败：${String(error)}`) } finally { setAppearanceBusy(false) }
+    try { setAppearanceOverrides((await nativeAppearance.clearOverride(slot)).overrides); void invoke('notify_appearance_changed').catch((error) => showFailure(t('settings.window.appearance.sync-failed', { error: String(error) }))) } catch (error) { showFailure(t('settings.window.appearance.reset-failed', { error: String(error) })) } finally { setAppearanceBusy(false) }
   }
 
   return <main className="settings-window">
     <ResizeHandles />
-    {notice && <div className="settings-window__notice" role="status"><span>{notice}</span><button type="button" aria-label="关闭通知" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); setNotice(undefined) }}>×</button></div>}
+    {notice && <div className="settings-window__notice" role="status"><span>{notice.text}</span><button type="button" aria-label={t('settings.window.notice.dismiss')} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); setNotice(undefined) }}>×</button></div>}
     <SettingsPanel
       settings={settings}
       page={page}
@@ -1067,11 +1092,11 @@ export function SettingsWindow() {
         // 契约：没装 TUI 时原生返回 `opened: false` 与一句"怎么办"。**把那句显示出来**，
         // 绝不静默改成打开浏览器 —— 那等于替用户换了一条他没选的路。
         if (!result.opened) {
-          setNotice(result.message ?? '本机没有找到 TUI（dst）。')
+          showNotice(result.message ?? t('settings.window.tui.missing'))
           return
         }
-        setNotice('已在新终端窗口中拉起 TUI。')
-      }).catch((error) => setNotice(`打开 TUI 失败：${String(error)}`))}
+        showNotice(t('settings.window.tui.launched'))
+      }).catch((error) => showFailure(t('settings.window.tui.failed', { error: String(error) })))}
       onSelectWindow={(value) => change({
         ...settingsRef.current,
         dshLaunch: { ...settingsRef.current.dshLaunch, window: value },
@@ -1104,7 +1129,7 @@ export function SettingsWindow() {
       onRefreshApiHistory={() => { void refreshApiHistory() }}
       onDeleteApiConversation={(conversationId) => { void deleteApiConversation(conversationId) }}
       onClearApiHistory={() => { void clearApiHistory() }}
-      onRequestDeepSeekLogin={() => void nativeRuntime.requestDeepSeekLogin().catch((error) => setNotice(`无法打开 DeepSeek 应用内页面：${String(error)}`))}
+      onRequestDeepSeekLogin={() => void nativeRuntime.requestDeepSeekLogin().catch((error) => showFailure(t('settings.window.deepseek-web.open-failed', { error: String(error) })))}
       deepseekWebAdapterConfig={deepseekWebAdapterConfig}
       onRefreshDeepSeekWebAdapterConfig={refreshDeepSeekWebAdapterConfig}
       onOpenDeepSeekWebAdapterConfig={() => { void openDeepSeekWebAdapterConfig() }}
@@ -1120,7 +1145,7 @@ export function SettingsWindow() {
       liveBackend={liveBackend}
       onSelectBackend={(backend) => { void selectBackend(backend) }}
       interactionEnabled={interactionEnabled}
-      onSetInteractionEnabled={(enabled) => void appCoreClient.setInteractionEnabled(enabled).then((snapshot) => setInteractionEnabled(snapshot.interaction.enabled)).catch((error) => setNotice(String(error)))}
+      onSetInteractionEnabled={(enabled) => void appCoreClient.setInteractionEnabled(enabled).then((snapshot) => setInteractionEnabled(snapshot.interaction.enabled)).catch((error) => showFailure(String(error)))}
       desktopWorkspace={desktopWorkspace}
       onOpenProjectMemory={async () => {
         // 打开的是**文件所在的位置**：文件在就选中它，不在就把工作区目录打开（原生实现）。
@@ -1128,9 +1153,9 @@ export function SettingsWindow() {
         setOpeningMemory(true)
         try {
           const opened = await nativeRuntime.openProjectMemory()
-          setNotice(opened.memoryExists ? '已在资源管理器中选中「项目记忆.md」。' : '还没有「项目记忆.md」：已打开桌面会话目录，你或助手第一次“记下来”时它会出现在这里。')
+          showNotice(opened.memoryExists ? t('settings.window.memory.selected') : t('settings.window.memory.opened-folder'))
         } catch (error) {
-          setNotice(String(error))
+          showFailure(String(error))
         } finally {
           setOpeningMemory(false)
         }

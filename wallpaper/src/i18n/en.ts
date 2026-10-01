@@ -265,6 +265,117 @@ export const en: Dict = {
   'settings.system.autostart.toggle': 'Start at sign-in',
   'settings.system.autostart.busy': 'Updating the Windows startup task; one moment. The settings centre stays usable.',
 
+  // ---------------------------------------------------------------------------
+  // What the settings window itself says (`settings/SettingsWindow.tsx`): the notice bar, the notices,
+  // the bridge feedback and the autostart warnings. All of them are assembled at run time (the
+  // placeholders carry ports, subject names, error objects), so the keys name the step, not the
+  // sentence. How long a notice stays up is decided by the call site's tone, never by reading these
+  // words back - a `/失败|错误|…/` guess stops working the moment the sentence is an entry.
+  // ---------------------------------------------------------------------------
+
+  // The notice bar itself, plus the three failures that cut across pages.
+  'settings.window.notice.dismiss': 'Dismiss this notice',
+  'settings.window.notice.sync-failed': 'Could not publish the settings: {error}',
+  'settings.window.notice.appearance-read-failed': 'Could not read the asset library: {error}',
+  'settings.window.notice.displays-read-failed': 'Could not read the display list: {error}',
+
+  // Scanning for execution subjects.
+  'settings.window.scan.done': 'Scan finished: {count} execution subjects to choose from.',
+  'settings.window.scan.none': 'No DSH project and no installed client were found; you can type a DSH project root and scan again.',
+  'settings.window.scan.failed': 'Scanning for DSH failed: {error}',
+
+  // The endpoint scan, and clearing a pinned port that belongs to a different subject.
+  'settings.window.endpoints.stale-port': 'The port pinned in settings ({port}) does not belong to the current subject, so it was cleared; "Open" will use this subject\'s own port.',
+  'settings.window.endpoints.none': 'No Harness to connect to was found. Start the official desktop client, or get the local DSH CLI running (dsh web), then scan again.',
+  'settings.window.endpoints.unavailable': 'Found {count} Harness instances, but none of them can hold a conversation right now; see the endpoint list for details.',
+  'settings.window.endpoints.found': 'Found {count} Harness instances ready to connect.',
+  'settings.window.endpoints.failed': 'Scanning for endpoints failed: {error}',
+
+  // The result of one "Open its interface". `{label}` is the subject class word (also an entry).
+  'settings.window.reach.start-failed': 'The launch failed; the log holds the record of this attempt.',
+  'settings.window.reach.no-port': 'There is no interface to open: the subject is not listening on any local port.',
+  'settings.window.reach.browser-opened': 'Opened 127.0.0.1:{port} in your default browser.',
+  'settings.window.reach.raised': 'Brought the {label} window to the front.',
+  'settings.window.reach.restored': 'The {label} window is back; Windows refused the foreground switch, so click it once.',
+  'settings.window.reach.failed': 'Could not open the client interface: {error}',
+
+  // Stopping the DSH instances this app started.
+  'settings.window.managed.stopped-all': 'Stopped every DSH this app started.',
+  'settings.window.managed.stopped-one': 'Stopped that DSH instance.',
+
+  // Autostart: the two ways Windows says no, a failed read, and a change that did not take effect.
+  'settings.window.autostart.disabled-by-user': 'Windows has autostart turned off for DSH Wallpaper; allow it in Windows settings.',
+  'settings.window.autostart.disabled-by-policy': 'A Windows policy forbids DSH Wallpaper from starting at sign-in.',
+  'settings.window.autostart.read-failed': 'Could not read the autostart state: {error}',
+  'settings.window.autostart.update-failed': 'Could not update autostart: {error}',
+
+  // Aligning the bridge of a subject.
+  'settings.window.bridge.failed': 'Installing the bridge failed: {error}',
+
+  // The web adapter configuration: opening it, restoring the defaults (with its confirmation), and
+  // the failures of each.
+  'settings.window.adapter.opened': 'Opened the web adapter configuration; once you save it, the next web status, history, or send reads the new configuration.',
+  'settings.window.adapter.open-failed': 'Could not open the web adapter configuration: {error}',
+  'settings.window.adapter.reset-confirm': 'Restoring the default web adapter configuration overwrites the current local override file. Continue?',
+  'settings.window.adapter.reset-done': 'The web adapter configuration is back to its defaults.',
+  'settings.window.adapter.reset-failed': 'Could not restore the web adapter configuration: {error}',
+
+  // The API key and the model catalogue: reading the state, an address that offers no catalogue, a
+  // missing key, the results of testing and saving it, and refreshing the catalogue alone.
+  'settings.window.api-key.read-failed': 'Could not read the API key state: {error}',
+  'settings.window.api-key.models-unsupported': 'That API address does not offer a model list (HTTP 404/405).',
+  'settings.window.api-key.models-read-failed': 'Could not read the model list: {error}',
+  'settings.window.api-key.missing': 'Enter a DeepSeek API key first.',
+  'settings.window.api-key.saved': 'The API key is saved in Windows Credential Manager and the model list is updated.',
+  'settings.window.api-key.usable': 'The saved API key works and the model list is updated.',
+  'settings.window.api-key.save-failed': 'Could not save the API key: {error}',
+  'settings.window.api-key.models-refreshed': 'The model list is refreshed.',
+
+  // Switching the chat mode (`{label}` is a backend display name, also an entry).
+  'settings.window.backend.switched': 'Switched to {label}; the running wallpaper uses it immediately.',
+  'settings.window.backend.failed': 'Could not switch the chat backend: {error}',
+
+  // API conversations: deleting one (with its confirmation), clearing them all (likewise), and the
+  // failures of each.
+  'settings.window.history.delete-confirm': 'Delete the local record of API conversation {id}? This cannot be undone.',
+  'settings.window.history.deleted': 'Deleted the local record of API conversation {id}.',
+  'settings.window.history.gone': 'That conversation no longer exists; the list is refreshed.',
+  'settings.window.history.delete-failed': 'Could not delete the API conversation: {error}',
+  'settings.window.history.clear-confirm': 'Clear the local records of all {count} API conversations? This cannot be undone, but it does not affect the DeepSeek Web entry or Harness sessions.',
+  'settings.window.history.cleared': 'Cleared the local records of {count} API conversations.',
+  'settings.window.history.nothing-to-clear': 'There are no API conversation records to clear.',
+  'settings.window.history.clear-failed': 'Could not clear the API history: {error}',
+
+  // Importing, classifying, applying and resetting assets.
+  'settings.window.appearance.import-failed': 'Import failed: {error}',
+  'settings.window.appearance.classify-failed': 'Classifying the asset failed: {error}',
+  'settings.window.appearance.sync-failed': 'Could not publish the appearance change: {error}',
+  'settings.window.appearance.apply-failed': 'Could not apply the asset: {error}',
+  'settings.window.appearance.reset-failed': 'Could not restore the default: {error}',
+
+  // "Open the TUI": with no TUI installed the native sentence (which says what to do) is shown; this
+  // is only the fallback for when native cannot even be asked.
+  'settings.window.tui.missing': 'No TUI (dst) was found on this machine.',
+  'settings.window.tui.launched': 'The TUI is up in a new terminal window.',
+  'settings.window.tui.failed': 'Could not open the TUI: {error}',
+
+  // The DeepSeek in-app page.
+  'settings.window.deepseek-web.open-failed': 'Could not open the DeepSeek in-app page: {error}',
+
+  // The two outcomes of "Open the project memory". The file name is the name on disk (native creates
+  // it), so it is not translated in either language.
+  'settings.window.memory.selected': 'Selected "项目记忆.md" in File Explorer.',
+  'settings.window.memory.opened-folder': 'There is no "项目记忆.md" yet: the desktop session folder is open, and it appears there the first time you or the assistant writes something down.',
+
+  // ---------------------------------------------------------------------------
+  // The names of the routes the "Open" card offers (`connect/openRoutes.ts`). They are fetched by
+  // that **pure function** on every call, which is why `t()` sits inside it and the names are not
+  // hoisted into a module-level constant - that would fix the language at import time.
+  // ---------------------------------------------------------------------------
+  'open.route.shell-window': 'Official client window',
+  'open.route.browser': 'Browser',
+  'open.route.tui': 'TUI in a terminal',
+
   // Windows autostart: which path carries it, and what to say when a change did not take effect.
   'autostart.detail.startup-task': 'Windows starts this app at sign-in through its startup task.',
   'autostart.detail.startup-task.disabled': 'The Windows startup task is not enabled.',
@@ -447,4 +558,29 @@ export const en: Dict = {
   'chat.host.embedded-shell': 'The DeepSeek Harness client on this machine, which brings its own window.',
   'chat.host.terminal': '{label}, with its interface in a terminal.',
   'chat.host.browser': '{label}, with its interface in a browser.',
+
+  // ---------------------------------------------------------------------------
+  // What the native runtime hands back to the interface (`native/runtime.ts`). These are the answers a
+  // browser preview gets - no Tauri, no Windows - and `t()` is called when they are produced, for the
+  // same reason as the sentences in `connect/*`.
+  //
+  // They are **data**: once one is put into an object (`AutostartStatus.reason`, an adapter status's
+  // `path`), it is fixed in the language of that moment and the interface does not re-translate it.
+  // That is exactly what the plan's "structured state, localised by the interface" is meant to
+  // collect, batch by batch; this batch makes them speak the current language instead of hard-coded
+  // Chinese.
+  // ---------------------------------------------------------------------------
+  'runtime.autostart.unsupported': 'This version of Windows cannot start this app at sign-in.',
+  // The four "desktop build only" refusals (calling these in a browser preview throws).
+  'runtime.credentials.desktop-only': 'Windows Credential Manager is available in the desktop build only',
+  'runtime.workspace.desktop-only': 'The desktop session workspace self-check is available in the desktop build only',
+  'runtime.memory.desktop-only': 'Opening the project memory is available in the desktop build only',
+  'runtime.tui.desktop-only': 'Opening the TUI is available in the desktop build only',
+  // The three browser-preview answers for the web adapter configuration (`path` carries a sentence for
+  // the interface, not a path).
+  'runtime.web-adapter.preview-config-path': 'A browser preview has no local web adapter configuration',
+  'runtime.web-adapter.preview-open': 'A browser preview cannot open the web adapter configuration',
+  'runtime.web-adapter.preview-reset': 'A browser preview cannot restore the web adapter configuration',
+  // A browser preview has no real displays; this names the placeholder one.
+  'runtime.display.preview-name': 'Preview display',
 }

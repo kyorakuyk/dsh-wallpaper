@@ -1,9 +1,5 @@
 [
   [
-    "src/settings/SettingsWindow.tsx",
-    55
-  ],
-  [
     "src/App.tsx",
     35
   ],
@@ -14,10 +10,6 @@
   [
     "src/lite/LiteSettingsWindow.tsx",
     25
-  ],
-  [
-    "src/native/runtime.ts",
-    9
   ],
   [
     "src/widgets/sdk.ts",
@@ -53,10 +45,6 @@
   ],
   [
     "src/connect/bridgeInstall.ts",
-    4
-  ],
-  [
-    "src/connect/openRoutes.ts",
     4
   ],
   [

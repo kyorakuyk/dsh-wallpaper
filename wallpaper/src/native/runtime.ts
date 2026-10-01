@@ -2,6 +2,9 @@ import type { BridgeInstallOutcome } from '../connect/bridgeInstall.ts'
 import type { BackendMode, ChatMessage, ScopedChatEvent } from '../domain/types.ts'
 import type { HarnessStatus } from '../connect/harness.ts'
 import { parseLaunchArgs } from '../connect/launchArgs.ts'
+// 兜底与错误句也要说界面当前的语言：`t()` 在**调用时**求值（见下面那些句子的用法）。
+// 这里只依赖 `i18n/`，Lite 与完整版都拿得到，不引入任何只在完整版里存在的东西。
+import { t } from '../i18n/index.ts'
 
 export interface NativeSendOptions {
   conversationId?: string
@@ -109,9 +112,14 @@ export interface AutostartStatus {
 /**
  * The state a browser preview reports: there is no Windows process to ask, so
  * the page must say that instead of showing an unchecked switch as "off".
+ *
+ * The sentence is taken **here**, when the status is built, not when the page
+ * renders: `reason` is a plain string that travels as data (see `autostartCopy`
+ * for the side that shows it). Building a status is what opening the page does,
+ * so this reads the language of that moment.
  */
 export function unsupportedAutostart(): AutostartStatus {
-  return { enabled: false, source: 'unsupported', reason: '当前系统不支持本应用的开机自启。' }
+  return { enabled: false, source: 'unsupported', reason: t('runtime.autostart.unsupported') }
 }
 /**
  * One endpoint from the native scan. `kind` is the expected client shape for a
@@ -629,7 +637,7 @@ export const nativeRuntime: NativeRuntime = {
   //     await invoke('open_windows_lock_screen_settings')
   //   },
   async saveApiKey(key) {
-    if (!await tauriAvailable()) throw new Error('仅桌面版支持 Windows 凭据管理器')
+    if (!await tauriAvailable()) throw new Error(t('runtime.credentials.desktop-only'))
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('save_api_key', { key })
   },
@@ -640,17 +648,17 @@ export const nativeRuntime: NativeRuntime = {
     return invoke<ApiKeyStatus>('api_key_status')
   },
   async desktopWorkspaceStatus() {
-    if (!await tauriAvailable()) throw new Error('仅桌面版支持桌面会话工作区自检')
+    if (!await tauriAvailable()) throw new Error(t('runtime.workspace.desktop-only'))
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<DesktopWorkspaceStatus>('desktop_workspace_status')
   },
   async openProjectMemory() {
-    if (!await tauriAvailable()) throw new Error('仅桌面版支持打开项目记忆')
+    if (!await tauriAvailable()) throw new Error(t('runtime.memory.desktop-only'))
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<{ opened: string; memoryFile: string; memoryExists: boolean }>('open_project_memory')
   },
   async openSubjectTui(args?: string[]) {
-    if (!await tauriAvailable()) throw new Error('仅桌面版支持打开 TUI')
+    if (!await tauriAvailable()) throw new Error(t('runtime.tui.desktop-only'))
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<{ opened: boolean; reason?: string; message?: string; launcher?: string }>('open_subject_tui', { args })
   },  async requestDeepSeekLogin() {
@@ -684,17 +692,17 @@ export const nativeRuntime: NativeRuntime = {
     return invoke<DeepSeekWebHistory>('deepseek_web_history', { conversationId, newConversation })
   },
   async deepseekWebAdapterConfig() {
-    if (!await tauriAvailable()) return { schemaVersion: 1, adapterVersion: 'preview', source: 'builtin', path: '浏览器预览不支持本地网页适配器配置' }
+    if (!await tauriAvailable()) return { schemaVersion: 1, adapterVersion: 'preview', source: 'builtin', path: t('runtime.web-adapter.preview-config-path') }
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<DeepSeekWebAdapterConfigStatus>('deepseek_web_adapter_config_status')
   },
   async openDeepSeekWebAdapterConfig() {
-    if (!await tauriAvailable()) throw new Error('浏览器预览不支持打开网页适配器配置')
+    if (!await tauriAvailable()) throw new Error(t('runtime.web-adapter.preview-open'))
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<DeepSeekWebAdapterConfigStatus>('open_deepseek_web_adapter_config')
   },
   async resetDeepSeekWebAdapterConfig() {
-    if (!await tauriAvailable()) throw new Error('浏览器预览不支持恢复网页适配器配置')
+    if (!await tauriAvailable()) throw new Error(t('runtime.web-adapter.preview-reset'))
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<DeepSeekWebAdapterConfigStatus>('reset_deepseek_web_adapter_config')
   },
@@ -922,7 +930,7 @@ export const nativeRuntime: NativeRuntime = {
     return invoke<HarnessEndpointScan[]>('scan_harness_endpoints_command', { extraPorts: [...extraPorts] })
   },
   async desktopDisplays() {
-    if (!await tauriAvailable()) return [{ id: 'preview', name: '预览屏幕', bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1080 }, scaleFactor: 1, primary: true }]
+    if (!await tauriAvailable()) return [{ id: 'preview', name: t('runtime.display.preview-name'), bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1080 }, scaleFactor: 1, primary: true }]
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<DesktopDisplayInfo[]>('desktop_displays')
   },

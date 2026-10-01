@@ -8,7 +8,12 @@
  *    所以 `tuiAvailable` 来自扫描结果，而不是"这个类别理论上支持"。
  * 2. 官壳与源码树**各只有一条路**（官壳用它独占的 `desktop` 档案，源码树没有自己的窗口），
  *    所以它们不给选项 —— 单项做成下拉就是一个点了没反应、也无法改变的控件。
+ *
+ * 文字是 `t()` 在**函数体里**取的，不是模块级常量：这个函数由 `SettingsPanel` 在渲染期调用，
+ * 每次调用都按当时的语言取一遍；提到模块级就会在 import 时把语言定死，之后切语言再也不变。
+ * `value` 那两个字面量（`browser` / `tui`）是内部标识，两种语言里都一样，所以不翻译。
  */
+import { t } from '../i18n/index.ts'
 
 export interface OpenRoute {
   value: 'browser' | 'tui'
@@ -30,13 +35,13 @@ export interface OpenRouteInput {
 
 export function openRoutesFor(input: OpenRouteInput): OpenRoute[] {
   if (!input.hasSubject) return []
-  if (input.shellSelected) return [{ value: 'browser', label: '官方客户端窗口' }]
+  if (input.shellSelected) return [{ value: 'browser', label: t('open.route.shell-window') }]
   if (input.subjectKind === 'installed-cli') {
-    const browser: OpenRoute = { value: 'browser', label: '浏览器' }
+    const browser: OpenRoute = { value: 'browser', label: t('open.route.browser') }
     if (!input.tuiAvailable) return [browser]
-    return [browser, { value: 'tui', label: '终端里的 TUI' }]
+    return [browser, { value: 'tui', label: t('open.route.tui') }]
   }
-  return [{ value: 'browser', label: '浏览器' }]
+  return [{ value: 'browser', label: t('open.route.browser') }]
 }
 
 /**

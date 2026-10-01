@@ -299,6 +299,111 @@ export const zh = {
   'settings.system.autostart.toggle': '登录后自动启动',
   'settings.system.autostart.busy': '正在更新 Windows 启动任务，请稍候；设置中心仍可继续使用。',
 
+  // ---------------------------------------------------------------------------
+  // 设置窗口自己说的话（`settings/SettingsWindow.tsx`）：提示条、通知、桥对齐反馈与自启提示。
+  // 这些都是**运行时**组出来的句子（插值里是端口、主体名、错误对象），所以键按"哪一步"命名。
+  // 提示条停留多久**不再**从这些字里反推（原来是拿 `/失败|错误|…/` 去猜），而由调用点给出
+  // 语气 —— 句子一进词条，那种猜测在英文下就失效了。
+  // ---------------------------------------------------------------------------
+
+  // 提示条本身，以及三条跨页面的通用失败（设置同步、素材库、显示器列表）。
+  'settings.window.notice.dismiss': '关闭通知',
+  'settings.window.notice.sync-failed': '设置同步失败：{error}',
+  'settings.window.notice.appearance-read-failed': '素材库读取失败：{error}',
+  'settings.window.notice.displays-read-failed': '显示器列表读取失败：{error}',
+
+  // 扫描执行主体。
+  'settings.window.scan.done': '扫描完成，发现 {count} 个可选执行主体。',
+  'settings.window.scan.none': '未发现 DSH 项目或已安装的客户端；可手动填写 DSH 项目根目录后再扫描。',
+  'settings.window.scan.failed': '扫描 DSH 失败：{error}',
+
+  // 端点扫描，以及"存着的端口已经不属于这个主体"那条自相矛盾的清理。
+  'settings.window.endpoints.stale-port': '设置里选定的端口 {port} 不属于当前主体，已清除；「打开」会按该主体自己的端口来。',
+  'settings.window.endpoints.none': '未发现可接入的 Harness。请先启动官方桌面客户端，或让本机的 DSH CLI 起来（dsh web）后重新扫描。',
+  'settings.window.endpoints.unavailable': '发现 {count} 个 Harness，但当前都不可对话；详情见端点下拉。',
+  'settings.window.endpoints.found': '发现 {count} 个可接入的 Harness。',
+  'settings.window.endpoints.failed': '扫描接入端点失败：{error}',
+
+  // 「打开界面」这一次动作的结果。`{label}` 填的是执行主体的类别词（也是词条）。
+  'settings.window.reach.start-failed': '启动失败，请查看日志中的启动记录。',
+  'settings.window.reach.no-port': '没有可打开的界面：主体没有在本机监听任何端口。',
+  'settings.window.reach.browser-opened': '已在默认浏览器中打开 127.0.0.1:{port}。',
+  'settings.window.reach.raised': '已把 {label} 的窗口拉到前台。',
+  'settings.window.reach.restored': '{label} 的窗口已恢复；Windows 拒绝了前台切换，点一下它即可。',
+  'settings.window.reach.failed': '打开客户端界面失败：{error}',
+
+  // 停止本应用启动的 DSH。
+  'settings.window.managed.stopped-all': '已停止本应用启动的全部 DSH。',
+  'settings.window.managed.stopped-one': '已停止该 DSH 实例。',
+
+  // 开机自启：Windows 那边的两种"不许"、读状态失败、以及这次改动没落地。
+  'settings.window.autostart.disabled-by-user': 'Windows 已禁用 DSH Wallpaper 开机启动，请在系统设置中允许。',
+  'settings.window.autostart.disabled-by-policy': 'Windows 策略禁止 DSH Wallpaper 开机启动。',
+  'settings.window.autostart.read-failed': '读取开机自启状态失败：{error}',
+  'settings.window.autostart.update-failed': '开机自启更新失败：{error}',
+
+  // 桥对齐（`ensureProfileBridge`）。
+  'settings.window.bridge.failed': '装桥失败：{error}',
+
+  // 网页适配器配置：打开、恢复默认（含确认框）与各自的失败。
+  'settings.window.adapter.opened': '已打开网页适配器配置；保存后下一次网页状态、历史或发送操作会读取新配置。',
+  'settings.window.adapter.open-failed': '网页适配器配置打开失败：{error}',
+  'settings.window.adapter.reset-confirm': '恢复默认网页适配器配置会覆盖当前本地 override 文件。确定继续吗？',
+  'settings.window.adapter.reset-done': '网页适配器配置已恢复默认。',
+  'settings.window.adapter.reset-failed': '网页适配器配置恢复失败：{error}',
+
+  // 访问密钥与模型目录：读状态、地址不支持目录、缺 Key、保存/测试的结果、只刷新目录。
+  'settings.window.api-key.read-failed': '读取访问密钥状态失败：{error}',
+  'settings.window.api-key.models-unsupported': '该 API 地址不提供模型列表（HTTP 404/405）。',
+  'settings.window.api-key.models-read-failed': '读取模型列表失败：{error}',
+  'settings.window.api-key.missing': '请先填入 DeepSeek API Key。',
+  'settings.window.api-key.saved': 'API Key 已保存到 Windows 凭据管理器，模型列表已更新。',
+  'settings.window.api-key.usable': '已保存的 API Key 可用，模型列表已更新。',
+  'settings.window.api-key.save-failed': 'API Key 保存失败：{error}',
+  'settings.window.api-key.models-refreshed': '模型列表已刷新。',
+
+  // 「聊天模式」这一栏的切换结果（`{label}` 是后端显示名，也是词条）。
+  'settings.window.backend.switched': '已切换为{label}，正在运行的壁纸立即生效。',
+  'settings.window.backend.failed': '切换后端失败：{error}',
+
+  // API 会话记录：删除一条（含确认框）、清空全部（含确认框），以及它们的失败。
+  'settings.window.history.delete-confirm': '删除 API 会话 {id} 的本地记录？此操作无法撤销。',
+  'settings.window.history.deleted': '已删除 API 会话 {id} 的本地记录。',
+  'settings.window.history.gone': '该会话已不存在，列表已刷新。',
+  'settings.window.history.delete-failed': '删除 API 会话失败：{error}',
+  'settings.window.history.clear-confirm': '清空全部 {count} 个 API 会话的本地记录？此操作无法撤销，但不会影响 DeepSeek 网页入口或 Harness 会话。',
+  'settings.window.history.cleared': '已清空 {count} 个 API 会话的本地记录。',
+  'settings.window.history.nothing-to-clear': '没有可清空的 API 会话记录。',
+  'settings.window.history.clear-failed': '清空 API 历史失败：{error}',
+
+  // 素材库的导入、分类、应用与恢复默认。
+  'settings.window.appearance.import-failed': '导入失败：{error}',
+  'settings.window.appearance.classify-failed': '素材分类失败：{error}',
+  'settings.window.appearance.sync-failed': '外观同步失败：{error}',
+  'settings.window.appearance.apply-failed': '应用素材失败：{error}',
+  'settings.window.appearance.reset-failed': '恢复默认失败：{error}',
+
+  // 「拉起 TUI」：没装 TUI 时**显示原生那句"怎么办"**，只有连原生都问不到时才用这里的兜底。
+  'settings.window.tui.missing': '本机没有找到 TUI（dst）。',
+  'settings.window.tui.launched': '已在新终端窗口中拉起 TUI。',
+  'settings.window.tui.failed': '打开 TUI 失败：{error}',
+
+  // DeepSeek 应用内页面。
+  'settings.window.deepseek-web.open-failed': '无法打开 DeepSeek 应用内页面：{error}',
+
+  // 「打开项目记忆」的两种结果。文件名是磁盘上那个文件的名字（原生建的），两种语言里都不译。
+  'settings.window.memory.selected': '已在资源管理器中选中「项目记忆.md」。',
+  'settings.window.memory.opened-folder': '还没有「项目记忆.md」：已打开桌面会话目录，你或助手第一次“记下来”时它会出现在这里。',
+
+  // ---------------------------------------------------------------------------
+  // 「打开」那张卡片给的路线的名字（`connect/openRoutes.ts`）。
+  // 这三个名字由那个**纯函数**在每次调用时取，所以函数体里用 `t()`；**不能**提到模块级常量里
+  // —— 那会在 import 时把语言定死，之后切语言就再也不变了。
+  // ---------------------------------------------------------------------------
+  'open.route.shell-window': '官方客户端窗口',
+  'open.route.browser': '浏览器',
+  'open.route.tui': '终端里的 TUI',
+
   // 开机自启（`settings/autostartCopy.ts`）：当前由哪条路承载，以及"这次变更没有生效"的说明。
   // `reason` 是原生读回来的原因原文，照旧接在句子后面（它是运行时的系统文字，不在词条里）。
   'autostart.detail.startup-task': '登录后由 Windows 启动任务启动本应用。',
@@ -488,6 +593,27 @@ export const zh = {
   'chat.host.embedded-shell': '本机 DeepSeek Harness 客户端，它带自己的窗口。',
   'chat.host.terminal': '{label}，界面在终端里。',
   'chat.host.browser': '{label}，界面在浏览器里。',
+
+  // ---------------------------------------------------------------------------
+  // 原生运行时**返回给界面**的兜底与错误句（`native/runtime.ts`）。它们是浏览器预览（没有 Tauri、
+  // 没有 Windows）时的答案，用 `t()` 在**调用时**求值 —— 与 `connect/*` 里的句子同一条理由。
+  //
+  // 注意这些句子是**数据**：一旦被组进一个对象（`AutostartStatus.reason`、适配器状态的 `path`），
+  // 它就定在那一刻的语言上，界面之后切语言不会把它重译。这正是计划里"结构化状态改由界面本地化"
+  // 要逐批收拾的东西 —— 本批先让它们**说当前语言**，而不是写死中文。
+  // ---------------------------------------------------------------------------
+  'runtime.autostart.unsupported': '当前系统不支持本应用的开机自启。',
+  // 四条"只有桌面版才有"的拒绝（浏览器预览里调用会抛错）。
+  'runtime.credentials.desktop-only': '仅桌面版支持 Windows 凭据管理器',
+  'runtime.workspace.desktop-only': '仅桌面版支持桌面会话工作区自检',
+  'runtime.memory.desktop-only': '仅桌面版支持打开项目记忆',
+  'runtime.tui.desktop-only': '仅桌面版支持打开 TUI',
+  // 网页适配器配置的三条浏览器预览答案（`path` 那一格是给界面显示的一句话，不是一个路径）。
+  'runtime.web-adapter.preview-config-path': '浏览器预览不支持本地网页适配器配置',
+  'runtime.web-adapter.preview-open': '浏览器预览不支持打开网页适配器配置',
+  'runtime.web-adapter.preview-reset': '浏览器预览不支持恢复网页适配器配置',
+  // 浏览器预览没有真实显示器，这是那块占位屏幕的名字。
+  'runtime.display.preview-name': '预览屏幕',
 }
 
 /** 所有可用键。写错键名在编译期就会被挡住。 */
