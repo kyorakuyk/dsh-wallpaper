@@ -381,6 +381,12 @@
           "markdownDescription": "Enables the ensure_harness_ui command without any pre-configured scope."
         },
         {
+          "description": "Enables the ensure_profile_bridge command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ensure-profile-bridge",
+          "markdownDescription": "Enables the ensure_profile_bridge command without any pre-configured scope."
+        },
+        {
           "description": "Enables the enter_inner_workspace_from_ball command without any pre-configured scope.",
           "type": "string",
           "const": "allow-enter-inner-workspace-from-ball",
@@ -711,6 +717,30 @@
           "markdownDescription": "Enables the translucent_tb_status command without any pre-configured scope."
         },
         {
+          "description": "Enables the update_check command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-update-check",
+          "markdownDescription": "Enables the update_check command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the update_dismiss command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-update-dismiss",
+          "markdownDescription": "Enables the update_dismiss command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the update_download command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-update-download",
+          "markdownDescription": "Enables the update_download command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the update_install command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-update-install",
+          "markdownDescription": "Enables the update_install command without any pre-configured scope."
+        },
+        {
           "description": "Enables the update_interaction_regions command without any pre-configured scope.",
           "type": "string",
           "const": "allow-update-interaction-regions",
@@ -925,6 +955,12 @@
           "type": "string",
           "const": "deny-ensure-harness-ui",
           "markdownDescription": "Denies the ensure_harness_ui command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ensure_profile_bridge command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ensure-profile-bridge",
+          "markdownDescription": "Denies the ensure_profile_bridge command without any pre-configured scope."
         },
         {
           "description": "Denies the enter_inner_workspace_from_ball command without any pre-configured scope.",
@@ -1255,6 +1291,30 @@
           "type": "string",
           "const": "deny-translucent-tb-status",
           "markdownDescription": "Denies the translucent_tb_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the update_check command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-update-check",
+          "markdownDescription": "Denies the update_check command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the update_dismiss command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-update-dismiss",
+          "markdownDescription": "Denies the update_dismiss command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the update_download command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-update-download",
+          "markdownDescription": "Denies the update_download command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the update_install command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-update-install",
+          "markdownDescription": "Denies the update_install command without any pre-configured scope."
         },
         {
           "description": "Denies the update_interaction_regions command without any pre-configured scope.",
