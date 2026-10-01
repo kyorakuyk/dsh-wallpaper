@@ -25,6 +25,14 @@ pub(crate) fn latest_release_url() -> String {
     format!("https://api.github.com/repos/{RELEASE_REPOSITORY}/releases/latest")
 }
 
+/// 这一版构建自报的家门。
+///
+/// 下载那一步（`update/download.rs`）用的是自己的客户端（总超时不一样），但**同一个 UA** ——
+/// 不带它 GitHub 会 403（§二），而两处各写一份迟早会漂移。
+pub(crate) fn user_agent() -> &'static str {
+    USER_AGENT
+}
+
 /// 一次进程一份客户端（与其它探针同一写法）。
 fn release_client() -> Option<&'static reqwest::Client> {
     static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();

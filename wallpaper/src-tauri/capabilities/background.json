@@ -56,6 +56,8 @@
     "allow-appearance-resolve-asset",
     "allow-update-check",
     "allow-update-dismiss",
+    "allow-update-download",
+    "allow-update-install",
       "allow-verify-island-click"
   ]
 }

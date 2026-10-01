@@ -16,9 +16,11 @@ const INSTALLABLE_SUFFIXES: [(&str, AssetKind); 2] = [(".msix", AssetKind::Msix)
 
 /// 资产属于哪一种安装形态。
 ///
-/// 这一层只是"名字像什么"；真正决定交给 Windows 哪一个处理程序的是安装那一步（第二片）：
-/// `.msix` 走 App Installer，`.exe` 走安装向导（§六）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 这一层只是"名字像什么"；真正决定交给 Windows 哪一个处理程序的是安装那一步（`update_install`）：
+/// `.msix` 走 App Installer，`.exe` 走安装向导（§六）。序列化成 `"exe"` / `"msix"`：安装报告里那
+/// 个 `kind` 字段就是它，界面据此说"交给哪个处理程序"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) enum AssetKind {
     Msix,
     Exe,

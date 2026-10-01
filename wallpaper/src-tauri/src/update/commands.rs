@@ -1,4 +1,4 @@
-//! 更新检查命令与整条流程（计划书 §四、§五、§八）。
+//! 更新检查与下载/安装命令、以及整条流程（计划书 §四、§五、§六）。
 //!
 //! 流程切成三段，是为了让"不该打网络的时候一次都不打"能被单测钉死：
 //!
@@ -7,12 +7,17 @@
 //!  2. 只有走到这里才会调用**注入进来的**取数入口（生产是
 //!     [`super::source::fetch_latest_release`]）；
 //!  3. 拿到正文之后全是纯判断：解析、比较、选资产、落盘。
+//!
+//! 下载与安装是**另外两条命令**（[`update_download`] / [`update_install`]），只由界面按下按钮那
+//! 一次发起：`run_check` 这条路上没有任何下载调用（§六 "绝不在检查时自动下载"），单测里由
+//! `checking_never_downloads_anything` 钉着。
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use super::download::{self, DownloadEvent, DownloadRequest};
 use super::release::{self, AssetKind, ReleaseAsset, ReleaseInfo};
 use super::state::{self, UpdateState};
 use super::version::{self, InstalledVersion, Version, VersionSource};
@@ -42,6 +47,48 @@ impl UpdateCommandError {
     fn invalid_version() -> Self {
         Self {
             code: "invalidVersion",
+        }
+    }
+
+    /// 版本或资产名拼不出一个安全的落盘路径（见 [`super::download::destination`]）。
+    fn destination_unavailable() -> Self {
+        Self {
+            code: "destinationUnavailable",
+        }
+    }
+
+    /// 下载地址不在发布仓库那一族里（见 [`super::download::trusted_asset_url`]）。
+    fn untrusted_asset_url() -> Self {
+        Self {
+            code: "untrustedAssetUrl",
+        }
+    }
+
+    /// 状态文件里没有"下过什么"这条记录 ⇒ 没有可装的东西。
+    fn nothing_downloaded() -> Self {
+        Self {
+            code: "nothingDownloaded",
+        }
+    }
+
+    /// 记录里那个文件已经不在了（用户删了、或清理工具扫走了）。
+    fn installer_missing() -> Self {
+        Self {
+            code: "installerMissing",
+        }
+    }
+
+    /// 后缀不在白名单里（只认 `.exe` 与 `.msix`，§六）。
+    fn unsupported_asset() -> Self {
+        Self {
+            code: "unsupportedAsset",
+        }
+    }
+
+    /// `ShellExecuteW` 没打开它（没有默认处理程序、被策略拦住等）。
+    fn open_failed() -> Self {
+        Self {
+            code: "openFailed",
         }
     }
 }
@@ -134,6 +181,30 @@ pub(crate) struct UpdateDismissReport {
     pub dismissed_version: Option<String>,
     /// 记录有没有落盘。写不进去时是 `false`（本次仍然生效，重启之后失效）。
     pub persisted: bool,
+}
+
+/// 一次「下载」调用的回执。
+///
+/// **不含终局**：下载在后台跑，`downloading` / `ready` / `failed` 三个状态由
+/// [`super::download::DOWNLOAD_EVENT`] 那条全局事件回给界面（§四）。这里的 `started` 只回答
+/// "这一次真的开工了没有" —— `false` 表示同一时刻已经有一次下载在跑（不重复下同一个文件）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateDownloadReport {
+    pub started: bool,
+    pub version: String,
+    /// 落盘位置（开工之前就能算出来，也是事件里 `path` 会指的地方）。
+    pub destination: String,
+}
+
+/// 一次「安装」的结果：把哪一个文件交给了 Windows 的哪一种处理程序（§六）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateInstallReport {
+    /// 交给 Windows 的那个文件（`.exe` 或 `.msix`）。
+    pub path: String,
+    /// 按后缀分派的结果：`exe` ⇒ 安装向导，`msix` ⇒ App Installer。
+    pub kind: AssetKind,
 }
 
 /// 一次检查的结论：解析成功与失败两条路都汇到这里。
@@ -340,18 +411,125 @@ fn require_update_surface(caller: &tauri::WebviewWindow) -> Result<(), UpdateCom
         .ok_or_else(UpdateCommandError::forbidden)
 }
 
-/// 状态文件的位置：`<本地数据>\com.dsh.wallpaper\updates\state.json`（§五）。
+/// 更新目录：`<本地数据>\com.dsh.wallpaper\updates`（§五）。
 ///
 /// 优先用 Tauri 算的那个本地数据目录（打包态它会被重定向到包容器里，与其它功能同一处），
 /// 拿不到时退回 `dirs` 的 `%LOCALAPPDATA%` —— 两条路拼出来的是同一个目录，退回不是"第二个位置"。
-fn state_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+///
+/// 状态文件与下载下来的安装包都在这个目录下（`state.json` 与 `<版本>\<资产名>`，§六）。
+fn updates_directory(app: &tauri::AppHandle) -> Option<PathBuf> {
     use tauri::Manager;
     let local_app_data = app
         .path()
         .app_local_data_dir()
         .ok()
         .or_else(|| dirs::data_local_dir().map(|directory| directory.join(super::APP_IDENTIFIER)))?;
-    Some(state::updates_dir(&local_app_data).join(state::STATE_FILE_NAME))
+    Some(state::updates_dir(&local_app_data))
+}
+
+/// 状态文件的位置：`<本地数据>\com.dsh.wallpaper\updates\state.json`（§五）。
+fn state_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    Some(updates_directory(app)?.join(state::STATE_FILE_NAME))
+}
+
+/// 下载开工前的**纯**准备：版本可比较、资产名能当文件名、目录拼得出来、地址在发布仓库那一族里。
+///
+/// 这四件事都在发起下载之前做完，于是"点到就报错"的那些情况（版本串被改过、地址不是 GitHub）
+/// 走的是命令的返回值，而不是一条 `failed` 事件 —— 界面那时还没进 `downloading`。
+fn prepare_download(
+    updates_dir: &Path,
+    version: &str,
+    request: &DownloadRequest,
+) -> Result<PathBuf, UpdateCommandError> {
+    let Some(destination) = download::destination(updates_dir, version, &request.name) else {
+        log::warn!("更新下载：版本或资产名拼不出安全路径（版本 {version:?}，资产 {:?}）", request.name);
+        return Err(UpdateCommandError::destination_unavailable());
+    };
+    if !download::trusted_asset_url(&request.download_url) {
+        log::warn!("更新下载：地址不在发布仓库那一族里（{}）", request.download_url);
+        return Err(UpdateCommandError::untrusted_asset_url());
+    }
+    Ok(destination)
+}
+
+/// 「安装」的两道判断（纯）：文件还在不在、后缀在不在白名单里。
+///
+/// 白名单用的就是资产选择那一个（[`release::AssetKind::from_name`]）：两处各写一份的话，"选中的"
+/// 与"能装的"迟早会不是同一批文件。
+fn install_kind(path: &Path) -> Result<AssetKind, UpdateCommandError> {
+    if !path.is_file() {
+        log::warn!("更新安装：记录里的文件已经不在了（{}）", path.display());
+        return Err(UpdateCommandError::installer_missing());
+    }
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Err(UpdateCommandError::unsupported_asset());
+    };
+    download::install_kind(name).ok_or_else(|| {
+        log::warn!("更新安装：后缀不在白名单里（{name}）");
+        UpdateCommandError::unsupported_asset()
+    })
+}
+
+/// 把文件交给 Windows 的默认处理程序（`ShellExecuteW("open", …)`，§六）。
+///
+/// 与 `external_link::open` 是同一个动作的两个出处：那一条开的是地址（因此要校验协议），这一条开
+/// 的是一个**已经由我们自己算出来的路径**（`state.json` 里的 `downloadedPath`，后缀也过过白名单）。
+#[cfg(windows)]
+fn shell_open(path: &Path) -> Result<(), UpdateCommandError> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let operation = "open".encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    // 路径走宽字符而不是 `to_string_lossy()`：非 UTF-8 的用户名目录不该被问号替换掉。
+    let wide = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<u16>>();
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            PCWSTR(operation.as_ptr()),
+            PCWSTR(wide.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // ShellExecuteW returns a value <= 32 on failure; only > 32 is success.
+    if result.0 as usize <= 32 {
+        log::warn!("更新安装：Windows 没有打开 {}（ShellExecuteW 返回 {}）", path.display(), result.0 as usize);
+        return Err(UpdateCommandError::open_failed());
+    }
+    log::info!("更新安装：已交给 Windows（{}）", path.display());
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn shell_open(path: &Path) -> Result<(), UpdateCommandError> {
+    log::warn!("更新安装：当前平台不支持把 {} 交给系统处理程序", path.display());
+    Err(UpdateCommandError::open_failed())
+}
+
+/// 把已经下载好的安装包交给 Windows（§六）。
+///
+/// 路径**不由界面给**：它读状态文件里那一条（`downloadedPath`）。界面因此无法让原生去打开任意一个
+/// 文件 —— 那会是一条"打开任何可执行文件"的命令，比 `open_external_link` 更宽。
+pub(crate) fn run_install(state_path: &Path) -> Result<UpdateInstallReport, UpdateCommandError> {
+    let recorded = state::load(state_path).downloaded_path;
+    let Some(recorded) = recorded.filter(|path| !path.trim().is_empty()) else {
+        log::info!("更新安装：状态文件里没有下过的安装包");
+        return Err(UpdateCommandError::nothing_downloaded());
+    };
+    let path = PathBuf::from(recorded);
+    let kind = install_kind(&path)?;
+    shell_open(&path)?;
+    Ok(UpdateInstallReport {
+        path: path.display().to_string(),
+        kind,
+    })
 }
 
 /// 检查更新。只检查，不下载不安装 —— 下载与安装是第二片。
@@ -405,6 +583,100 @@ pub(crate) fn update_dismiss(
     };
     // 读状态 + 写一个小 JSON，不占阻塞线程也不打网络。
     run_dismiss(&version, &state_path)
+}
+
+/// 「下载」：流式下载选中的那一个资产，进度与终局都走 [`super::download::DOWNLOAD_EVENT`]。
+///
+/// **只在这条命令被调用时才下载**（§六）：界面按下「下载」那一次。检查（`update_check`）这条路
+/// 上没有任何下载调用，所以"打开壁纸就自动下 30 MB"这件事在代码里不存在。
+///
+/// `version` 与 `asset` 由界面递回来 —— 就是检查报告里的 `latestVersion` 与 `asset`（资产选择在
+/// `run_check` 里已经做完了，这里不再选一遍）。两个都当**不可信输入**处理：版本要能解析、资产名要
+/// 能当文件名、地址要在发布仓库那一族里，不合格当场拒绝，而不是硬着头皮去下。
+///
+/// 下载在后台跑（`tauri::async_runtime::spawn`），所以命令很快返回：`started` 说"这一次真的开工了
+/// 没有"，终局由事件回。同一时刻只允许一次下载（见 [`super::download::InFlight`]）。
+#[tauri::command]
+// 整个模块已经在 `lib.rs` 里按 edition 门控；这一行是仓库惯例的第二道（Lite 不含本功能）。
+#[cfg(not(feature = "lite"))]
+pub(crate) async fn update_download(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    version: String,
+    asset: DownloadRequest,
+) -> Result<UpdateDownloadReport, UpdateCommandError> {
+    use tauri::Emitter;
+
+    require_update_surface(&caller)?;
+    let Some(updates_dir) = updates_directory(&app) else {
+        return Err(UpdateCommandError::state_path_unavailable());
+    };
+    let destination = prepare_download(&updates_dir, &version, &asset)?;
+    let reported_version = Version::parse(&version)
+        .map(|version| version.to_string())
+        .unwrap_or_else(|| version.clone());
+    let report = UpdateDownloadReport {
+        started: false,
+        version: reported_version.clone(),
+        destination: destination.display().to_string(),
+    };
+    let Some(claim) = download::InFlight::claim(&reported_version) else {
+        log::info!("更新下载：已经有一次下载在跑，这一次不重复下（{reported_version}）");
+        return Ok(report);
+    };
+
+    let state_path = updates_dir.join(state::STATE_FILE_NAME);
+    let version_for_task = reported_version.clone();
+    tauri::async_runtime::spawn(async move {
+        // 凭据跟着任务走：任务结束（含失败）就释放，下一次下载才能开工。
+        let _claim = claim;
+        let terminal = download::fetch(
+            &version_for_task,
+            &asset,
+            &destination,
+            &state_path,
+            |event: &DownloadEvent| {
+                // 一条全局事件：两个窗口都收得到（壁纸气泡与设置卡片看的是同一份进度）。
+                if let Err(error) = app.emit(download::DOWNLOAD_EVENT, event) {
+                    log::warn!("更新下载：进度事件发不出去：{error}");
+                }
+            },
+        )
+        .await;
+        log::info!(
+            "更新下载：{version_for_task} 结束（{:?}，{} 字节）",
+            terminal.phase,
+            terminal.downloaded_bytes
+        );
+    });
+
+    Ok(UpdateDownloadReport {
+        started: true,
+        ..report
+    })
+}
+
+/// 「安装」：把已经下载好的安装包按后缀交给 Windows 的默认处理程序（§六）。
+///
+/// `.exe`（NSIS setup）⇒ 安装向导；`.msix` ⇒ App Installer。两条分支都留着 —— MSIX 是将来上商店
+/// 的路，不许因为今天只发 `.exe` 就删掉。两条都只是 `ShellExecuteW("open", …)`，确认由用户在
+/// 系统界面上点。
+///
+/// 返回值只有路径与按后缀分派的结果（见 [`UpdateInstallReport`]）；开不起来给的是码
+/// （`nothingDownloaded` / `installerMissing` / `unsupportedAsset` / `openFailed`）。
+#[tauri::command]
+// 整个模块已经在 `lib.rs` 里按 edition 门控；这一行是仓库惯例的第二道（Lite 不含本功能）。
+#[cfg(not(feature = "lite"))]
+pub(crate) fn update_install(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<UpdateInstallReport, UpdateCommandError> {
+    require_update_surface(&caller)?;
+    let Some(state_path) = state_path(&app) else {
+        return Err(UpdateCommandError::state_path_unavailable());
+    };
+    // 读状态 + 一次 `ShellExecuteW`，都不打网络也不占阻塞线程。
+    run_install(&state_path)
 }
 
 #[cfg(test)]
@@ -870,9 +1142,14 @@ mod tests {
     /// "点了没反应"，而这类故障在构建期一声不响。
     #[test]
     fn every_update_command_is_registered_in_every_acl_place_it_is_called_through() {
-        /// (命令名, 授权标识符)。`update_check` 是"查"，`update_dismiss` 是「忽略」。
-        const COMMANDS: [(&str, &str); 2] =
-            [("update_check", "allow-update-check"), ("update_dismiss", "allow-update-dismiss")];
+        /// (命令名, 授权标识符)。`update_check` 是"查"，`update_dismiss` 是「忽略」，
+        /// `update_download` 是「下载」，`update_install` 是「点击安装」—— 后两个是第三片加的。
+        const COMMANDS: [(&str, &str); 4] = [
+            ("update_check", "allow-update-check"),
+            ("update_dismiss", "allow-update-dismiss"),
+            ("update_download", "allow-update-download"),
+            ("update_install", "allow-update-install"),
+        ];
 
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let build = std::fs::read_to_string(root.join("build.rs")).expect("build.rs must exist");
@@ -920,6 +1197,202 @@ mod tests {
                 lib.contains(&format!("update::commands::{command}")),
                 "lib.rs must register {command} in generate_handler!"
             );
+        }
+    }
+
+    /// §六 那条"绝不在检查时自动下载"：检查这条路（`run_check` 与 `update_check`）里不许出现任何
+    /// 下载调用。
+    ///
+    /// 这条靠读源码来钉（和上面那条 ACL 表一样）：它是"这条路上没有这段代码"的声明，而单测没法
+    /// 用行为证明"某件事没有发生"。按函数切段检查，而不是全文搜索 —— 全文里当然有 `download`。
+    #[test]
+    fn checking_never_downloads_anything() {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/update/commands.rs"),
+        )
+        .expect("this file must be readable");
+
+        for function in ["run_check", "update_check"] {
+            let body = function_body(&source, function)
+                .unwrap_or_else(|| panic!("{function} 必须还能被找到（这道测试靠名字切段）"));
+            // 四个标记分别对应下载那条路上的四样东西：模块、命令、请求体、状态字段。
+            for forbidden in ["download::", "update_download", "DownloadRequest", "downloaded_path"] {
+                assert!(
+                    !body.contains(forbidden),
+                    "{function} 里不许出现 {forbidden}：下载只由按下「下载」那一次发起（§六）"
+                );
+            }
+        }
+    }
+
+    /// 从源码里切出一个函数的正文（从 `fn <名字>` 到下一个顶格 `}`）。
+    ///
+    /// 够用就行：这个文件里的函数都是顶格写的，注释也在同一个缩进层内。
+    fn function_body(source: &str, name: &str) -> Option<String> {
+        let start = source.find(&format!("fn {name}"))?;
+        let rest = &source[start..];
+        // 函数体结束的标志：一行只有 `}` 的行（`insert` 之后剩下的部分从那里开始）。
+        let mut offset = 0usize;
+        let mut end = None;
+        for line in rest.split_inclusive('\n') {
+            offset += line.len();
+            if line.trim_end().ends_with('}') && !line.starts_with(' ') && offset > 1 {
+                end = Some(offset);
+                break;
+            }
+        }
+        Some(rest[..end.unwrap_or(rest.len())].to_string())
+    }
+
+    /// 下载开工前的那四道纯判断（版本、文件名、地址）。
+    #[test]
+    fn a_download_that_cannot_be_trusted_is_refused_before_it_starts() {
+        let directory = tempfile::tempdir().unwrap();
+        let updates = directory.path();
+        let good = DownloadRequest {
+            name: "dsh-wallpaper_0.4.2_x64-setup.exe".into(),
+            download_url: "https://github.com/kyorakuyk/dsh-wallpaper/releases/download/v0.4.2/setup.exe".into(),
+            size: 10,
+            digest: None,
+        };
+        assert_eq!(
+            prepare_download(updates, "0.4.2", &good).unwrap(),
+            updates.join("0.4.2").join("dsh-wallpaper_0.4.2_x64-setup.exe")
+        );
+        // 版本写法不唯一：目录名用规范写法（`v0.4.2` 与 `0.4.2` 是同一个版本）。
+        assert_eq!(
+            prepare_download(updates, "v0.4.2", &good).unwrap(),
+            updates.join("0.4.2").join("dsh-wallpaper_0.4.2_x64-setup.exe")
+        );
+
+        // 认不出的版本：拒绝，而不是把版本串拼进路径。
+        for version in ["", "latest", "0.4.2/../../evil"] {
+            let error = prepare_download(updates, version, &good).expect_err("must be refused");
+            assert_eq!(error.code, "destinationUnavailable", "{version:?}");
+        }
+        // 认不出的资产名（连文件名都当不了）同理。
+        let bad_name = DownloadRequest {
+            name: "../evil.exe".into(),
+            ..good.clone()
+        };
+        assert_eq!(
+            prepare_download(updates, "0.4.2", &bad_name).unwrap_err().code,
+            "destinationUnavailable"
+        );
+        // 地址不在发布仓库那一族里：拒绝（这一步取回的是**可执行文件**）。
+        for url in ["http://github.com/a.exe", "https://evil.test/a.exe", "https://github.com.evil.test/a.exe"] {
+            let bad_url = DownloadRequest {
+                download_url: url.into(),
+                ..good.clone()
+            };
+            assert_eq!(
+                prepare_download(updates, "0.4.2", &bad_url).unwrap_err().code,
+                "untrustedAssetUrl",
+                "{url}"
+            );
+        }
+    }
+
+    /// 安装的两道判断：文件在不在、后缀在不在白名单里（白名单与资产选择是同一份）。
+    #[test]
+    fn installing_checks_the_file_and_its_suffix_before_handing_it_over() {
+        let directory = tempfile::tempdir().unwrap();
+
+        // 不存在的文件：说"它已经不在了"，而不是去试一次必然失败的打开。
+        assert_eq!(
+            install_kind(&directory.path().join("gone.exe")).unwrap_err().code,
+            "installerMissing"
+        );
+
+        // 在的文件：按后缀分派（`.exe` ⇒ 安装向导，`.msix` ⇒ App Installer）。
+        let exe = directory.path().join("dsh-wallpaper_0.4.2_x64-setup.exe");
+        std::fs::write(&exe, b"installer").unwrap();
+        assert_eq!(install_kind(&exe).unwrap(), AssetKind::Exe);
+        let msix = directory.path().join("dsh-wallpaper_0.4.2.msix");
+        std::fs::write(&msix, b"package").unwrap();
+        assert_eq!(install_kind(&msix).unwrap(), AssetKind::Msix);
+        // 大小写不敏感（Windows 上文件名就是不区分大小写）。
+        let shouted = directory.path().join("setup.EXE");
+        std::fs::write(&shouted, b"installer").unwrap();
+        assert_eq!(install_kind(&shouted).unwrap(), AssetKind::Exe);
+
+        // 后缀在白名单外：拒绝，绝不硬着头皮交给 shell。
+        for name in ["SHA256SUMS.txt", "setup.exe.sig", "package.msixbundle", "notes.zip"] {
+            let path = directory.path().join(name);
+            std::fs::write(&path, b"x").unwrap();
+            assert_eq!(install_kind(&path).unwrap_err().code, "unsupportedAsset", "{name}");
+        }
+    }
+
+    /// 「安装」读的是**状态文件**里的那一条：没下过、或记录里的文件被删了，各有各的码。
+    #[test]
+    fn installing_uses_the_recorded_download_and_says_what_is_missing() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = state_path(&directory);
+
+        // 还没下过任何东西。
+        assert_eq!(run_install(&path).unwrap_err().code, "nothingDownloaded");
+
+        // 记过一条，但文件已经不在了。
+        state::save(
+            &path,
+            &UpdateState {
+                downloaded_path: Some(directory.path().join("gone.exe").display().to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(run_install(&path).unwrap_err().code, "installerMissing");
+
+        // 记录里的东西不是可安装资产。
+        let text = directory.path().join("readme.txt");
+        std::fs::write(&text, b"x").unwrap();
+        state::save(
+            &path,
+            &UpdateState {
+                downloaded_path: Some(text.display().to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(run_install(&path).unwrap_err().code, "unsupportedAsset");
+
+        // 空串与空白按"没有记录"处理（状态文件被手改过时也不该去开一个空路径）。
+        for empty in ["", "   "] {
+            state::save(
+                &path,
+                &UpdateState {
+                    downloaded_path: Some(empty.into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(run_install(&path).unwrap_err().code, "nothingDownloaded", "{empty:?}");
+        }
+    }
+
+    /// 两个报告也是契约：界面按这些字段名读（`started` / `kind` 是新增的两个）。
+    #[test]
+    fn the_download_and_install_reports_serialize_to_the_fields_the_interface_reads() {
+        let download = UpdateDownloadReport {
+            started: true,
+            version: "0.4.2".into(),
+            destination: "C:\\updates\\0.4.2\\setup.exe".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&download).unwrap(),
+            r#"{"started":true,"version":"0.4.2","destination":"C:\\updates\\0.4.2\\setup.exe"}"#
+        );
+
+        // 按后缀分派的结果就是这两个词（界面据此说"交给安装向导"还是"交给 App Installer"）。
+        for (kind, expected) in [(AssetKind::Exe, "exe"), (AssetKind::Msix, "msix")] {
+            let report = UpdateInstallReport {
+                path: "C:\\updates\\0.4.2\\a.bin".into(),
+                kind,
+            };
+            let value = serde_json::to_value(&report).unwrap();
+            assert_eq!(value["kind"], serde_json::json!(expected));
+            assert_eq!(value["path"], serde_json::json!("C:\\updates\\0.4.2\\a.bin"));
         }
     }
 }

@@ -389,6 +389,53 @@ export interface UpdateCheckReport {
 }
 /** 一次「忽略」的结果。 */
 export interface UpdateDismissReport { dismissedVersion: string | null; persisted: boolean }
+/** §四 的三个下载状态：`downloading` 是过程，`ready` / `failed` 是两种终局。 */
+export type UpdateDownloadPhase = 'downloading' | 'ready' | 'failed'
+/**
+ * 下载失败的原因码（原生 `update/download.rs` 的 `DownloadFailureCode`）。
+ *
+ * 界面按码说人话（`features/update/updateCopy.ts`）：`diskFull` 与 `writeFailed` 是两句话，
+ * 因为前者用户自己能解决（清一下盘），后者要说是"写不下去"。
+ */
+export type UpdateDownloadFailureCode =
+  | 'network'
+  | 'httpStatus'
+  | 'destinationUnavailable'
+  | 'writeFailed'
+  | 'diskFull'
+  | 'sizeMismatch'
+  | 'digestMismatch'
+export interface UpdateDownloadFailure {
+  code: UpdateDownloadFailureCode
+  httpStatus: number | null
+  /** 校验失败时的两个数字（大小不符时才有）。 */
+  expectedBytes: number | null
+  actualBytes: number | null
+  /** 摘要不符时的两个串（`sha256:<hex>`）。 */
+  expectedSha256: string | null
+  actualSha256: string | null
+}
+/**
+ * 一条下载进度/终局事件 —— 原生的事件名是 `update-download`。
+ *
+ * **全局事件**：壁纸宿主与设置中心两个窗口都收得到同一条（上一片"气泡不会因设置页的动作刷新"
+ * 就是缺了它）。界面手上那三个状态**只由它产生**：命令的返回值只说"开工了没有"。
+ */
+export interface UpdateDownloadEvent {
+  /** 这次下载的是哪个版本（界面据此忽略别的版本的旧事件）。 */
+  version: string
+  phase: UpdateDownloadPhase
+  downloadedBytes: number
+  /** API 给的总大小；没给时是 `null` —— 界面那时说"已下载多少"，不编百分比。 */
+  totalBytes: number | null
+  path: string | null
+  sha256: string | null
+  failure: UpdateDownloadFailure | null
+}
+/** 一次「下载」调用的回执。**不含终局**（终局走 `update-download` 事件）。 */
+export interface UpdateDownloadReport { started: boolean; version: string; destination: string }
+/** 一次「安装」的结果：交给了哪个文件、按后缀分派给了哪一种处理程序（§六）。 */
+export interface UpdateInstallReport { path: string; kind: 'exe' | 'msix' }
 
 export interface NativeRuntime {
   isNative: boolean
@@ -625,6 +672,32 @@ export interface NativeRuntime {
    * `persisted` 为假时界面要如实说出来：本次不再提示，但重启之后同一个版本还会出现。
    */
   updateDismiss(version: string): Promise<UpdateDismissReport>
+  /**
+   * 「下载」：把**报告里选中的那一个**资产交给原生流式下载（计划书 §六）。
+   *
+   * 只由按下「下载」那一次发起 —— 检查那条路上没有任何下载调用（原生侧另有单测钉着）。
+   * 返回值只说"开工了没有"（`started`）：进度与终局走 `listenUpdateDownload`，那条事件是全局的，
+   * 所以另一个窗口先按下「下载」时这一边照样看得到进度。
+   *
+   * 浏览器预览没有原生宿主：返回 `undefined`，**不假装开工**。
+   */
+  updateDownload(version: string, asset: UpdateAsset): Promise<UpdateDownloadReport | undefined>
+  /**
+   * 「点击安装」：把已经下载好的安装包按后缀交给 Windows（`.exe` ⇒ 安装向导，`.msix` ⇒
+   * App Installer，§六）。
+   *
+   * 路径不由界面给：原生读状态文件里那一条（`downloadedPath`），所以界面无法让它打开任意文件。
+   * 开不起来时抛出的错误带一个码（`nothingDownloaded` / `installerMissing` / `unsupportedAsset` /
+   * `openFailed`），文案由界面按语言说。
+   */
+  updateInstall(): Promise<UpdateInstallReport | undefined>
+  /**
+   * 订阅下载进度与终局（原生 `update-download`）。
+   *
+   * 两个窗口都订阅同一条**全局**事件：气泡上的进度条与设置卡片上那行进度因此是同一份数据，
+   * 谁按下的「下载」都一样。
+   */
+  listenUpdateDownload(listener: (event: UpdateDownloadEvent) => void): Promise<() => void>
 }
 
 async function tauriAvailable(): Promise<boolean> {
@@ -1089,5 +1162,21 @@ export const nativeRuntime: NativeRuntime = {
     if (!await tauriAvailable()) return { dismissedVersion: version, persisted: false }
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<UpdateDismissReport>('update_dismiss', { version })
+  },
+  async updateDownload(version, asset) {
+    // 浏览器预览没有原生宿主，也就没有下载：返回 undefined 而不是一份"已开工"的回执。
+    if (!await tauriAvailable()) return undefined
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<UpdateDownloadReport>('update_download', { version, asset })
+  },
+  async updateInstall() {
+    if (!await tauriAvailable()) return undefined
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<UpdateInstallReport>('update_install')
+  },
+  async listenUpdateDownload(listener) {
+    if (!await tauriAvailable()) return () => undefined
+    const { listen } = await import('@tauri-apps/api/event')
+    return listen<UpdateDownloadEvent>('update-download', (event) => listener(event.payload))
   },
 }

@@ -922,11 +922,51 @@ export const zhFull = {
   'update.action.dismiss': '忽略',
   // 这次发布没有可安装资产时，主按钮说的就是它真正做的事（§3.1 的回落）。
   'update.action.release-page': '打开发布页',
+  // 第三片：下载完的主按钮、下载失败之后的那一枚（§四 的状态机）。
+  'update.action.install': '点击安装',
+  'update.action.retry': '重试',
   // 点下去之后没成：写不进状态文件、调用本身失败、发布页打不开。
   'update.notice.dismiss-unpersisted': '这条忽略记录没有写进状态文件；下次启动还会提示这个版本。',
   'update.notice.dismiss-failed': '忽略失败：{error}',
   'update.notice.check-failed': '更新检查没有完成：{error}',
   'update.notice.open-release-failed': '打开发布页失败：{error}',
+  // 第三片（下载与安装）的那几句。
+  'update.notice.listen-failed': '订阅下载进度失败：{error}（进度不会更新）',
+  'update.notice.download-failed': '下载没有开始：{error}',
+  'update.notice.update-unavailable': '这个环境里没有原生的下载与安装（浏览器预览）：请打开发布页获取安装包。',
+  'update.notice.install-failed': '安装没有起来：{error}',
+  'update.notice.install-handed-off': '已交给 Windows 的{target}，请在打开的窗口里确认。',
+  // `ready` 的正文：下载完、还没装（§四 的「点击安装」）。
+  'update.outcome.ready': '新版本 {version} 已下载',
+  // `downloading` 的正文（§四 的「正在下载 42%」）。总大小未知时说的是"已下载多少"：
+  // 百分比要有个分母，编一个出来就是假数据。
+  'update.progress.percent': '正在下载 {percent}%',
+  'update.progress.downloaded': '正在下载（已下载 {downloaded}）',
+  // `failed` 的正文：可读的原因（`{reason}` 填下面 `update.download.failure.*` 里的某一句）。
+  'update.download.failed': '下载失败：{reason}',
+  'update.download.failed-unstated': '下载失败',
+  // 下载/校验失败的原因（§六：网络、磁盘、路径、校验各有各的说法）。
+  'update.download.failure.destination-unavailable': '保存位置不可用（目录建不出来）',
+  'update.download.failure.write-failed': '文件写不下去（可能是权限或磁盘问题）',
+  'update.download.failure.disk-full': '磁盘空间不足',
+  'update.download.failure.size-mismatch': '文件大小与发布信息不符（应为 {expected}，实际 {actual}）',
+  'update.download.failure.digest-mismatch': '文件校验和不符（已删除这个文件）',
+  'update.download.failure.verification': '文件没有通过校验',
+  'update.download.failure.unknown': '下载没有完成',
+  // 原生**拒绝一次调用**时的那些码（`UpdateCommandError`）：文案必须是人话，不能是 `[object Object]`。
+  'update.call.forbidden': '这个窗口不能做这件事（只有壁纸与设置中心可以）',
+  'update.call.state-path-unavailable': '找不到更新的数据目录',
+  'update.call.invalid-version': '版本号不可比较，已拒绝',
+  'update.call.destination-unavailable': '保存位置不可用（版本号或文件名不合格）',
+  'update.call.untrusted-asset-url': '下载地址不是发布仓库（已拒绝）',
+  'update.call.nothing-downloaded': '没有找到下载好的安装包（没下过，或者下载记录没写进状态文件）',
+  'update.call.installer-missing': '下载好的安装包已经不在原来的位置了',
+  'update.call.unsupported-asset': '这个文件不是可安装的安装包（只认 .exe 与 .msix）',
+  'update.call.open-failed': 'Windows 没有打开这个安装包',
+  'update.call.unknown': '调用没有成功：{error}',
+  // 安装交给的是哪一种系统处理程序（§六 的按后缀分派）。
+  'update.install.target.exe': '安装向导',
+  'update.install.target.msix': 'App Installer',
 }
 
 /** 这一份的形状（`en.full.ts` 用它标注）。 */

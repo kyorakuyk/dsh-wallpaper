@@ -5,12 +5,22 @@
  * 这不是实现细节而是前提：壁纸窗口与设置窗口是两个 WebView、两份 JS 运行时，谁也看不见谁的
  * `useState` —— 它们唯一的共识只能来自那次检查往 `state.json` 里写下的东西。所以"检查"与
  * "忽略"都从原生进出，本模块只负责把报告翻译成界面要的东西。
+ *
+ * 第三片接上的三件事：
+ *
+ *  - 「下载」调原生 `update_download`（流式下载 + 校验），命令很快返回，只说"开工了没有"；
+ *  - `downloading` / `ready` / `failed` 三个状态**只由原生的 `update-download` 事件产生**
+ *    （[`applyDownloadEvent`]）—— 界面不自己编一个进度出来；
+ *  - 那条事件是**全局事件**，两个窗口都订阅：设置页按下「下载」时壁纸上的气泡也会走同一条
+ *    时间线（上一片发现"两个窗口之间没有推送"就是缺了它）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { msg, sentenceOf, type Message } from '../../i18n/index.ts'
-import { nativeRuntime, type UpdateCheckReport } from '../../native/runtime.ts'
-import { offeredUpdate, type UpdateOffer } from './updateState.ts'
+import { nativeRuntime, type UpdateCheckReport, type UpdateDownloadEvent } from '../../native/runtime.ts'
+import { listenUntilDisposed } from '../../runtime/lifecycle.ts'
+import { applyDownloadEvent, offeredUpdate, updatePhase, type UpdateDownloadState, type UpdateOffer, type UpdatePhase } from './updateState.ts'
+import { updateCallMessage } from './updateCopy.ts'
 
 /**
  * 一次性闸门：第一次返回 `true`，之后恒为 `false`。
@@ -41,9 +51,16 @@ export interface UpdateController {
   report?: UpdateCheckReport
   /** 手上这一枚值得提示的更新（已忽略、失败、已是最新都没有）。 */
   offer?: UpdateOffer
+  /**
+   * §四 的状态机。`downloading` / `ready` / `failed` 来自下载事件；`dismissed` 来自报告里原生
+   * 算好的 `dismissed`。气泡与设置卡片都按它分支。
+   */
+  phase: UpdatePhase
+  /** 手上这一条下载事件（进度、落盘位置或失败原因）；没有下载过时是 `undefined`。 */
+  download?: UpdateDownloadState
   /** 有原生调用在飞：按钮据此禁用，免得一次点击变成两次请求。 */
   busy: boolean
-  /** 气泡/卡片下面那行提示（忽略没落盘、打开发布页失败、调用被拒）。 */
+  /** 气泡/卡片下面那行提示（忽略没落盘、下载没起来、安装没起来、调用被拒）。 */
   notice?: Message
   /** 查一次。`manual` 为真时不受原生侧 6 小时节流限制（设置页的按钮与打开系统页那一次）。 */
   check(manual: boolean): Promise<UpdateCheckReport | undefined>
@@ -51,12 +68,22 @@ export interface UpdateController {
   checkIfDue(): void
   /** 记下某个版本已忽略（气泡与设置页共用的那一条）。 */
   dismiss(version: string): Promise<void>
-  /** 本片的「下载」：打开发布页（第三片换成真下载，见函数内注释）。 */
+  /**
+   * 「下载」：把报告里选中的资产交给原生流式下载（§六）。进度与终局从 [`UpdateController.download`]
+   * 回来 —— 也就是那条全局事件，不是这里的返回值。
+   *
+   * 这次发布没有可安装资产时按钮本来就是「打开发布页」（§3.1），所以这条路会直接打开它。
+   */
+  startDownload(): Promise<void>
+  /** 「点击安装」（`ready` 状态）：把已经下好的安装包按后缀交给 Windows（§六）。 */
+  install(): Promise<void>
+  /** 回落：打开发布页（§六 规定资产缺失或下载失败时提供它）。 */
   openReleasePage(): Promise<void>
 }
 
 export function useUpdate(): UpdateController {
   const [report, setReport] = useState<UpdateCheckReport>()
+  const [download, setDownload] = useState<UpdateDownloadState>()
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<Message>()
   /**
@@ -77,6 +104,29 @@ export function useUpdate(): UpdateController {
     inFlightRef.current = Math.max(0, inFlightRef.current - 1)
     if (inFlightRef.current === 0) setBusy(false)
   }
+
+  /**
+   * 下载进度与终局：**唯一**产生 `downloading` / `ready` / `failed` 的地方。
+   *
+   * 走 `listenUntilDisposed`（`runtime/lifecycle.ts`）而不是自己存一个 disposer：挂载后立刻卸载时
+   * 那个 promise 还没 settle，自己存就会把原生监听器漏在 WebView 里。
+   *
+   * 事件整份替换状态（[`applyDownloadEvent`]）：它自带版本、相位、字节数与终局原因，所以不需要
+   * 拿上一份状态做增量 —— 也就不会出现"上一轮的失败原因挂在这一轮的进度上"。
+   */
+  useEffect(() => {
+    const listener = listenUntilDisposed<UpdateDownloadEvent>(
+      (receive) => nativeRuntime.listenUpdateDownload(receive),
+      (event) => setDownload(applyDownloadEvent(event)),
+      {
+        onError: (error) => {
+          // 订阅不上就永远没有进度：如实说一句，而不是让进度条停在 0%（或干脆不动）。
+          setNotice(msg('update.notice.listen-failed', { error: sentenceOf(error) }))
+        },
+      },
+    )
+    return () => listener.dispose()
+  }, [])
 
   const check = useCallback(async (manual: boolean) => {
     const epoch = ++epochRef.current
@@ -131,6 +181,8 @@ export function useUpdate(): UpdateController {
   /** 回调要读"当下这一枚"，不能读闭包当初捕获的那一个（报告会被下一次检查换掉）。 */
   const offerRef = useRef<UpdateOffer>()
   offerRef.current = offer
+  /** §四 的状态机：报告给前三个状态，下载事件给后三个（`updatePhase` 里两处汇合）。 */
+  const phase = useMemo(() => updatePhase(report, download), [report, download])
 
   const openReleasePage = useCallback(async () => {
     const offer = offerRef.current
@@ -143,12 +195,9 @@ export function useUpdate(): UpdateController {
     setNotice(undefined)
     try {
       /**
-       * **本片是临时实现**：把这次 release 的发布页交给默认浏览器，用户自己去下。
-       *
-       * TODO（第三片）：换成原生侧的流式下载 + 进度事件 + 校验 + 交付安装器 —— 那时这里调
-       * `nativeRuntime.updateDownload(...)`、气泡进入 `downloading`（进度条）→ `ready`
-       * （「点击安装」）。**这条"打开发布页"要留着**：§六 规定资产缺席或下载失败时正是它
-       * 兜底，不是被删掉。
+       * §六 的回落路径：把这次 release 的发布页交给默认浏览器。资产缺席、下载失败、或者用户自己
+       * 想手动去下，走的都是它 —— 它不是"临时实现"，是设计里的兜底（第三片把它从主按钮挪到了
+       * 回落按钮上）。
        */
       await nativeRuntime.openExternalLink(offer.releaseUrl)
     } catch (error) {
@@ -158,9 +207,87 @@ export function useUpdate(): UpdateController {
     }
   }, [])
 
+  /**
+   * 「下载」：交给原生流式下载（§六）。
+   *
+   * **这一颗按钮是唯一的下载入口**：检查那条路（`check` / `checkIfDue`）里没有它，命令的调用点
+   * 也全在这一段里 —— "打开壁纸就自动下 30 MB"这件事在代码里不存在（原生侧另有单测钉着
+   * `run_check` 里没有下载调用）。
+   *
+   * 这里**不预置 `downloading`**：进度条要等原生第一条进度事件回来才出现。界面自己先摆一个进度条
+   * 出来就是"假装下载"（第二片那条测试的翻转版：三个状态必须由**真实事件**驱动）。
+   */
+  const downloadUpdate = useCallback(async () => {
+    const offer = offerRef.current
+    if (!offer) {
+      console.warn('update: no offered release to download')
+      return
+    }
+    if (!offer.asset) {
+      // 这次发布没有可安装资产：主按钮本来就是「打开发布页」（§3.1 的回落），走同一条路。
+      await openReleasePage()
+      return
+    }
+    beginWork()
+    setNotice(undefined)
+    try {
+      const report = await nativeRuntime.updateDownload(offer.version, offer.asset)
+      if (!report) {
+        // 浏览器预览没有原生宿主：如实说，而不是让按钮看起来"点了没反应"。
+        setNotice(msg('update.notice.update-unavailable'))
+      }
+      // `started === false`：同一时刻已经有一次下载在跑（多半是另一个窗口按的）。什么都不用做
+      // —— 那条事件是全局的，这一边的进度条照样会跟着走。
+    } catch (error) {
+      setNotice(msg('update.notice.download-failed', { error: updateCallMessage(error) }))
+    } finally {
+      endWork()
+    }
+  }, [openReleasePage])
+
+  /**
+   * 「点击安装」：把下载好的安装包按后缀交给 Windows（§六）。
+   *
+   * 交给之后由系统界面接着走（安装向导 / App Installer），壁纸这边停在 `ready` 并说一句"已经
+   * 交出去了" —— 不假装装好了（装没装成只有用户看得见）。
+   */
+  const install = useCallback(async () => {
+    beginWork()
+    setNotice(undefined)
+    try {
+      const result = await nativeRuntime.updateInstall()
+      if (!result) {
+        setNotice(msg('update.notice.update-unavailable'))
+        return
+      }
+      setNotice(
+        msg('update.notice.install-handed-off', {
+          target: result.kind === 'msix' ? msg('update.install.target.msix') : msg('update.install.target.exe'),
+        }),
+      )
+    } catch (error) {
+      setNotice(msg('update.notice.install-failed', { error: updateCallMessage(error) }))
+    } finally {
+      endWork()
+    }
+  }, [])
+
   return useMemo(
-    () => ({ report, offer, busy, notice, check, checkIfDue, dismiss, openReleasePage }),
-    [report, offer, busy, notice, check, checkIfDue, dismiss, openReleasePage],
+    () => ({
+      report,
+      offer,
+      phase,
+      download,
+      busy,
+      notice,
+      check,
+      checkIfDue,
+      dismiss,
+      startDownload: downloadUpdate,
+      install,
+      openReleasePage,
+    }),
+    [report, offer, phase, download, busy, notice, check, checkIfDue, dismiss, downloadUpdate, install, openReleasePage],
   )
 }
 

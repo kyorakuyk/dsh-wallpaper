@@ -31,6 +31,38 @@
   gap: 8px;
 }
 
+/* 进度条（§四 的 downloading）。总大小未知时只有底槽、填充条淡着缓慢流动：那是不定态，
+   不是"0%" —— 与界面那句"已下载 x"是同一件事的两种画法。 */
+.update-bubble__progress {
+  position: relative;
+  display: block;
+  height: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(157, 210, 255, .22);
+  border-radius: 999px;
+  background: rgba(12, 28, 48, .62);
+}
+
+.update-bubble__progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--bubble-primary) 74%, rgba(255, 255, 255, .22)), var(--bubble-accent));
+  /* 0.2 秒的线性过渡：进度事件本身就是每 ~200 毫秒一条，条子跟着平滑挪而不是一跳一跳。 */
+  transition: width .2s linear;
+}
+
+.update-bubble__progress[data-known='unknown'] .update-bubble__progress-fill {
+  width: 100%;
+  opacity: .34;
+  animation: update-bubble-progress 1.4s ease-in-out infinite;
+}
+
+@keyframes update-bubble-progress {
+  0%, 100% { opacity: .22; }
+  50% { opacity: .46; }
+}
+
 .update-bubble__action {
   min-height: 30px;
   flex: 1 1 auto;

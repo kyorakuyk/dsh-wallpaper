@@ -1,20 +1,23 @@
-//! 更新检测：原生侧（第一片）。
+//! 更新检测：原生侧（第一片）＋ 下载与安装（第三片）。
 //!
-//! 依据 `docs/plans/wallpaper-update-detection-plan.md`。这一片只做"查"：读本机版本（按安装形态
-//! 分派）、解析 release 标签并比较、打一次 GitHub API、把状态落盘。下载与安装是第二片、界面是
-//! 第三片 —— 但这条命令返回的**码**已经按它们的需要定好。
+//! 依据 `docs/plans/wallpaper-update-detection-plan.md`。第一片只做"查"：读本机版本（按安装
+//! 形态分派）、解析 release 标签并比较、打一次 GitHub API、把状态落盘；第三片接上"下"与"装"：
+//! 流式下载 + 进度事件 + 校验 + 把文件交给 Windows 的处理程序。界面在 `wallpaper/src/features/update/`。
 //!
-//! 三条贯穿整片的规矩：
+//! 四条贯穿整片的规矩：
 //!
 //!  - **宁可漏报，不可误报**（计划书 §三）：标签解析不出、版本读不到、资产选不到，一律按
 //!    "没有新版本"或"不检查"处理，绝不猜一个数字出来；
 //!  - **与安装形态无关**（§3.1）：MSIX 与 NSIS 各有一条版本读取器，安装那一步按资产后缀分派，
 //!    所以将来换打包方式只改 release、不改代码；
 //!  - **界面自己说文案**（§四、`wallpaper/src/i18n/`）：命令只回码、数字、版本号与地址，
-//!    一句中文句子都不回。
+//!    一句中文句子都不回；
+//!  - **不在检查时下载**（§六）：下载只由界面按下「下载」那一次发起（`update_download`），
+//!    `run_check` 这条路上没有任何下载调用。
 //!
 //! 模块划分：`version`（版本与安装形态）、`release`（release 文档与资产选择）、`source`（唯一
-//! 碰网络的地方）、`state`（状态文件与 6 小时节流）、`commands`（命令与整条流程）。
+//! 碰网络的地方）、`download`（流式下载、校验与进度事件）、`state`（状态文件与 6 小时节流）、
+//! `commands`（命令与整条流程）。
 mod release;
 mod source;
 mod state;
@@ -25,6 +28,7 @@ mod version;
 // 整块只在完整版里存在（`mod update` 在 `lib.rs` 里本身就按 edition 门控），所以这里不再逐项加
 // `#[cfg(not(feature = "lite"))]`：那只会让人以为存在"Lite 也能编译这个模块"的情形。
 pub(crate) mod commands;
+pub(crate) mod download;
 
 use serde::{Deserialize, Serialize};
 

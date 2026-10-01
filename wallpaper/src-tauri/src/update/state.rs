@@ -47,9 +47,12 @@ pub(crate) struct UpdateState {
     pub checked_at_ms: Option<u64>,
     /// 用户按过「忽略」的那**一个**版本（§四：忽略记录的是具体版本，不是"忽略全部"）。
     pub dismissed_version: Option<String>,
-    /// 已下载资产的落盘位置（第二片下载完成后写）。
+    /// 已下载资产的落盘位置（`update_download` 成功时写；§六 的 `<版本>\<资产名>`）。
     pub downloaded_path: Option<String>,
-    /// 已下载资产的 sha256（第二片校验用；API 没给 `digest` 时留空）。
+    /// 已下载资产算出来的 sha256（`sha256:<hex>`）。
+    ///
+    /// API 给了 `digest` 时它就是**核对过**的那个值；没给时仍然写下来（文件在盘上的实际摘要），
+    /// 只是那一次没有可核对的对象（§六 只要求"有 digest 时"核对）。
     pub downloaded_sha256: Option<String>,
     /// 上一次检查的结论。
     pub last_outcome: Option<CheckOutcome>,
