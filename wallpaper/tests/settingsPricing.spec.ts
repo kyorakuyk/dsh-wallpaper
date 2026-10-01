@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { t } from '../src/i18n/index.ts'
 import { MAX_PRICE_PER_MILLION, normalizeSettings, normalizedPrice } from '../src/settings/store.ts'
 import { PriceInput, SettingsPanel } from '../src/settings/SettingsPanel.tsx'
+import { settingsPanelProps } from './settingsPanelFixture.ts'
 
 describe('API pricing setting normalization', () => {
   it('keeps valid zero pricing but rejects malformed or unsafe rates', () => {
@@ -64,71 +65,20 @@ describe('价格输入冻结之后', () => {
   }
 
   /**
-   * 一份能真的渲染出「连接」页的设置面板。
-   *
-   * 价格**故意配好**（0 与 4：零是有效配置，见上面那条归一化测试）—— 这样"渲染里没有输入框"
+   * 价格那两项**故意配好**（0 与 4：零是有效配置，见上面那条归一化测试）—— 这样"渲染里没有输入框"
    * 就不是因为"没什么可显示"，而是因为它确实被冻住了。语言是当前语言（默认中文），面板与这里的
    * `t()` 取的是同一份，所以两侧不会错位。
+   *
+   * 面板 props 的其余部分来自 `settingsPanelFixture.ts`（原来长在这里，见那边的说明）。
    */
   function panelProps() {
     const settings = normalizeSettings({})
-    return {
+    return settingsPanelProps({
       settings: {
         ...settings,
         deepseekApi: { ...settings.deepseekApi, priceInputPerMillion: 0, priceOutputPerMillion: 4 },
       },
-      page: 'connections' as const,
-      onPageChange: () => undefined,
-      harnessStatus: 'offline' as const,
-      onChange: () => undefined,
-      onRequestDeepSeekLogin: () => undefined,
-      apiKeyDraft: '',
-      onApiKeyDraftChange: () => undefined,
-      apiKeyBusy: false,
-      onTestApiKey: () => undefined,
-      onRefreshApiModels: () => undefined,
-      apiModelCatalog: [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }],
-      onSelectBackend: () => undefined,
-      onClose: () => undefined,
-      interactionEnabled: false,
-      onSetInteractionEnabled: () => undefined,
-      harnessTargets: [],
-      onSelectSubject: () => undefined,
-      autostart: { enabled: false, source: 'none' as const, reason: null },
-      onScanDsh: () => undefined,
-      dshScanBusy: false,
-      endpointScan: [],
-      endpointScanBusy: false,
-      endpointScanDone: false,
-      onScanEndpoints: () => undefined,
-      onOpenClient: () => undefined,
-      onOpenTui: () => undefined,
-      onSelectWindow: () => undefined,
-      tuiAvailable: false,
-      reachAction: 'browser' as const,
-      openBusy: false,
-      managedDsh: { instances: [], managed: false, running: false },
-      managedDshBusy: false,
-      onRefreshManagedDsh: () => undefined,
-      onStopAllManagedDsh: () => undefined,
-      onRefreshDeepSeekWebAdapterConfig: () => undefined,
-      onOpenDeepSeekWebAdapterConfig: () => undefined,
-      onResetDeepSeekWebAdapterConfig: () => undefined,
-      appearanceAssets: [],
-      appearanceOverrides: {},
-      appearanceBusy: false,
-      onImportAppearance: () => undefined,
-      onClassifyAppearance: () => undefined,
-      onSelectAppearance: () => undefined,
-      onClearAppearance: () => undefined,
-      autostartBusy: false,
-      desktopDisplays: [],
-      onRefreshDesktopDisplays: () => undefined,
-      apiHistoryBusy: false,
-      onRefreshApiHistory: () => undefined,
-      onDeleteApiConversation: () => undefined,
-      onClearApiHistory: () => undefined,
-    }
+    })
   }
 
   it('renders the connections page without either price input, even with both prices configured', () => {
