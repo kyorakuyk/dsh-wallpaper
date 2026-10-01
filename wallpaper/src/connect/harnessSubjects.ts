@@ -10,6 +10,7 @@
  * that owns them: a checkout's path *is* its identity, and the user asked for it
  * by adopting that directory.
  */
+import { t } from '../i18n/index.ts'
 import type { HarnessLaunchOutcome, HarnessTarget } from '../native/runtime.ts'
 
 /** The user-facing class name, which is also the reason the classes behave
@@ -22,9 +23,9 @@ export function subjectKindLabel(kind: HarnessTarget['kind']): string {
   // choosing between is a client that brings its own runtime, a source directory of
   // their own, and (2026-09-27) a DSH CLI installed on this machine with npm. The
   // labels say that, and the word 检出 never appears in the settings surface.
-  if (kind === 'embedded-shell') return '客户端'
-  if (kind === 'installed-cli') return '已安装的 CLI'
-  return '源码目录'
+  if (kind === 'embedded-shell') return t('harness.subject.kind.embedded-shell')
+  if (kind === 'installed-cli') return t('harness.subject.kind.installed-cli')
+  return t('harness.subject.kind.checkout')
 }
 
 /**
@@ -73,7 +74,7 @@ export function subjectDetail(target: HarnessTarget): string {
   return target.kind === 'embedded-shell'
     // A shell needs no configuration at all, and saying so is the useful part: the
     // user would otherwise look for the path field we deliberately hid for it.
-    ? '客户端自带运行环境，不需要填路径。'
+    ? t('harness.subject.detail.shell')
     : target.identity.rootPath ?? target.source
 }
 
@@ -105,7 +106,7 @@ export function reachNeedsBrowser(outcome: string): boolean {
 export function subjectChoicePrompt(targets: readonly HarnessTarget[]): string | null {
   const checkouts = targets.filter((target) => target.kind === 'checkout')
   if (checkouts.length < 2) return null
-  return `检测到您电脑上安装了 ${checkouts.length} 个 deepseek harness 源码树，请选择默认主体。`
+  return t('harness.subject.choice-prompt', { count: checkouts.length })
 }
 
 /**
@@ -124,11 +125,11 @@ export function subjectChoicePrompt(targets: readonly HarnessTarget[]): string |
  */
 export function catalogAgeLabel(verifiedAtMs: number, now = Date.now()): string {
   const minutes = Math.max(0, Math.floor((now - verifiedAtMs) / 60_000))
-  if (minutes < 1) return '刚刚验证'
-  if (minutes < 60) return `${minutes} 分钟前验证`
+  if (minutes < 1) return t('harness.subject.age.just-now')
+  if (minutes < 60) return t('harness.subject.age.minutes', { minutes })
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} 小时前验证`
-  return `${Math.floor(hours / 24)} 天前验证`
+  if (hours < 24) return t('harness.subject.age.hours', { hours })
+  return t('harness.subject.age.days', { days: Math.floor(hours / 24) })
 }
 
 /**
@@ -244,7 +245,7 @@ export function subjectOptionLabel(
   // 客户端与 CLI 的名字本身已经说清自己是什么（"官方桌面客户端"/"DSH CLI"），再冠一次类别词就是
   // 同一件事说两遍 —— 用户实测点名了这一点。只有源码目录的名字是个仓库名，必须带类别词。
   if (target.kind !== 'checkout') return `${target.label}${suffix}`
-  return `源码目录 · ${subjectName(target, all, aliases)}${suffix}`
+  return t('harness.subject.option.checkout', { name: subjectName(target, all, aliases), version: suffix })
 }
 
 /**
@@ -281,7 +282,7 @@ export function instanceLabel(
   targets: readonly HarnessTarget[],
   aliases?: Readonly<Record<string, string>>,
 ): string {
-  return `${instanceDisplayName(subjectId, targets, aliases)} · ${port ?? '端口未确认'}`
+  return `${instanceDisplayName(subjectId, targets, aliases)} · ${port ?? t('harness.subject.instance.port-unknown')}`
 }
 export function launchOutcomeNotice(outcome: {
   outcome: string
@@ -290,37 +291,39 @@ export function launchOutcomeNotice(outcome: {
 }): string | null {
   // One noun per class, the same two the subject list uses, so a result line and the
   // row it refers to cannot read as two different things.
-  const label = outcome.kind === 'embedded-shell' ? '客户端' : '源码目录'
+  const label = outcome.kind === 'embedded-shell'
+    ? t('harness.subject.kind.embedded-shell')
+    : t('harness.subject.kind.checkout')
   switch (outcome.outcome) {
     case 'started':
       // A hidden start is the one case where "started" is not the whole story:
       // the user would otherwise go looking for a window that is deliberately not
       // on screen yet.
       return outcome.hidden
-        ? `已启动${label}，窗口已在后台；需要用「拉起窗口」把它调出来。`
-        : `已启动${label}。`
+        ? t('harness.subject.launch.started-hidden', { label })
+        : t('harness.subject.launch.started', { label })
     case 'started-unconfirmed':
-      return `${label}接受了启动请求，但在超时时间内没有应答；它可能仍在启动，稍后刷新即可。`
+      return t('harness.subject.launch.started-unconfirmed', { label })
     case 'already-running':
-      return `${label}已在运行；本应用不会接管、重启或停止它。`
+      return t('harness.subject.launch.already-running', { label })
     case 'unknown-target':
       // "执行主体" is this plan's word for what runs the Harness; a user has no
       // reason to learn it, so the sentence names the missing act instead.
-      return '还没有选好要启动谁，请先扫描并选择一个。'
+      return t('harness.subject.launch.unknown-target')
     case 'root-path-invalid':
       // Names what is wrong with the *thing the user picked*, and the one action
       // that fixes it. A path is deliberately not repeated here: the row they
       // clicked already shows it.
-      return '这个目录不是可用的 DSH 源码目录，请重新扫描后选择。'
+      return t('harness.subject.launch.root-path-invalid')
     case 'launcher-missing':
       // The only entry that cannot avoid a system name: the fix is to install one of
       // two programs or point at their location, so naming them is the actionable
       // half, while PATH stays out of the sentence. 这一项**不再**把用户引向「启动命令」——
       // 那个设置已经不在了（现在只有「启动参数」，而它加不了参数以外的任何东西），
       // 指向一个不存在的入口比不说更坏。
-      return '找不到用来启动它的程序：请确认 Node.js 或 pnpm 已安装，并能在命令提示符里直接运行。'
+      return t('harness.subject.launch.launcher-missing')
     case 'profile-invalid':
-      return 'profile 无效：只能包含字母、数字、连字符或下划线。'
+      return t('harness.subject.launch.profile-invalid')
     case 'port-occupied-external':
       // The port number is an implementation fact; the user's situation is that
       // something is already running and this application is leaving it alone.
@@ -328,10 +331,10 @@ export function launchOutcomeNotice(outcome: {
       // 一个实例"。本 build 里「启动参数」不在界面上（它随这次冻结一起关掉了），把用户指向一个
       // 不存在的入口比不说更坏 —— 指向不存在的入口正是这个项目一直在修的那种失败。恢复办法：
       // 把原来那半句加回来（它随「启动参数」一起复活）。
-      return '本机已有别的程序占用该端口（不是本应用启动的），因此没有重复启动，也不会去接管或停止它。'
+      return t('harness.subject.launch.port-occupied-external')
     default:
       // No code, no path: the log does name both, and that is where a bug report
       // should come from rather than from a dialog.
-      return '启动没有成功。日志里有这次启动的完整记录，可用于排查。'
+      return t('harness.subject.launch.failed')
   }
 }

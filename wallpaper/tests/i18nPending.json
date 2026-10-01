@@ -24,28 +24,12 @@
     25
   ],
   [
-    "src/connect/harnessSubjects.ts",
-    22
-  ],
-  [
     "src/features/appearance/AppearanceDrawer.tsx",
     22
   ],
   [
-    "src/features/chat/conversationViewModel.ts",
-    16
-  ],
-  [
     "src/features/appearance/appearanceViewModel.ts",
     14
-  ],
-  [
-    "src/connect/harnessLabels.ts",
-    11
-  ],
-  [
-    "src/settings/autostartCopy.ts",
-    10
   ],
   [
     "src/native/runtime.ts",

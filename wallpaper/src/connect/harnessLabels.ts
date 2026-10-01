@@ -8,20 +8,29 @@
  *
  * Nothing here may carry a token, a filesystem path, or a raw exception.
  */
+import { t } from '../i18n/index.ts'
 import type { HarnessAvailability } from '../connect/harness.ts'
 
-/** One sentence per non-ready state: what is missing and what fixes it. */
+/**
+ * One sentence per non-ready state: what is missing and what fixes it.
+ *
+ * Read through getters rather than filling the record once at module load: the
+ * language is restored from the settings document *after* startup, so a value
+ * captured at import time would still be the Chinese one in an English window.
+ * `bridge-ready` is the absence of a problem, so it has no sentence at all - and
+ * the dictionaries do not take an empty entry, which is why that `''` stays here.
+ */
 export const HARNESS_STATE_DETAILS: Record<HarnessAvailability, string> = {
-  offline: '未能连接到本机的 DSH 壁纸 Bridge。',
-  'web-only': '检测到 DSH 服务，但壁纸 Bridge 未安装、未启动或不兼容。',
-  'bridge-loading': 'DSH 壁纸 Bridge 已启动，正在装载会话服务。',
-  'bridge-auth-unavailable': 'DSH 壁纸 Bridge 已启动，但本机访问令牌不可用，请重启壁纸应用。',
+  get offline() { return t('harness.detail.offline') },
+  get 'web-only'() { return t('harness.detail.web-only') },
+  get 'bridge-loading'() { return t('harness.detail.bridge-loading') },
+  get 'bridge-auth-unavailable'() { return t('harness.detail.bridge-auth-unavailable') },
   // A Bridge that is present but answers an older or narrower contract lands
   // here, which is the common "stale copy in the profile" case rather than a
   // hypothetical future version. Name the installation, not just "version
   // mismatch", so the user knows the fix is to update the Bridge plugin.
-  'bridge-incompatible': 'DSH 壁纸 Bridge 的版本或能力与本壁纸不兼容（profile 内可能是过旧的副本），请更新 Bridge 后重试。',
-  'bridge-ready': '',
+  get 'bridge-incompatible'() { return t('harness.detail.bridge-incompatible') },
+  get 'bridge-ready'() { return '' },
 }
 
 /**
@@ -49,12 +58,12 @@ export function harnessStateLabel(
   // 黄灯只有一种含义：**还没定**。所以凡是黄灯（正在连、正在装载、就绪过的桥接暂时失联还没判死）
   // 一律说"连接中"，绝不在呼吸着的同时写着"已连接" —— 那句话属于上一条连接，用户读到的却是
   // "能用了"，于是发消息才发现会话根本没建立。这是实测过的症状，不是假想。
-  if (probing || availability === 'bridge-loading') return '连接中'
+  if (probing || availability === 'bridge-loading') return t('harness.label.connecting')
   switch (availability) {
-    case 'bridge-ready': return 'DSH Bridge 已连接'
-    case 'bridge-auth-unavailable': return 'DSH Bridge 令牌不可用'
-    case 'bridge-incompatible': return 'DSH Bridge 版本不兼容'
-    case 'web-only': return 'DSH 在线，缺少 Bridge'
-    default: return 'DSH 当前离线'
+    case 'bridge-ready': return t('harness.label.bridge-ready')
+    case 'bridge-auth-unavailable': return t('harness.label.bridge-auth-unavailable')
+    case 'bridge-incompatible': return t('harness.label.bridge-incompatible')
+    case 'web-only': return t('harness.label.web-only')
+    default: return t('harness.label.offline')
   }
 }

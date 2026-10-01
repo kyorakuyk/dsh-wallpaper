@@ -1,3 +1,4 @@
+import { t } from '../i18n/index.ts'
 import type { AutostartStatus } from '../native/runtime.ts'
 
 /**
@@ -31,23 +32,23 @@ export function autostartDetail(status: AutostartStatus): string {
   switch (status.source) {
     case 'startup-task':
       return status.enabled
-        ? '登录后由 Windows 启动任务启动本应用。'
-        : `Windows 启动任务未启用。${cause}`.trim()
+        ? t('autostart.detail.startup-task')
+        : `${t('autostart.detail.startup-task.disabled')}${cause}`.trim()
     case 'run':
       // The compatibility entry is the normal path for an unpackaged build and
       // the fallback for a package Windows refuses to register a task for; in
       // both cases it really is what starts the app at logon, so say so.
-      return `登录后由当前用户启动项启动本应用。${cause}`.trim()
+      return `${t('autostart.detail.run')}${cause}`.trim()
     case 'disabled-by-user':
-      return status.reason ?? 'Windows 已禁用本应用的开机启动。'
+      return status.reason ?? t('autostart.detail.disabled-by-user')
     case 'disabled-by-policy':
-      return status.reason ?? 'Windows 策略禁止本应用开机启动。'
+      return status.reason ?? t('autostart.detail.disabled-by-policy')
     case 'unsupported':
-      return status.reason ?? '当前系统不支持本应用的开机自启。'
+      return status.reason ?? t('autostart.detail.unsupported')
     default:
       // Rust always names a cause when it reports "nothing is in effect"; a
       // missing one means this page has not heard back yet.
-      return status.reason ?? '正在读取 Windows 的启动状态…'
+      return status.reason ?? t('autostart.detail.reading')
   }
 }
 
@@ -60,7 +61,7 @@ export function autostartDetail(status: AutostartStatus): string {
  */
 export function autostartRefusalNotice(status: AutostartStatus, requested: boolean): string | null {
   if (status.enabled === requested) return null
-  const wanted = requested ? '打开' : '关闭'
-  if (status.reason) return `开机自启没有${wanted}：${status.reason}`
-  return `开机自启没有${wanted}；Windows 没有接受这次变更，请在系统设置的「启动应用」里检查本应用。`
+  const wanted = t(requested ? 'autostart.refusal.wanted-on' : 'autostart.refusal.wanted-off')
+  if (status.reason) return t('autostart.refusal.with-reason', { wanted, reason: status.reason })
+  return t('autostart.refusal.generic', { wanted })
 }

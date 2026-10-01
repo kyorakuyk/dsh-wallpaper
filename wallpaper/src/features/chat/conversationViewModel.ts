@@ -1,3 +1,4 @@
+import { t } from '../../i18n/index.ts'
 import type { Activity, BackendMode, ChatMessage, TokenUsage } from '../../domain/types.ts'
 
 export interface BackendPresentation {
@@ -7,19 +8,41 @@ export interface BackendPresentation {
   experimental: boolean
 }
 
+/**
+ * The wording is read through getters rather than filled in once at module load:
+ * the language is restored from the settings document after startup, so a value
+ * captured at import time would keep showing the wrong language. `shortName` is a
+ * product name (`DeepSeek Web`, `Harness`) and is the same in both languages.
+ */
 export const BACKEND_PRESENTATION: Record<BackendMode, BackendPresentation> = {
-  'deepseek-web': { name: 'DeepSeek 网页桥接', shortName: 'DeepSeek Web', description: '免费 · 实验能力', experimental: true },
-  'deepseek-api': { name: 'DeepSeek API', shortName: 'DeepSeek API', description: '按量计费', experimental: false },
-  harness: { name: 'DeepSeek Harness', shortName: 'Harness', description: '本地工具会话', experimental: false },
+  'deepseek-web': {
+    get name() { return t('chat.backend.deepseek-web.name') },
+    shortName: 'DeepSeek Web',
+    get description() { return t('chat.backend.deepseek-web.description') },
+    experimental: true,
+  },
+  'deepseek-api': {
+    name: 'DeepSeek API',
+    shortName: 'DeepSeek API',
+    get description() { return t('chat.backend.deepseek-api.description') },
+    experimental: false,
+  },
+  harness: {
+    name: 'DeepSeek Harness',
+    shortName: 'Harness',
+    get description() { return t('chat.backend.harness.description') },
+    experimental: false,
+  },
 }
 
+/** Same reason as above: these are read while rendering, not once at import. */
 export const ACTIVITY_LABEL: Record<Activity, string> = {
-  idle: '待命',
-  sending: '正在发送',
-  thinking: '正在思考',
-  streaming: '正在回复',
-  tool: '正在使用工具',
-  done: '已完成',
+  get idle() { return t('chat.activity.idle') },
+  get sending() { return t('chat.activity.sending') },
+  get thinking() { return t('chat.activity.thinking') },
+  get streaming() { return t('chat.activity.streaming') },
+  get tool() { return t('chat.activity.tool') },
+  get done() { return t('chat.activity.done') },
 }
 
 export function isBusyActivity(activity: Activity): boolean {
@@ -52,7 +75,7 @@ export function usageTokenCount(usage?: TokenUsage): number | undefined {
 }
 
 export function formatCost(cost: number, estimated = false): string {
-  return `${estimated ? '约 ' : ''}¥${cost.toFixed(4)}`
+  return `${estimated ? t('chat.cost.approx') : ''}¥${cost.toFixed(4)}`
 }
 
 /**
@@ -74,14 +97,16 @@ export function turnUsageSummary(
   backend: BackendMode,
   apiPricingConfigured: boolean,
 ): TurnUsageSummary {
-  const unavailable = '未提供'
+  const unavailable = t('chat.usage.unavailable')
   if (!usage) {
     return {
       available: false,
       input: unavailable,
       output: unavailable,
       cacheRead: unavailable,
-      cost: backend === 'deepseek-api' && !apiPricingConfigured ? '价格未配置' : '费用未提供',
+      cost: backend === 'deepseek-api' && !apiPricingConfigured
+        ? t('chat.usage.price-unconfigured')
+        : t('chat.usage.cost-unavailable'),
     }
   }
   return {
@@ -90,13 +115,15 @@ export function turnUsageSummary(
     output: String(usage.output),
     cacheRead: usage.cacheRead === undefined ? unavailable : String(usage.cacheRead),
     cost: usage.cost === undefined
-      ? backend === 'deepseek-api' && !apiPricingConfigured ? '价格未配置' : '费用未提供'
+      ? backend === 'deepseek-api' && !apiPricingConfigured
+        ? t('chat.usage.price-unconfigured')
+        : t('chat.usage.cost-unavailable')
       : formatCost(usage.cost, usage.estimated),
   }
 }
 
 export function composerPlaceholder(disabled: boolean, activity: Activity): string {
-  if (disabled) return '当前模式暂不可用'
-  if (isBusyActivity(activity)) return '大肥鱼正在处理上一条消息…'
-  return '今天要一起处理什么？'
+  if (disabled) return t('chat.composer.disabled')
+  if (isBusyActivity(activity)) return t('chat.composer.busy')
+  return t('chat.composer.placeholder')
 }
