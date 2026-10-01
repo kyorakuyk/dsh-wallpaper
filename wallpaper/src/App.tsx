@@ -54,7 +54,7 @@ import { WidgetHost } from './widgets/WidgetHost.tsx'
 import { displayCssRect, displayTopologySignature, displayUiScale, preferredDisplayId, virtualDesktopBounds } from './runtime/displayLayout.ts'
 import { listenUntilDisposed } from './runtime/lifecycle.ts'
 import { frameSchedulerTarget, StreamTextBuffer } from './features/chat/streamRender.ts'
-import { formatSentence, msg, sentenceOf, t, useLanguage, type Message, type Sentence } from './i18n/index.ts'
+import { formatSentence, msg, sentenceOf, t, useLanguage, useStoredLanguage, type Message, type Sentence } from './i18n/index.ts'
 
 const registry = new PersonaRegistry()
 
@@ -610,6 +610,8 @@ export function App({ surface = 'combined' }: AppProps) {
    */
   const language = useLanguage()
   const [settings, setSettings] = useState<WallpaperSettings>(() => loadSettings())
+  // 语言以设置文档为准：启动时回填、另一个窗口切过来时跟上（两个 WebView 各有一份运行时）。
+  useStoredLanguage(settings.language)
   const [runtime, baseDispatch] = useReducer(reduceRuntime, { ...INITIAL_RUNTIME_STATE, backend: settings.defaultBackend })
   const [resolvedAssets, setResolvedAssets] = useState<Partial<Record<AppearanceSlot, string>>>({})
   const [messages, setMessages] = useState<ChatMessage[]>([])

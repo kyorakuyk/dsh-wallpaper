@@ -46,7 +46,7 @@ import {
 import { chooseAppearanceImportPaths, nativeAppearance } from '../native/appearance.ts'
 import type { AppearanceAssetSummary } from '../features/appearance/appearanceViewModel.ts'
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
-import { formatSentence, msg, sentenceOf, t, useLanguage, type Sentence } from '../i18n/index.ts'
+import { formatSentence, msg, sentenceOf, t, useLanguage, useStoredLanguage, type Sentence } from '../i18n/index.ts'
 import './SettingsWindow.css'
 
 
@@ -129,6 +129,8 @@ export function SettingsWindow() {
   const [catalogVerifiedAt, setCatalogVerifiedAt] = useState<number>()
   // 本机有没有 TUI：由扫描结果带回来，决定要不要给出「终端里的 TUI」这个选项。
   const [tuiAvailable, setTuiAvailable] = useState(false)
+  // 与壁纸窗口同一条规矩：语言由设置文档推导，两个窗口都跟得上。
+  useStoredLanguage(settings.language)
   const [managedDsh, setManagedDsh] = useState<ManagedDshStatus>({ instances: [], managed: false, running: false })
   /**
    * 停止/刷新是否在飞。

@@ -8,7 +8,7 @@
  *
  * 词条编译进产物（不做运行时加载语言包）：少一次 IO，也少一类"语言包没加载出来"的故障。
  */
-import { useSyncExternalStore } from 'react'
+import { useEffect, useSyncExternalStore } from 'react'
 
 import { en } from './en'
 import { zh, type Dict, type MessageKey } from './zh'
@@ -65,6 +65,22 @@ export function t(key: MessageKey, params?: Record<string, string | number>): st
   return raw.replace(/\{(\w+)\}/g, (match, name: string) =>
     Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : match,
   )
+}
+
+/**
+ * 把**设置文档里的语言**应用到运行时。
+ *
+ * 为什么必须有这条：设置窗口与壁纸窗口是两个独立 WebView，各自一份 JS 运行时。切换动作
+ * （下拉）只发生在设置窗口，它调用 `setLanguage()` 只改到自己那一份；壁纸窗口要靠**设置文档
+ * 的广播**才跟得上。而且重启后，存下来的选择也必须有人应用 —— 曾经没有任何地方这么做，
+ * 于是"切了英文、桌面还是中文"，且重启后又变回中文（用户第一次看到的就是这个）。
+ *
+ * 所以运行时语言应当**由设置推导**，而不是由"用户点过下拉"这个动作决定。两个窗口都调用它。
+ */
+export function useStoredLanguage(language: Language): void {
+  useEffect(() => {
+    setLanguage(language)
+  }, [language])
 }
 
 /** 组件里订阅语言变化；语言一变，用到 `t()` 的组件就会重渲染。 */
