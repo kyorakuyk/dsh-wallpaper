@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../domain/types.ts'
+import { t } from '../i18n/index.ts'
 import { nativeRuntime } from '../native/runtime.ts'
 import { EventChatAdapter, type SendOptions } from './adapter.ts'
 
@@ -85,7 +86,7 @@ export class DeepSeekWebAdapter extends EventChatAdapter {
     this.connected = true
     this.emit({ type: 'model', provider: 'deepseek-web', model: status.model ?? 'deepseek-chat', tier: 'unknown' })
     if (status.state === 'unsupported') {
-      this.emit({ type: 'error', code: 'DEEPSEEK_WEB_UNSUPPORTED', recoverable: true, message: 'DeepSeek 网页结构无法识别，网页桥接需要更新。' })
+      this.emit({ type: 'error', code: 'DEEPSEEK_WEB_UNSUPPORTED', recoverable: true, message: t('chat.web.unrecognised') })
     }
   }
 
@@ -102,10 +103,10 @@ export class DeepSeekWebAdapter extends EventChatAdapter {
   }
 
   async send(text: string, options?: SendOptions): Promise<void> {
-    if (!this.connected) throw new Error('DeepSeek 网页实验入口尚未连接')
+    if (!this.connected) throw new Error(t('chat.web.not-connected'))
     const trimmed = text.trim()
-    if (!trimmed) throw new Error('消息不能为空。')
-    if (this.requestId) throw new Error('DeepSeek 网页上一条消息仍在处理中，请等待完成或点击停止。')
+    if (!trimmed) throw new Error(t('chat.web.empty-message'))
+    if (this.requestId) throw new Error(t('chat.web.busy'))
     this.requestId = crypto.randomUUID()
     const requestId = this.requestId
     this.emit({ type: 'message', role: 'user', content: text })

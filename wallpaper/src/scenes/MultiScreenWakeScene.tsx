@@ -5,6 +5,7 @@
  * one animation across monitors with different aspect ratios.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { t, useLanguage } from '../i18n/index.ts'
 import type { PersonaManifest } from '../persona/types.ts'
 import type { DesktopDisplayInfo } from '../native/runtime.ts'
 import { displayCssRect, virtualDesktopBounds } from '../runtime/displayLayout.ts'
@@ -34,6 +35,8 @@ export function MultiScreenWakeScene({
   enabled = true,
   speed = 1,
 }: MultiScreenWakeSceneProps) {
+  // 每一帧的 alt 都是词条。
+  useLanguage()
   const frames = wakeFrameSources(persona)
   const initialIndex = Math.min(Math.max(0, startIndex), Math.max(0, frames.length - 1))
   const [index, setIndex] = useState(initialIndex)
@@ -117,17 +120,17 @@ export function MultiScreenWakeScene({
         key={frame}
         className={`multi-screen-wake-frame ${frameNumber === index ? 'active' : ''}`}
         src={frame}
-        alt={`苏醒 ${frameNumber + 1}`}
+        alt={t('scene.wake.frame', { index: frameNumber + 1 })}
         draggable={false}
-      />) : <img className={`multi-screen-wake-art multi-screen-wake-art-${Math.min(index, 3)}`} src={image} alt="苏醒的鲸鱼娘" draggable={false} />}
+      />) : <img className={`multi-screen-wake-art multi-screen-wake-art-${Math.min(index, 3)}`} src={image} alt={t('scene.wake.alt')} draggable={false} />}
     </div>) : <div className="multi-screen-wake-surface multi-screen-wake-surface--virtual">
       {hasFrames && !fallbackToStatic ? frames.map((frame, frameNumber) => <img
         key={frame}
         className={`multi-screen-wake-frame ${frameNumber === index ? 'active' : ''}`}
         src={frame}
-        alt={`苏醒 ${frameNumber + 1}`}
+        alt={t('scene.wake.frame', { index: frameNumber + 1 })}
         draggable={false}
-      />) : <img className={`multi-screen-wake-art multi-screen-wake-art-${Math.min(index, 3)}`} src={image} alt="苏醒的鲸鱼娘" draggable={false} />}
+      />) : <img className={`multi-screen-wake-art multi-screen-wake-art-${Math.min(index, 3)}`} src={image} alt={t('scene.wake.alt')} draggable={false} />}
     </div>}
     {curtain && <div className="wake-curtain" style={{ animationDuration: `${WAKE_CURTAIN_IN_MS}ms` }} />}
   </div>

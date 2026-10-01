@@ -1,4 +1,5 @@
 import { Fragment, useMemo, type ReactNode } from 'react'
+import { t } from '../../i18n/index.ts'
 import { parseInline, parseMarkdown, type InlineToken, type MarkdownListItem } from './markdown.ts'
 
 /**
@@ -31,7 +32,7 @@ function Inline({ tokens, onOpenLink }: { tokens: InlineToken[]; onOpenLink?: Op
             key={index}
             className="dsh-chat__link"
             href={token.href}
-            title={`${token.href}（中键或回车打开）`}
+            title={t('chat.markdown.link-hint', { href: token.href })}
             rel="noreferrer noopener"
             onClick={(event) => event.preventDefault()}
             onAuxClick={(event) => {

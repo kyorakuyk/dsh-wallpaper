@@ -1,6 +1,7 @@
 /** 苏醒场景：帧序列动画（睡脸→睁眼→打哈欠→醒来），构图连贯 */
 
 import { useEffect, useRef, useState } from 'react'
+import { t, useLanguage } from '../i18n/index.ts'
 import type { PersonaManifest } from '../persona/types.ts'
 import { placeholderPortrait } from '../ui/whale.ts'
 import { assetUrl } from '../runtime/assets.ts'
@@ -97,6 +98,8 @@ export function WakeScene({ persona, onWakeDone, onFirstWakeFrame, handoffGenera
     persona.assets.wake ?? placeholderPortrait(persona.kind, 'wake'),
   )
   const [fallbackToStatic, setFallbackToStatic] = useState(false)
+  // 每一帧的 alt 都是词条。
+  useLanguage()
   const hasFrames = frames.length > 1
   const frameIndexRef = useRef(initialIndex)
   const onWakeDoneRef = useRef(onWakeDone)
@@ -174,7 +177,7 @@ export function WakeScene({ persona, onWakeDone, onFirstWakeFrame, handoffGenera
               key={f}
               className={`wake-frame ${i === index ? 'active' : ''}`}
               src={f}
-              alt={`苏醒 ${i + 1}`}
+              alt={t('scene.wake.frame', { index: i + 1 })}
               draggable={false}
             />
           ))}
@@ -184,7 +187,7 @@ export function WakeScene({ persona, onWakeDone, onFirstWakeFrame, handoffGenera
           <img
             className={`wake-art wake-art-${Math.min(index, 3)}`}
             src={img}
-            alt="苏醒的鲸鱼娘"
+            alt={t('scene.wake.alt')}
             draggable={false}
           />
         </>

@@ -1,6 +1,7 @@
 /** 睡眠场景：静态画面，鲸鱼娘在床上呼呼大睡（全屏铺满） */
 
 import { useEffect, useState } from 'react'
+import { t, useLanguage } from '../i18n/index.ts'
 import type { PersonaManifest } from '../persona/types.ts'
 import { placeholderPortrait } from '../ui/whale.ts'
 import { wakeFrameSources } from './WakeScene.tsx'
@@ -14,6 +15,8 @@ export interface SleepSceneProps {
 }
 
 export function SleepScene({ persona, mode, quiet = false }: SleepSceneProps) {
+  // alt 与那行提示都是词条。
+  useLanguage()
   // 优先用用户素材（睡眠静态图，全屏场景图），无素材回退程序占位布局
   const [sleepImg] = useState(() =>
     persona.assets.sleep ?? placeholderPortrait(persona.kind, 'sleep'),
@@ -40,7 +43,7 @@ export function SleepScene({ persona, mode, quiet = false }: SleepSceneProps) {
       {hasAsset ? (
         <>
           {/* 用户素材：整幅睡眠场景图 + 轻微暗化保证浮层可读 */}
-          <img className="sleep-art" src={sleepImg} alt="睡着的鲸鱼娘" draggable={false} />
+          <img className="sleep-art" src={sleepImg} alt={t('scene.sleep.alt')} draggable={false} />
           {!quiet && <div className="sleep-art-veil" />}
           {!quiet && <div className="sleep-zzz">Z z z…</div>}
         </>
@@ -57,11 +60,11 @@ export function SleepScene({ persona, mode, quiet = false }: SleepSceneProps) {
             <div className="pillow" />
             <div className="blanket" />
           </div>
-          <img className="sleeping-whale" src={sleepImg} alt="睡着的鲸鱼娘" draggable={false} />
+          <img className="sleeping-whale" src={sleepImg} alt={t('scene.sleep.alt')} draggable={false} />
           <div className="sleep-zzz">Z z z…</div>
         </>
       )}
-      {mode === 'manual' && !quiet && <div className="sleep-hint">按 Esc 或输入密码唤醒</div>}
+      {mode === 'manual' && !quiet && <div className="sleep-hint">{t('scene.sleep.hint')}</div>}
     </div>
   )
 }

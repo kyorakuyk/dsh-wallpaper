@@ -32,6 +32,7 @@ import '../ui/tokens/tokens.css'
 import './BallWindow.css'
 import { invoke } from '@tauri-apps/api/core'
 import { useEffect } from 'react'
+import { t, useLanguage } from '../i18n/index.ts'
 import { suppressNativeContextMenu } from '../runtime/contextMenu.ts'
 import { iconPaths } from '../ui/primitives/Icon.tsx'
 
@@ -44,14 +45,16 @@ export const BALL_RING_PATH =
   `${BALL_GLASS_PATH}M50.20 32.04C49.57 35.74 47.74 39.81 45.31 42.69C42.88 45.57 39.18 48.08 35.63 49.32C32.07 50.55 27.65 50.82 23.98 50.09C20.31 49.36 16.42 47.38 13.62 44.94C10.83 42.50 8.43 38.93 7.19 35.44C5.95 31.96 5.55 27.68 6.18 24.03C6.80 20.38 8.57 16.41 10.93 13.52C13.30 10.64 16.87 8.03 20.39 6.72C23.91 5.41 28.36 4.99 32.06 5.67C35.77 6.34 39.78 8.30 42.62 10.77C45.46 13.23 47.83 16.91 49.09 20.45C50.35 24.00 50.83 28.33 50.20 32.04Z`
 
 export function BallWindow() {
+  // 球上的可访问名字与 title 来自词条。
+  useLanguage()
   // 球也是壁纸的一部分：右键它不该弹出"图像另存为/更多工具"那一套网页菜单。
   useEffect(() => suppressNativeContextMenu(), [])
   return (
     <button
       type="button"
       className="ball"
-      aria-label="打开 AI 输入岛"
-      title="打开 AI 输入岛"
+      aria-label={t('ball.open-island')}
+      title={t('ball.open-island')}
       onClick={() => {
         // 失败不弹任何界面：球的窗口没有能力显示错误，原生侧会留下日志。
         void invoke('enter_inner_workspace_from_ball').catch(() => undefined)

@@ -1,5 +1,7 @@
 /** 形态（persona）类型定义 —— 立绘/插画/动画/气泡的定制化核心 */
 
+import { t } from '../i18n/index.ts'
+
 export type PersonaId = string
 
 export type AgeKind = 'child' | 'adult'
@@ -53,11 +55,17 @@ export interface PersonaManifest {
   }
 }
 
-/** 默认占位文案（用户可改，manifest 未提供字段时回退） */
+/**
+ * 默认占位文案（用户可改，manifest 未提供字段时回退）。
+ *
+ * 五个字段都是 **getter**：这个对象在 import 时就被建出来，写成字符串常量会把语言定死在
+ * 那一刻；getter 让每一次读取都按当下这一份词条取值（与 `t()` 同一条规矩）。
+ * 用户自己写的 bubble 覆盖照旧是普通字符串，它们不从词条里来。
+ */
 export const DEFAULT_BUBBLES: PersonaBubbles = {
-  morning: '早上好！今天要做什么呢？',
-  done: '搞定啦～还有别的吗？',
-  harnessOnline: '检测到 DeepSeek Harness，切换形态？',
-  harnessOffline: 'Harness 已下线，切回网页模式。',
-  chatOpen: '想聊点什么呀？',
+  get morning() { return t('persona.bubble.morning') },
+  get done() { return t('persona.bubble.done') },
+  get harnessOnline() { return t('persona.bubble.harness-online') },
+  get harnessOffline() { return t('persona.bubble.harness-offline') },
+  get chatOpen() { return t('persona.bubble.chat-open') },
 }

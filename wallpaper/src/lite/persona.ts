@@ -6,23 +6,26 @@ import type { PersonaManifest } from '../persona/types.ts'
 // satisfy the shared PersonaManifest shape; do not pull backend/chat labels
 // into the first-release bundle just to populate unused copy.
 const EMPTY_BUBBLES = { morning: '', done: '' } as PersonaManifest['bubbles']
-const PERSONA_META: Record<Exclude<LitePortraitId, 'custom'>, Pick<PersonaManifest, 'name' | 'age' | 'kind' | 'theme'>> = {
-  'blue-adult': { name: '蓝色成年形态', age: 'adult', kind: 'blue', theme: { primary: '#4da6ff', accent: '#9ad0ff', glow: 'rgba(77,166,255,0.18)' } },
-  'blue-child': { name: '蓝色幼年形态', age: 'child', kind: 'blue', theme: { primary: '#4da6ff', accent: '#7fc4ff', glow: 'rgba(77,166,255,0.18)' } },
-  'black-adult': { name: '黑红成年形态', age: 'adult', kind: 'black', theme: { primary: '#e03050', accent: '#ff6b81', glow: 'rgba(224,48,80,0.20)' } },
-  'black-child': { name: '黑红幼年形态', age: 'child', kind: 'black', theme: { primary: '#e03050', accent: '#ff8a9a', glow: 'rgba(224,48,80,0.20)' } },
+// 名字不在这里：它与 `LITE_PORTRAIT_OPTIONS` 的格子文字是同一句，所以从那张表里取（见下）。
+const PERSONA_META: Record<Exclude<LitePortraitId, 'custom'>, Pick<PersonaManifest, 'age' | 'kind' | 'theme'>> = {
+  'blue-adult': { age: 'adult', kind: 'blue', theme: { primary: '#4da6ff', accent: '#9ad0ff', glow: 'rgba(77,166,255,0.18)' } },
+  'blue-child': { age: 'child', kind: 'blue', theme: { primary: '#4da6ff', accent: '#7fc4ff', glow: 'rgba(77,166,255,0.18)' } },
+  'black-adult': { age: 'adult', kind: 'black', theme: { primary: '#e03050', accent: '#ff6b81', glow: 'rgba(224,48,80,0.20)' } },
+  'black-child': { age: 'child', kind: 'black', theme: { primary: '#e03050', accent: '#ff8a9a', glow: 'rgba(224,48,80,0.20)' } },
 }
 
 export function litePersona(id: LitePortraitId, portraitUrl?: string): PersonaManifest {
   const resolvedId = id === 'custom' ? 'blue-adult' : id
   const meta = PERSONA_META[resolvedId]
-  const builtInPortrait = LITE_PORTRAIT_OPTIONS.find((option) => option.id === resolvedId)?.path
+  const option = LITE_PORTRAIT_OPTIONS.find((candidate) => candidate.id === resolvedId)
   return {
     id: resolvedId,
     ...meta,
+    // getter：语言切了之后同一份 manifest 也要给出新的名字（它每次渲染时被重算，但不能被定死）。
+    get name() { return option?.label ?? resolvedId },
     bubbles: EMPTY_BUBBLES,
     assets: {
-      portrait: portraitUrl ?? assetUrl(builtInPortrait ?? 'personas/portrait-blue-adult.png'),
+      portrait: portraitUrl ?? assetUrl(option?.path ?? 'personas/portrait-blue-adult.png'),
       sleep: assetUrl('personas/wake-frames/variant-anima/sleep.png'),
     },
   }

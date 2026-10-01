@@ -1,5 +1,15 @@
 import { APPEARANCE_SLOTS, isAssetExposedInComponentLibrary, type AppearanceSlot, type AssetMediaType, type AssetRecord, type ThemeRecord } from '../../appearance/theme/index.ts'
-import { t } from '../../i18n/index.ts'
+import { getLanguage, t } from '../../i18n/index.ts'
+
+/**
+ * 排序用的 locale。
+ *
+ * 之前写死 `'zh-CN'`：界面切到英文之后，主题名与素材文件名仍然按中文规则排（"按拼音" vs "按字母"）。
+ * 排序是**行为**，不是文案，所以它必须跟着语言走；每次调用现取，模块级常量会把语言定死。
+ */
+function collationLocale(): string {
+  return getLanguage() === 'en' ? 'en-US' : 'zh-CN'
+}
 
 export interface AppearanceThemeSummary extends ThemeRecord {
   name: string
@@ -109,7 +119,7 @@ export function sortThemes(themes: readonly AppearanceThemeSummary[]): Appearanc
   return [...themes].sort((left, right) => {
     if (left.source !== right.source) return left.source === 'official' ? -1 : 1
     if (left.readonly !== right.readonly) return left.readonly ? -1 : 1
-    return left.name.localeCompare(right.name, 'zh-CN') || right.version.localeCompare(left.version)
+    return left.name.localeCompare(right.name, collationLocale()) || right.version.localeCompare(left.version)
   })
 }
 
@@ -118,7 +128,7 @@ export function componentAssets(assets: readonly AppearanceAssetSummary[], slot:
   const accepted = SLOT_PRESENTATION[slot].acceptedMedia
   return assets
     .filter((asset) => isAssetExposedInComponentLibrary(asset) && asset.slots.includes(slot) && accepted.includes(asset.mediaType))
-    .sort((left, right) => right.createdAt - left.createdAt || left.originalName.localeCompare(right.originalName, 'zh-CN'))
+    .sort((left, right) => right.createdAt - left.createdAt || left.originalName.localeCompare(right.originalName, collationLocale()))
 }
 
 export function inboxAssets(assets: readonly AppearanceAssetSummary[]): AppearanceAssetSummary[] {

@@ -31,6 +31,7 @@
  * and connecting to it is how the wallpaper used to answer a session the user
  * never chose.
  */
+import { t } from '../i18n/index.ts'
 import { interpretHarnessBridgeStatus, type HarnessStatus } from './harness.ts'
 import { launchSettingsPort } from './launchArgs.ts'
 
@@ -53,8 +54,8 @@ export interface HarnessEndpointCandidate {
 /** A stable, non-sensitive label for the settings dropdown. */
 export function endpointKindLabel(kind: HarnessClientKind): string {
   switch (kind) {
-    case 'official-desktop': return '桌面客户端'
-    default: return 'Web / CLI'
+    case 'official-desktop': return t('connect.endpoint.kind.desktop')
+    default: return t('connect.endpoint.kind.web')
   }
 }
 
@@ -126,9 +127,7 @@ export function unsupportedShellSubjectFallback(
   if (subjectClientKind(subject) !== undefined) return null
   return {
     subjectId: OFFICIAL_SHELL_SUBJECT_ID,
-    notice:
-      '原先选定的桌面客户端已不再受支持：它把本地接口锁在自己的授权后面，壁纸请求一律被拒绝；'
-      + '已切回官方桌面客户端。',
+    notice: t('connect.endpoint.unsupported-shell'),
   }
 }
 
@@ -354,8 +353,8 @@ export function scanSummary(candidates: readonly HarnessEndpointCandidate[]): {
     bridges: bridges.length,
     ready: ready.length,
     summary: bridges.length === 0
-      ? `已扫描 ${ordered.length} 个端口，未发现可接入的 Harness`
-      : `已扫描 ${ordered.length} 个端口，发现 ${bridges.length} 个可接入的 Harness（其中 ${ready.length} 个可用）`,
+      ? t('connect.scan.none', { count: ordered.length })
+      : t('connect.scan.found', { count: ordered.length, bridges: bridges.length, ready: ready.length }),
   }
 }
 
@@ -463,9 +462,9 @@ export function raiseOutcomeNotice(outcome: string, kind: HarnessClientKind): st
     case 'raise-refused':
       return null
     case 'no-window':
-      return `${endpointKindLabel(kind)} 没有可拉起的窗口；它的界面可能在浏览器里，请改用「在浏览器中打开」。`
+      return t('connect.raise.no-window', { kind: endpointKindLabel(kind) })
     case 'not-running':
-      return `${endpointKindLabel(kind)} 未在运行。请先启动它，然后重新扫描。`
+      return t('connect.raise.not-running', { kind: endpointKindLabel(kind) })
     default:
       return null
   }

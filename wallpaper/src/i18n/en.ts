@@ -749,4 +749,165 @@ export const en: Dict = {
   'lite.settings.custom-image.import-failed': 'Could not import the image: {error}',
   'lite.settings.custom-image.background-imported': 'Imported the custom wallpaper background.',
   'lite.settings.custom-image.portrait-imported': 'Imported the custom portrait.',
+
+  // ---------------------------------------------------------------------------
+  // Lite's wallpaper and portrait candidates (`lite/settings.ts`, `lite/persona.ts`): the words on
+  // the option tiles. The ids are internal identifiers and only the label is an entry; the `custom`
+  // tile is named by the asset the user imported, so it has no name of its own.
+  // ---------------------------------------------------------------------------
+  'lite.option.background.workspace': 'Late-night studio',
+  'lite.option.background.deepsea-2': 'Deep-sea dome',
+  'lite.option.background.deepsea-3': 'Deep-sea study',
+  'lite.option.portrait.blue-adult': 'Blue adult form',
+  'lite.option.portrait.blue-child': 'Blue child form',
+  'lite.option.portrait.black-adult': 'Black-and-red adult form',
+  'lite.option.portrait.black-child': 'Black-and-red child form',
+  // Lite's image picker dialogs (`lite/native.ts`).
+  'lite.native.pick.background': 'Choose a wallpaper background',
+  'lite.native.pick.portrait': 'Choose a portrait',
+  'lite.native.image-filter': 'Images',
+
+  // ---------------------------------------------------------------------------
+  // The built-in backgrounds (`BACKGROUND_OPTIONS` in `settings/store.ts`) and personas
+  // (`persona/registry.ts`). Both name a picture, so they are named after their place; `default` is
+  // the plain CSS gradient.
+  // ---------------------------------------------------------------------------
+  'settings.appearance.background.workspace': 'Late-night studio',
+  'settings.appearance.background.deepsea-2': 'Deep-sea dome',
+  'settings.appearance.background.deepsea-3': 'Deep-sea study',
+  'settings.appearance.background.default': 'Default gradient theme',
+  'persona.builtin.blue-child': 'Blue child whale girl',
+  'persona.builtin.blue-adult': 'Blue adult whale girl',
+  'persona.builtin.black-adult': 'Black-and-red adult whale girl',
+  'persona.builtin.black-child': 'Black-and-red child whale girl',
+
+  // What a built-in persona says when its manifest carries no bubble copy (`persona/types.ts`).
+  'persona.bubble.morning': 'Good morning! What shall we do today?',
+  'persona.bubble.done': 'All done ~ anything else?',
+  'persona.bubble.harness-online': 'DeepSeek Harness detected; switch forms?',
+  'persona.bubble.harness-offline': 'Harness has gone offline; back to the Web mode.',
+  'persona.bubble.chat-open': 'What would you like to talk about?',
+
+  // The four official persona cards (`persona/officialCatalog.ts`) and the two labels on each card
+  // (`OfficialPersonaCards.tsx`). `DeepSeek` and `DeepSeek Harness` are product names that read the
+  // same in both languages, so they are not entries.
+  'persona.official.deepseek.flash.name': 'DeepSeek Flash · Blue child',
+  'persona.official.deepseek.pro.name': 'DeepSeek Pro · Blue adult',
+  'persona.official.harness.flash.name': 'Harness Flash · Black-and-red child',
+  'persona.official.harness.pro.name': 'Harness Pro · Black-and-red adult',
+  'persona.official.tier.flash': 'Flash · Child',
+  'persona.official.tier.pro': 'Pro · Adult',
+  'persona.official.list.label': 'Persona list',
+  'persona.official.replaced': 'Replaced: {name}',
+  'persona.official.replaced-custom': 'Replaced: custom asset',
+  'persona.official.baseline': 'Baseline artwork',
+
+  // ---------------------------------------------------------------------------
+  // The connection surface: endpoints, launch arguments, the model directory, and installing the
+  // Bridge (`connect/*`).
+  // ---------------------------------------------------------------------------
+  'connect.endpoint.kind.desktop': 'Desktop client',
+  'connect.endpoint.kind.web': 'Web / CLI',
+  // What is said when the stored subject is a shell this build no longer supports (two halves).
+  'connect.endpoint.unsupported-shell':
+    'The previously chosen desktop client is no longer supported: it keeps the local interface '
+    + 'behind its own authorisation, so every wallpaper request is refused. Switched back to the official desktop client.',
+  // Scan results (`scanSummary`).
+  'connect.scan.none': 'Scanned {count} ports; no reachable Harness found',
+  'connect.scan.found': 'Scanned {count} ports; found {bridges} reachable Harness instances ({ready} of them usable)',
+  // The two ways "open the interface" can come up empty; `{kind}` is one of the names above.
+  'connect.raise.no-window': '{kind} has no window to raise; its interface may be in the browser, so use “Open in browser” instead.',
+  'connect.raise.not-running': '{kind} is not running. Start it first, then scan again.',
+  // Validating 「launch arguments」 and reading the port out of them (`launchArgs.ts`).
+  'connect.launch-args.too-many': 'At most {max} launch arguments.',
+  'connect.launch-args.too-long': 'One launch argument cannot exceed {max} characters.',
+  'connect.launch-args.control-chars': 'Launch arguments cannot contain control characters.',
+  // Why the model directory has nothing to offer (`modelDirectory.ts`): shown while the picker is
+  // disabled.
+  'connect.model.no-options': 'The current Harness offers no selectable model',
+  'connect.model.bridge-empty': 'The Bridge did not return a model directory',
+  'connect.model.endpoint-empty': 'The endpoint did not return a model directory',
+  // The outcome of installing the Bridge (`bridgeInstall.ts`): failure, confirmation, installed.
+  'connect.bridge.failed': 'Could not install the Bridge ({profile}): {detail}',
+  'connect.bridge.no-detail': 'No further information',
+  'connect.bridge.needs-confirmation': 'The Bridge is installed, but a plug-in in {profile} needs you to confirm a version exemption: run dsh plugin allow-version in a terminal (original text: {detail})',
+  'connect.bridge.installed': 'Installed the Bridge for {profiles}.',
+
+  // ---------------------------------------------------------------------------
+  // Appearance assets (`native/appearance.ts`, `features/appearance/*`).
+  // ---------------------------------------------------------------------------
+  'appearance.native.desktop-only': 'Appearance storage is only available in the desktop edition',
+  'appearance.native.import-desktop-only': 'Importing appearance assets is only available in the desktop edition',
+  'appearance.native.classify-desktop-only': 'Classifying assets is only available in the desktop edition',
+  // The asset import dialogs: their titles and the two filter names.
+  'appearance.import.title': 'Import a theme or standalone assets',
+  'appearance.import.filter.content': 'Appearance content',
+  'appearance.import.filter.all': 'All files',
+  'appearance.import.folder-title': 'Import an asset folder',
+  // The asset classification panel (`AssetClassificationPanel.tsx`).
+  'appearance.classify.label': 'Asset classification',
+  'appearance.classify.title': 'Tidy up standalone assets',
+  'appearance.classify.description': 'Choose the assets first, then one or more uses.',
+  'appearance.classify.close': 'Close the classification',
+  'appearance.classify.slots': 'Available positions',
+  'appearance.classify.later': 'Tidy up later',
+  'appearance.classify.confirm': 'Confirm the classification',
+
+  // ---------------------------------------------------------------------------
+  // What is left in the settings centre and the desktop shell: probe failures, scene alt text, and
+  // the accessible names of the drawer and the toast.
+  // ---------------------------------------------------------------------------
+  // The prefix of a probe failure (`settingsProbes.ts`), followed by `: ` and the raw error.
+  'settings.probe.error': '{message}: {error}',
+  'settings.probe.managed-dsh': 'Could not read the managed DSH state',
+  'settings.probe.web-adapter-config': 'Could not read the Web adapter configuration',
+  'settings.probe.autostart-status': 'Could not read the autostart state',
+  'settings.probe.desktop-displays': 'Could not read the display list',
+  'settings.probe.api-history': 'Could not read the API conversation history',
+  // The accessible names of the scene artwork (sleep, wake, idle background, the portrait click).
+  'scene.sleep.alt': 'The whale girl asleep',
+  'scene.sleep.hint': 'Press Esc or type your password to wake up',
+  'scene.wake.frame': 'Waking {index}',
+  'scene.wake.alt': 'The whale girl waking up',
+  'scene.idle.background': 'Background',
+  'scene.idle.portrait-title': 'Click to start talking',
+  'lite.scene.background.alt': 'Wallpaper background',
+  // The floating ball's accessible name and tooltip (`floating/BallWindow.tsx`).
+  'ball.open-island': 'Open the AI input island',
+  // The drawer's close button and the toast (`ui/primitives/*`).
+  'ui.drawer.close': 'Close {title}',
+  'ui.toast.close': 'Dismiss the notice',
+  'widgets.host.label': 'Desktop widgets',
+  // Why a widget manifest was rejected (`widgets/sdk.ts`); the versions are the host's own numbers.
+  'widgets.manifest.id-invalid': 'A widget ID may only use lower-case letters, digits, dots, hyphens, or underscores.',
+  'widgets.manifest.api-version': 'The widget needs API v{apiVersion}, but this host only supports v{hostVersion}.',
+  'widgets.manifest.display-name-required': 'A widget needs a display name.',
+  'widgets.manifest.default-size': 'A widget’s default size must be greater than zero.',
+  'widgets.manifest.min-size': 'A widget’s minimum size must be greater than zero.',
+  'widgets.manifest.min-exceeds-default': 'A widget’s minimum size cannot exceed its default size.',
+  'widgets.manifest.max-below-default': 'A widget’s maximum size cannot be smaller than its default size.',
+  'widgets.manifest.workspaces': 'A widget must declare which workspaces it can appear in.',
+
+  // ---------------------------------------------------------------------------
+  // What is left inside the chat backends: adapter errors, the receipt for a session swap, the
+  // preview replies, and the debug ruler and link hint.
+  // ---------------------------------------------------------------------------
+  'chat.native.archived-notice': 'That session was archived; the message was sent again in today’s new session.',
+  'chat.native.blocked-notice': 'DSH refused this turn (the session was archived); the message was sent again in today’s new session.',
+  'chat.native.new-session-failed': 'Switching to a new session did not work either: {error}',
+  'chat.native.reconnect-failed': '{error} Reconnecting to this endpoint did not work either: {connectError}',
+  'chat.native.archived-failed': '{error} Switching to a new session did not work either: {failure}',
+  'chat.native.closed': 'The connection is already closed',
+  'chat.native.no-new-session': 'The Bridge did not hand out a new session',
+  'chat.web.unrecognised': 'The DeepSeek page structure is unrecognised; the Web bridge needs an update.',
+  'chat.web.not-connected': 'The DeepSeek Web experimental entry is not connected yet',
+  'chat.web.empty-message': 'The message cannot be empty.',
+  'chat.web.busy': 'The previous message on the DeepSeek page is still being handled; wait for it to finish or press Stop.',
+  'chat.preview.harness-reply': 'Harness is connected. The real desktop app hands this message to a standard DSH session.',
+  'chat.preview.browser-reply': 'This is a browser preview reply. The real app connects to the DeepSeek Web bridge or to the API you enabled.',
+  // The debug ruler: the difference between two content edges (`LayoutProbe.tsx`, which only
+  // appears with those two commented-out lines switched back on).
+  'chat.layout-probe.delta': 'Δ {a}→{b}: left {left}  right {right}',
+  // A link's title: the address followed by the gesture hint (`MarkdownBody.tsx`).
+  'chat.markdown.link-hint': '{href} (middle-click or Enter to open)',
 }

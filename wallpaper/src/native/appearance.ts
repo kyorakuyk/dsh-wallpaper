@@ -1,5 +1,6 @@
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
 import type { AppearanceAssetSummary, AppearanceThemeSummary } from '../features/appearance/appearanceViewModel.ts'
+import { t } from '../i18n/index.ts'
 
 export interface AppearanceSnapshot {
   activeTheme?: { id: string; version: string }
@@ -62,7 +63,7 @@ interface NativeAppearanceClient {
 }
 
 async function tauriInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  if (!('__TAURI_INTERNALS__' in window)) throw new Error('仅桌面版支持外观存储')
+  if (!('__TAURI_INTERNALS__' in window)) throw new Error(t('appearance.native.desktop-only'))
   const { invoke } = await import('@tauri-apps/api/core')
   return invoke<T>(command, args)
 }
@@ -139,7 +140,7 @@ export const nativeAppearance: NativeAppearanceClient = {
     return mapSnapshot(await tauriInvoke<{ activeTheme: { id: string; version: string } | null; overrides: Record<string, string> }>('appearance_clear_override', { slot }))
   },
   async importPaths(paths) {
-    if (!this.isNative) throw new Error('仅桌面版支持导入外观素材')
+    if (!this.isNative) throw new Error(t('appearance.native.import-desktop-only'))
     const batch = await tauriInvoke<{
       results: Array<{
         kind: 'inbox' | 'theme'
@@ -157,7 +158,7 @@ export const nativeAppearance: NativeAppearanceClient = {
     }
   },
   async classifyAsset(assetId, slots) {
-    if (!this.isNative) throw new Error('仅桌面版支持素材分类')
+    if (!this.isNative) throw new Error(t('appearance.native.classify-desktop-only'))
     return mapAsset(await tauriInvoke<NativeAssetSummaryDto>('appearance_classify_asset', { assetId, slots }))
   },
   async resolveAsset(slot) {
@@ -176,12 +177,12 @@ export async function chooseAppearanceImportPaths(): Promise<string[]> {
   if (!('__TAURI_INTERNALS__' in window)) return []
   const { open } = await import('@tauri-apps/plugin-dialog')
   const selected = await open({
-    title: '导入主题或独立素材',
+    title: t('appearance.import.title'),
     multiple: true,
     directory: false,
     filters: [
-      { name: '外观内容', extensions: ['dshwallpaper', 'zip', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'ttf', 'otf', 'woff2'] },
-      { name: '所有文件', extensions: ['*'] },
+      { name: t('appearance.import.filter.content'), extensions: ['dshwallpaper', 'zip', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'ttf', 'otf', 'woff2'] },
+      { name: t('appearance.import.filter.all'), extensions: ['*'] },
     ],
   })
   if (!selected) return []
@@ -191,6 +192,6 @@ export async function chooseAppearanceImportPaths(): Promise<string[]> {
 export async function chooseAppearanceImportFolder(): Promise<string[]> {
   if (!('__TAURI_INTERNALS__' in window)) return []
   const { open } = await import('@tauri-apps/plugin-dialog')
-  const selected = await open({ title: '导入素材文件夹', multiple: false, directory: true })
+  const selected = await open({ title: t('appearance.import.folder-title'), multiple: false, directory: true })
   return selected ? [selected] : []
 }

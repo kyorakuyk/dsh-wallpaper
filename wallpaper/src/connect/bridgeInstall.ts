@@ -8,6 +8,8 @@
  * 一次失败不该被另一条成功掩盖。
  */
 
+import { t } from '../i18n/index.ts'
+
 /** 与 Rust 侧 `BridgeInstallOutcome` 字段一一对应（都是单词，不涉及重命名）。 */
 export interface BridgeInstallOutcome {
   profile: string
@@ -40,10 +42,10 @@ export function summarizeBridgeInstall(outcomes: BridgeInstallOutcome[]): Bridge
   const failed = outcomes.filter((outcome) => outcome.status === 'failed')
   if (failed.length > 0) {
     const first = failed[0]
-    const detail = clip(first.detail) || '没有更多信息'
+    const detail = clip(first.detail) || t('connect.bridge.no-detail')
     return {
       tone: 'error',
-      text: `装桥失败（${first.profile}）：${detail}`,
+      text: t('connect.bridge.failed', { profile: first.profile, detail }),
     }
   }
 
@@ -53,7 +55,7 @@ export function summarizeBridgeInstall(outcomes: BridgeInstallOutcome[]): Bridge
     const first = needsConfirmation[0]
     return {
       tone: 'attention',
-      text: `桥已装好，但 ${first.profile} 里的插件需要你确认版本豁免：在终端执行 dsh plugin allow-version（原文：${clip(first.detail)}）`,
+      text: t('connect.bridge.needs-confirmation', { profile: first.profile, detail: clip(first.detail) }),
     }
   }
 
@@ -62,6 +64,6 @@ export function summarizeBridgeInstall(outcomes: BridgeInstallOutcome[]): Bridge
   if (installed.length === 0) return null
   return {
     tone: 'ok',
-    text: `已为 ${profileNames(outcomes)} 装好桥。`,
+    text: t('connect.bridge.installed', { profiles: profileNames(outcomes) }),
   }
 }

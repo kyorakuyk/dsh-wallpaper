@@ -9,6 +9,8 @@
  * starts each group only when its page is actually shown, at most once.
  */
 
+import { t, type MessageKey } from '../i18n/index.ts'
+
 export const SETTINGS_PAGES = ['general', 'connections', 'appearance', 'personas', 'history', 'system'] as const
 export type SettingsPage = (typeof SETTINGS_PAGES)[number]
 
@@ -189,19 +191,21 @@ export function createSettingsProbeController(options: {
   }
 }
 
-const PROBE_ERROR_MESSAGES: Record<SettingsProbe, string> = {
+// 键而不是句子：这张表在 import 时建好，句子要等到真出错那一刻才取（见 `t()` 的说明）。
+const PROBE_ERROR_MESSAGES: Record<SettingsProbe, MessageKey> = {
   // FREEZE(1B)：
-  // translucentTb: '读取 TranslucentTB 状态失败',
-  managedDsh: '读取受管 DSH 状态失败',
-  deepseekWebAdapterConfig: '网页适配器配置读取失败',
+  // translucentTb: 'settings.probe.translucent-tb',
+  managedDsh: 'settings.probe.managed-dsh',
+  deepseekWebAdapterConfig: 'settings.probe.web-adapter-config',
   // FREEZE(1A)：同上。
-  // lockScreenDiagnostics: '锁屏检查失败',
-  autostartStatus: '读取开机自启状态失败',
-  desktopDisplays: '显示器列表读取失败',
-  apiHistory: '读取 API 会话记录失败',
+  // lockScreenDiagnostics: 'settings.probe.lock-screen',
+  autostartStatus: 'settings.probe.autostart-status',
+  desktopDisplays: 'settings.probe.desktop-displays',
+  apiHistory: 'settings.probe.api-history',
 }
 
 export function settingsProbeErrorMessage(probe: SettingsProbe, error?: unknown): string {
-  const suffix = error === undefined ? '' : `：${String(error)}`
-  return `${PROBE_ERROR_MESSAGES[probe]}${suffix}`
+  const message = t(PROBE_ERROR_MESSAGES[probe])
+  if (error === undefined) return message
+  return t('settings.probe.error', { message, error: String(error) })
 }

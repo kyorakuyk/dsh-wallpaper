@@ -19,6 +19,8 @@
  * 必须一致的常量是同一个理由。
  */
 
+import { t } from '../i18n/index.ts'
+
 /** 参数条数上限。够写端口、host、路径，又不足以拼出一条完整的命令行。 */
 export const MAX_LAUNCH_ARGS = 32
 /** 单个参数长度上限。超过这个长度的"参数"更可能是误粘贴。 */
@@ -90,11 +92,11 @@ export function parseLaunchArgs(raw: string | undefined): string[] {
  */
 export function launchArgsIssue(raw: string | undefined): string | null {
   const args = parseLaunchArgs(raw)
-  if (args.length > MAX_LAUNCH_ARGS) return `启动参数最多 ${MAX_LAUNCH_ARGS} 个。`
+  if (args.length > MAX_LAUNCH_ARGS) return t('connect.launch-args.too-many', { max: MAX_LAUNCH_ARGS })
   for (const argument of args) {
-    if (argument.length > MAX_LAUNCH_ARG_LENGTH) return `单个启动参数不能超过 ${MAX_LAUNCH_ARG_LENGTH} 个字符。`
+    if (argument.length > MAX_LAUNCH_ARG_LENGTH) return t('connect.launch-args.too-long', { max: MAX_LAUNCH_ARG_LENGTH })
     // eslint-disable-next-line no-control-regex
-    if (/[\u0000-\u001f\u007f]/.test(argument)) return '启动参数里不能包含控制字符。'
+    if (/[\u0000-\u001f\u007f]/.test(argument)) return t('connect.launch-args.control-chars')
   }
   return null
 }

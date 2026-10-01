@@ -15,6 +15,8 @@
  * 自己的账号没有模型；把"没有模型"当成"问不到"，又会在可切换时白关掉选择器。
  */
 
+import { t } from '../i18n/index.ts'
+
 export interface ModelOption {
   id: string
   name: string
@@ -60,7 +62,7 @@ export function canSwitchModel(directory: ModelDirectory): boolean {
 export function modelUnavailableReason(directory: ModelDirectory): string | undefined {
   if (canSwitchModel(directory)) return undefined
   if (directory.kind === 'unavailable') return directory.reason
-  return '当前 Harness 未提供可选模型'
+  return t('connect.model.no-options')
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -87,7 +89,7 @@ function readModels(value: unknown): ModelOption[] {
 export function bridgeModelDirectory(payload: unknown): ModelDirectory {
   const record = asRecord(payload)
   if (!record || typeof record.supported !== 'boolean') {
-    return { kind: 'unavailable', reason: '桥接未返回模型目录' }
+    return { kind: 'unavailable', reason: t('connect.model.bridge-empty') }
   }
   const current = asRecord(record.current)
   const currentModel = typeof current?.model === 'string' && current.model.trim() ? current.model.trim() : undefined
@@ -102,7 +104,7 @@ export function bridgeModelDirectory(payload: unknown): ModelDirectory {
 export function apiModelDirectory(payload: unknown, configured?: string): ModelDirectory {
   const record = asRecord(payload)
   if (!record || typeof record.supported !== 'boolean') {
-    return { kind: 'unavailable', reason: '端点未返回模型目录' }
+    return { kind: 'unavailable', reason: t('connect.model.endpoint-empty') }
   }
   const models = readModels(record.models)
   const current = configured?.trim() || undefined

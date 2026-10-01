@@ -1,6 +1,7 @@
 import type { AppearanceSlot } from '../appearance/theme/types.ts'
 import type { AppearanceAssetSummary } from '../features/appearance/appearanceViewModel.ts'
 import { assetUrl } from '../settings/store.ts'
+import { t, useLanguage } from '../i18n/index.ts'
 import { OFFICIAL_PERSONA_CARDS } from './officialCatalog.ts'
 
 export interface OfficialPersonaCardsProps {
@@ -8,14 +9,10 @@ export interface OfficialPersonaCardsProps {
   overrides: Partial<Record<AppearanceSlot, string>>
 }
 
+// 两段产品名（`DeepSeek` / `DeepSeek Harness`）两种语言里一样，所以不翻译；tier 那一段有中文。
 const FAMILY_LABEL = {
   deepseek: 'DeepSeek',
   harness: 'DeepSeek Harness',
-} as const
-
-const TIER_LABEL = {
-  flash: 'Flash · 幼年',
-  pro: 'Pro · 成年',
 } as const
 
 /**
@@ -24,9 +21,11 @@ const TIER_LABEL = {
  * Per-slot artwork replacement remains in the appearance library instead.
  */
 export function OfficialPersonaCards({ assets, overrides }: OfficialPersonaCardsProps) {
+  // 卡片上的字都来自词条，语言一变就要重渲染一次。
+  useLanguage()
   const assetsById = new Map(assets.map((asset) => [asset.id, asset]))
 
-  return <div className="official-persona-grid" role="list" aria-label="人物列表">
+  return <div className="official-persona-grid" role="list" aria-label={t('persona.official.list.label')}>
     {OFFICIAL_PERSONA_CARDS.map((card) => {
       const replacement = overrides[card.slot] ? assetsById.get(overrides[card.slot]!) : undefined
       const hasReplacement = Boolean(overrides[card.slot])
@@ -43,10 +42,12 @@ export function OfficialPersonaCards({ assets, overrides }: OfficialPersonaCards
         <div className="official-persona-card__copy">
           <div className="official-persona-card__labels">
             <span>{FAMILY_LABEL[card.family]}</span>
-            <strong>{TIER_LABEL[card.tier]}</strong>
+            <strong>{t(card.tier === 'flash' ? 'persona.official.tier.flash' : 'persona.official.tier.pro')}</strong>
           </div>
           <small>{card.slot}</small>
-          <p>{replacement ? `已替换：${replacement.originalName}` : hasReplacement ? '已替换：自定义素材' : '基础立绘'}</p>
+          <p>{replacement
+            ? t('persona.official.replaced', { name: replacement.originalName })
+            : hasReplacement ? t('persona.official.replaced-custom') : t('persona.official.baseline')}</p>
         </div>
       </article>
     })}

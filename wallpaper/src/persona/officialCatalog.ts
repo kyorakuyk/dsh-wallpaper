@@ -9,6 +9,7 @@
 
 import type { AppearanceSlot } from '../appearance/theme/types.ts'
 import type { BackendMode, ModelTier } from '../domain/types.ts'
+import { t } from '../i18n/index.ts'
 import type { AgeKind, PersonaTheme, ThemeKind } from './types.ts'
 
 export type OfficialPersonaFamily = 'deepseek' | 'harness'
@@ -42,6 +43,10 @@ export interface OfficialPersonaCard {
  * The four formal assets shipped by the application.  Keep this catalog
  * independent from the mutable appearance library: it defines the baseline,
  * whereas the library records optional per-slot replacements.
+ *
+ * `name` is a getter for the same reason the built-in registry uses one: this
+ * array is built at import time, and the name has to follow the interface
+ * language rather than the language that happened to be current back then.
  */
 export const OFFICIAL_PERSONA_CARDS = [
   {
@@ -51,7 +56,7 @@ export const OFFICIAL_PERSONA_CARDS = [
     tier: 'flash',
     age: 'child',
     kind: 'blue',
-    name: 'DeepSeek Flash · 蓝色幼年',
+    get name() { return t('persona.official.deepseek.flash.name') },
     theme: { primary: '#4da6ff', accent: '#7fc4ff', glow: 'rgba(77,166,255,0.18)' },
     portraitPath: 'personas/portrait-blue-child.png',
   },
@@ -62,7 +67,7 @@ export const OFFICIAL_PERSONA_CARDS = [
     tier: 'pro',
     age: 'adult',
     kind: 'blue',
-    name: 'DeepSeek Pro · 蓝色成年',
+    get name() { return t('persona.official.deepseek.pro.name') },
     theme: { primary: '#4da6ff', accent: '#9ad0ff', glow: 'rgba(77,166,255,0.18)' },
     portraitPath: 'personas/portrait-blue-adult.png',
   },
@@ -73,7 +78,7 @@ export const OFFICIAL_PERSONA_CARDS = [
     tier: 'flash',
     age: 'child',
     kind: 'black',
-    name: 'Harness Flash · 黑红幼年',
+    get name() { return t('persona.official.harness.flash.name') },
     theme: { primary: '#e03050', accent: '#ff8a9a', glow: 'rgba(224,48,80,0.20)' },
     portraitPath: 'personas/portrait-black-child.png',
   },
@@ -84,7 +89,7 @@ export const OFFICIAL_PERSONA_CARDS = [
     tier: 'pro',
     age: 'adult',
     kind: 'black',
-    name: 'Harness Pro · 黑红成年',
+    get name() { return t('persona.official.harness.pro.name') },
     theme: { primary: '#e03050', accent: '#ff6b81', glow: 'rgba(224,48,80,0.20)' },
     portraitPath: 'personas/portrait-black-adult.png',
   },

@@ -1,18 +1,29 @@
 import type { LiteBackgroundId, LitePortraitId, LiteSettings } from './types.ts'
+import { t } from '../i18n/index.ts'
 
 export const LITE_SETTINGS_VERSION = 1
 
-export const LITE_BACKGROUND_OPTIONS: Array<{ id: LiteBackgroundId; label: string; path: string }> = [
-  { id: 'workspace', label: '深夜工作室', path: 'personas/deepsea-bg/deepsea-studio.png' },
-  { id: 'deepsea-2', label: '深海穹顶舱', path: 'personas/deepsea-bg/deepsea-dome.png' },
-  { id: 'deepsea-3', label: '深海书房', path: 'personas/deepsea-bg/deepsea-study.png' },
+/**
+ * 候选格子上的字。`label` 是 **getter**：这两张表在 import 时建好，而格子上写的是当下的语言
+ * （与 `DEFAULT_BUBBLES` 同一条规矩）；`id` 与 `path` 是内部标识与素材路径，不随语言走。
+ */
+export interface LiteOption<Id extends string> {
+  id: Id
+  readonly label: string
+  path: string
+}
+
+export const LITE_BACKGROUND_OPTIONS: Array<LiteOption<LiteBackgroundId>> = [
+  { id: 'workspace', get label() { return t('lite.option.background.workspace') }, path: 'personas/deepsea-bg/deepsea-studio.png' },
+  { id: 'deepsea-2', get label() { return t('lite.option.background.deepsea-2') }, path: 'personas/deepsea-bg/deepsea-dome.png' },
+  { id: 'deepsea-3', get label() { return t('lite.option.background.deepsea-3') }, path: 'personas/deepsea-bg/deepsea-study.png' },
 ]
 
-export const LITE_PORTRAIT_OPTIONS: Array<{ id: LitePortraitId; label: string; path: string }> = [
-  { id: 'blue-adult', label: '蓝色成年形态', path: 'personas/portrait-blue-adult.png' },
-  { id: 'blue-child', label: '蓝色幼年形态', path: 'personas/portrait-blue-child.png' },
-  { id: 'black-adult', label: '黑红成年形态', path: 'personas/portrait-black-adult.png' },
-  { id: 'black-child', label: '黑红幼年形态', path: 'personas/portrait-black-child.png' },
+export const LITE_PORTRAIT_OPTIONS: Array<LiteOption<Exclude<LitePortraitId, 'custom'>>> = [
+  { id: 'blue-adult', get label() { return t('lite.option.portrait.blue-adult') }, path: 'personas/portrait-blue-adult.png' },
+  { id: 'blue-child', get label() { return t('lite.option.portrait.blue-child') }, path: 'personas/portrait-blue-child.png' },
+  { id: 'black-adult', get label() { return t('lite.option.portrait.black-adult') }, path: 'personas/portrait-black-adult.png' },
+  { id: 'black-child', get label() { return t('lite.option.portrait.black-child') }, path: 'personas/portrait-black-child.png' },
 ]
 
 export const DEFAULT_LITE_SETTINGS: LiteSettings = {

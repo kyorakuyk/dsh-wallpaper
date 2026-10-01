@@ -3,6 +3,7 @@
 // FREEZE(1B)：TranslucentTB 退出，这个类型随之冻结。
 // import type { AutostartStatus, TranslucentTbStatus } from '../native/runtime.ts'
 import type { AutostartStatus } from '../native/runtime.ts'
+import { t } from '../i18n/index.ts'
 
   // FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30 决定），这一项随之冻结。恢复办法：取消注释。
   // export interface DesktopWallpaperFallbackStatus {
@@ -88,10 +89,10 @@ export async function chooseImage(slot: LiteImageSlot): Promise<string | undefin
   if (!('__TAURI_INTERNALS__' in window)) return undefined
   const { open } = await import('@tauri-apps/plugin-dialog')
   const selected = await open({
-    title: slot === 'background' ? '选择壁纸背景' : '选择立绘',
+    title: slot === 'background' ? t('lite.native.pick.background') : t('lite.native.pick.portrait'),
     multiple: false,
     directory: false,
-    filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+    filters: [{ name: t('lite.native.image-filter'), extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
   })
   return typeof selected === 'string' ? selected : undefined
 }

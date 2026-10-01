@@ -8,6 +8,7 @@
  * or the conversation state changes.
  */
 import { memo, useMemo } from 'react'
+import { t, useLanguage } from '../i18n/index.ts'
 import type { PersonaManifest } from '../persona/types.ts'
 import { Bubble } from '../ui/Bubble.tsx'
 import { placeholderPortrait } from '../ui/whale.ts'
@@ -60,6 +61,8 @@ interface ScreenPortraitProps extends DisplayLayerProps {
 }
 
 const ScreenPortrait = memo(function ScreenPortrait({ display, virtualBounds, persona, backgroundUrl, bubbleText, portraitAmbientLength, portraitAmbientStrength, onOpenChat }: ScreenPortraitProps) {
+  // 立绘上那句提示是词条。
+  useLanguage()
   const image = useMemo(
     () => persona.assets.portrait ?? placeholderPortrait(persona.kind, 'idle'),
     [persona.assets.portrait, persona.kind],
@@ -73,7 +76,7 @@ const ScreenPortrait = memo(function ScreenPortrait({ display, virtualBounds, pe
     <div
       className="portrait-slot multi-screen-portrait__slot"
       onClick={onOpenChat}
-      title="点击开始对话"
+      title={t('scene.idle.portrait-title')}
       data-interaction-region="portrait"
       style={{
         ['--persona-primary' as string]: persona.theme.primary,

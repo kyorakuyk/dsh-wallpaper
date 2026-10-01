@@ -15,7 +15,7 @@
 1. **不加依赖**。一个字典模块 + 一个 `t()`，与这个代码库"纯函数优先、少依赖"的既有风格一致。
 2. **词条分文件**：`src/i18n/zh.ts`（真源，现有文案原样搬过来）、`src/i18n/en.ts`、`src/i18n/index.ts`（`t` / `setLanguage` / `useLanguage`）。
 3. **完整性由类型保证，而不是靠测试**：`en.ts` 声明为 `Dict`（由 `zh.ts` 推导出的类型），少一个键就**编译不过**。这比"跑测试才发现漏了"更早、更硬。
-4. **语言是一份设置**：存进现有设置文档（`wallpaper/src/settings/store.ts`，需**升一次 version 并写迁移**），默认跟随系统（`navigator.language` 以 `zh` 开头取中文，否则英文）。
+4. **语言是一份设置**：存进现有设置文档（`wallpaper/src/settings/store.ts`，需**升一次 version 并写迁移**），默认**中文**（有意如此：升级不该在用户眼皮底下把界面换一种语言，英文用户自己切一次；`i18nSettings.spec.ts` 钉着这条）。
 5. **非 React 代码也要能用**：`runtime.ts`、`connect/*` 里也返回面向用户的文案，所以 `t()` 不能是 hook。做法：模块级当前语言 + 订阅，React 侧用 `useLanguage()` 订阅重渲染。
 6. **原生侧分两段处理**：
    - **先做**：界面已经在用**结构化状态**的地方（如桥的 `installed` / `already-present` / `failed`、可用性 `Offline` / `BridgeReady`），文案由**界面**按状态本地化，不再转发中文原文；

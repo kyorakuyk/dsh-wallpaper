@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { t } from '../../i18n/index.ts'
 
 /**
  * 调试量尺：把元素的**内容**左右边缘画成引导线，并在左上角列出浏览器量到的真实盒子。
@@ -63,7 +64,12 @@ export function LayoutProbe(): React.ReactNode {
         const left = contentEdges[a]
         const right = contentEdges[b]
         if (!left || !right) continue
-        next.push(`Δ ${a}→${b}: 左 ${(right[0] - left[0]).toFixed(1)}  右 ${(right[1] - left[1]).toFixed(1)}`)
+        next.push(t('chat.layout-probe.delta', {
+          a,
+          b,
+          left: (right[0] - left[0]).toFixed(1),
+          right: (right[1] - left[1]).toFixed(1),
+        }))
       }
       setRows(next)
       setGuides(nextGuides)

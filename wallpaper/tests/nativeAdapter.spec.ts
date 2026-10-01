@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { NativeChatAdapter, ARCHIVED_SESSION_NOTICE, BLOCKED_TURN_NOTICE, isArchivedSessionError, isMissingSessionError } from '../src/chat/nativeAdapter.ts'
+import { NativeChatAdapter, archivedSessionNotice, blockedTurnNotice, isArchivedSessionError, isMissingSessionError } from '../src/chat/nativeAdapter.ts'
 import type { ChatEvent, ChatMessage, ScopedChatEvent } from '../src/domain/types.ts'
 import { nativeRuntime, type NativeSendOptions } from '../src/native/runtime.ts'
 
@@ -466,7 +466,7 @@ describe('NativeChatAdapter archived-session recovery', () => {
       // 通知在重发之前发出：重发一开始，轨道上那段转写就该已经在换了。
       expect(events).toEqual([
         { type: 'status', activity: 'sending' },
-        { type: 'conversation-reset', reason: 'session-archived', message: ARCHIVED_SESSION_NOTICE },
+        { type: 'conversation-reset', reason: 'session-archived', message: archivedSessionNotice() },
         { type: 'status', activity: 'sending' },
       ])
       adapter.disconnect()
@@ -590,7 +590,7 @@ describe('NativeChatAdapter archived-session recovery', () => {
 
       // 用户先知道发生了什么，然后才看到我们换了会话并重发。
       expect(events[0]).toMatchObject({ type: 'error', code: 'turn-blocked' })
-      expect(events[1]).toEqual({ type: 'conversation-reset', reason: 'turn-blocked', message: BLOCKED_TURN_NOTICE })
+      expect(events[1]).toEqual({ type: 'conversation-reset', reason: 'turn-blocked', message: blockedTurnNotice() })
       expect(native.connectCalls).toHaveLength(2)
       expect(native.connectCalls[1]?.resumeSessionId).toBeUndefined()
       expect(native.chatSends.map((send) => send.text)).toEqual(['这句话不能丢', '这句话不能丢'])

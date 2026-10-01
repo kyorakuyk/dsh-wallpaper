@@ -1,3 +1,4 @@
+import { t } from '../i18n/index.ts'
 import type { DesktopWorkspace } from '../runtime/desktopWorkspace.ts'
 
 /**
@@ -83,14 +84,22 @@ const allowedWorkspaces = new Set<DesktopWorkspace>(['front', 'entering-inner', 
 const WIDGET_ID = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/
 
 export function validateWidgetManifest(manifest: WidgetManifest): string | undefined {
-  if (!WIDGET_ID.test(manifest.id)) return '组件 ID 只能使用小写字母、数字、点、短横线或下划线。'
-  if (manifest.apiVersion !== WIDGET_API_VERSION) return `组件需要 API v${manifest.apiVersion}，当前宿主仅支持 v${WIDGET_API_VERSION}。`
-  if (!manifest.displayName.trim()) return '组件需要显示名称。'
-  if (manifest.defaultSize.width <= 0 || manifest.defaultSize.height <= 0) return '组件默认尺寸必须大于零。'
-  if (manifest.minSize.width <= 0 || manifest.minSize.height <= 0) return '组件最小尺寸必须大于零。'
-  if (manifest.minSize.width > manifest.defaultSize.width || manifest.minSize.height > manifest.defaultSize.height) return '组件最小尺寸不能超过默认尺寸。'
-  if (manifest.maxSize && (manifest.maxSize.width < manifest.defaultSize.width || manifest.maxSize.height < manifest.defaultSize.height)) return '组件最大尺寸不能小于默认尺寸。'
-  if (!manifest.workspaces.length || manifest.workspaces.some((workspace) => !allowedWorkspaces.has(workspace))) return '组件必须声明可用工作区。'
+  if (!WIDGET_ID.test(manifest.id)) return t('widgets.manifest.id-invalid')
+  if (manifest.apiVersion !== WIDGET_API_VERSION) {
+    return t('widgets.manifest.api-version', { apiVersion: manifest.apiVersion, hostVersion: WIDGET_API_VERSION })
+  }
+  if (!manifest.displayName.trim()) return t('widgets.manifest.display-name-required')
+  if (manifest.defaultSize.width <= 0 || manifest.defaultSize.height <= 0) return t('widgets.manifest.default-size')
+  if (manifest.minSize.width <= 0 || manifest.minSize.height <= 0) return t('widgets.manifest.min-size')
+  if (manifest.minSize.width > manifest.defaultSize.width || manifest.minSize.height > manifest.defaultSize.height) {
+    return t('widgets.manifest.min-exceeds-default')
+  }
+  if (manifest.maxSize && (manifest.maxSize.width < manifest.defaultSize.width || manifest.maxSize.height < manifest.defaultSize.height)) {
+    return t('widgets.manifest.max-below-default')
+  }
+  if (!manifest.workspaces.length || manifest.workspaces.some((workspace) => !allowedWorkspaces.has(workspace))) {
+    return t('widgets.manifest.workspaces')
+  }
   return undefined
 }
 

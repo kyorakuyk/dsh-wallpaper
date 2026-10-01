@@ -3,6 +3,7 @@
 import type { PersonaId, PersonaManifest, ThemeKind } from './types.ts'
 import { DEFAULT_BUBBLES } from './types.ts'
 import { assetUrl } from '../settings/store.ts'
+import { t } from '../i18n/index.ts'
 
 /**
  * 素材 URL 约定（Vite public 目录）：
@@ -12,10 +13,16 @@ import { assetUrl } from '../settings/store.ts'
  * 用户素材由外观素材库导入、校验和分类；运行时只读取已登记的资产引用。
  */
 
+/**
+ * 内置形态引用 public/personas/ 素材；无素材字段时回退程序占位。
+ *
+ * 四张表的 `name` 都是 **getter**（见 `DEFAULT_BUBBLES` 上那段说明）：这张表在 import 时建好，
+ * 而名字要跟着界面语言走，所以存的是取值方式而不是那一刻的字符串。
+ */
 export const BUILTIN_PERSONAS: Record<string, PersonaManifest> = {
   'blue-child': {
     id: 'blue-child',
-    name: '蓝色幼年鲸鱼娘',
+    get name() { return t('persona.builtin.blue-child') },
     theme: { primary: '#4da6ff', accent: '#7fc4ff', glow: 'rgba(77,166,255,0.18)' },
     age: 'child',
     kind: 'blue',
@@ -28,7 +35,7 @@ export const BUILTIN_PERSONAS: Record<string, PersonaManifest> = {
   },
   'blue-adult': {
     id: 'blue-adult',
-    name: '蓝色成年鲸鱼娘',
+    get name() { return t('persona.builtin.blue-adult') },
     theme: { primary: '#4da6ff', accent: '#9ad0ff', glow: 'rgba(77,166,255,0.18)' },
     age: 'adult',
     kind: 'blue',
@@ -41,7 +48,7 @@ export const BUILTIN_PERSONAS: Record<string, PersonaManifest> = {
   },
   'black-adult': {
     id: 'black-adult',
-    name: '黑红成年鲸鱼娘',
+    get name() { return t('persona.builtin.black-adult') },
     theme: { primary: '#e03050', accent: '#ff6b81', glow: 'rgba(224,48,80,0.20)' },
     age: 'adult',
     kind: 'black',
@@ -54,7 +61,7 @@ export const BUILTIN_PERSONAS: Record<string, PersonaManifest> = {
   },
   'black-child': {
     id: 'black-child',
-    name: '黑红幼年鲸鱼娘',
+    get name() { return t('persona.builtin.black-child') },
     theme: { primary: '#e03050', accent: '#ff8a9a', glow: 'rgba(224,48,80,0.20)' },
     age: 'child',
     kind: 'black',

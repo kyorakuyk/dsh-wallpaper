@@ -1,6 +1,7 @@
 /** 待机场景（纯展示）：背景插画 + 右侧立绘 + 气泡；交互逻辑由父组件管理 */
 
 import { useMemo } from 'react'
+import { t, useLanguage } from '../i18n/index.ts'
 import type { PersonaManifest } from '../persona/types.ts'
 import { Bubble } from '../ui/Bubble.tsx'
 import { placeholderPortrait } from '../ui/whale.ts'
@@ -29,6 +30,8 @@ export function IdleScene({
   hideBubble = false,
   onOpenChat,
 }: IdleSceneProps) {
+  // 背景的 alt 与立绘上那句提示都是词条。
+  useLanguage()
   const img = useMemo(
     () => persona.assets.portrait ?? placeholderPortrait(persona.kind, 'idle'),
     [persona.assets.portrait, persona.kind],
@@ -42,12 +45,12 @@ export function IdleScene({
     >
       {/* 背景：深海插画 or 空白背景渐变 */}
       {backgroundUrl ? (
-        <img className="idle-bg-image" src={backgroundUrl} alt="背景" draggable={false} />
+        <img className="idle-bg-image" src={backgroundUrl} alt={t('scene.idle.background')} draggable={false} />
       ) : (
         <div className="idle-bg" />
       )}
       {/* 右侧立绘（透明 PNG；带背景的 JPG 素材则圆角融入） */}
-      <div className="portrait-slot" onClick={onOpenChat} title="点击开始对话" style={{ ['--portrait-environment-rgb' as string]: environment.rgb, ['--portrait-environment-luma' as string]: environment.luminance.toFixed(3), ['--portrait-light-angle' as string]: environment.lightAngle, ['--portrait-light-contrast' as string]: environment.contrast.toFixed(3), ['--portrait-ambient-length' as string]: `${portraitAmbientLength}%`, ['--portrait-ambient-strength' as string]: portraitAmbientStrength.toFixed(2), ['--portrait-alpha-mask' as string]: `url("${img}")`, ['--portrait-age-scale' as string]: String(portraitAgeScale(persona)) }}>
+      <div className="portrait-slot" onClick={onOpenChat} title={t('scene.idle.portrait-title')} style={{ ['--portrait-environment-rgb' as string]: environment.rgb, ['--portrait-environment-luma' as string]: environment.luminance.toFixed(3), ['--portrait-light-angle' as string]: environment.lightAngle, ['--portrait-light-contrast' as string]: environment.contrast.toFixed(3), ['--portrait-ambient-length' as string]: `${portraitAmbientLength}%`, ['--portrait-ambient-strength' as string]: portraitAmbientStrength.toFixed(2), ['--portrait-alpha-mask' as string]: `url("${img}")`, ['--portrait-age-scale' as string]: String(portraitAgeScale(persona)) }}>
         <img data-interaction-region="persona" onMouseDown={(event) => event.preventDefault()} 
           className={`portrait ${persona.assets.portrait?.endsWith('.jpg') ? 'portrait-asset' : ''}`}
           src={img}

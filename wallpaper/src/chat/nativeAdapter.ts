@@ -1,4 +1,5 @@
 import type { BackendMode, ChatMessage, ScopedChatEvent } from '../domain/types.ts'
+import { t } from '../i18n/index.ts'
 import { nativeRuntime, type NativeSendOptions } from '../native/runtime.ts'
 import { EventChatAdapter, type SendOptions } from './adapter.ts'
 
@@ -57,14 +58,21 @@ export function isMissingSessionError(error: unknown): boolean {
  * 换会话时**必须**说清楚的一句。用户归档掉一条会话之后，桥拒绝它的消息，我们能做的只有
  * 在今天的新会话里重发——但"把用户刚说的话挪到另一条会话里"这件事不能静默发生（用户对主体
  * 的同一原则：不允许静默替换），所以这句话就是他看到的凭据。
+ *
+ * 是函数而不是常量：常量在 import 那一刻求值，会把语言定死（与 `App.tsx` 里
+ * `harnessDisconnectedErrorPrefix()` 同一条规矩）。
  */
-export const ARCHIVED_SESSION_NOTICE = '这条会话已被归档，已在今天的新会话里重新发送。'
+export function archivedSessionNotice(): string {
+  return t('chat.native.archived-notice')
+}
 
 /**
  * 宿主拒绝这一轮时说的那句。与归档不同：会话还在、只是不再接受我们的消息（实测：被归档的
  * 会话，`turn/end` 的 `reason.kind` 是 `blocked`）。给用户的动作是同一个 —— 换一条新会话。
  */
-export const BLOCKED_TURN_NOTICE = 'DSH 拒绝了这一轮（这条会话已被归档）；已在今天的新会话里重新发送。'
+export function blockedTurnNotice(): string {
+  return t('chat.native.blocked-notice')
+}
 
 export class NativeChatAdapter extends EventChatAdapter {
   readonly mode: BackendMode
@@ -304,11 +312,11 @@ export class NativeChatAdapter extends EventChatAdapter {
     const failure = await this.recoverArchivedSession()
     if (failure || !text) {
       if (failure) {
-        this.emit({ type: 'error', code: 'NATIVE_SEND_FAILED', recoverable: true, message: `换一条新会话也没有成功：${failure}` })
+        this.emit({ type: 'error', code: 'NATIVE_SEND_FAILED', recoverable: true, message: t('chat.native.new-session-failed', { error: failure }) })
       }
       return
     }
-    this.emit({ type: 'conversation-reset', reason: 'turn-blocked', message: BLOCKED_TURN_NOTICE })
+    this.emit({ type: 'conversation-reset', reason: 'turn-blocked', message: blockedTurnNotice() })
     await this.runTurn(text, this.nativeOptions.model ? { model: this.nativeOptions.model } : undefined, false)
       .catch(() => undefined)
   }
@@ -357,7 +365,7 @@ export class NativeChatAdapter extends EventChatAdapter {
         try {
           await this.openEventScope()
         } catch (connectError) {
-          const message = `${String(error)} 重新连接这条端点也没有成功：${String(connectError)}`
+          const message = t('chat.native.reconnect-failed', { error: String(error), connectError: String(connectError) })
           this.emit({ type: 'error', code: 'NATIVE_SEND_FAILED', recoverable: true, message })
           throw new Error(message)
         }
@@ -369,13 +377,13 @@ export class NativeChatAdapter extends EventChatAdapter {
         if (!failure) {
           // 先告诉界面：它正在显示的那段转写属于一条**已被归档**的会话，而下面这些事件
           // 会落到另一条会话上。顺序不能反——重发一旦开始，转写就该已经在换了。
-          this.emit({ type: 'conversation-reset', reason: 'session-archived', message: ARCHIVED_SESSION_NOTICE })
+          this.emit({ type: 'conversation-reset', reason: 'session-archived', message: archivedSessionNotice() })
           // 重发**不带**上一轮的 `conversationId`：那个 id 正是刚被桥拒绝的那条会话，
           // 带着它就等于又往归档会话里发一次。
           await this.runTurn(text, options?.model ? { model: options.model } : undefined, false)
           return
         }
-        const message = `${String(error)} 换一条新会话也没有成功：${failure}`
+        const message = t('chat.native.archived-failed', { error: String(error), failure })
         this.emit({ type: 'error', code: 'NATIVE_SEND_FAILED', recoverable: true, message })
         throw new Error(message)
       }
@@ -404,8 +412,8 @@ export class NativeChatAdapter extends EventChatAdapter {
     } catch (error) {
       return String(error)
     }
-    if (this.disposed) return '连接已经关闭'
-    if (!this.sessionId) return '桥没有给出新的会话'
+    if (this.disposed) return t('chat.native.closed')
+    if (!this.sessionId) return t('chat.native.no-new-session')
     return undefined
   }
 

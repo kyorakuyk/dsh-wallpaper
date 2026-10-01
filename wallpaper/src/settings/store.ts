@@ -2,6 +2,7 @@
 
 import type { BackendMode, ConversationPolicy, ModelTierRule } from '../domain/types.ts'
 import type { Language } from '../i18n/index.ts'
+import { t } from '../i18n/index.ts'
 import type { PersonaBubbles } from '../persona/types.ts'
 import { assetUrl } from '../runtime/assets.ts'
 
@@ -21,15 +22,26 @@ const CONVERSATION_KEY = 'dsh-wallpaper:conversations:v1'
 // and web pointers remain unaffected.
 const HARNESS_POINTER_REVISION = 2
 
-/** 背景选项：'default' = 默认渐变主题（纯 CSS 的空白背景）；其他项 = 深海室内插画。 */
-export const BACKGROUND_OPTIONS = [
-  { id: 'workspace', name: '深夜工作室', path: 'personas/deepsea-bg/deepsea-studio.png' },
-  { id: 'deepsea-2', name: '深海穹顶舱', path: 'personas/deepsea-bg/deepsea-dome.png' },
-  { id: 'deepsea-3', name: '深海书房', path: 'personas/deepsea-bg/deepsea-study.png' },
-  { id: 'default', name: '默认渐变主题', path: '' },
-] as const
+export type BackgroundId = 'workspace' | 'deepsea-2' | 'deepsea-3' | 'default'
 
-export type BackgroundId = (typeof BACKGROUND_OPTIONS)[number]['id']
+/**
+ * 背景选项：'default' = 默认渐变主题（纯 CSS 的空白背景）；其他项 = 深海室内插画。
+ *
+ * `name` 是 **getter**：这张表在 import 时建好，而格子上的字要跟着界面语言走
+ * （与 `DEFAULT_BUBBLES` 同一条规矩）。id 与路径不随语言变，所以它们是普通字段。
+ */
+export interface BackgroundOption {
+  id: BackgroundId
+  readonly name: string
+  path: string
+}
+
+export const BACKGROUND_OPTIONS: readonly BackgroundOption[] = [
+  { id: 'workspace', get name() { return t('settings.appearance.background.workspace') }, path: 'personas/deepsea-bg/deepsea-studio.png' },
+  { id: 'deepsea-2', get name() { return t('settings.appearance.background.deepsea-2') }, path: 'personas/deepsea-bg/deepsea-dome.png' },
+  { id: 'deepsea-3', get name() { return t('settings.appearance.background.deepsea-3') }, path: 'personas/deepsea-bg/deepsea-study.png' },
+  { id: 'default', get name() { return t('settings.appearance.background.default') }, path: '' },
+]
 
 export interface MultiScreenSettings {
   /** Keep the original single-screen composition until the user opts in. */

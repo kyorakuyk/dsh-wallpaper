@@ -84,6 +84,9 @@ describe('hardcoded copy', () => {
     let total = 0
     for (const [entry] of listed) total += hardcodedCopyLines(await readFile(join(REPO, entry), 'utf8'))
     console.log(`  待迁文件 ${listed.length} 个，剩余含中文的行 ${total} 行`)
-    expect(listed.length).toBeGreaterThan(0)
+    // 空清单就是终点：这一条只负责报数，**不是**"必须还有活干"的契约。清单空了以后它仍然是
+    // 一条有用的哨兵 —— 哪天有人往清单里塞回一个文件，上面那句日志会立刻把数字说出来，而第一
+    // 条测试（清单外不许有中文）与第二条（清单里不许有迁完的）才是真正的契约。
+    expect(listed.length).toBeGreaterThanOrEqual(0)
   })
 })

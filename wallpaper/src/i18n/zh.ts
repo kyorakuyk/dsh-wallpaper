@@ -774,6 +774,159 @@ export const zh = {
   'lite.settings.custom-image.import-failed': '导入图片失败：{error}',
   'lite.settings.custom-image.background-imported': '已导入自定义壁纸背景。',
   'lite.settings.custom-image.portrait-imported': '已导入自定义立绘。',
+
+  // ---------------------------------------------------------------------------
+  // Lite 的壁纸与立绘候选（`lite/settings.ts`、`lite/persona.ts`）：选项格子上的字。
+  // 这几个 id 是内部标识，只有 label 是词条；`custom` 那一格由导入的素材决定，没有名字。
+  // ---------------------------------------------------------------------------
+  'lite.option.background.workspace': '深夜工作室',
+  'lite.option.background.deepsea-2': '深海穹顶舱',
+  'lite.option.background.deepsea-3': '深海书房',
+  'lite.option.portrait.blue-adult': '蓝色成年形态',
+  'lite.option.portrait.blue-child': '蓝色幼年形态',
+  'lite.option.portrait.black-adult': '黑红成年形态',
+  'lite.option.portrait.black-child': '黑红幼年形态',
+  // Lite 选图的文件对话框（`lite/native.ts`）。
+  'lite.native.pick.background': '选择壁纸背景',
+  'lite.native.pick.portrait': '选择立绘',
+  'lite.native.image-filter': '图片',
+
+  // ---------------------------------------------------------------------------
+  // 内置背景（`settings/store.ts` 的 `BACKGROUND_OPTIONS`）与内置形态（`persona/registry.ts`）。
+  // 名字都是**画出来的东西**，所以按位置命名；`default` 是纯 CSS 的空白渐变。
+  // ---------------------------------------------------------------------------
+  'settings.appearance.background.workspace': '深夜工作室',
+  'settings.appearance.background.deepsea-2': '深海穹顶舱',
+  'settings.appearance.background.deepsea-3': '深海书房',
+  'settings.appearance.background.default': '默认渐变主题',
+  'persona.builtin.blue-child': '蓝色幼年鲸鱼娘',
+  'persona.builtin.blue-adult': '蓝色成年鲸鱼娘',
+  'persona.builtin.black-adult': '黑红成年鲸鱼娘',
+  'persona.builtin.black-child': '黑红幼年鲸鱼娘',
+
+  // 内置形态在 manifest 没给气泡文案时的兜底（`persona/types.ts`）。
+  'persona.bubble.morning': '早上好！今天要做什么呢？',
+  'persona.bubble.done': '搞定啦～还有别的吗？',
+  'persona.bubble.harness-online': '检测到 DeepSeek Harness，切换形态？',
+  'persona.bubble.harness-offline': 'Harness 已下线，切回网页模式。',
+  'persona.bubble.chat-open': '想聊点什么呀？',
+
+  // 四张官方形态卡（`persona/officialCatalog.ts`）与卡片上的两段标签（`OfficialPersonaCards.tsx`）。
+  // `DeepSeek` / `DeepSeek Harness` 是产品名，两种语言里一样，所以不在这里。
+  'persona.official.deepseek.flash.name': 'DeepSeek Flash · 蓝色幼年',
+  'persona.official.deepseek.pro.name': 'DeepSeek Pro · 蓝色成年',
+  'persona.official.harness.flash.name': 'Harness Flash · 黑红幼年',
+  'persona.official.harness.pro.name': 'Harness Pro · 黑红成年',
+  'persona.official.tier.flash': 'Flash · 幼年',
+  'persona.official.tier.pro': 'Pro · 成年',
+  'persona.official.list.label': '人物列表',
+  'persona.official.replaced': '已替换：{name}',
+  'persona.official.replaced-custom': '已替换：自定义素材',
+  'persona.official.baseline': '基础立绘',
+
+  // ---------------------------------------------------------------------------
+  // 连接面：端点、启动参数、模型目录、装桥（`connect/*`）。
+  // ---------------------------------------------------------------------------
+  'connect.endpoint.kind.desktop': '桌面客户端',
+  'connect.endpoint.kind.web': 'Web / CLI',
+  // 存着一个本 build 已不支持的壳主体时说的话（两段拼成一句）。
+  'connect.endpoint.unsupported-shell':
+    '原先选定的桌面客户端已不再受支持：它把本地接口锁在自己的授权后面，壁纸请求一律被拒绝；'
+    + '已切回官方桌面客户端。',
+  // 扫描结果（`scanSummary`）。
+  'connect.scan.none': '已扫描 {count} 个端口，未发现可接入的 Harness',
+  'connect.scan.found': '已扫描 {count} 个端口，发现 {bridges} 个可接入的 Harness（其中 {ready} 个可用）',
+  // 「打开界面」的两种落空说法；`{kind}` 是上面那两个字。
+  'connect.raise.no-window': '{kind} 没有可拉起的窗口；它的界面可能在浏览器里，请改用「在浏览器中打开」。',
+  'connect.raise.not-running': '{kind} 未在运行。请先启动它，然后重新扫描。',
+  // 「启动参数」的校验与读端口（`launchArgs.ts`）。
+  'connect.launch-args.too-many': '启动参数最多 {max} 个。',
+  'connect.launch-args.too-long': '单个启动参数不能超过 {max} 个字符。',
+  'connect.launch-args.control-chars': '启动参数里不能包含控制字符。',
+  // 模型目录问不到时的原因（`modelDirectory.ts`）：禁用选择器时给用户的解释。
+  'connect.model.no-options': '当前 Harness 未提供可选模型',
+  'connect.model.bridge-empty': '桥接未返回模型目录',
+  'connect.model.endpoint-empty': '端点未返回模型目录',
+  // 装桥结果（`bridgeInstall.ts`）：失败、需要确认、装好了三种语气。
+  'connect.bridge.failed': '装桥失败（{profile}）：{detail}',
+  'connect.bridge.no-detail': '没有更多信息',
+  'connect.bridge.needs-confirmation': '桥已装好，但 {profile} 里的插件需要你确认版本豁免：在终端执行 dsh plugin allow-version（原文：{detail}）',
+  'connect.bridge.installed': '已为 {profiles} 装好桥。',
+
+  // ---------------------------------------------------------------------------
+  // 外观素材（`native/appearance.ts`、`features/appearance/*`）。
+  // ---------------------------------------------------------------------------
+  'appearance.native.desktop-only': '仅桌面版支持外观存储',
+  'appearance.native.import-desktop-only': '仅桌面版支持导入外观素材',
+  'appearance.native.classify-desktop-only': '仅桌面版支持素材分类',
+  // 导入素材的文件对话框：标题与两组过滤器名。
+  'appearance.import.title': '导入主题或独立素材',
+  'appearance.import.filter.content': '外观内容',
+  'appearance.import.filter.all': '所有文件',
+  'appearance.import.folder-title': '导入素材文件夹',
+  // 素材分类面板（`AssetClassificationPanel.tsx`）。
+  'appearance.classify.label': '素材分类',
+  'appearance.classify.title': '整理独立素材',
+  'appearance.classify.description': '先选择素材，再指定一个或多个用途。',
+  'appearance.classify.close': '关闭分类',
+  'appearance.classify.slots': '可用位置',
+  'appearance.classify.later': '稍后整理',
+  'appearance.classify.confirm': '确认分类',
+
+  // ---------------------------------------------------------------------------
+  // 设置中心与桌面壳里剩下的那几句：探针失败、场景 alt、抽屉与提示条的无障碍名字。
+  // ---------------------------------------------------------------------------
+  // 探针失败的前缀（`settingsProbes.ts`），后面接 `：` 与异常原文。
+  'settings.probe.error': '{message}：{error}',
+  'settings.probe.managed-dsh': '读取受管 DSH 状态失败',
+  'settings.probe.web-adapter-config': '网页适配器配置读取失败',
+  'settings.probe.autostart-status': '读取开机自启状态失败',
+  'settings.probe.desktop-displays': '显示器列表读取失败',
+  'settings.probe.api-history': '读取 API 会话记录失败',
+  // 场景图的无障碍名字（睡眠、苏醒、待机背景、立绘那一下点击）。
+  'scene.sleep.alt': '睡着的鲸鱼娘',
+  'scene.sleep.hint': '按 Esc 或输入密码唤醒',
+  'scene.wake.frame': '苏醒 {index}',
+  'scene.wake.alt': '苏醒的鲸鱼娘',
+  'scene.idle.background': '背景',
+  'scene.idle.portrait-title': '点击开始对话',
+  'lite.scene.background.alt': '壁纸背景',
+  // 悬浮球（`floating/BallWindow.tsx`）上的可访问名字与悬停提示。
+  'ball.open-island': '打开 AI 输入岛',
+  // 抽屉的关闭按钮与提示条（`ui/primitives/*`）。
+  'ui.drawer.close': '关闭{title}',
+  'ui.toast.close': '关闭提示',
+  'widgets.host.label': '桌面组件',
+  // 组件清单的校验理由（`widgets/sdk.ts`）：`{apiVersion}` / `{hostVersion}` 是宿主报的版本号。
+  'widgets.manifest.id-invalid': '组件 ID 只能使用小写字母、数字、点、短横线或下划线。',
+  'widgets.manifest.api-version': '组件需要 API v{apiVersion}，当前宿主仅支持 v{hostVersion}。',
+  'widgets.manifest.display-name-required': '组件需要显示名称。',
+  'widgets.manifest.default-size': '组件默认尺寸必须大于零。',
+  'widgets.manifest.min-size': '组件最小尺寸必须大于零。',
+  'widgets.manifest.min-exceeds-default': '组件最小尺寸不能超过默认尺寸。',
+  'widgets.manifest.max-below-default': '组件最大尺寸不能小于默认尺寸。',
+  'widgets.manifest.workspaces': '组件必须声明可用工作区。',
+
+  // ---------------------------------------------------------------------------
+  // 聊天后端里剩下的句子：适配器错误、换会话的凭据、预览回复，以及调试量尺与链接提示。
+  // ---------------------------------------------------------------------------
+  'chat.native.archived-notice': '这条会话已被归档，已在今天的新会话里重新发送。',
+  'chat.native.blocked-notice': 'DSH 拒绝了这一轮（这条会话已被归档）；已在今天的新会话里重新发送。',
+  'chat.native.new-session-failed': '换一条新会话也没有成功：{error}',
+  'chat.native.reconnect-failed': '{error} 重新连接这条端点也没有成功：{connectError}',
+  'chat.native.archived-failed': '{error} 换一条新会话也没有成功：{failure}',
+  'chat.native.closed': '连接已经关闭',
+  'chat.native.no-new-session': '桥没有给出新的会话',
+  'chat.web.unrecognised': 'DeepSeek 网页结构无法识别，网页桥接需要更新。',
+  'chat.web.not-connected': 'DeepSeek 网页实验入口尚未连接',
+  'chat.web.empty-message': '消息不能为空。',
+  'chat.web.busy': 'DeepSeek 网页上一条消息仍在处理中，请等待完成或点击停止。',
+  'chat.preview.harness-reply': 'Harness 已接通。正式桌面应用会把这条消息交给标准 DSH 会话。',
+  'chat.preview.browser-reply': '这是浏览器预览回复。正式应用会连接 DeepSeek 网页桥接或用户启用的 API。',
+  // 调试量尺：两个内容边缘之差（`LayoutProbe.tsx`，只在注释掉的那两行打开时才会出现）。
+  'chat.layout-probe.delta': 'Δ {a}→{b}: 左 {left}  右 {right}',
+  // 链接的 title：地址后面跟着手势说明（`MarkdownBody.tsx`）。
+  'chat.markdown.link-hint': '{href}（中键或回车打开）',
 }
 
 /** 所有可用键。写错键名在编译期就会被挡住。 */

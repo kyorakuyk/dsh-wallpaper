@@ -1,4 +1,5 @@
 import type { BackendMode, ChatMessage } from '../domain/types.ts'
+import { t } from '../i18n/index.ts'
 import { EventChatAdapter, type SendOptions } from './adapter.ts'
 
 export class PreviewAdapter extends EventChatAdapter {
@@ -14,7 +15,7 @@ export class PreviewAdapter extends EventChatAdapter {
     this.messages.push({ id: crypto.randomUUID(), role: 'user', content: text, createdAt: Date.now() })
     this.emit({ type: 'message', role: 'user', content: text })
     this.emit({ type: 'status', activity: 'thinking' })
-    const answer = this.mode === 'harness' ? 'Harness 已接通。正式桌面应用会把这条消息交给标准 DSH 会话。' : '这是浏览器预览回复。正式应用会连接 DeepSeek 网页桥接或用户启用的 API。'
+    const answer = this.mode === 'harness' ? t('chat.preview.harness-reply') : t('chat.preview.browser-reply')
     let cursor = 0
     await new Promise<void>((resolve) => {
       this.timer = setInterval(() => {
