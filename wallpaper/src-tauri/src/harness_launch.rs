@@ -2716,7 +2716,13 @@ mod tests {
     #[test]
     #[test]
     fn the_installed_bridge_version_is_read_from_the_profile_tree() {
-        let root = std::env::temp_dir().join(format!("dsh-bridge-test-{}", std::process::id()));
+        // 目录名带上纳秒时间戳：只用进程号时，PID 复用会撞上上一轮残留的目录，
+// 于是这条测试会在别处绿、在这里红（2026-10-01 的发布构建就被它挡过一次）。
+let unique = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .map(|elapsed| elapsed.as_nanos())
+    .unwrap_or(0);
+let root = std::env::temp_dir().join(format!("dsh-bridge-test-{}-{}", std::process::id(), unique));
         let module = root.join("web").join("node_modules").join("dsh-wallpaper-bridge");
         std::fs::create_dir_all(&module).expect("临时目录");
         std::fs::write(
