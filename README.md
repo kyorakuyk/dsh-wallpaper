@@ -1,3 +1,5 @@
+[English](README.en.md) · 简体中文
+
 <h2 align="center">在桌面上和鲸鱼娘交互吧！</h2>
 
 <!-- PROJECT SHIELDS -->
