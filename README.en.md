@@ -25,9 +25,11 @@ English · [简体中文](README.md)
   <a href="docs/media/hero.mp4"><img src="docs/media/hero-clip.gif" alt="Idle desktop: the character on the right, the input island below" width="100%"></a>
 </p>
 
-> **Note on language:** the application interface is currently **Chinese only**. There is no
-> translation layer in the code yet. This README is the English front door; the app itself will
-> speak Chinese to you.
+> **Note on language:** the interface speaks **Chinese and English**. Switch it in
+> **Settings → General → Language**; the choice is remembered, and Chinese is the default so an
+> update never changes it under you. A few messages that come back from the native side are still
+> Chinese - autostart reasons and bridge error text - which is the planned second pass; the rest of
+> the English interface is covered by a test that refuses Chinese outside the dictionary.
 
 ## What it is
 
@@ -66,6 +68,7 @@ Switching happens from the settings centre and takes effect on the running wallp
 | | Feature | Notes |
 |:---:|------|------|
 | ⚙️ | **Settings centre** | Six tabs; changes save as you make them |
+| 🌐 | **Interface language** | Chinese or English, switched in General and remembered; the native side's free-form messages are the one part still Chinese |
 | 🎨 | **Four built-in personas** | Blue and red, each in child and adult form; adult portraits are scaled up 1.15 |
 | 🌊 | **Deep-sea backgrounds** | Three illustrated interiors plus a default gradient |
 | 🧾 | **History and cost** | Local API conversations can be viewed, deleted or cleared; with prices configured it estimates the cost of a turn and of a session |
