@@ -1,13 +1,30 @@
 name: CI
 
+# 2026-10-01 改了两处，都是为了"不该等的别等"：
+#
+# 1. 文档改动不再触发整条流水线。此前 README 改一个错别字也要在 Windows 上重编一遍 Rust ——
+#    实测最近 12 次运行里有 10 次是 docs/release/license 提交，合计吃掉约 40 分钟 runner 时间。
+# 2. 拆成三个并行作业（前端 / Rust 全量 / Lite）。此前所有步骤在同一个作业里顺序跑，总时长是
+#    **各步骤之和**（5 分半，其中 Rust 测试独自占 152 秒）；拆开后墙钟时间约等于最慢的那一个。
 on:
   push:
     branches:
       - master
       - 'codex/**'
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'LICENSE*'
+      - 'archive/**'
+      - '.gitignore'
   pull_request:
     branches:
       - master
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'LICENSE*'
+      - 'archive/**'
 
 permissions:
   contents: read
@@ -17,10 +34,81 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify:
-    name: Windows verification
+  # 前端与 Bridge：不需要 Rust 工具链，最快的一条。
+  frontend:
+    name: Frontend and bridge
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: pnpm
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm typecheck
+
+      - name: Run frontend and bridge tests
+        run: pnpm test
+
+      - name: Build frontend
+        run: pnpm build
+
+  # Rust 全量：默认特性下的所有 target。这一条最慢，所以它单独一个作业，其余两条与它并行。
+  rust:
+    name: Rust (full)
     runs-on: windows-latest
     timeout-minutes: 35
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+          targets: x86_64-pc-windows-msvc
+
+      # 依赖缓存，key 跟着 lock 文件走；并且**失败也存**。
+      #
+      # 这一条替代了原来的手写 actions/cache：那个 key 只由 Cargo.lock 决定，而 actions/cache
+      # 对已存在的 key 永不重写 —— 于是每个 lock 版本只在第一次成功的那轮存一次；那一轮失败或
+      # 被取消，之后每一轮都要把整棵依赖树重新编一遍，直到 lock 再变。实测确认过这个行为。
+      #
+      # 这个 action 只缓存**依赖**（不缓存本仓库的 crate —— 那部分每轮都会变，缓存它没意义），
+      # 并在保存前清掉增量产物与一周前的旧产物，所以恢复/上传都快得多。
+      #
+      # 两个作业各自缓存会各存一份（key 里带作业名），换来的是它们能真正并行；体积换时间。
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          # target/ 在清单旁边，不在仓库根目录。
+          workspaces: wallpaper/src-tauri
+          key: full
+          cache-on-failure: true
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path wallpaper/src-tauri/Cargo.toml --locked --all-targets
+
+  # Lite：前端产物、原生目标与产物边界三件事互相依赖，所以留在同一个作业里。
+  lite:
+    name: Lite
+    runs-on: windows-latest
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
@@ -43,36 +131,15 @@ jobs:
           toolchain: stable-x86_64-pc-windows-msvc
           targets: x86_64-pc-windows-msvc
 
-      # 依赖缓存，key 跟着 lock 文件走；并且**失败也存**。
-      #
-      # 这一条替代了原来的手写 actions/cache：那个 key 只由 Cargo.lock 决定，而 actions/cache
-      # 对已存在的 key 永不重写 —— 于是每个 lock 版本只在第一次成功的那轮存一次；那一轮失败或
-      # 被取消，之后每一轮都要把整棵依赖树重新编一遍，直到 lock 再变。实测确认过这个行为。
-      #
-      # 这个 action 只缓存**依赖**（不缓存本仓库的 crate —— 那部分每轮都会变，缓存它没意义），
-      # 并在保存前清掉增量产物与一周前的旧产物，所以恢复/上传都快得多。
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          # target/ 在清单旁边，不在仓库根目录。
           workspaces: wallpaper/src-tauri
-          key: ci
+          key: lite
           cache-on-failure: true
 
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Type check
-        run: pnpm typecheck
-
-      - name: Run frontend and bridge tests
-        run: pnpm test
-
-      - name: Run Rust tests
-        run: cargo test --manifest-path wallpaper/src-tauri/Cargo.toml --locked --all-targets
-
-      - name: Build frontend
-        run: pnpm build
 
       - name: Build Lite frontend
         run: pnpm build:lite
