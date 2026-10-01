@@ -118,7 +118,10 @@ async function mount(props: ProbeProps): Promise<void> {
   // `invoke` 只 resolve 一次：一个宏任务边界足够让 `check` 把状态写完（否则断言跑在它前面，
   // 看到的就是"调了但界面没变"，而那不是事实）。
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    // 多让出几个宏任务：这条测试跑在真渲染器里，invoke 的 promise 链要跨几个 tick。
+    // 只让一次 setTimeout(0) 在空闲时够用，但构建机忙着编译 cargo 时不够 ——
+    // 2026-10-02 的发布构建就这么红过一次（偶发的门禁比没有门禁更坏）。
+    for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setTimeout(resolve, 5))
   })
 }
 
