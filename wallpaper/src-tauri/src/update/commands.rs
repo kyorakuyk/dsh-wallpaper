@@ -1042,6 +1042,26 @@ mod tests {
     }
 
     /// 「忽略」记下的是**具体版本**：同一个版本不再提示，更晚的版本仍然提示（§四、§八 3）。
+    /// 真机：真的向 GitHub 发一次请求，验证"请求 + 解析"这段胶水（单测里它被注入的取数入口替掉了）。
+    /// 默认 ignore（CI 不该依赖网络）；手动跑：
+    /// `cargo test --lib -- --ignored a_real_fetch_from_github --nocapture`
+    #[tokio::test]
+    #[ignore = "hits the network; run on purpose"]
+    async fn a_real_fetch_from_github_parses_into_a_release() {
+        let json = super::super::source::fetch_latest_release()
+            .await
+            .expect("要能连上 GitHub 并拿到正文");
+        let info = super::super::release::parse_release(&json).expect("真实的 release 要被解析出来");
+        println!("  latest tag: {:?}", info.tag);
+        println!("  page: {:?}", info.page_url);
+        println!(
+            "  assets: {:?}",
+            info.assets.iter().map(|a| (&a.name, a.size)).collect::<Vec<_>>()
+        );
+        assert!(info.tag.is_some(), "真实的 release 一定有标签");
+        assert!(!info.assets.is_empty(), "真实的 release 一定有资产");
+    }
+
     #[tokio::test]
     async fn a_dismissal_silences_that_version_and_leaves_later_ones_alone() {
         let directory = tempfile::tempdir().unwrap();
