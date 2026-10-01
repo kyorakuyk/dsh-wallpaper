@@ -32,6 +32,9 @@ export const SETTINGS_PROBES = [
   'autostartStatus',
   'desktopDisplays',
   'apiHistory',
+  // 更新检测（`features/update/`）：系统页打开时读一次结论。它是**手动**检查 —— 用户主动打开
+  // 这一页，所以不受原生侧 6 小时节流限制，卡片上因此一定有一个真结论（§四）。
+  'updateStatus',
 ] as const
 export type SettingsProbe = (typeof SETTINGS_PROBES)[number]
 
@@ -49,7 +52,7 @@ export const PAGE_PROBES: Record<SettingsPage, readonly SettingsProbe[]> = {
   history: ['apiHistory'],
   // FREEZE(1A)：同上。
   // system: ['lockScreenDiagnostics', 'autostartStatus'],
-  system: ['autostartStatus'],
+  system: ['autostartStatus', 'updateStatus'],
 }
 
 /**
@@ -202,6 +205,7 @@ const PROBE_ERROR_MESSAGES: Record<SettingsProbe, MessageKey> = {
   autostartStatus: 'settings.probe.autostart-status',
   desktopDisplays: 'settings.probe.desktop-displays',
   apiHistory: 'settings.probe.api-history',
+  updateStatus: 'settings.probe.update',
 }
 
 /**

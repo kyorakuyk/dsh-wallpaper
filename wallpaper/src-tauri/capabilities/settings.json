@@ -58,6 +58,7 @@
     "allow-appearance-resolve-asset",
     "allow-appearance-resolve-library-asset",
     "allow-update-check",
+    "allow-update-dismiss",
       "allow-ensure-profile-bridge"
   ]
 }

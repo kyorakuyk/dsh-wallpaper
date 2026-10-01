@@ -46,6 +46,7 @@ import {
 import { chooseAppearanceImportPaths, nativeAppearance } from '../native/appearance.ts'
 import type { AppearanceAssetSummary } from '../features/appearance/appearanceViewModel.ts'
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
+import { useUpdate } from '../features/update/useUpdate.ts'
 import { formatSentence, msg, sentenceOf, t, useLanguage, useStoredLanguage, type Sentence } from '../i18n/index.ts'
 import './SettingsWindow.css'
 
@@ -187,6 +188,16 @@ export function SettingsWindow() {
   const [apiModelCatalogFetchedAt, setApiModelCatalogFetchedAt] = useState<string>()
   /** 「桌面会话」工作区路径（原生只读自检；系统页显示，方便核对）。 */
   const [desktopWorkspace, setDesktopWorkspace] = useState<DesktopWorkspaceStatus>()
+  /**
+   * 更新检测（`features/update/`，计划书 §四）：系统页那张卡片的报告、忙碌标志与那行提示。
+   *
+   * 报告来自原生 `update_check`（只有码与数字），文案由 `features/update/updateCopy.ts` 说。
+   * 探针的实现是 `useMemo(…, [])`，所以下面那个 runner 通过 ref 拿"当下这一个"控制器
+   * （与 `settingsRef` 同一条理由）。
+   */
+  const update = useUpdate()
+  const updateRef = useRef(update)
+  updateRef.current = update
   /** 正在打开「项目记忆」：桌面会话里不贴路径，改它的入口只在这里。 */
   const [openingMemory, setOpeningMemory] = useState(false)
   /**
@@ -601,6 +612,15 @@ export function SettingsWindow() {
       const listing = await nativeRuntime.listApiConversations()
       if (mountedRef.current) setApiHistory(listing)
     },
+    /**
+     * 更新检测：用户主动打开系统页，所以这一次走**手动**检查（不受原生侧 6 小时节流限制，
+     * §四"手动检查不受频率限制"）。于是卡片上一定有一个真结论 —— "已是最新" / "有新版本 x" /
+     * 失败原因 —— 而不是一行"本次跳过"，也不需要为"读上次结果"再加一条命令。
+     * 卡片上那枚「检查更新」按钮重复的就是这一次（`checkForUpdates`）。
+     */
+    updateStatus: async () => {
+      await updateRef.current.check(true)
+    },
   }), [])
 
   const probeController = useMemo(() => createSettingsProbeController({
@@ -980,6 +1000,16 @@ export function SettingsWindow() {
   }
 
   const close = () => void invoke('hide_settings_window')
+  /**
+   * 更新那三个动作（计划书 §四）。全部交给同一个控制器：两个窗口（壁纸气泡 / 这里）与同一份
+   * 原生状态打交道，动作也只有一份实现。失败与"没落盘"由控制器写进 `update.notice`，
+   * 卡片就在原地把那句话显示出来 —— 不需要再弹一条窗口通知说同一件事。
+   */
+  const checkForUpdates = async () => {
+    await updateRef.current.check(true)
+  }
+  const downloadUpdate = () => { void updateRef.current.openReleasePage() }
+  const dismissUpdate = (version: string) => { void updateRef.current.dismiss(version) }
   const importAppearance = async () => {
     setAppearanceBusy(true)
     try {
@@ -1135,6 +1165,12 @@ export function SettingsWindow() {
       onRefreshApiHistory={() => { void refreshApiHistory() }}
       onDeleteApiConversation={(conversationId) => { void deleteApiConversation(conversationId) }}
       onClearApiHistory={() => { void clearApiHistory() }}
+      updateReport={update.report}
+      updateBusy={update.busy}
+      updateNotice={update.notice}
+      onCheckForUpdates={() => { void checkForUpdates() }}
+      onDownloadUpdate={downloadUpdate}
+      onDismissUpdate={dismissUpdate}
       onRequestDeepSeekLogin={() => void nativeRuntime.requestDeepSeekLogin().catch((error) => showFailure(msg('settings.window.deepseek-web.open-failed', { error: sentenceOf(error) })))}
       deepseekWebAdapterConfig={deepseekWebAdapterConfig}
       onRefreshDeepSeekWebAdapterConfig={refreshDeepSeekWebAdapterConfig}

@@ -265,6 +265,18 @@ export const enFull: FullOnlyDict = {
   'settings.system.autostart.toggle': 'Start at sign-in',
   'settings.system.autostart.busy': 'Updating the Windows startup task; one moment. The settings centre stays usable.',
 
+  // System · updates (`features/update/*`): the card's fixed wording. The outcomes, the failure reasons
+  // and the two actions live in the "update detection" section at the end of this file, because the
+  // portrait bubble says exactly the same sentences.
+  'settings.system.update.title': 'Updates',
+  'settings.system.update.description': 'Updates come from GitHub Releases. The wallpaper checks once after you enter the inner desktop, and at most once every six hours afterwards; the button here is not limited by that.',
+  'settings.system.update.current.title': 'Installed version',
+  'settings.system.update.current.unavailable': 'The installed version cannot be read, so updates are not checked',
+  'settings.system.update.last-check.title': 'Last check',
+  'settings.system.update.last-check.never': 'Not checked yet',
+  'settings.system.update.check': 'Check for updates',
+  'settings.system.update.checking': 'Checking…',
+
   // ---------------------------------------------------------------------------
   // What the settings window itself says (`settings/SettingsWindow.tsx`): the notice bar, the notices,
   // the bridge feedback and the autostart warnings. All of them are assembled at run time (the
@@ -808,6 +820,7 @@ export const enFull: FullOnlyDict = {
   'settings.probe.autostart-status': 'Could not read the autostart state',
   'settings.probe.desktop-displays': 'Could not read the display list',
   'settings.probe.api-history': 'Could not read the API conversation history',
+  'settings.probe.update': 'The update check did not finish',
   // The idle background and the portrait click (sleep and wake are shared with Lite, in `en.shared.ts`).
   'scene.idle.background': 'Background',
   'scene.idle.portrait-title': 'Click to start talking',
@@ -849,4 +862,38 @@ export const enFull: FullOnlyDict = {
   'chat.layout-probe.delta': 'Δ {a}→{b}: left {left}  right {right}',
   // A link's title: the address followed by the gesture hint (`MarkdownBody.tsx`).
   'chat.markdown.link-hint': '{href} (middle-click or Enter to open)',
+
+  // ---------------------------------------------------------------------------
+  // Update detection (`features/update/*`): the sentences the portrait bubble and the settings system
+  // page share. The native side returns codes and numbers only, so every entry here answers one code:
+  // `update.outcome.*` are the five conclusions, `update.skip.*` / `update.failure.*` are the reasons
+  // nested inside them, and `update.notice.*` are the "that did not work" lines.
+  // ---------------------------------------------------------------------------
+  'update.outcome.available': 'Version {version} is available',
+  // The conclusion says "there is an update" while the report carries no version: native never produces
+  // this, but saying so beats printing an empty version number.
+  'update.outcome.available-unversioned': 'An update is available, but its version number could not be read',
+  'update.outcome.up-to-date': 'Up to date',
+  'update.outcome.no-asset': 'Version {version} is out, but this release has no installable package',
+  // `{reason}` carries one of the `update.skip.*` / `update.failure.*` sentences below.
+  'update.outcome.skipped': 'No check this time: {reason}',
+  'update.outcome.failed': 'The check failed: {reason}',
+  // The report says it skipped or failed without a reason code (native never produces this): say only
+  // that half rather than picking a reason - that would read like a fact.
+  'update.outcome.skipped-unstated': 'No check this time',
+  'update.outcome.failed-unstated': 'The check failed',
+  'update.skip.throttled': 'it has been less than six hours since the last check',
+  'update.skip.version-unavailable': 'the installed version cannot be read',
+  'update.failure.network': 'the network is unavailable or the request timed out',
+  'update.failure.http-status': 'the server answered {status}',
+  'update.failure.http-status-unknown': 'the server answered with an error status',
+  'update.failure.malformed-response': 'the release information could not be read',
+  'update.action.download': 'Download',
+  'update.action.dismiss': 'Ignore',
+  // With no installable asset in the release, the primary button says what it really does.
+  'update.action.release-page': 'Open the release page',
+  'update.notice.dismiss-unpersisted': 'This dismissal was not written to the state file; the version will be offered again next launch.',
+  'update.notice.dismiss-failed': 'Could not ignore it: {error}',
+  'update.notice.check-failed': 'The update check did not finish: {error}',
+  'update.notice.open-release-failed': 'Could not open the release page: {error}',
 }

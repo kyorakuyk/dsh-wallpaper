@@ -37,6 +37,13 @@ impl UpdateCommandError {
             code: "statePathUnavailable",
         }
     }
+
+    /// 要记下的版本串不是一个可比较的版本号（见 [`run_dismiss`]）。
+    fn invalid_version() -> Self {
+        Self {
+            code: "invalidVersion",
+        }
+    }
 }
 
 /// 一次检查的结果。
@@ -114,6 +121,19 @@ impl UpdateCheckReport {
             state_persisted,
         }
     }
+}
+
+/// 一次「忽略」的结果。
+///
+/// 与检查报告一样只有码、版本号与布尔：界面自己说文案。`persisted` 是**要给用户看的**那一半
+/// —— 写不进去时"这个版本下次启动还会提示"，界面必须能如实说出来，而不是让用户以为按过了。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateDismissReport {
+    /// 记下的版本（按**写下来的段数**输出：`0.4.1` 不写成 `0.4.1.0`）。
+    pub dismissed_version: Option<String>,
+    /// 记录有没有落盘。写不进去时是 `false`（本次仍然生效，重启之后失效）。
+    pub persisted: bool,
 }
 
 /// 一次检查的结论：解析成功与失败两条路都汇到这里。
@@ -205,6 +225,42 @@ where
     };
 
     UpdateCheckReport::concluded(&state, conclusion, &installed, state_persisted)
+}
+
+/// 记下「这个版本用户按过忽略」（§四：忽略记录的是**具体版本**，不是"忽略全部"）。
+///
+/// 只做一件事：读状态、写 `dismissedVersion`、落盘。**不重新检查**，也不动 `latestVersion` ——
+/// 用户按下忽略时手上那个版本号由界面给（就是报告里的 `latestVersion`），原生不替他猜：
+/// 猜错就是把一个用户没见过的版本永久吞掉。
+///
+/// 解析不出的版本串**拒绝**，而不是照写。`UpdateState::is_dismissed` 是按版本**等价**比较的
+/// （`0.4.1` 与 `0.4.1.0` 是同一个版本），写进一串认不出的形状等于写了一条永远匹配不上的记录：
+/// 界面会以为"已经忽略了"，下次启动同一个版本照旧提示，中间没有任何一处报错。
+pub(crate) fn run_dismiss(
+    version: &str,
+    state_path: &Path,
+) -> Result<UpdateDismissReport, UpdateCommandError> {
+    let Some(version) = Version::parse(version) else {
+        log::warn!("更新忽略：版本串不是一个可比较的版本（{version:?}），拒绝记录");
+        return Err(UpdateCommandError::invalid_version());
+    };
+    let recorded = version.to_string();
+
+    let mut state = state::load(state_path);
+    state.dismissed_version = Some(recorded.clone());
+    let persisted = match state::save(state_path, &state) {
+        Ok(()) => true,
+        Err(error) => {
+            log::warn!("更新忽略写不进去（{}）：{error}", state_path.display());
+            false
+        }
+    };
+    log::info!("更新忽略：已记下 {recorded}（落盘：{persisted}）");
+
+    Ok(UpdateDismissReport {
+        dismissed_version: Some(recorded),
+        persisted,
+    })
 }
 
 /// 拿到 release 之后的全部判断（纯函数）。
@@ -326,6 +382,29 @@ pub(crate) async fn update_check(
         super::source::fetch_latest_release,
     )
     .await)
+}
+
+/// 「忽略」：把某个版本写进 `dismissedVersion`（§四）。
+///
+/// 两个面都调它：立绘气泡上的「忽略」与设置中心那一行上的「忽略」。同一条状态迁移只有这一个实现，
+/// 于是两个界面对"忽略"的理解不会漂移。`version` 由调用者给出（报告里的 `latestVersion`）——
+/// 原生不接受"忽略最新那个"这种说法：那会在两次调用之间变成另一个版本。
+///
+/// 返回值只有版本号与一个布尔（见 [`UpdateDismissReport`]），文案由界面按语言说。
+#[tauri::command]
+// 整个模块已经在 `lib.rs` 里按 edition 门控；这一行是仓库惯例的第二道（Lite 不含本功能）。
+#[cfg(not(feature = "lite"))]
+pub(crate) fn update_dismiss(
+    caller: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    version: String,
+) -> Result<UpdateDismissReport, UpdateCommandError> {
+    require_update_surface(&caller)?;
+    let Some(state_path) = state_path(&app) else {
+        return Err(UpdateCommandError::state_path_unavailable());
+    };
+    // 读状态 + 写一个小 JSON，不占阻塞线程也不打网络。
+    run_dismiss(&version, &state_path)
 }
 
 #[cfg(test)]
@@ -690,49 +769,157 @@ mod tests {
         );
     }
 
-    /// 上一版就是在这儿栽的：命令写好了、`build.rs` 也登记了，但**没给窗口授权**，于是界面每
-    /// 一次调用都被能力系统拒掉（报错原文：`Command ... not allowed by ACL`）。这道测试把"三处
-    /// 必须同时存在"钉住：permission 文件、两个窗口的 capability、以及 `build.rs` 的命令清单。
+    /// 「忽略」记下的是**具体版本**：同一个版本不再提示，更晚的版本仍然提示（§四、§八 3）。
+    #[tokio::test]
+    async fn a_dismissal_silences_that_version_and_leaves_later_ones_alone() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = state_path(&directory);
+
+        let report = run_dismiss("0.4.2", &path).expect("a parseable version is accepted");
+        assert_eq!(report.dismissed_version.as_deref(), Some("0.4.2"));
+        assert!(report.persisted);
+        // 写的是状态文件里那一个字段，而不是别处：下一次检查就是从这儿读出来的。
+        assert_eq!(state::load(&path).dismissed_version.as_deref(), Some("0.4.2"));
+
+        // 同一个版本（哪怕 release 这次写成四段）不再提示。
+        let same = Fetch::ok(&release(
+            "v0.4.2.0",
+            &[("dsh-wallpaper_0.4.2_x64-setup.exe", 10)],
+        ));
+        let report = run_check(
+            installed("0.4.1", VersionSource::UninstallEntry),
+            &path,
+            NOW,
+            true,
+            || same.fetch(),
+        )
+        .await;
+        assert!(report.dismissed);
+        assert_eq!(report.outcome, CheckOutcome::UpdateAvailable, "忽略不改结论，只是让界面别提示");
+
+        // 更晚的版本照旧提示。
+        let later = Fetch::ok(&release(
+            "v0.4.3",
+            &[("dsh-wallpaper_0.4.3_x64-setup.exe", 10)],
+        ));
+        let report = run_check(
+            installed("0.4.1", VersionSource::UninstallEntry),
+            &path,
+            NOW,
+            true,
+            || later.fetch(),
+        )
+        .await;
+        assert!(!report.dismissed, "0.4.3 不该被 0.4.2 的那条记录吞掉");
+    }
+
+    /// 记录写不下来时**照样回报**，只是 `persisted` 是 `false`：界面要能把"下次启动还会提示"
+    /// 说出来，而不是让用户以为按过了。
     #[test]
-    fn the_command_is_registered_in_every_acl_place_it_is_called_through() {
+    fn an_unwritable_state_file_is_reported_instead_of_swallowed() {
+        let directory = tempfile::tempdir().unwrap();
+        // 把状态文件的路径指到一个**目录**上：读是"没有历史"，写必然失败。
+        let blocked = directory.path().join("state.json");
+        std::fs::create_dir_all(&blocked).unwrap();
+
+        let report = run_dismiss("0.4.2", &blocked).expect("the version itself is fine");
+        assert_eq!(report.dismissed_version.as_deref(), Some("0.4.2"));
+        assert!(!report.persisted);
+    }
+
+    /// 认不出版本的串**拒绝**，不写一条永远匹配不上的记录（见 `run_dismiss`）。
+    #[test]
+    fn a_version_that_cannot_be_compared_is_refused_rather_than_recorded() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = state_path(&directory);
+
+        for version in ["", "   ", "latest", "0.4.2 (build 7)", "0.4.2.3.4"] {
+            let error = run_dismiss(version, &path).expect_err("must be refused");
+            assert_eq!(error.code, "invalidVersion", "{version:?}");
+        }
+        assert!(
+            !path.exists(),
+            "拒绝之后一个字节都不该落盘：写下去等于记了一条永远匹配不上的忽略"
+        );
+        // 带 `v` 前缀或首尾空白是允许的（`Version::parse` 的规则），记下来的是规范写法。
+        assert_eq!(
+            run_dismiss(" v0.4.2 ", &path).unwrap().dismissed_version.as_deref(),
+            Some("0.4.2")
+        );
+    }
+
+    /// 「忽略」的结果也是契约：界面按这两个字段名读（`dismissedVersion` / `persisted`）。
+    #[test]
+    fn the_dismiss_report_serializes_to_the_fields_the_interface_reads() {
+        let report = UpdateDismissReport {
+            dismissed_version: Some("0.4.2".into()),
+            persisted: false,
+        };
+        assert_eq!(
+            serde_json::to_string(&report).unwrap(),
+            r#"{"dismissedVersion":"0.4.2","persisted":false}"#
+        );
+    }
+
+    /// 上一版就是在这儿栽的：命令写好了、`build.rs` 也登记了，但**没给窗口授权**，于是界面每
+    /// 一次调用都被能力系统拒掉（报错原文：`Command ... not allowed by ACL`）。这道测试把"四处
+    /// 必须同时存在"钉住：permission 文件（allow 与 deny 两条）、两个窗口的 capability、
+    /// `build.rs` 的命令清单、以及 `generate_handler!`。
+    ///
+    /// **表驱动**：加一条更新命令就在 `COMMANDS` 里加一行 —— 漏任何一处，界面上的按钮就是
+    /// "点了没反应"，而这类故障在构建期一声不响。
+    #[test]
+    fn every_update_command_is_registered_in_every_acl_place_it_is_called_through() {
+        /// (命令名, 授权标识符)。`update_check` 是"查"，`update_dismiss` 是「忽略」。
+        const COMMANDS: [(&str, &str); 2] =
+            [("update_check", "allow-update-check"), ("update_dismiss", "allow-update-dismiss")];
+
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-
-        let permission =
-            std::fs::read_to_string(root.join("permissions/autogenerated/update_check.toml"))
-                .expect("the generated-style permission file must exist");
-        assert!(
-            permission.contains(r#"identifier = "allow-update-check""#),
-            "{permission}"
-        );
-        assert!(
-            permission.contains(r#"commands.allow = ["update_check"]"#),
-            "{permission}"
-        );
-
-        // 气泡在壁纸窗口里、那一行在设置窗口里：两个都要授权。
-        for capability in ["background", "settings"] {
-            let text = std::fs::read_to_string(root.join(format!("capabilities/{capability}.json")))
-                .expect("the capability file must exist");
-            assert!(
-                text.contains(r#""allow-update-check""#),
-                "{capability} must grant update_check"
-            );
-        }
-        // Lite 两个窗口都不给（命令本身也不在 Lite 里）。
-        for capability in ["lite-background", "lite-settings"] {
-            let text = std::fs::read_to_string(root.join(format!("capabilities/{capability}.json")))
-                .expect("the capability file must exist");
-            assert!(
-                !text.contains("allow-update-check"),
-                "{capability} must not grant update_check"
-            );
-        }
-
-        // 没在 `build.rs` 的清单里声明，命令根本不会有 ACL 条目。
         let build = std::fs::read_to_string(root.join("build.rs")).expect("build.rs must exist");
-        assert!(
-            build.contains(r#""update_check""#),
-            "build.rs must declare the command"
-        );
+        let lib = std::fs::read_to_string(root.join("src/lib.rs")).expect("lib.rs must exist");
+
+        for (command, permission) in COMMANDS {
+            // 1. permission 文件（照 `permissions/autogenerated/` 的既有格式：allow + deny 两条）。
+            let file = root.join(format!("permissions/autogenerated/{command}.toml"));
+            let text = std::fs::read_to_string(&file)
+                .unwrap_or_else(|error| panic!("{} 必须存在：{error}", file.display()));
+            assert!(text.contains(&format!(r#"identifier = "{permission}""#)), "{text}");
+            assert!(text.contains(&format!(r#"commands.allow = ["{command}"]"#)), "{text}");
+            let denied = permission.replace("allow-", "deny-");
+            assert!(text.contains(&format!(r#"identifier = "{denied}""#)), "{text}");
+            assert!(text.contains(&format!(r#"commands.deny = ["{command}"]"#)), "{text}");
+
+            // 2. 两个窗口的 capability：气泡在壁纸窗口里、那一行在设置窗口里，两个都要授权。
+            for capability in ["background", "settings"] {
+                let text =
+                    std::fs::read_to_string(root.join(format!("capabilities/{capability}.json")))
+                        .expect("the capability file must exist");
+                assert!(
+                    text.contains(&format!(r#""{permission}""#)),
+                    "{capability} must grant {command}"
+                );
+            }
+            // 3. Lite 两个窗口都不给（命令本身也不在 Lite 里，§七）。
+            for capability in ["lite-background", "lite-settings"] {
+                let text =
+                    std::fs::read_to_string(root.join(format!("capabilities/{capability}.json")))
+                        .expect("the capability file must exist");
+                assert!(
+                    !text.contains(permission),
+                    "{capability} must not grant {command}"
+                );
+            }
+
+            // 4. 没在 `build.rs` 的清单里声明，命令根本不会有 ACL 条目；没在
+            //    `generate_handler!` 里登记，命令根本不存在。
+            assert!(
+                build.contains(&format!(r#""{command}""#)),
+                "build.rs must declare {command}"
+            );
+            assert!(
+                lib.contains(&format!("update::commands::{command}")),
+                "lib.rs must register {command} in generate_handler!"
+            );
+        }
     }
 }

@@ -55,6 +55,7 @@
     "allow-managed-dsh-status",
     "allow-appearance-resolve-asset",
     "allow-update-check",
+    "allow-update-dismiss",
       "allow-verify-island-click"
   ]
 }

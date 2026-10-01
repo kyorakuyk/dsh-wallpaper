@@ -7,7 +7,7 @@
  * whose assignment did not change out of the update path when another screen
  * or the conversation state changes.
  */
-import { memo, useMemo } from 'react'
+import { memo, useMemo, type ReactNode } from 'react'
 import { t, useLanguage } from '../i18n/index.ts'
 import type { PersonaManifest } from '../persona/types.ts'
 import { Bubble } from '../ui/Bubble.tsx'
@@ -57,10 +57,12 @@ interface ScreenPortraitProps extends DisplayLayerProps {
   bubbleText: string
   portraitAmbientLength: number
   portraitAmbientStrength: number
+  /** 更新气泡（`features/update/UpdateBubble.tsx`）；挂不挂由父组件决定。 */
+  updateBubble?: ReactNode
   onOpenChat: () => void
 }
 
-const ScreenPortrait = memo(function ScreenPortrait({ display, virtualBounds, persona, backgroundUrl, bubbleText, portraitAmbientLength, portraitAmbientStrength, onOpenChat }: ScreenPortraitProps) {
+const ScreenPortrait = memo(function ScreenPortrait({ display, virtualBounds, persona, backgroundUrl, bubbleText, portraitAmbientLength, portraitAmbientStrength, updateBubble, onOpenChat }: ScreenPortraitProps) {
   // 立绘上那句提示是词条。
   useLanguage()
   const image = useMemo(
@@ -98,6 +100,8 @@ const ScreenPortrait = memo(function ScreenPortrait({ display, virtualBounds, pe
       />
       <div className="portrait-environment" aria-hidden="true"><i className="portrait-glow" /><i className="portrait-rim" /><i className="portrait-fade" /><i className="portrait-contact" /></div>
       {bubbleText.trim() && <Bubble text={bubbleText} theme={persona.theme} from="top" />}
+      {/* 更新气泡：同一个槽位、同一套样式（`data-interaction-region` 在组件里，见它的文件头） */}
+      {updateBubble}
     </div>
   </div>
 }, (previous, next) => (
@@ -113,6 +117,7 @@ const ScreenPortrait = memo(function ScreenPortrait({ display, virtualBounds, pe
   && previous.persona === next.persona
   && previous.backgroundUrl === next.backgroundUrl
   && previous.bubbleText === next.bubbleText
+  && previous.updateBubble === next.updateBubble
   && previous.portraitAmbientLength === next.portraitAmbientLength
   && previous.portraitAmbientStrength === next.portraitAmbientStrength
   && previous.onOpenChat === next.onOpenChat
@@ -126,10 +131,12 @@ export interface MultiScreenIdleSceneProps {
   bubbleText: string
   portraitAmbientLength?: number
   portraitAmbientStrength?: number
+  /** 更新气泡：挂在**立绘所在那块屏幕**的槽位里（与单屏那条路同一个组件）。 */
+  updateBubble?: ReactNode
   onOpenChat: () => void
 }
 
-export function MultiScreenIdleScene({ displays, backgroundUrls, portraitDisplayId, persona, bubbleText, portraitAmbientLength = 82, portraitAmbientStrength = .72, onOpenChat }: MultiScreenIdleSceneProps) {
+export function MultiScreenIdleScene({ displays, backgroundUrls, portraitDisplayId, persona, bubbleText, portraitAmbientLength = 82, portraitAmbientStrength = .72, updateBubble, onOpenChat }: MultiScreenIdleSceneProps) {
   const virtualBounds = useMemo(() => virtualDesktopBounds(displays), [displays])
   const portraitDisplay = displays.find((display) => display.id === portraitDisplayId)
     ?? displays.find((display) => display.primary)
@@ -151,6 +158,7 @@ export function MultiScreenIdleScene({ displays, backgroundUrls, portraitDisplay
       bubbleText={bubbleText}
       portraitAmbientLength={portraitAmbientLength}
       portraitAmbientStrength={portraitAmbientStrength}
+      updateBubble={updateBubble}
       onOpenChat={onOpenChat}
     />}
   </div>

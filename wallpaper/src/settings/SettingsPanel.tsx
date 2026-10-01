@@ -10,7 +10,9 @@ import type { AppearanceAssetSummary } from '../features/appearance/appearanceVi
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
 // FREEZE(1A)：锁屏退出，LockScreenDiagnostics 一并冻结（单行 import 列表里不能用 // 注释单项，所以整行注释、旁边写出不含它的版本）。
 // import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, DesktopWorkspaceStatus, LockScreenDiagnostics, ManagedDshStatus, ApiConversationListing, ApiKeyStatus } from '../native/runtime.ts'
-import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, DesktopWorkspaceStatus, ManagedDshStatus, ApiConversationListing, ApiKeyStatus } from '../native/runtime.ts'
+import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, DesktopWorkspaceStatus, ManagedDshStatus, ApiConversationListing, ApiKeyStatus, UpdateCheckReport } from '../native/runtime.ts'
+import { offeredUpdate } from '../features/update/updateState.ts'
+import { updateOutcomeMessage } from '../features/update/updateCopy.ts'
 import { preferredDisplayId } from '../runtime/displayLayout.ts'
 import { harnessStateLabel } from '../connect/harnessLabels.ts'
 import type { AutostartStatus, HarnessEndpointScan, HarnessTarget } from '../native/runtime.ts'
@@ -197,6 +199,21 @@ export interface SettingsPanelProps {
   onRefreshApiHistory: () => void
   onDeleteApiConversation: (conversationId: string) => void
   onClearApiHistory: () => void
+  /**
+   * 更新检测（`features/update/`，计划书 §四）：系统页那张卡片。
+   *
+   * 报告来自原生 `update_check`（只有码与数字），**文案由 `features/update/updateCopy.ts` 说** ——
+   * 面板这里只摆字段。`updateNotice` 与气泡下面那行是同一句（忽略没落盘、打开发布页失败）。
+   */
+  updateReport?: UpdateCheckReport
+  updateBusy: boolean
+  updateNotice?: Message
+  /** 手动检查：不受原生侧 6 小时节流限制。 */
+  onCheckForUpdates: () => void
+  /** 本片的「下载」：打开发布页（第三片换成真下载 + 进度）。 */
+  onDownloadUpdate: () => void
+  /** 「忽略」：把这一个版本记进原生状态文件；更晚的版本仍会提示。 */
+  onDismissUpdate: (version: string) => void
 }
 
 /**
@@ -616,6 +633,20 @@ export function SettingsPanel(props: SettingsPanelProps) {
     else delete backgrounds[displayId]
     set({ multiScreen: { ...settings.multiScreen, backgrounds } })
   }
+  /**
+   * 更新卡片的三样派生值（计划书 §四）。
+   *
+   * 都在这儿算，是因为它们**要在渲染期求值**：`updateOutcomeMessage` 返回的是没求值的 `Message`
+   * （切语言时整句跟着变），而时间戳那句沿用了历史页那个"当天只写时刻"的格式。
+   */
+  const updateReport = props.updateReport
+  const updateOffer = offeredUpdate(updateReport)
+  const updateCurrentVersion = updateReport
+    ? updateReport.currentVersion ?? t('settings.system.update.current.unavailable')
+    : t('settings.system.reading')
+  const updateLastChecked = updateReport?.checkedAtMs
+    ? formatHistoryTime(updateReport.checkedAtMs)
+    : t('settings.system.update.last-check.never')
 
   return <div className="settings-app">
     <header className="settings-titlebar">
@@ -1063,6 +1094,36 @@ export function SettingsPanel(props: SettingsPanelProps) {
       </>}
 
       {page === 'system' && <>
+        {/* 更新（计划书 §四）：当前版本、上次检查（时间 + 结论）、手动「检查更新」；有可用更新时
+            同一张卡片上给出「下载」与「忽略」—— 与立绘气泡同一状态机、同一份原生状态。 */}
+        <Card title={t('settings.system.update.title')} description={t('settings.system.update.description')}>
+          <Field title={t('settings.system.update.current.title')}>
+            <span className="settings-static">{updateCurrentVersion}</span>
+          </Field>
+          <Field
+            title={t('settings.system.update.last-check.title')}
+            detail={updateReport
+              ? `${updateLastChecked} · ${formatMessage(updateOutcomeMessage(updateReport))}`
+              : t('settings.system.reading')}
+          >
+            <span className="integration-actions">
+              <button className="settings-action" disabled={props.updateBusy} onClick={props.onCheckForUpdates}>
+                {props.updateBusy ? t('settings.system.update.checking') : t('settings.system.update.check')}
+              </button>
+              {updateOffer && <>
+                {/* 本片的「下载」是"打开发布页"（第三片换成真下载 + 进度 + 安装）；这次发布没挂
+                    安装包时，这个按钮说的就是它真正做的事，而不是一句"下载"。 */}
+                <button className="settings-action secondary" disabled={props.updateBusy} onClick={props.onDownloadUpdate}>
+                  {updateOffer.asset ? t('update.action.download') : t('update.action.release-page')}
+                </button>
+                <button className="settings-action secondary" disabled={props.updateBusy} onClick={() => props.onDismissUpdate(updateOffer.version)}>
+                  {t('update.action.dismiss')}
+                </button>
+              </>}
+            </span>
+          </Field>
+          {props.updateNotice && <p className="settings-hint" role="status">{formatMessage(props.updateNotice)}</p>}
+        </Card>
         <Card title={t('settings.system.data.title')} description={t('settings.system.data.description')}>
           <Field title={t('settings.system.workspace.title')} detail={props.desktopWorkspace ? (props.desktopWorkspace.workspaceExists ? props.desktopWorkspace.workspaceDirectory : props.desktopWorkspace.workspaceDirectory + t('settings.system.workspace.missing')) : t('settings.system.reading')}><span /></Field>
           {/* 卸载时问不了（MSIX 没有自定义卸载界面），所以"想清干净的时候能清干净"这个入口放在这里。

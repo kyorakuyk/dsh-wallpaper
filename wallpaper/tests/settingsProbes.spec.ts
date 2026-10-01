@@ -94,8 +94,8 @@ describe('settings probe plan', () => {
     expect(PAGE_PROBES.personas).toEqual([])
     // The history page reads the durable API archive; nothing else needs it.
     expect([...PAGE_PROBES.history]).toEqual(['apiHistory'])
-    // FREEZE(1A)：锁屏探针已退出，system 页现在只剩自启探针。
-  expect([...PAGE_PROBES.system]).toEqual(['autostartStatus'])
+    // FREEZE(1A)：锁屏探针已退出，system 页现在只剩自启探针与更新那条。
+  expect([...PAGE_PROBES.system].sort()).toEqual(['autostartStatus', 'updateStatus'])
   })
 })
 
@@ -187,7 +187,8 @@ describe('settings probe scheduling', () => {
     controller.activate('system')
     scheduler.flush()
     await controller.settled('autostartStatus')
-    expect(calls).toEqual(['autostartStatus'])
+    // 系统页现在有两条探针（自启 + 更新）：一条失败不许挡住另一条。
+    expect(calls).toEqual(['autostartStatus', 'updateStatus'])
     expect(errors).toEqual([{ probe: 'autostartStatus', error: expect.any(Error) }])
     // 失败那句话现在是**没求值的** `Message`（它要进设置窗口的通知状态），所以断言的是它渲染
     // 出来的样子 —— 顺便钉住"渲染期才求值"这件事：切到英文，同一份值说的是英文。
@@ -216,7 +217,8 @@ describe('settings probe scheduling', () => {
     controller.dispose()
     scheduler.flush()
     await controller.settled('autostartStatus')
-    expect(calls).toEqual(['autostartStatus'])
+    // 系统页两条探针都在关窗之前开跑了，两条的迟到失败都必须被吞掉。
+    expect(calls).toEqual(['autostartStatus', 'updateStatus'])
     expect(errors).toEqual([])
     expect(scheduler.pending).toBe(0)
   })

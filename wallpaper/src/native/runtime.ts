@@ -355,6 +355,41 @@ export interface ApiConversationListing {
 export interface DesktopRect { x: number; y: number; width: number; height: number }
 export interface DesktopDisplayInfo { id: string; name: string; bounds: DesktopRect; workArea: DesktopRect; scaleFactor: number; primary: boolean }
 
+/**
+ * 更新检测（原生侧在 `src-tauri/src/update/`，计划书 §四、§五）。
+ *
+ * 原生只回**码、数字、版本号与地址**，一句句子都不回：界面按这些码分支、按语言说
+ * （`features/update/updateCopy.ts`）。这些字段名与码是两侧的契约，各有一条测试钉着
+ * （`update/commands.rs` 的 `the_report_serializes_to_the_fields_the_interface_reads`
+ * 与 `tests/updateUi.spec.ts`）。
+ */
+export type UpdateOutcome = 'updateAvailable' | 'upToDate' | 'noInstallableAsset' | 'skipped' | 'failed'
+/** 没检查的原因；`outcome === 'skipped'` 之外恒为 `null`。 */
+export type UpdateSkipReason = 'throttled' | 'versionUnavailable'
+export type UpdateFailureCode = 'network' | 'httpStatus' | 'malformedResponse'
+export interface UpdateFailure { code: UpdateFailureCode; httpStatus: number | null }
+/** 一个可选中的可安装资产（按后缀白名单挑出来的那一个）。 */
+export interface UpdateAsset { name: string; size: number; downloadUrl: string; digest: string | null }
+export interface UpdateCheckReport {
+  outcome: UpdateOutcome
+  skipReason: UpdateSkipReason | null
+  failure: UpdateFailure | null
+  /** 本机当前版本；读不到时是 `null`，而那时**没有检查**（`skipped`）。 */
+  currentVersion: string | null
+  currentVersionSource: 'packaged' | 'uninstallEntry' | 'executable' | null
+  latestVersion: string | null
+  /** release 页面。资产缺席或第三片的下载失败时，界面回落到"打开发布页"。 */
+  releaseUrl: string | null
+  asset: UpdateAsset | null
+  checkedAtMs: number | null
+  dismissedVersion: string | null
+  /** `latestVersion` 是否已被忽略。**原生算好的**（等价比较），界面不再实现一遍。 */
+  dismissed: boolean
+  statePersisted: boolean
+}
+/** 一次「忽略」的结果。 */
+export interface UpdateDismissReport { dismissedVersion: string | null; persisted: boolean }
+
 export interface NativeRuntime {
   isNative: boolean
   // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
@@ -574,6 +609,22 @@ export interface NativeRuntime {
    * 一个实现、一个动作：「实例下拉里某一行的 ×」与「全部停止」走的是同一条命令，只是参数不同。
    */
   stopManagedDsh(instanceKey?: string): Promise<void>
+  /**
+   * 查一次更新（GitHub Releases；计划书 §四、§五）。
+   *
+   * `manual` 为真时**不受原生侧 6 小时节流限制** —— 设置页的「检查更新」与打开系统页那一次
+   * 都走这条路；不传或传假是自动检查（进入里桌面时那一次），6 小时内最多真正打一次网络。
+   *
+   * 浏览器预览没有原生宿主：返回 `undefined`，**不伪造**一份带着版本号的报告（那会让界面把
+   * 一个编出来的版本号当成事实）。
+   */
+  updateCheck(manual?: boolean): Promise<UpdateCheckReport | undefined>
+  /**
+   * 把某个版本记进"用户按过忽略"（气泡与设置页共用的那一条）。
+   *
+   * `persisted` 为假时界面要如实说出来：本次不再提示，但重启之后同一个版本还会出现。
+   */
+  updateDismiss(version: string): Promise<UpdateDismissReport>
 }
 
 async function tauriAvailable(): Promise<boolean> {
@@ -1026,5 +1077,17 @@ export const nativeRuntime: NativeRuntime = {
   async stopManagedDsh(instanceKey?: string) {
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('stop_managed_dsh', { instanceKey })
+  },
+  async updateCheck(manual = false) {
+    // 浏览器预览没有原生宿主，也没有更新检测：返回 undefined 而不是一份编出来的报告。
+    if (!await tauriAvailable()) return undefined
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<UpdateCheckReport>('update_check', { manual })
+  },
+  async updateDismiss(version) {
+    // 预览里没有状态文件可写：如实回报"没落盘"，界面照同一句话处理。
+    if (!await tauriAvailable()) return { dismissedVersion: version, persisted: false }
+    const { invoke } = await import('@tauri-apps/api/core')
+    return invoke<UpdateDismissReport>('update_dismiss', { version })
   },
 }

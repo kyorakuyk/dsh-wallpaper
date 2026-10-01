@@ -4995,8 +4995,9 @@ macro_rules! register_edition_commands {
             appearance::commands::appearance_resolve_asset,
             appearance::commands::appearance_resolve_library_asset,
             // 更新检测：壁纸宿主（立绘气泡）与设置中心（系统页）各调一次；返回值只有结构化码与
-            // 数字，文案由界面按语言说。
-            update::commands::update_check
+            // 数字，文案由界面按语言说。`update_dismiss` 是气泡与设置页共用的那一条「忽略」。
+            update::commands::update_check,
+            update::commands::update_dismiss
         ])
     };
 }

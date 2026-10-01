@@ -1,0 +1,55 @@
+/*
+ * 更新气泡（`features/update/UpdateBubble.tsx`）。
+ *
+ * 壳、玻璃质感、出现动画与位置全部沿用 `styles.css` 里的 `.bubble` 与
+ * `.portrait-slot > .bubble` —— 这里只加"正文 + 两个按钮 + 一行提示"的排布，以及按钮自己的样子。
+ * 主题色跟着立绘走（`--bubble-primary` / `--bubble-accent`，由 `bubbleThemeStyle` 注入）。
+ */
+/* 这一条不跟 `.bubble` 抢任何属性：`display` / `gap` / `text-align` 只有这里在写。 */
+.bubble-update {
+  display: grid;
+  gap: 9px;
+  text-align: left;
+}
+
+.update-bubble__text {
+  /* 计划书 §十：长版本号不换行（气泡宽度自适应）。 */
+  white-space: nowrap;
+  font-weight: 550;
+}
+
+/* 忽略没落盘 / 打开发布页失败：这句话是给用户看的，所以它能换行、也不许被截断。 */
+.update-bubble__notice {
+  color: rgba(255, 216, 216, .94);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: normal;
+}
+
+.update-bubble__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.update-bubble__action {
+  min-height: 30px;
+  flex: 1 1 auto;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--bubble-accent) 52%, rgba(255, 255, 255, .18));
+  border-radius: 10px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--bubble-primary) 62%, rgba(10, 26, 46, .9)), rgba(12, 30, 52, .84));
+  color: rgba(246, 251, 255, .96);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.update-bubble__action:hover:not(:disabled) { filter: brightness(1.12); }
+.update-bubble__action:disabled { opacity: .55; cursor: default; }
+
+/* 「忽略」：有动作但不必抢眼 —— 它和「下载」是两件不同分量的事。 */
+.update-bubble__action--quiet {
+  border-color: rgba(157, 210, 255, .2);
+  background: rgba(12, 28, 48, .5);
+  color: rgba(220, 236, 248, .9);
+}

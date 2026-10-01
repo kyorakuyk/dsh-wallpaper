@@ -54,6 +54,9 @@ import { WidgetHost } from './widgets/WidgetHost.tsx'
 import { displayCssRect, displayTopologySignature, displayUiScale, preferredDisplayId, virtualDesktopBounds } from './runtime/displayLayout.ts'
 import { listenUntilDisposed } from './runtime/lifecycle.ts'
 import { frameSchedulerTarget, StreamTextBuffer } from './features/chat/streamRender.ts'
+import { UpdateBubble } from './features/update/UpdateBubble.tsx'
+import { updateBubbleVisible } from './features/update/updateState.ts'
+import { useUpdateBubble } from './features/update/useUpdate.ts'
 import { formatSentence, msg, sentenceOf, t, useLanguage, useStoredLanguage, type Message, type Sentence } from './i18n/index.ts'
 
 const registry = new PersonaRegistry()
@@ -664,6 +667,17 @@ export function App({ surface = 'combined' }: AppProps) {
   // docked interaction surface may be collapsed.
   const workspaceRef = useRef<DesktopWorkspace>('front')
   workspaceRef.current = workspace
+  /**
+   * 更新检测（计划书 §四）：**进入里桌面之后**才查、才显示。
+   *
+   * 两个条件都是那次判断的一部分：`workspace === 'inner'` 把表桌面阶段排掉（验收 1），`awake`
+   * 把锁屏/苏醒/启动中排掉。自动检查每个进程只发一次，原生侧还有 6 小时节流（§五），所以
+   * "进出里桌面"这件事反复发生时不会反复打网络。
+   */
+  const update = useUpdateBubble({
+    inInnerDesktop: workspace === 'inner',
+    awake: runtime.phase === 'idle' || runtime.phase === 'chatting',
+  })
   const [innerHistoryExpanded, setInnerHistoryExpanded] = useState(false)
   const [expandedBottomInset, setExpandedBottomInset] = useState(48)
   const [desktopDisplays, setDesktopDisplays] = useState<DesktopDisplayInfo[]>([])
@@ -1035,6 +1049,25 @@ export function App({ surface = 'combined' }: AppProps) {
   )
   const persona = registry.get(personaIdFor(runtime.backend, tier))
   const bubbles = applyBubbleOverrides(persona.bubbles, settings.bubbleOverrides)
+  /**
+   * 挂在立绘槽位里的更新气泡（计划书 §四）。`updateBubbleVisible` 是唯一一处判断"现在该不该
+   * 出现"，所以"表桌面阶段不出现"这条不会被某个 `&&` 绕过去：条件不成立时这里是 `undefined`，
+   * 场景里就什么都不渲染。
+   *
+   * 两个按钮：主按钮交给 `update.openReleasePage()`（本片是"打开发布页"，第三片换成真下载），
+   * 「忽略」记下**这一枚**的版本号 —— 点气泡本体不做任何升级动作（规矩 3）。
+   */
+  const updateOffer = update.offer
+  const updateBubbleNode = updateBubbleVisible({ workspace, phase: runtime.phase, offer: updateOffer }) && updateOffer
+    ? <UpdateBubble
+        offer={updateOffer}
+        theme={persona.theme}
+        busy={update.busy}
+        notice={update.notice}
+        onDownload={() => { void update.openReleasePage() }}
+        onDismiss={() => { void update.dismiss(updateOffer.version) }}
+      />
+    : undefined
   const personaSlot: AppearanceSlot = runtime.backend === 'harness'
     ? tier === 'pro' ? 'persona.harness.pro' : 'persona.harness.flash'
     : tier === 'pro' ? 'persona.deepseek.pro' : 'persona.deepseek.flash'
@@ -1947,11 +1980,11 @@ const enterInnerWorkspace = () => {
       : runtime.activity === 'thinking' ? t('app.bubble.thinking') : bubbles.morning
     const scenePersona = { ...persona, bubbles, assets: { ...persona.assets, portrait: resolvedPersona ?? persona.assets.portrait } }
     if (multiScreenActive) {
-      return <MultiScreenIdleScene displays={desktopDisplays} backgroundUrls={screenBackgroundUrls} portraitDisplayId={portraitDisplayId} persona={scenePersona} bubbleText={workspace === 'front' ? bubbleText : ''} portraitAmbientLength={settings.portraitAmbientLength} portraitAmbientStrength={settings.portraitAmbientStrength} onOpenChat={enterInnerWorkspace} />
+      return <MultiScreenIdleScene displays={desktopDisplays} backgroundUrls={screenBackgroundUrls} portraitDisplayId={portraitDisplayId} persona={scenePersona} bubbleText={workspace === 'front' ? bubbleText : ''} portraitAmbientLength={settings.portraitAmbientLength} portraitAmbientStrength={settings.portraitAmbientStrength} updateBubble={updateBubbleNode} onOpenChat={enterInnerWorkspace} />
     }
-    return <IdleScene persona={scenePersona} bubbleText={bubbleText} backgroundUrl={resolvedBackground ?? (background?.path ? assetUrl(background.path) : undefined)} portraitAmbientLength={settings.portraitAmbientLength} portraitAmbientStrength={settings.portraitAmbientStrength} hideBubble={workspace !== 'front'} onOpenChat={enterInnerWorkspace} />
+    return <IdleScene persona={scenePersona} bubbleText={bubbleText} backgroundUrl={resolvedBackground ?? (background?.path ? assetUrl(background.path) : undefined)} portraitAmbientLength={settings.portraitAmbientLength} portraitAmbientStrength={settings.portraitAmbientStrength} hideBubble={workspace !== 'front'} updateBubble={updateBubbleNode} onOpenChat={enterInnerWorkspace} />
     // 依赖里为什么有 `language`：这一幕里那颗气泡的句子是算出来的，语言一变它就得重算。
-  }, [background?.path, bubbles, desktopDisplays, language, multiScreenActive, persona, portraitDisplayId, questionPrompt, resolvedBackground, resolvedPersona, runtime, screenBackgroundUrls, settings, workspace])
+  }, [background?.path, bubbles, desktopDisplays, language, multiScreenActive, persona, portraitDisplayId, questionPrompt, resolvedBackground, resolvedPersona, runtime, screenBackgroundUrls, settings, updateBubbleNode, workspace])
 
   const conversationBubble = interactionEnabled
     && runtime.phase !== 'booting'

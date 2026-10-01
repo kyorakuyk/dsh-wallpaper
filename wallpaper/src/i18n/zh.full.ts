@@ -305,6 +305,17 @@ export const zhFull = {
   'settings.system.autostart.toggle': '登录后自动启动',
   'settings.system.autostart.busy': '正在更新 Windows 启动任务，请稍候；设置中心仍可继续使用。',
 
+  // 系统 · 更新（`features/update/*`）：卡片上的固定文案。结论、失败原因与两条动作的话在文件
+  // 末尾的「更新检测」那一节，因为它们与立绘气泡**共用同一句话**。
+  'settings.system.update.title': '更新',
+  'settings.system.update.description': '更新来自 GitHub Releases。进入里桌面后会自动检查一次，之后每 6 小时最多一次；这里的「检查更新」不受这个限制。',
+  'settings.system.update.current.title': '当前版本',
+  'settings.system.update.current.unavailable': '读不到本机版本，因此不检查更新',
+  'settings.system.update.last-check.title': '上次检查',
+  'settings.system.update.last-check.never': '还没有检查过',
+  'settings.system.update.check': '检查更新',
+  'settings.system.update.checking': '正在检查…',
+
   // ---------------------------------------------------------------------------
   // 设置窗口自己说的话（`settings/SettingsWindow.tsx`）：提示条、通知、桥对齐反馈与自启提示。
   // 这些都是**运行时**组出来的句子（插值里是端口、主体名、错误对象），所以键按"哪一步"命名。
@@ -834,6 +845,7 @@ export const zhFull = {
   'settings.probe.autostart-status': '读取开机自启状态失败',
   'settings.probe.desktop-displays': '显示器列表读取失败',
   'settings.probe.api-history': '读取 API 会话记录失败',
+  'settings.probe.update': '更新检查没有完成',
   // 待机背景与立绘那一下点击（睡眠、苏醒那两个 Lite 也用，在 `zh.shared.ts`）。
   'scene.idle.background': '背景',
   'scene.idle.portrait-title': '点击开始对话',
@@ -873,6 +885,48 @@ export const zhFull = {
   'chat.layout-probe.delta': 'Δ {a}→{b}: 左 {left}  右 {right}',
   // 链接的 title：地址后面跟着手势说明（`MarkdownBody.tsx`）。
   'chat.markdown.link-hint': '{href}（中键或回车打开）',
+
+  // ---------------------------------------------------------------------------
+  // 更新检测（`features/update/*`）：立绘气泡与设置中心系统页**共用**的句子。
+  //
+  // 原生侧只回码与数字（`src-tauri/src/update/commands.rs`），所以这里每一句话都对应一个码：
+  // `update.outcome.*` 是五种结论，`update.skip.*` / `update.failure.*` 是嵌进结论里的原因，
+  // `update.notice.*` 是"点下去之后没成"的那些话。
+  //
+  // 更新检测只属于完整版（计划书 §七：Lite 本次不做），所以这些键在 `.full.ts` 这一半 ——
+  // 放进 `.shared.ts` 会让 Lite 的产物多出一整节用不上的文案（`verify-lite-bundle.ps1` 拦的就是它）。
+  // ---------------------------------------------------------------------------
+  // 结论（设置卡片的「上次结果」、气泡的正文、手动检查后那句话，都用这一组）。
+  'update.outcome.available': '有新版本 {version}',
+  // 结论说"有更新"、报告里却没有版本号：这是原生不该出现的状态，但宁可说出来也不印一个空版本号。
+  'update.outcome.available-unversioned': '有新版本，但版本号读不出来',
+  'update.outcome.up-to-date': '已是最新',
+  'update.outcome.no-asset': '有新版本 {version}，但这次发布没有可安装的安装包',
+  // `{reason}` 填下面 `update.skip.*` / `update.failure.*` 里的某一句（整句随语言一起变）。
+  'update.outcome.skipped': '本次没有检查：{reason}',
+  'update.outcome.failed': '检查失败：{reason}',
+  // 报告说"跳过了/失败了"却没带原因码（原生不该出现）：只说不带原因的那半句，
+  // **不替它挑一个原因** —— 那会是一句看起来很像事实的假话。
+  'update.outcome.skipped-unstated': '本次没有检查',
+  'update.outcome.failed-unstated': '检查失败',
+  // 没检查的原因。
+  'update.skip.throttled': '距上次检查不足 6 小时',
+  'update.skip.version-unavailable': '读不到本机版本',
+  // 检查失败的原因（`{status}` 是 HTTP 状态码）。
+  'update.failure.network': '网络不可用或请求超时',
+  'update.failure.http-status': '服务器返回 {status}',
+  'update.failure.http-status-unknown': '服务器返回了一个错误状态',
+  'update.failure.malformed-response': '发布信息读不懂',
+  // 两个动作：气泡上、以及设置卡片上的那两个按钮，说的是同一句话。
+  'update.action.download': '下载',
+  'update.action.dismiss': '忽略',
+  // 这次发布没有可安装资产时，主按钮说的就是它真正做的事（§3.1 的回落）。
+  'update.action.release-page': '打开发布页',
+  // 点下去之后没成：写不进状态文件、调用本身失败、发布页打不开。
+  'update.notice.dismiss-unpersisted': '这条忽略记录没有写进状态文件；下次启动还会提示这个版本。',
+  'update.notice.dismiss-failed': '忽略失败：{error}',
+  'update.notice.check-failed': '更新检查没有完成：{error}',
+  'update.notice.open-release-failed': '打开发布页失败：{error}',
 }
 
 /** 这一份的形状（`en.full.ts` 用它标注）。 */

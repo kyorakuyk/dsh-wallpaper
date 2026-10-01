@@ -52,6 +52,10 @@
    裸 <span> 会继承这一层的默认字号（比旁边的说明大出一截），所以静态值必须带这个类。 */
 .settings-static{display:inline-flex;align-items:center;min-height:34px;min-width:220px;padding:0 10px;border:1px solid rgba(139,196,235,.16);border-radius:9px;background:rgba(4,13,25,.48);color:#9fbdd4;font-size:11px}
 
+/* 卡片里的一行提示（更新检测那两句：结果没落盘、调用失败）。它说的都是一件**需要用户知道**的事，
+   所以不缩成脚注色 —— 但也不做成按钮，那里没有可点的东西。 */
+.settings-hint{margin:0;padding:11px 0 12px;border-top:1px solid rgba(158,205,239,.075);color:#d3a9ad;font-size:10px;line-height:1.55}
+
 /* ---------------------------------------------------------------------------
    FREEZE（临时冻结，不是删除）：「当前已启动实例」下拉与它的 header 布局。
 
