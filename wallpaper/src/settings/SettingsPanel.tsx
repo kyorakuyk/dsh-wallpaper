@@ -11,8 +11,8 @@ import type { AppearanceSlot } from '../appearance/theme/index.ts'
 // FREEZE(1A)：锁屏退出，LockScreenDiagnostics 一并冻结（单行 import 列表里不能用 // 注释单项，所以整行注释、旁边写出不含它的版本）。
 // import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, DesktopWorkspaceStatus, LockScreenDiagnostics, ManagedDshStatus, ApiConversationListing, ApiKeyStatus } from '../native/runtime.ts'
 import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, DesktopWorkspaceStatus, ManagedDshStatus, ApiConversationListing, ApiKeyStatus, UpdateCheckReport } from '../native/runtime.ts'
-import { offeredUpdate } from '../features/update/updateState.ts'
-import { updateOutcomeMessage } from '../features/update/updateCopy.ts'
+import { downloadPercent, offeredUpdate, updatePhase, type UpdateDownloadState } from '../features/update/updateState.ts'
+import { downloadFailedMessage, downloadProgressMessage, updateOutcomeMessage } from '../features/update/updateCopy.ts'
 import { preferredDisplayId } from '../runtime/displayLayout.ts'
 import { harnessStateLabel } from '../connect/harnessLabels.ts'
 import type { AutostartStatus, HarnessEndpointScan, HarnessTarget } from '../native/runtime.ts'
@@ -203,15 +203,21 @@ export interface SettingsPanelProps {
    * 更新检测（`features/update/`，计划书 §四）：系统页那张卡片。
    *
    * 报告来自原生 `update_check`（只有码与数字），**文案由 `features/update/updateCopy.ts` 说** ——
-   * 面板这里只摆字段。`updateNotice` 与气泡下面那行是同一句（忽略没落盘、打开发布页失败）。
+   * 面板这里只摆字段。`updateNotice` 与气泡下面那行是同一句（忽略没落盘、调用被拒）。
+   * `updateDownload` 是那条全局 `update-download` 事件的当下值：下载中、已就绪、还是失败。
    */
   updateReport?: UpdateCheckReport
+  updateDownload?: UpdateDownloadState
   updateBusy: boolean
   updateNotice?: Message
   /** 手动检查：不受原生侧 6 小时节流限制。 */
   onCheckForUpdates: () => void
-  /** 本片的「下载」：打开发布页（第三片换成真下载 + 进度）。 */
+  /** 「下载」/「重试」：交给原生流式下载（§六）。 */
   onDownloadUpdate: () => void
+  /** 「点击安装」：把下载好的安装包交给 Windows（§六）。 */
+  onInstallUpdate: () => void
+  /** 「打开发布页」：资产缺席或下载失败时的回落（§3.1、§六）。 */
+  onOpenUpdatePage: () => void
   /** 「忽略」：把这一个版本记进原生状态文件；更晚的版本仍会提示。 */
   onDismissUpdate: (version: string) => void
 }
@@ -634,13 +640,18 @@ export function SettingsPanel(props: SettingsPanelProps) {
     set({ multiScreen: { ...settings.multiScreen, backgrounds } })
   }
   /**
-   * 更新卡片的三样派生值（计划书 §四）。
+   * 更新卡片上那几个派生值（计划书 §四）。
    *
-   * 都在这儿算，是因为它们**要在渲染期求值**：`updateOutcomeMessage` 返回的是没求值的 `Message`
-   * （切语言时整句跟着变），而时间戳那句沿用了历史页那个"当天只写时刻"的格式。
+   * 都在这儿算，是因为它们**要在渲染期求值**：`updateOutcomeMessage`/`downloadProgressMessage`
+   * 返回的是没求值的 `Message`（切语言时整句跟着变），而时间戳那句沿用了历史页那个"当天只写时刻"
+   * 的格式。
+   *
+   * `updateNow` 是**与气泡同一个状态机**（`updatePhase`）：报告给前三个状态、全局的下载事件给
+   * 后三个，所以卡片与气泡不会各说各的。
    */
   const updateReport = props.updateReport
   const updateOffer = offeredUpdate(updateReport)
+  const updateNow = updatePhase(updateReport, props.updateDownload)
   const updateCurrentVersion = updateReport
     ? updateReport.currentVersion ?? t('settings.system.update.current.unavailable')
     : t('settings.system.reading')
@@ -1111,17 +1122,37 @@ export function SettingsPanel(props: SettingsPanelProps) {
                 {props.updateBusy ? t('settings.system.update.checking') : t('settings.system.update.check')}
               </button>
               {updateOffer && <>
-                {/* 本片的「下载」是"打开发布页"（第三片换成真下载 + 进度 + 安装）；这次发布没挂
-                    安装包时，这个按钮说的就是它真正做的事，而不是一句"下载"。 */}
-                <button className="settings-action secondary" disabled={props.updateBusy} onClick={props.onDownloadUpdate}>
-                  {updateOffer.asset ? t('update.action.download') : t('update.action.release-page')}
-                </button>
-                <button className="settings-action secondary" disabled={props.updateBusy} onClick={() => props.onDismissUpdate(updateOffer.version)}>
-                  {t('update.action.dismiss')}
-                </button>
+                {/* 与立绘气泡同一个状态机（`updateNow`）与同一条下载事件：这里给的是同样的动作。
+                    `downloading` 只有进度（§十：不提供取消），`ready` 是「点击安装」，
+                    `failed` 是「重试」+「打开发布页」（§六 的回落）。 */}
+                {updateNow === 'downloading' && props.updateDownload
+                  ? <span className="settings-static" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={downloadPercent(props.updateDownload)} aria-valuetext={formatMessage(downloadProgressMessage(props.updateDownload))}>
+                      {formatMessage(downloadProgressMessage(props.updateDownload))}
+                    </span>
+                  : <>
+                      <button className="settings-action secondary" disabled={props.updateBusy} onClick={updateNow === 'ready' ? props.onInstallUpdate : props.onDownloadUpdate}>
+                        {updateNow === 'ready'
+                          ? t('update.action.install')
+                          : updateNow === 'failed'
+                            ? t('update.action.retry')
+                            : updateOffer.asset ? t('update.action.download') : t('update.action.release-page')}
+                      </button>
+                      {(updateNow === 'failed' || !updateOffer.asset) && (
+                        <button className="settings-action secondary" disabled={props.updateBusy} onClick={props.onOpenUpdatePage}>
+                          {t('update.action.release-page')}
+                        </button>
+                      )}
+                      {updateNow !== 'failed' && (
+                        <button className="settings-action secondary" disabled={props.updateBusy} onClick={() => props.onDismissUpdate(updateOffer.version)}>
+                          {t('update.action.dismiss')}
+                        </button>
+                      )}
+                    </>}
               </>}
             </span>
           </Field>
+          {/* 失败原因就显示在卡片上（§四 的 `failed`、§八 7：断网、资产缺失、校验不符都要看得见）。 */}
+          {updateNow === 'failed' && <p className="settings-hint" role="status">{formatMessage(downloadFailedMessage(props.updateDownload))}</p>}
           {props.updateNotice && <p className="settings-hint" role="status">{formatMessage(props.updateNotice)}</p>}
         </Card>
         <Card title={t('settings.system.data.title')} description={t('settings.system.data.description')}>
@@ -1163,6 +1194,6 @@ export function SettingsPanel(props: SettingsPanelProps) {
       </>}
     </main>
 
-    <footer className="settings-statusbar"><span>dsh-wallpaper · v0.4.1</span><span><i />{t('statusbar.autosave')}</span></footer>
+    <footer className="settings-statusbar"><span>dsh-wallpaper · v0.4.2</span><span><i />{t('statusbar.autosave')}</span></footer>
   </div>
 }
