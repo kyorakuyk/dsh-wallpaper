@@ -117,6 +117,9 @@ export function formatMessage(message: Message): string {
  * 两种形状分得很开，所以这里不需要额外的标志位：字符串就是"这不是我们写的句子"。
  * （`RuntimeState.errorKind` 回答的是另一个问题：`error` 里那句**我们自己的**提示属于哪一类。）
  * 把原生文本包成 `Message` 只会假装它已经国际化了。
+ *
+ * 异常通道用的是同一个类型：`SentenceError.sentence` 就是一句 `Sentence`（见下），所以"我们自己
+ * 的异常"和"状态里的句子"遵守同一条规矩，不需要第二套表示。
  */
 export type Sentence = Message | string
 
@@ -124,4 +127,47 @@ export type Sentence = Message | string
 export function formatSentence(sentence: Sentence | undefined): string | undefined {
   if (sentence === undefined) return undefined
   return typeof sentence === 'string' ? sentence : formatMessage(sentence)
+}
+
+/**
+ * 我们自己抛出的异常：它带的是一句**还没求值**的话（`Sentence`）。
+ *
+ * 为什么不让异常直接带渲染好的字符串：`throw new Error(t('…'))` 把**抛出那一刻**的语言钉死在
+ * 异常里，而异常活得比抛出点久 —— 它跨 await、进日志、被上层存进通知状态，用户切到英文之后
+ * 那句话仍是抛出时那句中文。它和状态里的句子（`Message`）是同一种东西：存键和参数，显示时才
+ * 求值。捕获处一律用 `sentenceOf()` 把它取回来，**不要**再 `String(error)`。
+ *
+ * `message` 是访问器而不是构造时渲染的字符串：任何仍然 `String(error)` / `error.message` 的
+ * 地方（日志、还没换成 `sentenceOf` 的兜底路径）读到的是**读的那一刻**的语言，而不是抛出那一刻
+ * 的。给代码看的那条路是 `instanceof SentenceError` + `.sentence`。
+ */
+export class SentenceError extends Error {
+  /** 那句没求值的话（我们自己的异常里是 `Message`；字符串只用于刻意转发原生原文的场合）。 */
+  readonly sentence: Sentence
+  /** 与 `Error` 的 `cause` 同义；ES2020 的 lib 里还没有它，所以自己声明。 */
+  readonly cause?: unknown
+
+  constructor(sentence: Sentence, options?: { cause?: unknown }) {
+    // 不把渲染结果交给 `super()`：`message` 由下面的访问器现取。
+    super()
+    this.name = 'SentenceError'
+    this.sentence = sentence
+    if (options && 'cause' in options) this.cause = options.cause
+  }
+
+  get message(): string {
+    return typeof this.sentence === 'string' ? this.sentence : formatMessage(this.sentence)
+  }
+}
+
+/**
+ * 从任意 catch 到的东西里取出**可显示的句子**：我们的异常取回那句没求值的话（`Message`），
+ * 其余原样 `String()`。
+ *
+ * 兜底那一支仍然可能拿到中文：原生的自由文本本批不翻译（见 `docs/plans/i18n-plan.md` 第一节
+ * 第 6 条），而 `String(error)` 自带的 `Error: ` 前缀也保持原样 —— 中文界面逐字不变。区别在于
+ * **我们自己的**异常不再经过那条兜底：它取回来的是词条，切语言时跟着变。
+ */
+export function sentenceOf(error: unknown): Sentence {
+  return error instanceof SentenceError ? error.sentence : String(error)
 }

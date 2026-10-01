@@ -1,5 +1,5 @@
 import type { ChatMessage } from '../domain/types.ts'
-import { msg, t } from '../i18n/index.ts'
+import { msg, SentenceError } from '../i18n/index.ts'
 import { nativeRuntime } from '../native/runtime.ts'
 import { EventChatAdapter, type SendOptions } from './adapter.ts'
 
@@ -103,10 +103,10 @@ export class DeepSeekWebAdapter extends EventChatAdapter {
   }
 
   async send(text: string, options?: SendOptions): Promise<void> {
-    if (!this.connected) throw new Error(t('chat.web.not-connected'))
+    if (!this.connected) throw new SentenceError(msg('chat.web.not-connected'))
     const trimmed = text.trim()
-    if (!trimmed) throw new Error(t('chat.web.empty-message'))
-    if (this.requestId) throw new Error(t('chat.web.busy'))
+    if (!trimmed) throw new SentenceError(msg('chat.web.empty-message'))
+    if (this.requestId) throw new SentenceError(msg('chat.web.busy'))
     this.requestId = crypto.randomUUID()
     const requestId = this.requestId
     this.emit({ type: 'message', role: 'user', content: text })

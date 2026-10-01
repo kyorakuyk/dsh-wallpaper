@@ -8,7 +8,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { AutostartStatus } from '../native/runtime.ts'
 import * as liteNative from './native.ts'
 import { assetUrl, DEFAULT_LITE_SETTINGS, LITE_BACKGROUND_OPTIONS, LITE_PORTRAIT_OPTIONS, loadLiteSettings, saveLiteSettings } from './settings.ts'
-import { formatSentence, msg, t, useLanguage, type Sentence } from '../i18n/index.ts'
+import { formatSentence, msg, sentenceOf, t, useLanguage, type Sentence } from '../i18n/index.ts'
 import { listenUntilDisposed } from '../runtime/lifecycle.ts'
 import { autostartDetail, autostartRefusalNotice } from '../settings/autostartCopy.ts'
 import { createAutostartQueue, type AutostartQueue } from '../settings/autostartQueue.ts'
@@ -64,7 +64,7 @@ export function LiteSettingsWindow() {
   const commit = (next: LiteSettings) => {
     settingsRef.current = next
     setSettings(next)
-    void saveLiteSettings(next).catch((error) => setNotice(msg('lite.settings.save-failed', { error: String(error) })))
+    void saveLiteSettings(next).catch((error) => setNotice(msg('lite.settings.save-failed', { error: sentenceOf(error) })))
   }
 
   // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，见 docs/plans/release-scope-cleanup-plan.md 第一节）。恢复办法：取消注释。
@@ -97,7 +97,7 @@ export function LiteSettingsWindow() {
       latestAutostartRef.current = status.enabled
       if (status.enabled !== current.autostart) commit({ ...current, autostart: status.enabled })
     } catch (error) {
-      setNotice(msg('lite.settings.autostart.read-failed', { error: String(error) }))
+      setNotice(msg('lite.settings.autostart.read-failed', { error: sentenceOf(error) }))
     }
   }
 
@@ -138,7 +138,7 @@ export function LiteSettingsWindow() {
       setCustomBackground(background)
       setCustomPortrait(portrait)
     } catch (error) {
-      setNotice(msg('lite.settings.custom-image.read-failed', { error: String(error) }))
+      setNotice(msg('lite.settings.custom-image.read-failed', { error: sentenceOf(error) }))
     }
   }
 
@@ -154,7 +154,7 @@ export function LiteSettingsWindow() {
       // FREEZE(1B)：随上面两者冻结。
       // void refreshTranslucentTb()
       void refreshCustomImages()
-    }).catch((error) => setNotice(msg('lite.settings.load-failed', { error: String(error) })))
+    }).catch((error) => setNotice(msg('lite.settings.load-failed', { error: sentenceOf(error) })))
     if (!('__TAURI_INTERNALS__' in window)) return
     const current = getCurrentWindow()
     // The close listener is registered without awaiting the native call, so a
@@ -164,9 +164,9 @@ export function LiteSettingsWindow() {
       async (emit) => current.onCloseRequested((event) => emit(event)),
       (event) => {
         event.preventDefault()
-        void invoke('hide_settings_window').catch((error) => setNotice(String(error)))
+        void invoke('hide_settings_window').catch((error) => setNotice(sentenceOf(error)))
       },
-      { onError: (error) => setNotice(String(error)) },
+      { onError: (error) => setNotice(sentenceOf(error)) },
     ).dispose
   }, [])
 
@@ -195,7 +195,7 @@ export function LiteSettingsWindow() {
           const refusal = autostartRefusalNotice(status, requested)
           if (refusal) setNotice(refusal)
         },
-        onError: (error) => setNotice(msg('lite.settings.autostart.update-failed', { error: String(error) })),
+        onError: (error) => setNotice(msg('lite.settings.autostart.update-failed', { error: sentenceOf(error) })),
       })
     }
     return autostartQueueRef.current
@@ -286,7 +286,7 @@ export function LiteSettingsWindow() {
       }
       setNotice(slot === 'background' ? t('lite.settings.custom-image.background-imported') : t('lite.settings.custom-image.portrait-imported'))
     } catch (error) {
-      setNotice(msg('lite.settings.custom-image.import-failed', { error: String(error) }))
+      setNotice(msg('lite.settings.custom-image.import-failed', { error: sentenceOf(error) }))
     }
   }
 

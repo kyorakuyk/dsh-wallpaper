@@ -1,5 +1,5 @@
 import { openRoutesFor, selectedOpenRoute } from '../connect/openRoutes.ts'
-import { formatMessage, formatSentence, msg, setLanguage, t, useLanguage, type Language, type Message, type MessageKey } from '../i18n/index.ts'
+import { formatMessage, formatSentence, msg, sentenceOf, setLanguage, t, useLanguage, type Language, type Message, type MessageKey } from '../i18n/index.ts'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 // `ModelTierRule` 随「模型与形态映射」卡片一起被冻结，解冻时连同上面那行 `updateRule` 一起加回来。
@@ -561,7 +561,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
       const manual = result.manual.map((entry) => msg('settings.system.clear.manual', { what: entry.what, path: entry.path }))
       setClearDetail([...done, ...manual])
     } catch (error) {
-      setClearDetail([msg('settings.system.clear.failed', { error: String(error) })])
+      setClearDetail([msg('settings.system.clear.failed', { error: sentenceOf(error) })])
     } finally {
       setClearing(false)
     }

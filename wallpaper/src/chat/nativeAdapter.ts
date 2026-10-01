@@ -1,5 +1,5 @@
 import type { BackendMode, ChatMessage, ScopedChatEvent } from '../domain/types.ts'
-import { formatMessage, msg, type Message, type Sentence } from '../i18n/index.ts'
+import { msg, SentenceError, sentenceOf, type Message, type Sentence } from '../i18n/index.ts'
 import { nativeRuntime, type NativeSendOptions } from '../native/runtime.ts'
 import { EventChatAdapter, type SendOptions } from './adapter.ts'
 
@@ -31,14 +31,11 @@ export function isCurrentAdapter(active: unknown, candidate: unknown, disposed: 
  * 原生侧"这条会话已被归档"的稳定标记，与 `wallpaper/src-tauri/src/chat.rs` 的
  * `HARNESS_SESSION_ARCHIVED` 一一对应（那边注释写明这是**跨进程契约**，改一处就要改另一处）。
  *
- * 用**包含**匹配而不是相等：Tauri 拒绝一条命令时抛的是那条 Rust 错误字符串本身（不是 Error），
- * 而它对用户话术的改动不该把这条机器可读的标识一起弄丢。
+ * 它是**机器读的标记**，不是给用户看的文案：原生那句自由文本里中文说明会变、以后还会换语言，
+ * 这个标记不会。所以判据只能建立在它上面 —— 而且只在这一个地方（见 `classifyNativeSessionFailure`），
+ * 下游一律按 `kind` 判断，谁也不许再拿异常消息去比文字。
  */
 export const HARNESS_SESSION_ARCHIVED = 'HARNESS_SESSION_ARCHIVED'
-
-export function isArchivedSessionError(error: unknown): boolean {
-  return String(error ?? '').includes(HARNESS_SESSION_ARCHIVED)
-}
 
 /**
  * 原生侧"这条端点还没有会话"的稳定标记，与 `chat.rs` 的 `HARNESS_NO_SESSION` 一一对应。
@@ -50,8 +47,33 @@ export function isArchivedSessionError(error: unknown): boolean {
  */
 export const HARNESS_NO_SESSION = 'HARNESS_NO_SESSION'
 
-export function isMissingSessionError(error: unknown): boolean {
-  return String(error ?? '').includes(HARNESS_NO_SESSION)
+/**
+ * 一句发送失败的**种类**：会话被归档，还是这条端点还没有会话。
+ *
+ * 与语言无关的标志位，供上层分支用（`failure.kind === 'session-archived'`）。以前这里是
+ * `String(error).includes(…)` 之类的**文本**判据：文案一改、语言一换，判据就失效。
+ */
+export type NativeSessionFailureKind = 'session-archived' | 'no-session'
+
+export interface NativeSessionFailure {
+  readonly kind: NativeSessionFailureKind
+  /** 原生那句自由文本，原样留着给用户看原因（本批不翻译，见 `Sentence`）。 */
+  readonly detail: Sentence
+}
+
+/**
+ * 把一次原生的发送失败**归类**。
+ *
+ * 全链路唯一一处"看文字"的地方，看的也只是上面那两个跨进程标记（Rust 常量，与任何语言的文案
+ * 无关）。原生（Rust）本批返回的仍是自由文本 —— 不是 `SentenceError`，没有类型或错误码可认
+ * （计划第一节第 6 条把它留给第二批），所以这一层只能靠标记识别；**下游一律按 `kind` 判断**，
+ * 换语言、换文案都不会影响它。（第二批 Rust 改回报错误码之后，这里直接读那个码。）
+ */
+export function classifyNativeSessionFailure(error: unknown): NativeSessionFailure | undefined {
+  const text = String(error ?? '')
+  if (text.includes(HARNESS_SESSION_ARCHIVED)) return { kind: 'session-archived', detail: sentenceOf(error) }
+  if (text.includes(HARNESS_NO_SESSION)) return { kind: 'no-session', detail: sentenceOf(error) }
+  return undefined
 }
 
 /**
@@ -361,23 +383,25 @@ export class NativeChatAdapter extends EventChatAdapter {
     } catch (error) {
       if (this.turnToken === turnToken) this.turnActive = false
       this.stopHistoryReconciliation()
-      if (allowArchivedRecovery && this.mode === 'harness' && !this.disposed && isMissingSessionError(error)) {
+      // 归类一次：下面每个分支只按 `kind`（标志）判断，不再拿异常消息比文字。
+      const failure = classifyNativeSessionFailure(error)
+      if (allowArchivedRecovery && this.mode === 'harness' && !this.disposed && failure?.kind === 'no-session') {
         // 没有会话 ⇒ 建立它，再把这句原话发一次。
         try {
           await this.openEventScope()
         } catch (connectError) {
-          const message = msg('chat.native.reconnect-failed', { error: String(error), connectError: String(connectError) })
+          const message = msg('chat.native.reconnect-failed', { error: failure.detail, connectError: sentenceOf(connectError) })
           this.emit({ type: 'error', code: 'NATIVE_SEND_FAILED', recoverable: true, message })
-          // `Error` 收的是字符串：这条异常只往控制台/上层日志走（用户看到的是上面那条事件），
-          // 所以在**抛出**这一刻渲染。
-          throw new Error(formatMessage(message))
+          // 这条异常只往控制台/上层日志走（用户看到的是上面那条事件）。即使如此它也带**词条**
+          // 而不是渲染好的句子：谁读到它（`sentenceOf`/`formatSentence`）就按那时的语言说。
+          throw new SentenceError(message)
         }
         await this.runTurn(text, options?.model ? { model: options.model } : undefined, false)
         return
       }
-      if (allowArchivedRecovery && this.mode === 'harness' && !this.disposed && isArchivedSessionError(error)) {
-        const failure = await this.recoverArchivedSession()
-        if (!failure) {
+      if (allowArchivedRecovery && this.mode === 'harness' && !this.disposed && failure?.kind === 'session-archived') {
+        const recoveryFailure = await this.recoverArchivedSession()
+        if (!recoveryFailure) {
           // 先告诉界面：它正在显示的那段转写属于一条**已被归档**的会话，而下面这些事件
           // 会落到另一条会话上。顺序不能反——重发一旦开始，转写就该已经在换了。
           this.emit({ type: 'conversation-reset', reason: 'session-archived', message: archivedSessionNotice() })
@@ -386,11 +410,11 @@ export class NativeChatAdapter extends EventChatAdapter {
           await this.runTurn(text, options?.model ? { model: options.model } : undefined, false)
           return
         }
-        const message = msg('chat.native.archived-failed', { error: String(error), failure })
+        const message = msg('chat.native.archived-failed', { error: failure.detail, failure: recoveryFailure })
         this.emit({ type: 'error', code: 'NATIVE_SEND_FAILED', recoverable: true, message })
-        throw new Error(formatMessage(message))
+        throw new SentenceError(message)
       }
-      this.emit({ type: 'error', code: 'NATIVE_SEND_FAILED', recoverable: true, message: String(error) })
+      this.emit({ type: 'error', code: 'NATIVE_SEND_FAILED', recoverable: true, message: sentenceOf(error) })
       throw error
     }
   }
@@ -413,7 +437,7 @@ export class NativeChatAdapter extends EventChatAdapter {
     try {
       await this.openEventScope()
     } catch (error) {
-      return String(error)
+      return sentenceOf(error)
     }
     // 两条我们自己的原因也返回**词条**：它们会被当成参数拼进上面那句通知，而参数是在渲染期
     // 递归求值的 —— 存成渲染好的字符串，这一小段就会留在当时的语言里。

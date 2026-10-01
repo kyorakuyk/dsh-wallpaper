@@ -46,7 +46,7 @@ import {
 import { chooseAppearanceImportPaths, nativeAppearance } from '../native/appearance.ts'
 import type { AppearanceAssetSummary } from '../features/appearance/appearanceViewModel.ts'
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
-import { formatSentence, msg, t, useLanguage, type Sentence } from '../i18n/index.ts'
+import { formatSentence, msg, sentenceOf, t, useLanguage, type Sentence } from '../i18n/index.ts'
 import './SettingsWindow.css'
 
 
@@ -257,7 +257,7 @@ export function SettingsWindow() {
     // settings through Rust so this renderer cannot emit to arbitrary Tauri
     // event targets; Rust delivers the snapshot only to the background host.
     void invoke('publish_settings', { settings: next })
-      .catch((error) => showFailure(msg('settings.window.notice.sync-failed', { error: String(error) })))
+      .catch((error) => showFailure(msg('settings.window.notice.sync-failed', { error: sentenceOf(error) })))
   }
 
   useEffect(() => {
@@ -293,7 +293,7 @@ export function SettingsWindow() {
       setAppearanceOverrides(snapshot.overrides)
       setAppearanceAssets(assets)
     })
-    .catch((error) => showFailure(msg('settings.window.notice.appearance-read-failed', { error: String(error) })))
+    .catch((error) => showFailure(msg('settings.window.notice.appearance-read-failed', { error: sentenceOf(error) })))
 
   /**
    * The manual scan is the *only* place that walks the disk for DSH projects, and
@@ -334,7 +334,7 @@ export function SettingsWindow() {
           : msg('settings.window.scan.none')))
       }
     } catch (error) {
-      showFailure(msg('settings.window.scan.failed', { error: String(error) }))
+      showFailure(msg('settings.window.scan.failed', { error: sentenceOf(error) }))
     } finally {
       dshScanOperationRef.current = false
       setDshScanBusy(false)
@@ -378,7 +378,7 @@ export function SettingsWindow() {
       const displays = await nativeRuntime.desktopDisplays()
       if (mountedRef.current) setDesktopDisplays(displays)
     } catch (error) {
-      showFailure(msg('settings.window.notice.displays-read-failed', { error: String(error) }))
+      showFailure(msg('settings.window.notice.displays-read-failed', { error: sentenceOf(error) }))
     }
   }
 
@@ -406,7 +406,7 @@ export function SettingsWindow() {
         showNotice(msg('settings.window.endpoints.found', { count: bridges.length }))
       }
     } catch (error) {
-      showFailure(msg('settings.window.endpoints.failed', { error: String(error) }))
+      showFailure(msg('settings.window.endpoints.failed', { error: sentenceOf(error) }))
     } finally {
       if (mountedRef.current) setEndpointScanBusy(false)
     }
@@ -480,7 +480,7 @@ export function SettingsWindow() {
       else if (ensured.outcome === 'raised') showNotice(msg('settings.window.reach.raised', { label: endpointKindMessage(kind) }))
       else showNotice(msg('settings.window.reach.restored', { label: endpointKindMessage(kind) }))
     } catch (error) {
-      showFailure(msg('settings.window.reach.failed', { error: String(error) }))
+      showFailure(msg('settings.window.reach.failed', { error: sentenceOf(error) }))
     } finally {
       if (mountedRef.current) setReachBusy(false)
     }
@@ -504,7 +504,7 @@ export function SettingsWindow() {
       await nativeRuntime.stopManagedDsh(instanceKey)
       showNotice(instanceKey === undefined ? msg('settings.window.managed.stopped-all') : msg('settings.window.managed.stopped-one'))
     } catch (error) {
-      showFailure(String(error))
+      showFailure(sentenceOf(error))
     } finally {
       if (mountedRef.current) setManagedDshBusy(false)
       // 成功失败都刷一次：成功了那一行该消失，失败了清单也该说出**现在**的真相（也许它本来就
@@ -529,12 +529,12 @@ export function SettingsWindow() {
         settingsRef.current = next
         setSettings(next)
         saveSettings(next)
-        void invoke('publish_settings', { settings: next }).catch((error) => showFailure(msg('settings.window.notice.sync-failed', { error: String(error) })))
+        void invoke('publish_settings', { settings: next }).catch((error) => showFailure(msg('settings.window.notice.sync-failed', { error: sentenceOf(error) })))
       }
       if (status.source === 'disabled-by-user') showNotice(msg('settings.window.autostart.disabled-by-user'))
       if (status.source === 'disabled-by-policy') showNotice(msg('settings.window.autostart.disabled-by-policy'))
     } catch (error) {
-      showFailure(msg('settings.window.autostart.read-failed', { error: String(error) }))
+      showFailure(msg('settings.window.autostart.read-failed', { error: sentenceOf(error) }))
     }
   }
 
@@ -552,7 +552,7 @@ export function SettingsWindow() {
       const summary = summarizeBridgeInstall(outcomes)
       if (summary) showNotice(summary.text)
     } catch (error) {
-      showFailure(msg('settings.window.bridge.failed', { error: String(error) }))
+      showFailure(msg('settings.window.bridge.failed', { error: sentenceOf(error) }))
     }
   }
 
@@ -623,7 +623,7 @@ export function SettingsWindow() {
       setDeepseekWebAdapterConfig(await nativeRuntime.openDeepSeekWebAdapterConfig())
       showNotice(msg('settings.window.adapter.opened'))
     } catch (error) {
-      showFailure(msg('settings.window.adapter.open-failed', { error: String(error) }))
+      showFailure(msg('settings.window.adapter.open-failed', { error: sentenceOf(error) }))
     }
   }
   const resetDeepSeekWebAdapterConfig = async () => {
@@ -632,7 +632,7 @@ export function SettingsWindow() {
       setDeepseekWebAdapterConfig(await nativeRuntime.resetDeepSeekWebAdapterConfig())
       showNotice(msg('settings.window.adapter.reset-done'))
     } catch (error) {
-      showFailure(msg('settings.window.adapter.reset-failed', { error: String(error) }))
+      showFailure(msg('settings.window.adapter.reset-failed', { error: sentenceOf(error) }))
     }
   }
 
@@ -650,7 +650,7 @@ export function SettingsWindow() {
       const status = await nativeRuntime.apiKeyStatus()
       if (mountedRef.current) setApiKeyStatus(status)
     } catch (error) {
-      if (mountedRef.current) showFailure(msg('settings.window.api-key.read-failed', { error: String(error) }))
+      if (mountedRef.current) showFailure(msg('settings.window.api-key.read-failed', { error: sentenceOf(error) }))
     }
   }
 
@@ -676,7 +676,7 @@ export function SettingsWindow() {
       })
       return true
     } catch (error) {
-      if (mountedRef.current) showFailure(msg('settings.window.api-key.models-read-failed', { error: String(error) }))
+      if (mountedRef.current) showFailure(msg('settings.window.api-key.models-read-failed', { error: sentenceOf(error) }))
       return false
     }
   }
@@ -702,7 +702,7 @@ export function SettingsWindow() {
       await readApiKeyStatus()
       showNotice(draft ? msg('settings.window.api-key.saved') : msg('settings.window.api-key.usable'))
     } catch (error) {
-      showFailure(msg('settings.window.api-key.save-failed', { error: String(error) }))
+      showFailure(msg('settings.window.api-key.save-failed', { error: sentenceOf(error) }))
     } finally {
       if (mountedRef.current) setApiKeyBusy(false)
     }
@@ -743,7 +743,7 @@ export function SettingsWindow() {
       if (mountedRef.current) setLiveBackend(snapshot.backend)
       showNotice(msg('settings.window.backend.switched', { label: backendModeMessage(backend) }))
     } catch (error) {
-      showFailure(msg('settings.window.backend.failed', { error: String(error) }))
+      showFailure(msg('settings.window.backend.failed', { error: sentenceOf(error) }))
     }
   }
 
@@ -780,7 +780,7 @@ export function SettingsWindow() {
         ? msg('settings.window.history.deleted', { id: conversationId })
         : msg('settings.window.history.gone'))
     } catch (error) {
-      showFailure(msg('settings.window.history.delete-failed', { error: String(error) }))
+      showFailure(msg('settings.window.history.delete-failed', { error: sentenceOf(error) }))
     } finally {
       apiHistoryOperationRef.current = false
       if (mountedRef.current) setApiHistoryBusy(false)
@@ -802,7 +802,7 @@ export function SettingsWindow() {
         ? msg('settings.window.history.cleared', { count: cleared })
         : msg('settings.window.history.nothing-to-clear'))
     } catch (error) {
-      showFailure(msg('settings.window.history.clear-failed', { error: String(error) }))
+      showFailure(msg('settings.window.history.clear-failed', { error: sentenceOf(error) }))
     } finally {
       apiHistoryOperationRef.current = false
       if (mountedRef.current) setApiHistoryBusy(false)
@@ -874,7 +874,7 @@ export function SettingsWindow() {
       setHarness(snapshot.harness)
       setInteractionEnabled(snapshot.interaction.enabled)
       setLiveBackend(snapshot.backend)
-    }).catch((error) => showFailure(String(error)))
+    }).catch((error) => showFailure(sentenceOf(error)))
   }, [])
 
   // The single native event subscription this window owns. It is registered
@@ -890,7 +890,7 @@ export function SettingsWindow() {
     }).then((dispose) => {
       if (disposed) dispose()
       else unsubscribe = dispose
-    }).catch((error) => showFailure(String(error)))
+    }).catch((error) => showFailure(sentenceOf(error)))
     return () => {
       disposed = true
       unsubscribe?.()
@@ -946,7 +946,7 @@ export function SettingsWindow() {
           if (refusal) showNotice(refusal)
         },
         onError: (error) => {
-          if (mountedRef.current) showFailure(msg('settings.window.autostart.update-failed', { error: String(error) }))
+          if (mountedRef.current) showFailure(msg('settings.window.autostart.update-failed', { error: sentenceOf(error) }))
         },
       })
     }
@@ -985,19 +985,19 @@ export function SettingsWindow() {
       if (paths.length === 0) return
       await nativeAppearance.importPaths(paths)
       refreshAppearance()
-    } catch (error) { showFailure(msg('settings.window.appearance.import-failed', { error: String(error) })) } finally { setAppearanceBusy(false) }
+    } catch (error) { showFailure(msg('settings.window.appearance.import-failed', { error: sentenceOf(error) })) } finally { setAppearanceBusy(false) }
   }
   const classifyAppearance = async (assetId: string, slot: AppearanceSlot) => {
     setAppearanceBusy(true)
-    try { await nativeAppearance.classifyAsset(assetId, [slot]); refreshAppearance() } catch (error) { showFailure(msg('settings.window.appearance.classify-failed', { error: String(error) })) } finally { setAppearanceBusy(false) }
+    try { await nativeAppearance.classifyAsset(assetId, [slot]); refreshAppearance() } catch (error) { showFailure(msg('settings.window.appearance.classify-failed', { error: sentenceOf(error) })) } finally { setAppearanceBusy(false) }
   }
   const selectAppearance = async (slot: AppearanceSlot, assetId: string) => {
     setAppearanceBusy(true)
-    try { setAppearanceOverrides((await nativeAppearance.setOverride(slot, assetId)).overrides); void invoke('notify_appearance_changed').catch((error) => showFailure(msg('settings.window.appearance.sync-failed', { error: String(error) }))) } catch (error) { showFailure(msg('settings.window.appearance.apply-failed', { error: String(error) })) } finally { setAppearanceBusy(false) }
+    try { setAppearanceOverrides((await nativeAppearance.setOverride(slot, assetId)).overrides); void invoke('notify_appearance_changed').catch((error) => showFailure(msg('settings.window.appearance.sync-failed', { error: sentenceOf(error) }))) } catch (error) { showFailure(msg('settings.window.appearance.apply-failed', { error: sentenceOf(error) })) } finally { setAppearanceBusy(false) }
   }
   const clearAppearance = async (slot: AppearanceSlot) => {
     setAppearanceBusy(true)
-    try { setAppearanceOverrides((await nativeAppearance.clearOverride(slot)).overrides); void invoke('notify_appearance_changed').catch((error) => showFailure(msg('settings.window.appearance.sync-failed', { error: String(error) }))) } catch (error) { showFailure(msg('settings.window.appearance.reset-failed', { error: String(error) })) } finally { setAppearanceBusy(false) }
+    try { setAppearanceOverrides((await nativeAppearance.clearOverride(slot)).overrides); void invoke('notify_appearance_changed').catch((error) => showFailure(msg('settings.window.appearance.sync-failed', { error: sentenceOf(error) }))) } catch (error) { showFailure(msg('settings.window.appearance.reset-failed', { error: sentenceOf(error) })) } finally { setAppearanceBusy(false) }
   }
 
   return <main className="settings-window">
@@ -1100,7 +1100,7 @@ export function SettingsWindow() {
           return
         }
         showNotice(msg('settings.window.tui.launched'))
-      }).catch((error) => showFailure(msg('settings.window.tui.failed', { error: String(error) })))}
+      }).catch((error) => showFailure(msg('settings.window.tui.failed', { error: sentenceOf(error) })))}
       onSelectWindow={(value) => change({
         ...settingsRef.current,
         dshLaunch: { ...settingsRef.current.dshLaunch, window: value },
@@ -1133,7 +1133,7 @@ export function SettingsWindow() {
       onRefreshApiHistory={() => { void refreshApiHistory() }}
       onDeleteApiConversation={(conversationId) => { void deleteApiConversation(conversationId) }}
       onClearApiHistory={() => { void clearApiHistory() }}
-      onRequestDeepSeekLogin={() => void nativeRuntime.requestDeepSeekLogin().catch((error) => showFailure(msg('settings.window.deepseek-web.open-failed', { error: String(error) })))}
+      onRequestDeepSeekLogin={() => void nativeRuntime.requestDeepSeekLogin().catch((error) => showFailure(msg('settings.window.deepseek-web.open-failed', { error: sentenceOf(error) })))}
       deepseekWebAdapterConfig={deepseekWebAdapterConfig}
       onRefreshDeepSeekWebAdapterConfig={refreshDeepSeekWebAdapterConfig}
       onOpenDeepSeekWebAdapterConfig={() => { void openDeepSeekWebAdapterConfig() }}
@@ -1149,7 +1149,7 @@ export function SettingsWindow() {
       liveBackend={liveBackend}
       onSelectBackend={(backend) => { void selectBackend(backend) }}
       interactionEnabled={interactionEnabled}
-      onSetInteractionEnabled={(enabled) => void appCoreClient.setInteractionEnabled(enabled).then((snapshot) => setInteractionEnabled(snapshot.interaction.enabled)).catch((error) => showFailure(String(error)))}
+      onSetInteractionEnabled={(enabled) => void appCoreClient.setInteractionEnabled(enabled).then((snapshot) => setInteractionEnabled(snapshot.interaction.enabled)).catch((error) => showFailure(sentenceOf(error)))}
       desktopWorkspace={desktopWorkspace}
       onOpenProjectMemory={async () => {
         // 打开的是**文件所在的位置**：文件在就选中它，不在就把工作区目录打开（原生实现）。
@@ -1159,7 +1159,7 @@ export function SettingsWindow() {
           const opened = await nativeRuntime.openProjectMemory()
           showNotice(opened.memoryExists ? msg('settings.window.memory.selected') : msg('settings.window.memory.opened-folder'))
         } catch (error) {
-          showFailure(String(error))
+          showFailure(sentenceOf(error))
         } finally {
           setOpeningMemory(false)
         }

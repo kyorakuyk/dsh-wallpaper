@@ -54,7 +54,7 @@ import { WidgetHost } from './widgets/WidgetHost.tsx'
 import { displayCssRect, displayTopologySignature, displayUiScale, preferredDisplayId, virtualDesktopBounds } from './runtime/displayLayout.ts'
 import { listenUntilDisposed } from './runtime/lifecycle.ts'
 import { frameSchedulerTarget, StreamTextBuffer } from './features/chat/streamRender.ts'
-import { formatSentence, msg, t, useLanguage, type Message, type Sentence } from './i18n/index.ts'
+import { formatSentence, msg, sentenceOf, t, useLanguage, type Message, type Sentence } from './i18n/index.ts'
 
 const registry = new PersonaRegistry()
 
@@ -862,7 +862,7 @@ export function App({ surface = 'combined' }: AppProps) {
         console.warn('bridge alignment failed', error)
       })
       .then(() => appCoreClient.dispatch(action, options))
-      .catch((error) => patchRuntime({ error: String(error) }))
+      .catch((error) => patchRuntime({ error: sentenceOf(error) }))
   }
 
   // 背景与立绘形态无关，留在这里；**形态那一串（tier / persona / 立绘槽位）搬到了模型选择之后**，
@@ -946,11 +946,11 @@ export function App({ surface = 'combined' }: AppProps) {
       }
       void nativeRuntime.harnessModels()
         .then((payload) => { if (!disposed) setHarnessModelDir(bridgeModelDirectory(payload)) })
-        .catch((error) => { if (!disposed) setHarnessModelDir(unavailableDirectory(msg('app.bubble.model.harness-read-failed', { error: String(error) }))) })
+        .catch((error) => { if (!disposed) setHarnessModelDir(unavailableDirectory(msg('app.bubble.model.harness-read-failed', { error: sentenceOf(error) }))) })
     } else if (runtime.backend === 'deepseek-api') {
       void nativeRuntime.apiModels(settingsRef.current.deepseekApi.baseUrl)
         .then((payload) => { if (!disposed) setApiModelDir(apiModelDirectory(payload, settingsRef.current.deepseekApi.model)) })
-        .catch((error) => { if (!disposed) setApiModelDir(unavailableDirectory(msg('app.bubble.model.endpoint-read-failed', { error: String(error) }))) })
+        .catch((error) => { if (!disposed) setApiModelDir(unavailableDirectory(msg('app.bubble.model.endpoint-read-failed', { error: sentenceOf(error) }))) })
     }
     return () => { disposed = true }
   }, [runtime.backend, runtime.harness, settings.deepseekApi.baseUrl])
@@ -997,7 +997,7 @@ export function App({ surface = 'combined' }: AppProps) {
           patchRuntime({ error: msg('app.bubble.launch.subject-failed') })
         }
       } catch (error) {
-        patchRuntime({ error: msg('app.bubble.notice.raise-window-failed', { error: String(error) }) })
+        patchRuntime({ error: msg('app.bubble.notice.raise-window-failed', { error: sentenceOf(error) }) })
       }
     })()
   }, [settings.dshLaunch])
@@ -1146,7 +1146,7 @@ const enterInnerWorkspace = () => {
       if (refreshEpoch !== appearanceRefreshEpochRef.current) return
       setResolvedAssets(Object.fromEntries(resolved.filter((entry) => Boolean(entry[1]))))
     } catch (error) {
-      patchRuntime({ error: String(error) })
+      patchRuntime({ error: sentenceOf(error) })
     }
   }
 
@@ -1214,11 +1214,11 @@ const enterInnerWorkspace = () => {
     const listener = listenUntilDisposed(
       (onSnapshot) => appCoreClient.subscribe(onSnapshot),
       applySnapshot,
-      { onError: (error) => patchRuntime({ error: String(error) }) },
+      { onError: (error) => patchRuntime({ error: sentenceOf(error) }) },
     )
     void appCoreClient.snapshot()
       .then(applySnapshot)
-      .catch((error) => patchRuntime({ error: String(error) }))
+      .catch((error) => patchRuntime({ error: sentenceOf(error) }))
     return () => listener.dispose()
     // Deliberately keyed on the surface alone: this is a subscription, and every
     // setting it reads goes through `settingsRef`. Listing a setting here is what
@@ -1263,7 +1263,7 @@ const enterInnerWorkspace = () => {
         }
         setSettings(next)
       },
-      { onError: (error) => patchRuntime({ error: String(error) }) },
+      { onError: (error) => patchRuntime({ error: sentenceOf(error) }) },
     ).dispose
   }, [])
 
@@ -1280,7 +1280,7 @@ const enterInnerWorkspace = () => {
         desktopDisplaysSignatureRef.current = signature
         setDesktopDisplays(next)
       } catch (error) {
-        if (!disposed) patchRuntime({ error: msg('app.bubble.notice.display-read-failed', { error: String(error) }) })
+        if (!disposed) patchRuntime({ error: msg('app.bubble.notice.display-read-failed', { error: sentenceOf(error) }) })
       }
     }
     const delayedRefresh = () => {
@@ -1294,7 +1294,7 @@ const enterInnerWorkspace = () => {
     const displayListener = listenUntilDisposed<unknown>(
       (emit) => listen('display-changed', () => emit(undefined)),
       delayedRefresh,
-      { onError: (error) => patchRuntime({ error: msg('app.bubble.notice.display-subscribe-failed', { error: String(error) }) }) },
+      { onError: (error) => patchRuntime({ error: msg('app.bubble.notice.display-subscribe-failed', { error: sentenceOf(error) }) }) },
     )
     window.addEventListener('resize', delayedRefresh)
     const timer = window.setInterval(() => { void refresh() }, DISPLAY_TOPOLOGY_FALLBACK_INTERVAL_MS)
@@ -1374,7 +1374,7 @@ const enterInnerWorkspace = () => {
         changeBackendRef.current?.(nonHarnessBackendRef.current)
         patchRuntime({ error: outcome.message })
       } catch (error) {
-        if (!disposed) patchRuntime({ error: String(error) })
+        if (!disposed) patchRuntime({ error: sentenceOf(error) })
       }
     }
     void check()
@@ -1447,7 +1447,7 @@ const enterInnerWorkspace = () => {
         const notice = dshAutostartNotice(result)
         if (notice && !disposed) patchRuntime({ error: notice })
       } catch (error) {
-        if (!disposed) patchRuntime({ error: msg('app.bubble.autostart.failed', { error: String(error) }) })
+        if (!disposed) patchRuntime({ error: msg('app.bubble.autostart.failed', { error: sentenceOf(error) }) })
       }
     })()
     return () => { disposed = true }
@@ -1625,7 +1625,7 @@ const enterInnerWorkspace = () => {
       } catch (error) {
         if (isCurrent()) {
           if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current.activity = 'idle'
-          patchRuntime({ activity: 'idle', error: String(error) })
+          patchRuntime({ activity: 'idle', error: sentenceOf(error) })
           dispatchCore('set-activity', { value: 'idle' })
         }
       }
@@ -1670,7 +1670,7 @@ const enterInnerWorkspace = () => {
           if (!appCoreClient.native) baseDispatch({ type: 'UNLOCK', playWake: settingsRef.current.playWakeOnEveryUnlock && settingsRef.current.animationsEnabled && !settingsRef.current.skipWakeAnimation })
         }
       },
-      { onError: (error) => patchRuntime({ error: msg('app.bubble.notice.system-subscribe-failed', { error: String(error) }) }) },
+      { onError: (error) => patchRuntime({ error: msg('app.bubble.notice.system-subscribe-failed', { error: sentenceOf(error) }) }) },
     )
     return () => listener.dispose()
     // Subscription, not a reaction to a preference: the values it reads are taken from
@@ -1683,7 +1683,7 @@ const enterInnerWorkspace = () => {
     const listener = listenUntilDisposed<{ type: 'backend'; backend: BackendMode }>(
       (emit) => nativeRuntime.listenTray(emit),
       (event) => changeBackend(event.backend),
-      { onError: (error) => patchRuntime({ error: String(error) }) },
+      { onError: (error) => patchRuntime({ error: sentenceOf(error) }) },
     )
     return () => listener.dispose()
   }, [])
@@ -1699,7 +1699,7 @@ const enterInnerWorkspace = () => {
         if (payload === 'enter') enterInnerWorkspace()
         else leaveInnerWorkspace()
       },
-      { onError: (error) => patchRuntime({ error: String(error) }) },
+      { onError: (error) => patchRuntime({ error: sentenceOf(error) }) },
     )
     return () => listener.dispose()
     // One subscription for the surface's lifetime: the handlers read the layout they
@@ -1718,7 +1718,7 @@ const enterInnerWorkspace = () => {
     const listener = listenUntilDisposed<unknown>(
       (emit) => listen('appearance-changed', () => emit(undefined)),
       () => { void refreshAppearance() },
-      { onError: (error) => patchRuntime({ error: msg('app.bubble.notice.appearance-subscribe-failed', { error: String(error) }) }) },
+      { onError: (error) => patchRuntime({ error: msg('app.bubble.notice.appearance-subscribe-failed', { error: sentenceOf(error) }) }) },
     )
     return () => listener.dispose()
   }, [surface])
@@ -1748,7 +1748,7 @@ const enterInnerWorkspace = () => {
       observer.observe(document.body, { attributes: true, childList: true, subtree: true })
       window.addEventListener('resize', publish)
       publish()
-    }).catch((error) => patchRuntime({ error: String(error) }))
+    }).catch((error) => patchRuntime({ error: sentenceOf(error) }))
     return () => {
       disposed = true
       observer.disconnect()
@@ -1867,7 +1867,7 @@ const enterInnerWorkspace = () => {
     activeBackendRef.current = backend
     patchRuntime({ backend })
     baseDispatch({ type: 'RECOVER' })
-    if (appCoreClient.native) void appCoreClient.selectBackend(backend).catch((error) => patchRuntime({ error: String(error) }))
+    if (appCoreClient.native) void appCoreClient.selectBackend(backend).catch((error) => patchRuntime({ error: sentenceOf(error) }))
   }
   /**
    * 苏醒收尾这一幕是否还在演。
@@ -2022,10 +2022,10 @@ const enterInnerWorkspace = () => {
           harnessLaunchPendingRef.current = false
           harnessLaunchStartedAtRef.current = undefined
           setHarnessStarting(false)
-          patchRuntime({ error: String(error) })
+          patchRuntime({ error: sentenceOf(error) })
         }
       }}
-      onConfigureHarness={() => { void nativeRuntime.openSettingsWindow().catch((error) => patchRuntime({ error: String(error) })) }}
+      onConfigureHarness={() => { void nativeRuntime.openSettingsWindow().catch((error) => patchRuntime({ error: sentenceOf(error) })) }}
       onSelectBackend={changeBackend}
       // 离开 Harness 要回到**用户在设置里选的那个聊天后端**，而不是写死的网页桥：
       // 设置里选了 API 的人，用这个开关去 Harness 再切回来时必须回到 API（用户实测报过）。
@@ -2036,10 +2036,10 @@ const enterInnerWorkspace = () => {
       keptTranscript={harnessResetClaimed(autoResetFromHarness, settings.harnessAutoResetAt) && runtime.backend !== 'harness' && messages.length > 0}
       presetOptions={presetOptions}
       selectedPreset={selectedPreset}
-      onSelectPreset={messages.length === 0 ? (preset) => { void nativeRuntime.setHarnessPreset(preset).then(() => setSelectedPreset(preset)).catch((error) => patchRuntime({ error: String(error) })) } : undefined}
+      onSelectPreset={messages.length === 0 ? (preset) => { void nativeRuntime.setHarnessPreset(preset).then(() => setSelectedPreset(preset)).catch((error) => patchRuntime({ error: sentenceOf(error) })) } : undefined}
       permission={runtime.backend === 'harness' ? harnessControls?.permission : undefined}
       commands={runtime.backend === 'harness' ? harnessControls?.commands : undefined}
-      onSelectPermission={(permission) => { void nativeRuntime.setHarnessPermission(permission).then(() => setHarnessControls((value) => value ? { ...value, permission: { ...value.permission, current: permission } } : value)).catch((error) => patchRuntime({ error: String(error) })) }}
+      onSelectPermission={(permission) => { void nativeRuntime.setHarnessPermission(permission).then(() => setHarnessControls((value) => value ? { ...value, permission: { ...value.permission, current: permission } } : value)).catch((error) => patchRuntime({ error: sentenceOf(error) })) }}
       modelOptions={modelOptions}
       selectedModel={selectedModel}
       modelLabels={modelLabels}
@@ -2106,7 +2106,7 @@ const enterInnerWorkspace = () => {
         }).catch((error) => {
           if (isCurrent()) {
             if (chatActivityRef.current?.adapter === adapter) chatActivityRef.current.activity = 'idle'
-            patchRuntime({ activity: 'idle', error: String(error) })
+            patchRuntime({ activity: 'idle', error: sentenceOf(error) })
             dispatchCore('set-activity', { value: 'idle' })
           }
         })
@@ -2120,7 +2120,7 @@ const enterInnerWorkspace = () => {
         patchRuntime({ activity: 'idle' })
         dispatchCore('set-activity', { value: 'idle' })
         void adapter.stop().catch((error) => {
-          if (isCurrent()) patchRuntime({ activity: 'idle', error: String(error) })
+          if (isCurrent()) patchRuntime({ activity: 'idle', error: sentenceOf(error) })
         })
       }}
       // 「X」= 离开里桌面。**交给原生**（`leave_inner_workspace`），不在这里自己搬界面：
@@ -2136,13 +2136,13 @@ const enterInnerWorkspace = () => {
           leaveInnerWorkspace()
           return
         }
-        void nativeRuntime.leaveInnerWorkspace().catch((error) => patchRuntime({ error: msg('app.bubble.notice.leave-inner-failed', { error: String(error) }) }))
+        void nativeRuntime.leaveInnerWorkspace().catch((error) => patchRuntime({ error: msg('app.bubble.notice.leave-inner-failed', { error: sentenceOf(error) }) }))
       }}
       // 打开转写里的链接：地址来自模型输出，真正的白名单在 Rust 侧（`external_link::validate`）。
       // 失败要说出来 —— 中键点了没反应，用户只会以为是手势没生效。
       onOpenLink={(href) => {
         void nativeRuntime.openExternalLink(href)
-          .catch((error) => patchRuntime({ chatNotice: msg('app.bubble.notice.open-link-failed', { error: String(error) }) }))
+          .catch((error) => patchRuntime({ chatNotice: msg('app.bubble.notice.open-link-failed', { error: sentenceOf(error) }) }))
       }}
     />
     })()

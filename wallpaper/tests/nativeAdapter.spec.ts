@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { NativeChatAdapter, archivedSessionNotice, blockedTurnNotice, isArchivedSessionError, isMissingSessionError } from '../src/chat/nativeAdapter.ts'
+import { NativeChatAdapter, archivedSessionNotice, blockedTurnNotice, classifyNativeSessionFailure } from '../src/chat/nativeAdapter.ts'
 import type { ChatEvent, ChatMessage, ScopedChatEvent } from '../src/domain/types.ts'
-import { formatSentence } from '../src/i18n/index.ts'
+import { formatSentence, setLanguage } from '../src/i18n/index.ts'
+import { en } from '../src/i18n/en.ts'
 import { nativeRuntime, type NativeSendOptions } from '../src/native/runtime.ts'
 
 /**
@@ -105,6 +106,8 @@ const idle = { type: 'status', activity: 'idle' } as const
 
 afterEach(() => {
   vi.useRealTimers()
+  // 语言是模块级状态，测试之间必须还原（与 tests/i18n.spec.ts 同一条规矩）。
+  setLanguage('zh')
 })
 
 describe('NativeChatAdapter stop lifecycle', () => {
@@ -399,11 +402,12 @@ describe('NativeChatAdapter stop lifecycle', () => {
 describe('NativeChatAdapter missing-session recovery', () => {
   const missing = () => new Error('HARNESS_NO_SESSION: Harness 会话尚未建立')
 
-  it('recognises the marker, and does not confuse it with an archived session', () => {
-    expect(isMissingSessionError('HARNESS_NO_SESSION: Harness 会话尚未建立')).toBe(true)
-    expect(isMissingSessionError(new Error('HARNESS_NO_SESSION: x'))).toBe(true)
-    expect(isMissingSessionError('HARNESS_SESSION_ARCHIVED: 这条会话已归档')).toBe(false)
-    expect(isMissingSessionError(undefined)).toBe(false)
+  it('classifies the marker, and does not confuse it with an archived session', () => {
+    // 判据是**标志**（`kind`）而不是文字：分类只发生在这里一处，消费方全部按 `kind` 分支。
+    expect(classifyNativeSessionFailure('HARNESS_NO_SESSION: Harness 会话尚未建立')?.kind).toBe('no-session')
+    expect(classifyNativeSessionFailure(new Error('HARNESS_NO_SESSION: x'))?.kind).toBe('no-session')
+    expect(classifyNativeSessionFailure('HARNESS_SESSION_ARCHIVED: 这条会话已归档')?.kind).toBe('session-archived')
+    expect(classifyNativeSessionFailure(undefined)).toBeUndefined()
   })
 
   it('connects and resends the same sentence once, without announcing a switch', async () => {
@@ -437,12 +441,12 @@ describe('NativeChatAdapter archived-session recovery', () => {
   /** 原生侧抛出的就是这条字符串；这里用 Error 包一层，两种形状都要能认出来。 */
   const archived = () => new Error(`HARNESS_SESSION_ARCHIVED: 这条会话已在桌面端归档，桥不再接受它的消息。`)
 
-  it('recognises the marker in the plain string Tauri rejects with', () => {
-    expect(isArchivedSessionError('HARNESS_SESSION_ARCHIVED: 这条会话已在桌面端归档')).toBe(true)
-    expect(isArchivedSessionError(new Error('HARNESS_SESSION_ARCHIVED: x'))).toBe(true)
+  it('classifies the marker in the plain string Tauri rejects with', () => {
+    expect(classifyNativeSessionFailure('HARNESS_SESSION_ARCHIVED: 这条会话已在桌面端归档')?.kind).toBe('session-archived')
+    expect(classifyNativeSessionFailure(new Error('HARNESS_SESSION_ARCHIVED: x'))?.kind).toBe('session-archived')
     // 别的 409（"另一台 DSH 占用这条会话"）绝不能冒充归档。
-    expect(isArchivedSessionError('发送失败：409 另一台 DSH 正在使用这条会话')).toBe(false)
-    expect(isArchivedSessionError(undefined)).toBe(false)
+    expect(classifyNativeSessionFailure('发送失败：409 另一台 DSH 正在使用这条会话')).toBeUndefined()
+    expect(classifyNativeSessionFailure(undefined)).toBeUndefined()
   })
 
   it('reconnects without a resume ID and resends the same sentence once', async () => {
@@ -470,6 +474,34 @@ describe('NativeChatAdapter archived-session recovery', () => {
         { type: 'conversation-reset', reason: 'session-archived', message: archivedSessionNotice() },
         { type: 'status', activity: 'sending' },
       ])
+      adapter.disconnect()
+    } finally {
+      native.restore()
+    }
+  })
+
+  /**
+   * 换语言不该让恢复机制失效：判据现在是**标志**（`classifyNativeSessionFailure` 的 `kind`），
+   * 恢复本身照旧；而用户看到的那句通知存的是词条，所以 `en` 下读到的是英文。
+   */
+  it('recovers the same way in English, and says so in English', async () => {
+    setLanguage('en')
+    const native = new FakeNative()
+    try {
+      const adapter = await connectedHarness(native)
+      const events = collector(adapter)
+      native.sendErrors = [archived()]
+      native.connectSessionIds = ['fresh-daily-session']
+
+      await adapter.send('这句话不能丢')
+
+      // 归档恢复的三件事在英文界面里一件不少：换会话、不带 resume id、重发原话。
+      expect(native.connectCalls).toHaveLength(2)
+      expect(native.chatSends.map((send) => send.text)).toEqual(['这句话不能丢', '这句话不能丢'])
+      const reset = events.find((event) => event.type === 'conversation-reset')
+      expect(reset).toEqual({ type: 'conversation-reset', reason: 'session-archived', message: archivedSessionNotice() })
+      expect(formatSentence(reset?.type === 'conversation-reset' ? reset.message : undefined))
+        .toBe(en['chat.native.archived-notice'])
       adapter.disconnect()
     } finally {
       native.restore()

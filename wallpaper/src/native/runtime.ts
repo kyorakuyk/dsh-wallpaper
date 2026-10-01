@@ -4,7 +4,7 @@ import type { HarnessStatus } from '../connect/harness.ts'
 import { parseLaunchArgs } from '../connect/launchArgs.ts'
 // 兜底与错误句也要说界面当前的语言：`t()` 在**调用时**求值（见下面那些句子的用法）。
 // 这里只依赖 `i18n/`，Lite 与完整版都拿得到，不引入任何只在完整版里存在的东西。
-import { t } from '../i18n/index.ts'
+import { msg, SentenceError, t } from '../i18n/index.ts'
 
 export interface NativeSendOptions {
   conversationId?: string
@@ -637,7 +637,7 @@ export const nativeRuntime: NativeRuntime = {
   //     await invoke('open_windows_lock_screen_settings')
   //   },
   async saveApiKey(key) {
-    if (!await tauriAvailable()) throw new Error(t('runtime.credentials.desktop-only'))
+    if (!await tauriAvailable()) throw new SentenceError(msg('runtime.credentials.desktop-only'))
     const { invoke } = await import('@tauri-apps/api/core')
     await invoke('save_api_key', { key })
   },
@@ -648,17 +648,17 @@ export const nativeRuntime: NativeRuntime = {
     return invoke<ApiKeyStatus>('api_key_status')
   },
   async desktopWorkspaceStatus() {
-    if (!await tauriAvailable()) throw new Error(t('runtime.workspace.desktop-only'))
+    if (!await tauriAvailable()) throw new SentenceError(msg('runtime.workspace.desktop-only'))
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<DesktopWorkspaceStatus>('desktop_workspace_status')
   },
   async openProjectMemory() {
-    if (!await tauriAvailable()) throw new Error(t('runtime.memory.desktop-only'))
+    if (!await tauriAvailable()) throw new SentenceError(msg('runtime.memory.desktop-only'))
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<{ opened: string; memoryFile: string; memoryExists: boolean }>('open_project_memory')
   },
   async openSubjectTui(args?: string[]) {
-    if (!await tauriAvailable()) throw new Error(t('runtime.tui.desktop-only'))
+    if (!await tauriAvailable()) throw new SentenceError(msg('runtime.tui.desktop-only'))
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<{ opened: boolean; reason?: string; message?: string; launcher?: string }>('open_subject_tui', { args })
   },  async requestDeepSeekLogin() {
@@ -697,12 +697,12 @@ export const nativeRuntime: NativeRuntime = {
     return invoke<DeepSeekWebAdapterConfigStatus>('deepseek_web_adapter_config_status')
   },
   async openDeepSeekWebAdapterConfig() {
-    if (!await tauriAvailable()) throw new Error(t('runtime.web-adapter.preview-open'))
+    if (!await tauriAvailable()) throw new SentenceError(msg('runtime.web-adapter.preview-open'))
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<DeepSeekWebAdapterConfigStatus>('open_deepseek_web_adapter_config')
   },
   async resetDeepSeekWebAdapterConfig() {
-    if (!await tauriAvailable()) throw new Error(t('runtime.web-adapter.preview-reset'))
+    if (!await tauriAvailable()) throw new SentenceError(msg('runtime.web-adapter.preview-reset'))
     const { invoke } = await import('@tauri-apps/api/core')
     return invoke<DeepSeekWebAdapterConfigStatus>('reset_deepseek_web_adapter_config')
   },

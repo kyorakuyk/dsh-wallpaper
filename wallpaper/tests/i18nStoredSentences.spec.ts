@@ -234,7 +234,8 @@ describe('the dictionary entries the composed notices are stored as', () => {
 
 /**
  * 这里**没有**钉的东西，写下来免得被当成疏漏：`AutostartStatus.reason`、
- * `DeepSeekWebAdapterConfigStatus.warning`、`String(error)` 这些**原生自由文本**仍是中文
- * （计划第一节第 6 条把它留给第二批）。上面那条 "keeps the native free text out of the
- * mechanism" 钉的是"这两种形状分得开"这件事本身。
+ * `DeepSeekWebAdapterConfigStatus.warning`、以及 `sentenceOf()` 的兜底分支（`String(error)` ——
+ * 原生（Rust）自由文本走的就是它）仍是中文（计划第一节第 6 条把它留给第二批）。上面那条
+ * "keeps the native free text out of the mechanism" 钉的是"这两种形状分得开"这件事本身。
+ * 我们**自己的**异常不走那条兜底：它们带的是词条，见 `tests/i18nErrors.spec.ts`。
  */
