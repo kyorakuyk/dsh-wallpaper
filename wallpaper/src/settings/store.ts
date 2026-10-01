@@ -1,6 +1,7 @@
 /** 版本化设置；桌面壳会以原生文件存储替换浏览器 localStorage。 */
 
 import type { BackendMode, ConversationPolicy, ModelTierRule } from '../domain/types.ts'
+import type { Language } from '../i18n/index.ts'
 import type { PersonaBubbles } from '../persona/types.ts'
 import { assetUrl } from '../runtime/assets.ts'
 
@@ -8,7 +9,8 @@ export { assetUrl }
 
 export type InteractionLayout = 'floating' | 'taskbar-docked'
 
-export const SETTINGS_VERSION = 10
+// 11：新增 language（界面语言）。旧文档里没有这个键，归一化会补默认值。
+export const SETTINGS_VERSION = 11
 /** Keep renderer validation aligned with the native request boundary. A value
  * beyond this ceiling is almost certainly a unit/configuration error and must
  * not be presented as a configured price when Rust deliberately ignores it. */
@@ -177,6 +179,8 @@ export interface WallpaperSettings {
   skipWakeAnimation: boolean
   // lockScreenEnabled: boolean
   autostart: boolean
+  /** 界面语言。默认中文 —— 与这个产品一直以来的表现一致，升级不会突然换语言。 */
+  language: Language
   /** 发送消息快捷键 */
   sendShortcut: 'Enter' | 'Ctrl+Enter'
   background: BackgroundId
@@ -238,6 +242,7 @@ export const DEFAULT_SETTINGS: WallpaperSettings = {
   skipWakeAnimation: false,
   // lockScreenEnabled: false,
   autostart: false,
+  language: 'zh',
   sendShortcut: 'Enter',
   background: 'workspace',
   historyStartsExpanded: false,
@@ -295,6 +300,7 @@ export const MAX_BUBBLE_OVERRIDE_LENGTH = 2000
 export const MAX_MODEL_TIER_RULES = 64
 export const MAX_BUBBLE_OVERRIDES = 256
 
+const SETTING_LANGUAGES: readonly Language[] = ['zh', 'en']
 const BACKEND_MODES: readonly BackendMode[] = ['deepseek-web', 'deepseek-api', 'harness']
 const CONVERSATION_POLICIES: readonly ConversationPolicy[] = ['resume-last', 'new-on-unlock', 'daily']
 const INTERACTION_LAYOUTS: readonly WallpaperSettings['interactionLayout'][] = ['floating', 'taskbar-docked']
@@ -372,6 +378,7 @@ export function normalizeSettings(raw: unknown): WallpaperSettings {
     skipWakeAnimation: settingsBool(value.skipWakeAnimation, DEFAULT_SETTINGS.skipWakeAnimation),
     // lockScreenEnabled: settingsBool(value.lockScreenEnabled, DEFAULT_SETTINGS.lockScreenEnabled),
     autostart: settingsBool(value.autostart, DEFAULT_SETTINGS.autostart),
+    language: oneOf(value.language, SETTING_LANGUAGES, DEFAULT_SETTINGS.language),
     sendShortcut: oneOf(value.sendShortcut, ['Enter', 'Ctrl+Enter'] as const, DEFAULT_SETTINGS.sendShortcut),
     background: oneOf(value.background, BACKGROUND_IDS, DEFAULT_SETTINGS.background) as BackgroundId,
     historyStartsExpanded: settingsBool(value.historyStartsExpanded, DEFAULT_SETTINGS.historyStartsExpanded),
