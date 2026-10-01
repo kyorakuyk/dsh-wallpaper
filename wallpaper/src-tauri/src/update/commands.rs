@@ -215,6 +215,10 @@ pub(crate) struct UpdateInstallReport {
     pub path: String,
     /// 按后缀分派的结果：`exe` ⇒ 安装向导，`msix` ⇒ App Installer。
     pub kind: AssetKind,
+    /// 接下来的那一步（[`InstallLaunch`]）：已经安排了"退出后再安装"，还是回落成了"现在就打开"。
+    /// 界面据此说最后那句话 —— 应用在这一条命令里可能**不会再回话了**（它正在退出），所以这句话
+    /// 必须由这一个字段决定，而不能靠界面猜。
+    pub next_step: InstallLaunch,
 }
 
 /// 一次检查的结论：解析成功与失败两条路都汇到这里。
@@ -571,11 +575,227 @@ fn shell_open(path: &Path) -> Result<(), UpdateCommandError> {
     Err(UpdateCommandError::open_failed())
 }
 
+/// 装好之前会短暂用一次的助手执行文件（两种写法都试，见 [`installer_launcher_argv`]）。
+///
+/// 用 `%SystemRoot%` 拼**绝对路径**是首选：`powershell.exe` 在 `PATH` 被收紧的进程里照样在。
+/// 读不到那个变量时回落到名字本身，让系统按 `PATH` 找 —— 找不到就当"助手起不来"，走回落分支。
+///
+/// 这里不按平台门控：这是一段纯拼路径的计算，真正的"起不起来"由 [`spawn_install_launcher`] 那条
+/// 分支决定（非 Windows 上它直接报 `openFailed`）。不门控的好处是命令行那两个纯函数在**任何平台**
+/// 上都编得过、测得上 —— 它们的单测正是转义与编码那几件事的证据。
+fn windows_powershell() -> PathBuf {
+    std::env::var_os("SystemRoot")
+        .map(|root| {
+            PathBuf::from(root)
+                .join("System32")
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join("powershell.exe")
+        })
+        .unwrap_or_else(|| PathBuf::from("powershell.exe"))
+}
+
+/// 助手要跑的脚本（纯函数，单测钉着它的每一处转义）。
+///
+/// 语义只有一条：**等本进程结束，再把安装包交给 Windows**。这里没有也不许有固定延时 ——
+/// "等一会儿"与"等它退出"是两回事，前者只是在赌。
+///
+/// 写法上的两处讲究（都在本机实测过）：
+///
+///  - **先取进程对象、再 `WaitForExit()`**：`Wait-Process -Id … -ErrorAction SilentlyContinue` 在
+///    目标**已经不在**时会退化成"立刻返回"（实测：目标还活着也只花 13 ms），于是等待会静默消失；
+///    `$p.WaitForExit()` 拿到的是那个进程对象本身，实测会等满目标的整个生命周期（5 s 的目标等了
+///    5189 ms），而进程已经不在了时 `Get-Process` 给 `$null`，`if ($p)` 直接跳过（实测 213 ms）；
+///  - **`Get-Process` 不重定向 `-ErrorAction`**：目标进程**权限比助手高**时它会给 `$null` 而不是抛错
+///    （"已经不在"与"看不见"在这里是同一件事：都只能往下走），脚本照旧启动安装包。
+///
+/// 路径来源见 [`super::state::UpdateState::downloaded_path`]：是我们自己写下的记录，但仍按不可信输入
+/// 处理 —— 这里只把 `'` 翻倍（PowerShell 单引号字符串里唯一的转义），整段脚本再按 UTF-16LE 走
+/// `-EncodedCommand`，因此**不存在**命令行引号、转义或编码问题。
+fn installer_waiter_script(process_id: u32, installer: &Path) -> String {
+    let quoted = installer.to_string_lossy().replace('\'', "''");
+    format!(
+        "$p = Get-Process -Id {process_id} -ErrorAction SilentlyContinue; \
+         if ($p) {{ $p.WaitForExit() }}; \
+         Start-Process -FilePath '{quoted}'"
+    )
+}
+
+/// 把一个脚本包成 `-EncodedCommand` 认的那段 Base64（UTF-16LE）。
+fn encode_powershell(script: &str) -> String {
+    use base64::Engine;
+
+    let mut utf16 = Vec::with_capacity(script.len() * 2);
+    for unit in script.encode_utf16() {
+        utf16.extend_from_slice(&unit.to_le_bytes());
+    }
+    base64::engine::general_purpose::STANDARD.encode(utf16)
+}
+
+/// 起助手的完整命令行：要跑哪个执行文件、按哪几个参数（纯函数）。
+///
+/// 三个"别这么写"，每一个都在本机实测过：
+///
+///  - **不带 `-WindowStyle Hidden`**：它和 `-EncodedCommand` 一起用时 PowerShell 会在**十几毫秒**内
+///    直接退出（实测 14 ms），脚本一行都不跑 —— 而且没有任何输出，看起来就像"助手起来了"。
+///    不留黑框靠的是 `CREATE_NO_WINDOW`（见 [`spawn_install_launcher`]），那是**进程级**的事，
+///    不该交给 PowerShell 的窗口样式参数；
+///  - **`-NoProfile` 要留着**：用户的 profile 可能改掉 `Get-Process` / `Start-Process` 的行为，
+///    也可能弹提示、写输出、拖慢启动；
+///  - **`-EncodedCommand` 与它那段 Base64 分成两项**：写成一项（`"-EncodedCommand AAAA…"`）时
+///    PowerShell 会把它们当成一个整体去匹配开关名，同样是不跑脚本。
+///
+/// 参数分开给也意味着 `Command::args` 会按 Windows 的 `CommandLineToArgvW` 规则自己加引号：
+/// 路径里的空格、中文、括号都不会漏出去。
+fn installer_launcher_argv(process_id: u32, installer: &Path) -> (PathBuf, [String; 3]) {
+    let encoded = encode_powershell(&installer_waiter_script(process_id, installer));
+    (
+        windows_powershell(),
+        [
+            "-NoProfile".to_string(),
+            "-EncodedCommand".to_string(),
+            // 必须是最后一项：它后面没有别的开关，PowerShell 把这一段当脚本正文。
+            encoded,
+        ],
+    )
+}
+
+/// 起一个**比我们活得久**的助手：它等本进程结束，再把安装包交给 Windows（[`InstallLaunch`]）。
+///
+/// 这一层是注入点（`Box<dyn Fn>`）：单测里换成"只数调用次数"的假助手，绝不在单测里真的起进程。
+pub(crate) type InstallLauncher = Box<dyn Fn(u32, &Path) -> Result<(), UpdateCommandError>>;
+
+/// 回落那一步（`ShellExecuteW("open", …)`）同样是注入点：单测里换成假的，不真的打开安装包。
+pub(crate) type InstallOpener = Box<dyn Fn(&Path) -> Result<(), UpdateCommandError>>;
+
+/// 默认助手：`powershell.exe` 分离启动（`CREATE_NO_WINDOW`，见下）。
+///
+/// 为什么是 PowerShell 而不是 `cmd.exe /c`：
+///
+///  - `$p.WaitForExit()` 等的是**进程结束**这个语义本身，不是一段猜出来的延时；
+///  - 等待与启动各是一句话，不需要在 `cmd` 里再拼一层引号（`start "" "…"` 那套转义又长又容易错）；
+///  - 整段脚本走 `-EncodedCommand`（UTF-16LE + Base64），路径里的空格、中文、引号都不过命令行
+///    解析这一关，`SHIFT-JIS`/代码页一类的编码坑也不存在。
+///
+/// `CREATE_NO_WINDOW` 是"不留黑框"的那一半：助手是控制台程序，不拦的话用户会看到一个黑色的
+/// 控制台窗口。**只剩这一半**是对的：`-WindowStyle Hidden` 那条路会把脚本本身弄没（见
+/// [`installer_launcher_argv`] 的第一条）。启动它的进程**不阻塞我们**，也不回收它 ——
+/// 它比我们活得久正是这件事的全部意义。
+#[cfg(all(not(feature = "lite"), windows))]
+fn spawn_install_launcher(process_id: u32, installer: &Path) -> Result<(), UpdateCommandError> {
+    use std::os::windows::process::CommandExt;
+
+    /// `CREATE_NO_WINDOW`（winbase.h）：给控制台程序用，不建控制台窗口。
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let (program, arguments) = installer_launcher_argv(process_id, installer);
+    let mut command = std::process::Command::new(&program);
+    command.args(arguments).creation_flags(CREATE_NO_WINDOW);
+    match command.spawn() {
+        Ok(_child) => {
+            // `_child` 被丢在这里是**故意的**：`std::process::Child` 的 Drop 不杀进程，句柄一关
+            // 助手就独立了。等它、杀它都会让"等我们退出"这件事变成我们自己的负担。
+            log::info!(
+                "更新安装：已安排退出后安装（助手 {}，本进程 {}，安装包 {}）",
+                program.display(),
+                process_id,
+                installer.display()
+            );
+            Ok(())
+        }
+        Err(error) => {
+            log::warn!(
+                "更新安装：{} 起不来（{error}），改回直接打开安装包",
+                program.display()
+            );
+            Err(UpdateCommandError::open_failed())
+        }
+    }
+}
+
+/// 非 Windows：没有"等本进程退出再启动"的这套东西（`.exe`/`.msix` 本来就只属于 Windows）。
+#[cfg(not(windows))]
+fn spawn_install_launcher(process_id: u32, installer: &Path) -> Result<(), UpdateCommandError> {
+    log::warn!(
+        "更新安装：当前平台没有先退出再安装这条路（助手未启动，进程 {process_id}，安装包 {}）",
+        installer.display()
+    );
+    Err(UpdateCommandError::open_failed())
+}
+
+/// 这一台机器上**真实**的两个外部动作（生产用这一份；单测注入假的，绝不真的起进程）。
+struct InstallRunner {
+    /// 起助手：它等本进程结束后再启动安装包。
+    launcher: InstallLauncher,
+    /// 回落那一步：现在就 `ShellExecuteW("open", …)`。
+    opener: InstallOpener,
+}
+
+fn system_install_runner() -> InstallRunner {
+    InstallRunner {
+        launcher: Box::new(spawn_install_launcher),
+        opener: Box::new(shell_open),
+    }
+}
+
+/// 安装这一步的两种走法（见 [`UpdateInstallReport::next_step`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum InstallLaunch {
+    /// 助手已经起来：它在等本进程退出，退出之后由它启动安装包 ⇒ 应用**接着就退出**。
+    Exiting,
+    /// 助手起不来，已经回落到"现在就交给 Windows"：应用**继续运行**。
+    Opened,
+}
+
+/// 走完"安装"这一步：先起助手，起不来才回落。
+///
+/// 两件事分开，是因为"起没起来"决定的是**用户接下来看到什么**（应用退出 / 应用留着），
+/// 而不是成败：回落分支照样把安装包交出去了，只是没有"先退出"那一步。回落**不静默** ——
+/// 报告里的 `next_step` 就是界面要说的那句话的依据（`update.notice.install-fallback-opened`）。
+fn launch_installer(
+    process_id: u32,
+    path: &Path,
+    kind: AssetKind,
+    runner: &InstallRunner,
+) -> Result<UpdateInstallReport, UpdateCommandError> {
+    let next_step = match (runner.launcher)(process_id, path) {
+        Ok(()) => InstallLaunch::Exiting,
+        Err(error) => {
+            // 只有 **openFailed** 是"助手起不来"（见 `spawn_install_launcher`）。别的码说明这一步
+            // 之前就已经坏了（路径守卫那几条），那时候再打开一次安装包只会把原因盖掉。
+            if error.code != "openFailed" {
+                return Err(error);
+            }
+            log::warn!("更新安装：助手起不来，回落到直接打开安装包（应用不退出）");
+            (runner.opener)(path)?;
+            InstallLaunch::Opened
+        }
+    };
+    Ok(UpdateInstallReport {
+        path: path.display().to_string(),
+        kind,
+        next_step,
+    })
+}
+
 /// 把已经下载好的安装包交给 Windows（§六）。
 ///
 /// 路径**不由界面给**：它读状态文件里那一条（`downloadedPath`）。界面因此无法让原生去打开任意一个
 /// 文件 —— 那会是一条"打开任何可执行文件"的命令，比 `open_external_link` 更宽。
+///
+/// 顺序是"先安排、后退出"：助手起不来时**不退出**（那时候安装包走的是"现在就打开"那条回落），
+/// 所以 [`InstallLaunch::Opened`] 这个结论本身就带着"应用不许退出"的意思。
 pub(crate) fn run_install(state_path: &Path) -> Result<UpdateInstallReport, UpdateCommandError> {
+    run_install_with(state_path, std::process::id(), &system_install_runner())
+}
+
+/// [`run_install`] 的注入版：进程号与两个外部动作都由调用者给（单测里从不真的起进程）。
+fn run_install_with(
+    state_path: &Path,
+    process_id: u32,
+    runner: &InstallRunner,
+) -> Result<UpdateInstallReport, UpdateCommandError> {
     let recorded = state::load(state_path).downloaded_path;
     let Some(recorded) = recorded.filter(|path| !path.trim().is_empty()) else {
         log::info!("更新安装：状态文件里没有下过的安装包");
@@ -583,11 +803,7 @@ pub(crate) fn run_install(state_path: &Path) -> Result<UpdateInstallReport, Upda
     };
     let path = PathBuf::from(recorded);
     let kind = install_kind(&path)?;
-    shell_open(&path)?;
-    Ok(UpdateInstallReport {
-        path: path.display().to_string(),
-        kind,
-    })
+    launch_installer(process_id, &path, kind, runner)
 }
 
 /// 检查更新。只检查，不下载不安装 —— 下载与安装是第二片。
@@ -714,13 +930,21 @@ pub(crate) async fn update_download(
     })
 }
 
-/// 「安装」：把已经下载好的安装包按后缀交给 Windows 的默认处理程序（§六）。
+/// 「安装」：**先安排"我们退出之后再启动安装包"，然后退出**；安排不了才回落到直接打开（§六）。
 ///
 /// `.exe`（NSIS setup）⇒ 安装向导；`.msix` ⇒ App Installer。两条分支都留着 —— MSIX 是将来上商店
-/// 的路，不许因为今天只发 `.exe` 就删掉。两条都只是 `ShellExecuteW("open", …)`，确认由用户在
-/// 系统界面上点。
+/// 的路，不许因为今天只发 `.exe` 就删掉。两条走的是同一个助手，确认由用户在系统界面上点。
 ///
-/// 返回值只有路径与按后缀分派的结果（见 [`UpdateInstallReport`]）；开不起来给的是码
+/// **为什么必须先退出**：Tauri 的 NSIS 安装包在检测到已安装时先跑旧版卸载器（带 `/S`，本意是静默），
+/// 而安装器换不掉一个还在运行的 `dsh-wallpaper.exe`；那时它会把卸载器弹成可见窗口 —— 用户看到的
+/// "先一个 uninstaller、再一个 installer"就是这么来的。应用自己先退出，这一步就干净了。
+///
+/// 退出走的是 [`tauri::AppHandle::exit`]（`0`）：它走 `RunEvent::ExitRequested` → `Exit`，所以
+/// `lib.rs` 里那个 `shutdown_native_state` 照常把桌面图标、原生首帧窗口、DSH 实例与清理标记都收好
+/// —— 与托盘「退出」是同一条路，不是硬杀。**回落分支不退出**：那时候安装包是"现在就打开"的，
+/// 我们退出只会让用户看到安装器去抢一个刚被占用的文件（退回原来的两步）。
+///
+/// 返回值只有路径、按后缀分派的结果与接下来的那一步（见 [`UpdateInstallReport`]）；开不起来给的是码
 /// （`nothingDownloaded` / `installerMissing` / `unsupportedAsset` / `openFailed`）。
 #[tauri::command]
 // 整个模块已经在 `lib.rs` 里按 edition 门控；这一行是仓库惯例的第二道（Lite 不含本功能）。
@@ -733,13 +957,20 @@ pub(crate) fn update_install(
     let Some(state_path) = state_path(&app) else {
         return Err(UpdateCommandError::state_path_unavailable());
     };
-    // 读状态 + 一次 `ShellExecuteW`，都不打网络也不占阻塞线程。
-    run_install(&state_path)
+    // 读状态 + 起一个助手，都不打网络也不占阻塞线程。
+    let report = run_install(&state_path)?;
+    if report.next_step == InstallLaunch::Exiting {
+        // 顺序是"先起助手、后退出"：反过来的话助手可能来不及起来，安装包就没人启动了。
+        log::info!("更新安装：助手已就位，本进程退出（{}）", report.path);
+        app.exit(0);
+    }
+    Ok(report)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
 
     use super::*;
 
@@ -801,6 +1032,90 @@ mod tests {
 
     fn state_path(directory: &tempfile::TempDir) -> PathBuf {
         state::updates_dir(directory.path()).join(state::STATE_FILE_NAME)
+    }
+
+    /// 假的一条注入链：`launcher` 记 `(进程号, 安装包路径)`，`opener` 记回落那一步收到的路径。
+    ///
+    /// 记账本用 `Rc<Cell<..>>` 而不是 `&Cell<..>`：装进 [`InstallRunner`] 的是一个 `'static` 闭包，
+    /// 拿着引用的闭包过不了这道门槛。`Box<dyn Fn>` 也让"助手报什么错"能被注入进来 —— 回落分支
+    /// 就是这样被覆盖到的，而不是真去起一个起不来的进程。
+    fn counting_runner(
+        launcher: Result<(), UpdateCommandError>,
+    ) -> (InstallRunner, Rc<LauncherCalls>, Rc<OpenerCalls>) {
+        counting_runner_with(launcher, Ok(()))
+    }
+
+    fn counting_runner_with(
+        launcher: Result<(), UpdateCommandError>,
+        opener: Result<(), UpdateCommandError>,
+    ) -> (InstallRunner, Rc<LauncherCalls>, Rc<OpenerCalls>) {
+        let launches = Rc::new(LauncherCalls::default());
+        let opens = Rc::new(OpenerCalls::default());
+        let runner = InstallRunner {
+            launcher: fake_launcher(launcher, Rc::clone(&launches)),
+            opener: fake_opener(opener, Rc::clone(&opens)),
+        };
+        (runner, launches, opens)
+    }
+
+    /// 一次"起助手"的调用记录。
+    #[derive(Default)]
+    struct LauncherCalls {
+        calls: Cell<usize>,
+        arguments: RefCell<(u32, String)>,
+    }
+
+    /// 一次"打开安装包"（回落）的调用记录。
+    #[derive(Default)]
+    struct OpenerCalls {
+        calls: Cell<usize>,
+        arguments: RefCell<String>,
+    }
+
+    /// 假的"起助手"：只数调用次数、记下收到的那两样东西，**绝不真的起进程**。
+    fn fake_launcher(
+        answer: Result<(), UpdateCommandError>,
+        calls: Rc<LauncherCalls>,
+    ) -> InstallLauncher {
+        let answer = Rc::new(answer);
+        Box::new(move |process_id, installer| {
+            calls.calls.set(calls.calls.get() + 1);
+            *calls.arguments.borrow_mut() = (process_id, installer.display().to_string());
+            match &*answer {
+                Ok(()) => Ok(()),
+                Err(error) => Err(error.clone()),
+            }
+        })
+    }
+
+    /// 假的"打开安装包"（回落那一步）：同样是记账，不打开任何东西。
+    fn fake_opener(
+        answer: Result<(), UpdateCommandError>,
+        calls: Rc<OpenerCalls>,
+    ) -> InstallOpener {
+        let answer = Rc::new(answer);
+        Box::new(move |installer| {
+            calls.calls.set(calls.calls.get() + 1);
+            *calls.arguments.borrow_mut() = installer.display().to_string();
+            match &*answer {
+                Ok(()) => Ok(()),
+                Err(error) => Err(error.clone()),
+            }
+        })
+    }
+
+    /// 状态文件里记上这一个安装包 —— 「安装」那一步读的**只有**这里。
+    fn install_runner(directory: &tempfile::TempDir, installer: &Path) -> PathBuf {
+        let path = state_path(directory);
+        state::save(
+            &path,
+            &UpdateState {
+                downloaded_path: Some(installer.display().to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        path
     }
 
     /// 今天真身的资产名（NSIS 的 `.exe`），外加一枚后缀在白名单外的噪声文件。
@@ -1509,9 +1824,14 @@ mod tests {
     fn installing_uses_the_recorded_download_and_says_what_is_missing() {
         let directory = tempfile::tempdir().unwrap();
         let path = state_path(&directory);
+        // 这一条只走"路径守卫"那几道判断：两道守卫都过不去时**一个助手都不该起**。
+        let (runner, launches, _opens) = counting_runner(Ok(()));
 
         // 还没下过任何东西。
-        assert_eq!(run_install(&path).unwrap_err().code, "nothingDownloaded");
+        assert_eq!(
+            run_install_with(&path, 4242, &runner).unwrap_err().code,
+            "nothingDownloaded"
+        );
 
         // 记过一条，但文件已经不在了。
         state::save(
@@ -1522,7 +1842,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(run_install(&path).unwrap_err().code, "installerMissing");
+        assert_eq!(
+            run_install_with(&path, 4242, &runner).unwrap_err().code,
+            "installerMissing"
+        );
 
         // 记录里的东西不是可安装资产。
         let text = directory.path().join("readme.txt");
@@ -1535,7 +1858,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(run_install(&path).unwrap_err().code, "unsupportedAsset");
+        assert_eq!(
+            run_install_with(&path, 4242, &runner).unwrap_err().code,
+            "unsupportedAsset"
+        );
 
         // 空串与空白按"没有记录"处理（状态文件被手改过时也不该去开一个空路径）。
         for empty in ["", "   "] {
@@ -1547,14 +1873,181 @@ mod tests {
                 },
             )
             .unwrap();
-            assert_eq!(run_install(&path).unwrap_err().code, "nothingDownloaded", "{empty:?}");
+            assert_eq!(
+                run_install_with(&path, 4242, &runner).unwrap_err().code,
+                "nothingDownloaded",
+                "{empty:?}"
+            );
         }
+
+        // 四条拒绝路径上都不许起助手：那一步只在**确定要装这个文件**之后才发生。
+        assert_eq!(launches.calls.get(), 0);
     }
 
-    /// 两个报告也是契约：界面按这些字段名读（`started` / `kind` 是新增的两个）。
+    /// 「安装」的顺序：**先起助手、立刻回 `exiting`**。应用接着退出，所以这里不能是 `opened`。
     #[test]
-    fn the_download_and_install_reports_serialize_to_the_fields_the_interface_reads() {
-        let download = UpdateDownloadReport {
+    fn installing_schedules_the_installer_for_after_our_exit() {
+        let directory = tempfile::tempdir().unwrap();
+        let installer = directory.path().join("dsh-wallpaper_0.4.3_x64-setup.exe");
+        std::fs::write(&installer, b"installer").unwrap();
+        let (runner, launches, opens) = counting_runner(Ok(()));
+
+        let report = run_install_with(&install_runner(&directory, &installer), 4242, &runner).unwrap();
+
+        assert_eq!(report.next_step, InstallLaunch::Exiting);
+        assert_eq!(report.kind, AssetKind::Exe);
+        assert_eq!(report.path, installer.display().to_string());
+        // 起助手那一步拿到的必须是**本进程的号**与**记录里那个安装包**：换一个号就会去等一个
+        // 不存在的进程（等不到，退出后没人启动安装器）；换一条路径就是打开另一个文件。
+        assert_eq!(launches.calls.get(), 1);
+        let (pid, launched) = &*launches.arguments.borrow();
+        assert_eq!(*pid, 4242);
+        assert_eq!(launched, &installer.display().to_string());
+        // 助手起来了就**不**回落：回落那条路意味着"应用不退出"，那是另一种用户可见的行为。
+        assert_eq!(opens.calls.get(), 0);
+    }
+
+    /// `.msix` 与 `.exe` 走同一套（MSIX 是将来上商店的路，不许因为今天只发 `.exe` 就漏掉一条）。
+    #[test]
+    fn installing_hands_a_msix_to_the_same_launcher() {
+        let directory = tempfile::tempdir().unwrap();
+        let package = directory.path().join("dsh-wallpaper_0.4.3_x64.msix");
+        std::fs::write(&package, b"package").unwrap();
+        let (runner, launches, _opens) = counting_runner(Ok(()));
+
+        let report = run_install_with(&install_runner(&directory, &package), 7, &runner).unwrap();
+
+        assert_eq!(report.kind, AssetKind::Msix);
+        assert_eq!(report.next_step, InstallLaunch::Exiting);
+        assert_eq!(launches.calls.get(), 1);
+    }
+
+    /// 助手起不来：**回落成现在就打开**，而且如实报告 `opened`（应用不退出）。
+    #[test]
+    fn a_launcher_that_cannot_start_falls_back_to_opening_it_now() {
+        let directory = tempfile::tempdir().unwrap();
+        let installer = directory.path().join("setup.exe");
+        std::fs::write(&installer, b"installer").unwrap();
+        let (runner, launches, opens) = counting_runner(Err(UpdateCommandError::open_failed()));
+
+        let report = run_install_with(&install_runner(&directory, &installer), 4242, &runner).unwrap();
+
+        // 回落不是失败：安装包**已经交出去了**，只是没有"先退出"这一步。界面按 `opened` 说那句
+        // "已交给 Windows，应用不会退出"，而不是显示一个错误。
+        assert_eq!(report.next_step, InstallLaunch::Opened);
+        assert_eq!(report.kind, AssetKind::Exe);
+        assert_eq!(launches.calls.get(), 1);
+        assert_eq!(opens.calls.get(), 1);
+        assert_eq!(*opens.arguments.borrow(), installer.display().to_string());
+    }
+
+    /// 回落那一步也失败：这才有错误码，而且是既有的 `openFailed`（新码会让界面无话可说）。
+    #[test]
+    fn a_fallback_that_also_fails_keeps_the_open_failed_code() {
+        let directory = tempfile::tempdir().unwrap();
+        let installer = directory.path().join("setup.exe");
+        std::fs::write(&installer, b"installer").unwrap();
+        let (runner, launches, opens) = counting_runner_with(
+            Err(UpdateCommandError::open_failed()),
+            Err(UpdateCommandError::open_failed()),
+        );
+
+        let error = run_install_with(&install_runner(&directory, &installer), 4242, &runner)
+            .expect_err("both routes failed");
+
+        assert_eq!(error.code, "openFailed");
+        assert_eq!(launches.calls.get(), 1);
+        assert_eq!(opens.calls.get(), 1);
+    }
+
+    /// 助手起不来时报的**不是** openFailed（别的码）：原样往外抛，不去打开安装包盖掉原因。
+    #[test]
+    fn a_launcher_failure_that_is_not_open_failed_is_reported_as_is() {
+        let directory = tempfile::tempdir().unwrap();
+        let installer = directory.path().join("setup.exe");
+        std::fs::write(&installer, b"installer").unwrap();
+        let (runner, launches, opens) =
+            counting_runner(Err(UpdateCommandError::unsupported_asset()));
+
+        let error = run_install_with(&install_runner(&directory, &installer), 4242, &runner)
+            .expect_err("the launcher refused");
+
+        assert_eq!(error.code, "unsupportedAsset");
+        assert_eq!(launches.calls.get(), 1);
+        assert_eq!(opens.calls.get(), 0);
+    }
+
+    /// 助手要跑的脚本（纯函数）：等的是**我们的进程号**，启动的是**那个安装包**，而且可被 PowerShell
+    /// 逐字还原 —— 路径里的空格、中文、单引号都不许把脚本带跑偏。
+    #[test]
+    fn the_waiter_script_waits_for_us_and_then_starts_the_installer() {        let installer = Path::new("C:\\Users\\我 的 用户\\AppData\\Local\\com.dsh.wallpaper\\updates\\0.4.3\\dsh-wallpaper_0.4.3_x64-setup.exe");
+        let script = installer_waiter_script(4242, installer);
+        assert!(script.contains("Get-Process -Id 4242"));
+        // 等的是"进程结束"这件事本身：`$p.WaitForExit()` 拿的是那个进程对象。
+        // （`Wait-Process -Id … -ErrorAction SilentlyContinue` 实测会退化成"立刻返回"，不许用。）
+        assert!(script.contains("$p.WaitForExit()"));
+        assert!(!script.contains("Wait-Process"));
+        assert!(script.contains(&format!("Start-Process -FilePath '{}'", installer.display())));
+        // 固定延时的痕迹：这件事的语义是"等进程结束"，不是"等一会儿"。
+        assert!(!script.contains("Start-Sleep"));
+        assert!(!script.contains("timeout"));
+
+        // PowerShell 单引号字符串里唯一的转义就是把 `'` 写成 `''`；别的字符（含 `$`、反引号、
+        // 空格、中文）在单引号里都是字面量，所以这里不该出现别的转义。
+        let awkward = Path::new("C:\\Users\\O'Brien\\更新 包\\setup.exe");
+        let escaped = installer_waiter_script(4242, awkward);
+        assert!(escaped.contains("'C:\\Users\\O''Brien\\更新 包\\setup.exe'"));
+        assert!(!escaped.contains("`"));
+    }
+
+    /// 助手命令行：整段脚本按 **UTF-16LE + Base64** 走 `-EncodedCommand`，所以路径里的空格与中文
+    /// 不经过命令行解析。这一条把 Base64 解回来逐字比对 —— 编码方式写错（比如用 UTF-8）时，
+    /// PowerShell 会解码出乱码路径，而那时症状是"安装器起不来"，不是这里有测试失败。
+    ///
+    /// 同时钉住那三个**实测出来的**"别这么写"（每一个都让助手静默地什么都不做）：
+    /// `-WindowStyle Hidden` 会让 PowerShell 在 14 ms 内直接退出；`-EncodedCommand` 与那段
+    /// Base64 必须分成两项；`-NoProfile` 必须留着。
+    #[test]
+    fn the_launcher_argv_encodes_the_script_as_utf16le_base64() {
+        use base64::Engine;
+
+        let installer = Path::new("C:\\Users\\我 的 用户\\setup.exe");
+        let (program, arguments) = installer_launcher_argv(4242, installer);
+
+        // 执行文件是一个绝对路径（找得到 `powershell.exe` 的进程里，`PATH` 是否完整都不影响）。
+        assert_eq!(
+            program.file_name().and_then(|name| name.to_str()),
+            Some("powershell.exe")
+        );
+        assert_eq!(
+            arguments[..2],
+            ["-NoProfile".to_string(), "-EncodedCommand".to_string()],
+            "助手必须无配置地起来，而且那一段 Base64 要单独作为一项"
+        );
+        assert!(
+            !arguments.iter().any(|argument| argument.contains("WindowStyle")),
+            "`-WindowStyle Hidden` 会让脚本一行都不跑（实测 14 ms 就退出），不许加回来"
+        );
+
+        let encoded = &arguments[2];
+        // Base64 字母表里没有空格、引号这些会让命令行解析犯迷糊的字符，所以整项按原样传即可。
+        assert!(
+            encoded.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '='),
+            "Base64 以外的东西出现在这里：{encoded}"
+        );
+        let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+        assert_eq!(bytes.len() % 2, 0, "UTF-16LE 的字节数一定是偶数");
+        let units = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<u16>>();
+        let decoded = String::from_utf16(&units).unwrap();
+        assert_eq!(decoded, installer_waiter_script(4242, installer));
+    }
+
+    /// 两个报告也是契约：界面按这些字段名读（`started` / `kind` / `nextStep` 是新增的那几个）。
+    #[test]
+    fn the_download_and_install_reports_serialize_to_the_fields_the_interface_reads() {        let download = UpdateDownloadReport {
             started: true,
             version: "0.4.2".into(),
             destination: "C:\\updates\\0.4.2\\setup.exe".into(),
@@ -1564,15 +2057,83 @@ mod tests {
             r#"{"started":true,"version":"0.4.2","destination":"C:\\updates\\0.4.2\\setup.exe"}"#
         );
 
-        // 按后缀分派的结果就是这两个词（界面据此说"交给安装向导"还是"交给 App Installer"）。
+        // 按后缀分派的结果就是这两个词（界面据此说"交给安装向导"还是"交给 App Installer"）；
+        // `nextStep` 是"应用接着退出"还是"应用留着"，界面按它说最后那句话。
         for (kind, expected) in [(AssetKind::Exe, "exe"), (AssetKind::Msix, "msix")] {
-            let report = UpdateInstallReport {
-                path: "C:\\updates\\0.4.2\\a.bin".into(),
-                kind,
-            };
-            let value = serde_json::to_value(&report).unwrap();
-            assert_eq!(value["kind"], serde_json::json!(expected));
-            assert_eq!(value["path"], serde_json::json!("C:\\updates\\0.4.2\\a.bin"));
+            for (step, step_name) in [
+                (InstallLaunch::Exiting, "exiting"),
+                (InstallLaunch::Opened, "opened"),
+            ] {
+                let report = UpdateInstallReport {
+                    path: "C:\\updates\\0.4.2\\a.bin".into(),
+                    kind,
+                    next_step: step,
+                };
+                let value = serde_json::to_value(&report).unwrap();
+                assert_eq!(value["kind"], serde_json::json!(expected));
+                assert_eq!(value["path"], serde_json::json!("C:\\updates\\0.4.2\\a.bin"));
+                assert_eq!(value["nextStep"], serde_json::json!(step_name));
+            }
+        }
+    }
+
+    /// **手动的一次真机验证**（`#[ignore]`：需要真的起进程、真的开一个记事本，跑完自动杀掉）。
+    ///
+    /// 说的是我们唯一没法在单测里证明的那一段：`installer_waiter_script` 生成的脚本喂给
+    /// `installer_launcher_argv` 生成的命令行之后，助手**真的**会等到目标进程结束才启动目标程序。
+    ///
+    /// 目标用 `notepad.exe`（不跑真安装器），闸门用"临时起的一个 5 秒进程"而不是本测试进程
+    /// （后者要等测试进程结束，那就在测试里等不到结果）。
+    ///
+    /// 跑法：`cargo test --lib -- --ignored real_launcher_waits_for_the_gate_process --nocapture`
+    #[test]
+    #[ignore = "真的起进程（PowerShell + notepad），只在手动验证时跑"]
+    fn real_launcher_waits_for_the_gate_process() {
+        use std::time::{Duration, Instant};
+
+        let gate = std::process::Command::new(crate::update::commands::windows_powershell())
+            .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 5"])
+            .spawn()
+            .expect("a gate process");
+        let gate_id = gate.id();
+
+        let (program, arguments) =
+            installer_launcher_argv(gate_id, Path::new("C:\\Windows\\System32\\notepad.exe"));
+        let started = Instant::now();
+        let _helper = std::process::Command::new(&program)
+            .args(arguments)
+            .spawn()
+            .expect("the helper");
+
+        std::thread::sleep(Duration::from_millis(1500));
+        let early = wait_for_notepad(0);
+        let awaited = started.elapsed();
+        let notepad = wait_for_notepad(15);
+
+        // 收尾：别给这台机器留下一个记事本窗口。
+        let _ = std::process::Command::new("taskkill").args(["/IM", "notepad.exe", "/F"]).output();
+        let _ = std::process::Command::new("taskkill").args(["/PID", &gate_id.to_string(), "/F"]).output();
+
+        assert!(early == 0, "闸门还活着（已 {awaited:?}），记事本不该已经起来 —— 助手没在等");
+        assert!(notepad > 0, "助手退出之后安装器该起来了（等了 {awaited:?}）");
+    }
+
+    /// 等一个 `notepad.exe` 出现（最多 `seconds` 秒），返回看到几个。
+    fn wait_for_notepad(seconds: u64) -> usize {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+        loop {
+            let output = std::process::Command::new("tasklist")
+                .args(["/FI", "IMAGENAME eq notepad.exe", "/NH"])
+                .output()
+                .expect("tasklist");
+            let text = String::from_utf8_lossy(&output.stdout);
+            if text.to_lowercase().contains("notepad.exe") {
+                return 1;
+            }
+            if std::time::Instant::now() >= deadline {
+                return 0;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
         }
     }
 }

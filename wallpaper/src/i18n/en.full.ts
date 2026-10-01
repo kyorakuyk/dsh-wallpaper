@@ -904,7 +904,12 @@ export const enFull: FullOnlyDict = {
   'update.notice.download-failed': 'The download did not start: {error}',
   'update.notice.update-unavailable': 'There is no native download or install here (browser preview): open the release page to get the installer.',
   'update.notice.install-failed': 'The installer did not start: {error}',
-  'update.notice.install-handed-off': 'Handed to the Windows {target}; confirm in the window that opened.',
+  // The helper is in place: the app is exiting and that helper starts the installer afterwards.
+  // This has to be said *before* the exit — once the app closes there is no next sentence.
+  'update.notice.install-exiting': 'Exiting to install: the installer wizard opens on its own once the app closes; confirm in that window.',
+  // Fallback when the helper cannot start: the installer was handed to Windows right now, but the
+  // app stays open.
+  'update.notice.install-fallback-opened': 'Could not arrange "install after exit", so the installer was opened right away; the app will stay open — confirm in the installer window.',
   'update.outcome.ready': 'Version {version} has been downloaded',
   'update.progress.percent': 'Downloading {percent}%',
   'update.progress.downloaded': 'Downloading ({downloaded} so far)',
@@ -928,6 +933,4 @@ export const enFull: FullOnlyDict = {
   'update.call.unsupported-asset': 'this file is not an installable package (only .exe and .msix)',
   'update.call.open-failed': 'Windows did not open this installer',
   'update.call.unknown': 'the call did not succeed: {error}',
-  'update.install.target.exe': 'installer wizard',
-  'update.install.target.msix': 'App Installer',
 }

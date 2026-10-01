@@ -248,8 +248,12 @@ export function useUpdate(): UpdateController {
   /**
    * 「点击安装」：把下载好的安装包按后缀交给 Windows（§六）。
    *
-   * 交给之后由系统界面接着走（安装向导 / App Installer），壁纸这边停在 `ready` 并说一句"已经
-   * 交出去了" —— 不假装装好了（装没装成只有用户看得见）。
+   * 原生那一步的顺序是"**先安排、后退出**"：它先起一个等本进程结束的助手，成功就让应用退出
+   * （`nextStep === 'exiting'`）—— 那一步回来的报告是这次调用**最后**一次回话，所以这里必须
+   * 当场把话说清楚（"正在退出以便安装"），而不是等一个不会来的事件。
+   *
+   * 助手起不来时原生回落到"现在就交给 Windows"（`nextStep === 'opened'`）：应用**不退出**，界面
+   * 如实说这一句 —— 回落不是失败（安装包照样交出去了），但用户要知道接下来该看哪儿。
    */
   const install = useCallback(async () => {
     beginWork()
@@ -261,9 +265,9 @@ export function useUpdate(): UpdateController {
         return
       }
       setNotice(
-        msg('update.notice.install-handed-off', {
-          target: result.kind === 'msix' ? msg('update.install.target.msix') : msg('update.install.target.exe'),
-        }),
+        result.nextStep === 'exiting'
+          ? msg('update.notice.install-exiting')
+          : msg('update.notice.install-fallback-opened'),
       )
     } catch (error) {
       setNotice(msg('update.notice.install-failed', { error: updateCallMessage(error) }))

@@ -26,7 +26,7 @@ import {
   updatePhase,
 } from '../src/features/update/updateState.ts'
 import { createOnceGate } from '../src/features/update/useUpdate.ts'
-import { formatMessage, setLanguage, t, type Message, type MessageKey } from '../src/i18n/index.ts'
+import { formatMessage, msg, setLanguage, t, type Message, type MessageKey } from '../src/i18n/index.ts'
 import { nativeRuntime, type UpdateCheckReport, type UpdateDownloadEvent, type UpdateDownloadFailure, type UpdateDownloadFailureCode } from '../src/native/runtime.ts'
 import { BUILTIN_PERSONAS } from '../src/persona/registry.ts'
 import { dictionarySource } from './i18nSource.ts'
@@ -397,6 +397,43 @@ describe('三个新状态真的可达，而且只由事件驱动', () => {
     expect(app).toMatch(/useUpdateBubble\(\{/)
     expect(window).toContain('useUpdate()')
   })
+
+  /**
+   * 「点击安装」这一条命令的**两种走法**各说各的话（原生用 `nextStep` 告诉界面是哪种）。
+   *
+   * 为什么这一条重要：`exiting` 那一次调用之后应用就关了 —— 界面**没有下一次说话的机会**，
+   * 所以"正在退出以便安装"必须当场说出来；而 `opened`（助手起不来）时应用还在，界面要说的是
+   * "已直接打开安装包，应用不会退出"。两句话混起来，用户就会以为窗口会关（或者以为它不会关）。
+   */
+  it('「点击安装」的两种走法各说各的话：正在退出 / 已直接打开', async () => {
+    const hook = await readSource('src/features/update/useUpdate.ts')
+    const installBody = hook.slice(
+      hook.indexOf('const install = useCallback'),
+      // `openReleasePage` 是普通函数（没有 `useCallback`），所以下界取那之后的第一个锚点。
+      hook.indexOf('return useMemo('),
+    )
+    // 分支读的就是原生那个字段，而且两条分支各对应一条词条。
+    expect(installBody).toContain("result.nextStep === 'exiting'")
+    expect(installBody).toContain("msg('update.notice.install-exiting')")
+    expect(installBody).toContain("msg('update.notice.install-fallback-opened')")
+    // 旧的"已交给 Windows 的{target}"那句话没了：`nextStep` 把两种走法分开了，界面不该再猜
+    // 交给的是哪一种处理程序。
+    expect(hook).not.toContain('install-handed-off')
+
+    setLanguage('zh')
+    expect(formatMessage(msg('update.notice.install-exiting'))).toContain('退出')
+    expect(formatMessage(msg('update.notice.install-fallback-opened'))).toContain('不会退出')
+    setLanguage('en')
+    expect(formatMessage(msg('update.notice.install-exiting'))).toContain('Exiting')
+    expect(formatMessage(msg('update.notice.install-fallback-opened'))).toContain('stay open')
+    setLanguage('zh')
+
+    // 原生侧那两半同样钉在 Rust 里（`InstallLaunch` ⇄ `nextStep`），名字对不上界面就分不清走法。
+    const rust = await readFile(resolve(wallpaperRoot, 'src-tauri', 'src', 'update', 'commands.rs'), 'utf8')
+    expect(rust).toContain('pub next_step: InstallLaunch')
+    expect(rust).toContain('let report = run_install(&state_path)?;')
+    expect(rust).toContain('app.exit(0);')
+  })
 })
 
 describe('三个新状态由事件驱动', () => {
@@ -607,7 +644,7 @@ describe('原生命令边界', () => {
         case 'update_download':
           return { started: true, version: '0.4.2', destination: 'C:\\updates\\0.4.2\\setup.exe' }
         default:
-          return { path: 'C:\\updates\\0.4.2\\setup.exe', kind: 'exe' }
+          return { path: 'C:\\updates\\0.4.2\\setup.exe', kind: 'exe', nextStep: 'exiting' }
       }
     })
 
@@ -639,7 +676,7 @@ describe('原生命令边界', () => {
     ])
     expect(dismissed).toEqual({ dismissedVersion: '0.4.2', persisted: true })
     expect(started).toEqual({ started: true, version: '0.4.2', destination: 'C:\\updates\\0.4.2\\setup.exe' })
-    expect(installed).toEqual({ path: 'C:\\updates\\0.4.2\\setup.exe', kind: 'exe' })
+    expect(installed).toEqual({ path: 'C:\\updates\\0.4.2\\setup.exe', kind: 'exe', nextStep: 'exiting' })
   })
 
   it('预览（没有原生宿主）不伪造报告，也不假装忽略成功或开工下载', async () => {
@@ -766,9 +803,10 @@ describe('词条', () => {
       'update.notice.download-failed',
       'update.notice.update-unavailable',
       'update.notice.install-failed',
-      'update.notice.install-handed-off',
-      'update.install.target.exe',
-      'update.install.target.msix',
+      // 「点击安装」之后那两句：安排好了就说"正在退出以便安装"（这句话必须在退出**之前**说 ——
+      // 应用一关，界面就没有下一次说话的机会），助手起不来时才说回落那句。
+      'update.notice.install-exiting',
+      'update.notice.install-fallback-opened',
       'update.notice.dismiss-unpersisted',
       'update.notice.dismiss-failed',
       'update.notice.check-failed',

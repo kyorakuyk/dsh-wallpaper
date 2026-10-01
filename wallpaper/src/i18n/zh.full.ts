@@ -935,7 +935,11 @@ export const zhFull = {
   'update.notice.download-failed': '下载没有开始：{error}',
   'update.notice.update-unavailable': '这个环境里没有原生的下载与安装（浏览器预览）：请打开发布页获取安装包。',
   'update.notice.install-failed': '安装没有起来：{error}',
-  'update.notice.install-handed-off': '已交给 Windows 的{target}，请在打开的窗口里确认。',
+  // 助手已经就位：应用**正在退出**，安装向导由那个助手在退出之后启动。这一句要在退出之前
+  // 就说出来 —— 应用一关，界面就没有下一次说话的机会了。
+  'update.notice.install-exiting': '正在退出以便安装：应用关闭后安装向导会自己打开，请在窗口里确认。',
+  // 助手起不来时的回落：安装包已经交给 Windows 了，但应用**不会退出**（安装向导自己打开）。
+  'update.notice.install-fallback-opened': '没能安排"退出后再安装"，已直接打开安装包；应用不会退出，请在安装窗口里确认。',
   // `ready` 的正文：下载完、还没装（§四 的「点击安装」）。
   'update.outcome.ready': '新版本 {version} 已下载',
   // `downloading` 的正文（§四 的「正在下载 42%」）。总大小未知时说的是"已下载多少"：
@@ -964,9 +968,6 @@ export const zhFull = {
   'update.call.unsupported-asset': '这个文件不是可安装的安装包（只认 .exe 与 .msix）',
   'update.call.open-failed': 'Windows 没有打开这个安装包',
   'update.call.unknown': '调用没有成功：{error}',
-  // 安装交给的是哪一种系统处理程序（§六 的按后缀分派）。
-  'update.install.target.exe': '安装向导',
-  'update.install.target.msix': 'App Installer',
 }
 
 /** 这一份的形状（`en.full.ts` 用它标注）。 */
