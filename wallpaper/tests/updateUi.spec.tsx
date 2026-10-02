@@ -423,9 +423,13 @@ describe('三个新状态真的可达，而且只由事件驱动', () => {
     setLanguage('zh')
     expect(formatMessage(msg('update.notice.install-exiting'))).toContain('退出')
     expect(formatMessage(msg('update.notice.install-fallback-opened'))).toContain('不会退出')
+    // 升级是"一键"的（原生带 `/P`）：第一句里不该再出现一个要用户去点的窗口 —— 那会替一个
+    // 已经不存在的步骤要确认（回落那一句说的是另一回事：那条路上安装器确实是普通窗口）。
+    expect(formatMessage(msg('update.notice.install-exiting'))).not.toContain('向导')
     setLanguage('en')
     expect(formatMessage(msg('update.notice.install-exiting'))).toContain('Exiting')
     expect(formatMessage(msg('update.notice.install-fallback-opened'))).toContain('stay open')
+    expect(formatMessage(msg('update.notice.install-exiting'))).not.toContain('wizard')
     setLanguage('zh')
 
     // 原生侧那两半同样钉在 Rust 里（`InstallLaunch` ⇄ `nextStep`），名字对不上界面就分不清走法。

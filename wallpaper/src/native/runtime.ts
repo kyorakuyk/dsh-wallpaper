@@ -694,8 +694,9 @@ export interface NativeRuntime {
    */
   updateDownload(version: string, asset: UpdateAsset): Promise<UpdateDownloadReport | undefined>
   /**
-   * 「点击安装」：把已经下载好的安装包按后缀交给 Windows（`.exe` ⇒ 安装向导，`.msix` ⇒
-   * App Installer，§六）。
+   * 「点击安装」：把已经下载好的安装包按后缀交给 Windows（`.exe` ⇒ NSIS 安装器，`.msix` ⇒
+   * App Installer，§六）。`.exe` 那一条带的参数是 `/P /UPDATE /R`（原生 `INSTALLER_ARGUMENTS`）：
+   * passive 让升级没有要点的页面、`/UPDATE` 说的是原地覆盖、`/R` 负责装完起新版。
    *
    * 路径不由界面给：原生读状态文件里那一条（`downloadedPath`），所以界面无法让它打开任意文件。
    * 开不起来时抛出的错误带一个码（`nothingDownloaded` / `installerMissing` / `unsupportedAsset` /

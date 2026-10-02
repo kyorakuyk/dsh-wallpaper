@@ -5075,6 +5075,10 @@ fn run_with_edition(lite: bool) {
                     Ok(dir) => harness_launch::set_records_path(dir.join("managed-dsh.json")),
                     Err(error) => log::warn!("managed-child record path unavailable: {error}"),
                 }
+                // 更新目录的"顺手清理"（0.4.6 把标识符拼了两遍，状态与安装包落在嵌套目录里）
+                // 在启动时就做一次：不按任何按钮的一次启动也会把旧目录收干净。它只记日志、
+                // 不返回错误，失败绝不拖住启动链。
+                update::commands::reconcile_updates_at_startup(app.handle());
             }
             if let Err(error) = windows_integration::start_wallpaper_host(app.handle().clone()) {
                 log::error!("WorkerW wallpaper host failed: {error}");

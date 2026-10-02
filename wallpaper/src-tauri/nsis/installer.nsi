@@ -3,10 +3,11 @@
 ; from the bundler that builds this repo (@tauri-apps/cli 2.11.4 -- the
 ; installer.nsi embedded in cli.win32-x64-msvc.node, sha256
 ; 1114A136876D667CA7BA77218D4E966A625D1078DCBA18484CAAE8F7BFFB8626) and
-; changed in exactly one place, marked "DSH Wallpaper:" below: the NSIS branch
-; of `Function PageLeaveReinstall` now runs the previous version's uninstaller
-; with `/S`, so an update is one wizard instead of "uninstaller, then
-; installer".
+; changed in exactly two places, both marked "DSH Wallpaper:" below: the NSIS
+; branch of `Function PageLeaveReinstall` now runs the previous version's
+; uninstaller with `/S`, and the WiX branch above it with `/qn` (msiexec's
+; silent switch -- `/S` is NSIS-only and msiexec rejects it). Both exist for the
+; same reason: an update is one wizard instead of "uninstaller, then installer".
 ;
 ; Why a copy instead of a hook: `bundle.windows.nsis.installerHooks` can only
 ; define/insert the four NSIS_HOOK_* macros, and this template inserts them
@@ -14,9 +15,49 @@
 ; uninstaller is launched earlier, in the leave function of the "Already
 ; Installed" page, so no hook can run before that decision.
 ;
+; ---------------------------------------------------------------------------
+; How an update is launched, and why nothing of this file has to change for it:
+;
+; The app starts this installer as `setup.exe /P /UPDATE /R`
+; (`wallpaper/src-tauri/src/update/commands.rs`, `INSTALLER_ARGUMENTS` -- that
+; constant is the other half of what follows; change one and re-read the other).
+;
+; `/P` (passive) is what makes the update one click. Measured on this machine
+; with a throwaway probe installer built from the same page layout (MUI welcome
+; + a custom page whose create function takes the `$PassiveMode = 1` branch +
+; INSTFILES + MUI finish + `MUI_FINISHPAGE_RUN`), one file written per page
+; event, run with `/P`: the welcome page's pre function called `Abort` (page
+; skipped, `SkipIfPassive`), the "Already Installed" page's create function ran
+; but created no dialog at all and NSIS went straight on, the install section
+; ran, the finish page was skipped the same way as the welcome page, and the
+; process exited by itself with code 0. Nothing waited for a click.
+;
+;   - skipped by `SkipIfPassive`: the welcome page, the license page (only
+;     present when a license is configured), the install-mode page (only when
+;     `installMode` is `both`), the directory page, and the finish page. The
+;     start-menu page is skipped unconditionally in this build (`Skip`, because
+;     no start-menu folder is configured);
+;   - the "Already Installed" maintenance page is a plain `Page custom` with no
+;     `SkipIfPassive`, so its create function *does* run -- it just never calls
+;     `nsDialogs::Create`/`Show` when `$PassiveMode = 1` (see the `Else` in
+;     `Function PageReinstall`). Measured: no dialog, no blocking page, and the
+;     branch below it still decides what happens to the previous install;
+;   - the finish page is the GUI's only "start the app afterwards" switch
+;     (`MUI_FINISHPAGE_RUN` -> `RunMainBinary`), and passive skips it, so the
+;     app must ask for the restart itself with `/R` (`Function .onInstSuccess`).
+;     Measured: without `/R` the finish page's run function is never called;
+;     with `/R` the process it names comes up.
+;
+; `/S` (fully silent) was rejected as the flag for this: in silent mode NSIS runs
+; no page function at all (the probe never logged a single page event, not even
+; `.onGUIEnd` -- there is no window), so a 60 MB install happens behind a screen
+; that shows nothing at all and a failure would have to be guessed at. `/P` gives
+; the same "no pages to click" while keeping one visible progress window.
+;
+; ---------------------------------------------------------------------------
 ; Maintenance: @tauri-apps/cli upgrades do not update this file. Re-extract the
 ; template from the new CLI binary (search the .node addon for "Unicode true")
-; and re-apply the single edit, then compare the generated
+; and re-apply the two edits, then compare the generated
 ; target/release/nsis/x64/installer.nsi with upstream's output.
 ; =============================================================================
 Unicode true
@@ -204,6 +245,13 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 
 ; 4. Custom page to ask user if he wants to reinstall/uninstall
 ;    only if a previous installation was detected
+;
+; DSH Wallpaper: this page has no `SkipIfPassive` (upstream). It does not need
+; one: in passive mode the function below takes the `$PassiveMode = 1` branch,
+; which never creates a dialog, so the user sees no maintenance page at all --
+; measured, see the header. What that branch still does is decide the fate of
+; the previous install, and `/UPDATE` (passed by the app) makes it "overwrite in
+; place" without running the old uninstaller.
 Var ReinstallPageCheck
 Page custom PageReinstall PageLeaveReinstall
 Function PageReinstall
@@ -379,12 +427,15 @@ Function PageLeaveReinstall
     ${Else}
       ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
       ReadRegStr $R1 SHCTX "${UNINSTKEY}" "UninstallString"
-      ; DSH Wallpaper: the one edit in this copy of the template. Without `/S`
-      ; the old uninstaller draws its own MUI window, so an update reads as
-      ; "uninstaller, then installer" instead of one wizard. Measured on NSIS
-      ; 3.x: with `_?=` alone the uninstaller runs with silent=0, with `/S`
+      ; DSH Wallpaper: the NSIS half of the two edits in this copy of the template.
+      ; Without `/S` the old uninstaller draws its own MUI window, so an update
+      ; reads as "uninstaller, then installer" instead of one wizard. Measured on
+      ; NSIS 3.x: with `_?=` alone the uninstaller runs with silent=0, with `/S`
       ; silent=1. `/S` goes first so the final command is the conventional
       ; `"...\uninstall.exe" /S [/UPDATE] [/P] _?=<dir>`.
+      ; (Note that a passive update launched with `/UPDATE` never gets here:
+      ; that flag takes the `$UpdateMode = 1` shortcut at the top of
+      ; `PageLeaveReinstall`, so the previous version is simply overwritten.)
       StrCpy $R1 "$R1 /S"
       ${IfThen} $UpdateMode = 1 ${|} StrCpy $R1 "$R1 /UPDATE" ${|} ; append /UPDATE
       ${IfThen} $PassiveMode = 1 ${|} StrCpy $R1 "$R1 /P" ${|} ; append /P
@@ -443,6 +494,10 @@ Var AppStartMenuFolder
 !define MUI_FINISHPAGE_SHOWREADME_TEXT "$(createDesktop)"
 !define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateOrUpdateDesktopShortcut
 ; Show run app after installation.
+;
+; DSH Wallpaper: passive mode never reaches this page (`SkipIfPassive` below), so
+; this switch cannot be the one that brings the app back after an update -- the
+; launcher asks for that with `/R` (see `Function .onInstSuccess` and the header).
 !define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_FUNCTION RunMainBinary
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
@@ -757,6 +812,10 @@ Section Install
 
   ; Create desktop shortcut for silent and passive installers
   ; because finish page will be skipped
+  ;
+  ; DSH Wallpaper: note that `CreateOrUpdateDesktopShortcut` returns early when
+  ; `$UpdateMode = 1` -- which is why the app passes `/UPDATE`: an update must not
+  ; drop a desktop shortcut the user never asked for (this machine has none).
   ${If} $PassiveMode = 1
   ${OrIf} ${Silent}
     Call CreateOrUpdateDesktopShortcut

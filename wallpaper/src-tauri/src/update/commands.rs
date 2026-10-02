@@ -473,23 +473,120 @@ fn require_update_surface(caller: &tauri::WebviewWindow) -> Result<(), UpdateCom
         .ok_or_else(UpdateCommandError::forbidden)
 }
 
-/// 更新目录：`<本地数据>\com.dsh.wallpaper\updates`（§五）。
+/// 应用的本地数据目录（`%LOCALAPPDATA%\com.dsh.wallpaper`）：**Tauri 算的那个优先**。
 ///
-/// 优先用 Tauri 算的那个本地数据目录（打包态它会被重定向到包容器里，与其它功能同一处），
-/// 拿不到时退回 `dirs` 的 `%LOCALAPPDATA%` —— 两条路拼出来的是同一个目录，退回不是"第二个位置"。
+/// 打包态它会被重定向到包容器里，与其它功能（桌面会话、桥的记录文件）同一处；拿不到时退回
+/// `dirs` 的 `%LOCALAPPDATA%` 再补上标识符 —— 两条路拼出来的是同一个目录，退回不是"第二个位置"。
+fn local_app_data_root(app: &tauri::AppHandle) -> Option<PathBuf> {
+    use tauri::Manager;
+    app.path()
+        .app_local_data_dir()
+        .ok()
+        .or_else(|| dirs::data_local_dir().map(|directory| directory.join(super::APP_IDENTIFIER)))
+}
+
+/// 更新目录：`<本地数据>\updates`，即 `%LOCALAPPDATA%\com.dsh.wallpaper\updates`（§五）。
+///
+/// **不再自己拼标识符**：Tauri 的 `app_local_data_dir()` 返回值末尾已经是标识符，0.4.6 及以前
+/// 这里又拼了一次，于是目录变成 `…\com.dsh.wallpaper\com.dsh.wallpaper\updates`（真机上攒了
+/// 4 个安装包、237 MB）。老位置的残留在第一次用到这个目录时由
+/// [`reconcile_updates_directory`] 搬走。
 ///
 /// 状态文件与下载下来的安装包都在这个目录下（`state.json` 与 `<版本>\<资产名>`，§六）。
 fn updates_directory(app: &tauri::AppHandle) -> Option<PathBuf> {
-    use tauri::Manager;
-    let local_app_data = app
-        .path()
-        .app_local_data_dir()
-        .ok()
-        .or_else(|| dirs::data_local_dir().map(|directory| directory.join(super::APP_IDENTIFIER)))?;
-    Some(state::updates_dir(&local_app_data))
+    let local_app_data = local_app_data_root(app)?;
+    let directory = state::updates_dir(&local_app_data);
+    reconcile_at_most_once(&local_app_data, &directory, &running_version(app));
+    Some(directory)
 }
 
-/// 状态文件的位置：`<本地数据>\com.dsh.wallpaper\updates\state.json`（§五）。
+/// 启动时就把更新目录理顺（不等到第一次「检查更新」）。
+///
+/// 与 [`updates_directory`] 走同一个"只做一次"的闸门：谁先到谁做，另一处是空转。这样"用户
+/// 什么都没按"的一次启动也会把旧目录收干净。失败只记日志（见 [`reconcile_updates_directory`]）。
+pub(crate) fn reconcile_updates_at_startup(app: &tauri::AppHandle) {
+    let Some(local_app_data) = local_app_data_root(app) else {
+        log::warn!("更新目录：拿不到本地数据目录，这一次不做迁移与清理");
+        return;
+    };
+    let directory = state::updates_dir(&local_app_data);
+    reconcile_at_most_once(&local_app_data, &directory, &running_version(app));
+}
+
+/// 正在跑的这一版的版本号（原样给字符串；解析不出来时清理那一步会自己保守起来）。
+fn running_version(app: &tauri::AppHandle) -> String {
+    use tauri::Manager;
+    app.package_info().version.to_string()
+}
+
+/// "顺手清理"每个进程只做一次：迁移旧目录 + 清掉旧版本的安装包。重复做没有意义，
+/// 而 `Once` 让两处入口（启动、第一次用到更新目录）不会互相踩。
+fn reconcile_at_most_once(local_app_data: &Path, target: &Path, running: &str) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| reconcile_updates_directory(local_app_data, target, running));
+}
+
+/// 更新目录的一次性整理：把 0.4.6 写坏的旧目录搬回来、把状态里那条路径跟着改、再清掉旧版本的
+/// 安装包（每版约 59 MB）。
+///
+/// **不返回 `Result`**：这是"顺手清理"而不是一条功能。旧目录不存在、某一个文件被占着、状态文件
+/// 写不回去 —— 都只记日志。用户按下「检查更新」或「安装」时，卡在一个删不掉的文件上比什么都不做
+/// 更没道理。
+fn reconcile_updates_directory(local_app_data: &Path, target: &Path, running: &str) {
+    let legacy = state::legacy_updates_dir(local_app_data);
+    if legacy.is_dir() {
+        log::info!("更新目录：发现 0.4.6 及以前写坏的嵌套目录（{}）", legacy.display());
+    }
+    state::migrate_legacy_updates(&legacy, target);
+
+    // 迁移把文件搬到了新位置，可状态里记的还是旧绝对路径 —— 先把它改对，再决定删什么：
+    // "状态里记着的那一枚"必须进保留名单，否则清理会当场删掉用户刚下好的安装包。
+    let state_path = target.join(state::STATE_FILE_NAME);
+    let recorded = state::load(&state_path);
+    let current = match state::repoint_downloaded_path(&recorded, &legacy, target) {
+        Some(updated) => {
+            if let Err(error) = state::save(&state_path, &updated) {
+                log::warn!("更新目录：状态里那条安装包路径改不回去（{error}）");
+            }
+            updated
+        }
+        None => recorded,
+    };
+
+    let removed = state::prune_downloaded_installers(target, &versions_to_keep(running, &current));
+    if removed > 0 {
+        log::info!("更新目录：清掉 {removed} 个旧版本的安装包目录");
+    }
+}
+
+/// 清理时要留下的版本（纯函数）：**正在跑的这一版**，加上状态里记着的那一枚安装包所属的版本。
+///
+/// 两枚都留的理由不一样：当前版本那一枚是同一版本的安装包（"再装一次"用得上）；记着的那一枚
+/// 是下一次要装的（删了就等于让用户白下 59 MB）。
+///
+/// 读不到当前版本（`package_info` 给了个解析不出的串）时返回的名单里只有记着的那一枚；
+/// 一枚都没有时 [`state::stale_installer_dirs`] 会自己停下来什么也不删。
+fn versions_to_keep(running: &str, state: &UpdateState) -> Vec<Version> {
+    let mut keep = Vec::new();
+    if let Some(version) = Version::parse(running) {
+        keep.push(version);
+    }
+    let recorded = state.downloaded_path.as_deref().and_then(|path| {
+        Path::new(path)
+            .parent()?
+            .file_name()?
+            .to_str()
+            .and_then(Version::parse)
+    });
+    if let Some(version) = recorded {
+        if !keep.contains(&version) {
+            keep.push(version);
+        }
+    }
+    keep
+}
+
+/// 状态文件的位置：`<本地数据>\updates\state.json`（§五）。
 fn state_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     Some(updates_directory(app)?.join(state::STATE_FILE_NAME))
 }
@@ -597,8 +694,8 @@ fn windows_powershell() -> PathBuf {
 
 /// 助手要跑的脚本（纯函数，单测钉着它的每一处转义）。
 ///
-/// 语义只有一条：**等本进程结束，再把安装包交给 Windows**。这里没有也不许有固定延时 ——
-/// "等一会儿"与"等它退出"是两回事，前者只是在赌。
+/// 语义只有一条：**等本进程结束，再把安装包（带上 [`INSTALLER_ARGUMENTS`]）交给 Windows**。
+/// 这里没有也不许有固定延时 ——"等一会儿"与"等它退出"是两回事，前者只是在赌。
 ///
 /// 写法上的两处讲究（都在本机实测过）：
 ///
@@ -609,16 +706,54 @@ fn windows_powershell() -> PathBuf {
 ///  - **`Get-Process` 不重定向 `-ErrorAction`**：目标进程**权限比助手高**时它会给 `$null` 而不是抛错
 ///    （"已经不在"与"看不见"在这里是同一件事：都只能往下走），脚本照旧启动安装包。
 ///
+/// 参数与路径都不过命令行解析这一关：路径走 `-FilePath` 的单引号字面量（`'` 翻倍），参数走
+/// `-ArgumentList` 的数组（见 [`installer_arguments`]），整段脚本再按 UTF-16LE 走 `-EncodedCommand`。
+///
 /// 路径来源见 [`super::state::UpdateState::downloaded_path`]：是我们自己写下的记录，但仍按不可信输入
-/// 处理 —— 这里只把 `'` 翻倍（PowerShell 单引号字符串里唯一的转义），整段脚本再按 UTF-16LE 走
-/// `-EncodedCommand`，因此**不存在**命令行引号、转义或编码问题。
+/// 处理 —— 这里只把 `'` 翻倍（PowerShell 单引号字符串里唯一的转义），因此**不存在**命令行引号、
+/// 转义或编码问题。
 fn installer_waiter_script(process_id: u32, installer: &Path) -> String {
     let quoted = installer.to_string_lossy().replace('\'', "''");
     format!(
         "$p = Get-Process -Id {process_id} -ErrorAction SilentlyContinue; \
          if ($p) {{ $p.WaitForExit() }}; \
-         Start-Process -FilePath '{quoted}'"
+         Start-Process -FilePath '{quoted}' -ArgumentList {}",
+        installer_arguments()
     )
+}
+
+/// 安装器要带的参数。一枚一枚都对着模板里的一处行为（`src-tauri/nsis/installer.nsi`）：
+///
+///  - **`/P`（passive）**：欢迎页、目录页、开始菜单页、完成页都挂了 `SkipIfPassive`，而"已安装"
+///    维护页在 `$PassiveMode = 1` 时**根本不建那个对话框**（它只跑自己的离开逻辑）—— 于是这一枚
+///    把"维护页 + 选路径 + 向导"整片去掉，只剩一条进度。实测（探针安装器 + 每页留一个文件的
+///    记录）：`/P` 下欢迎页 `Abort`、维护页进了函数但没有对话框、安装段执行、完成页 `Abort`、
+///    进程自己退出（退出码 0）；
+///  - **`/UPDATE`**：告诉安装器"这是升级"。两处作用：同版本重装时不再去跑旧卸载器
+///    （`Function PageLeaveReinstall` 开头那一条 `$UpdateMode = 1` 分支），以及**不会顺手建
+///    快捷方式**（完成页被跳过时，模板会给 passive/silent 安装补一个桌面快捷方式 ——
+///    升级不该夹带这个）。升级时的装法不变：passive 下维护页取的是"不卸载"那条分支，
+///    也就是原地覆盖，与今天界面上的默认一致；
+///  - **`/R`**：装完自动把新版本起回来。passive 跳过了完成页，而"装完运行"那枚开关就长在完成页上
+///    （`MUI_FINISHPAGE_RUN` → `RunMainBinary`），所以只能由 `/R` 补（`Function .onInstSuccess`）。
+///    实测：只有 `/P` 时完成页的 run 函数一次都没被调用；`/P /R` 时它起来了。
+///
+/// 不做 `/S`（完全静默）：那一枚会把进度窗口也去掉 —— 用户按下「点击安装」之后，应用消失、
+/// 60 MB 的安装与旧卸载都发生在什么都没有的屏幕后面，出事时（例如安装器弹出错误框）也少一层
+/// 可读的过程；`/P` 同样没有要点的页，却保留进度与细节。
+const INSTALLER_ARGUMENTS: [&str; 3] = ["/P", "/UPDATE", "/R"];
+
+/// `-ArgumentList` 的那一截（纯函数）：每枚参数各自是一个 PowerShell 单引号字面量，逗号分隔。
+///
+/// 写成**数组**（而不是一整个字符串）是这一处唯一容易写错的地方：`Start-Process -ArgumentList`
+/// 收数组时由 PowerShell 按 Windows 的规则拼命令行，参数里的空格、引号都不用自己操心 ——
+/// 而漏掉 `-ArgumentList` 的话参数根本不会跟着 exe 走（这一条正是被单测钉住的）。
+fn installer_arguments() -> String {
+    INSTALLER_ARGUMENTS
+        .iter()
+        .map(|flag| format!("'{flag}'"))
+        .collect::<Vec<String>>()
+        .join(",")
 }
 
 /// 把一个脚本包成 `-EncodedCommand` 认的那段 Base64（UTF-16LE）。
@@ -932,12 +1067,15 @@ pub(crate) async fn update_download(
 
 /// 「安装」：**先安排"我们退出之后再启动安装包"，然后退出**；安排不了才回落到直接打开（§六）。
 ///
-/// `.exe`（NSIS setup）⇒ 安装向导；`.msix` ⇒ App Installer。两条分支都留着 —— MSIX 是将来上商店
-/// 的路，不许因为今天只发 `.exe` 就删掉。两条走的是同一个助手，确认由用户在系统界面上点。
+/// `.exe`（NSIS setup）⇒ 安装器；`.msix` ⇒ App Installer。两条分支都留着 —— MSIX 是将来上商店
+/// 的路，不许因为今天只发 `.exe` 就删掉。两条走的是同一个助手。
 ///
 /// **为什么必须先退出**：Tauri 的 NSIS 安装包在检测到已安装时先跑旧版卸载器（带 `/S`，本意是静默），
 /// 而安装器换不掉一个还在运行的 `dsh-wallpaper.exe`；那时它会把卸载器弹成可见窗口 —— 用户看到的
 /// "先一个 uninstaller、再一个 installer"就是这么来的。应用自己先退出，这一步就干净了。
+///
+/// **为什么是升级而不是一次向导**：`/UPDATE` 意味着原地覆盖（维护页在 passive 下取的是"不卸载"
+/// 那条分支），所以"旧版本还跑着"这件事是这条路的前提，而不是可以省掉的一步。
 ///
 /// 退出走的是 [`tauri::AppHandle::exit`]（`0`）：它走 `RunEvent::ExitRequested` → `Exit`，所以
 /// `lib.rs` 里那个 `shutdown_native_state` 照常把桌面图标、原生首帧窗口、DSH 实例与清理标记都收好
@@ -1977,8 +2115,8 @@ mod tests {
         assert_eq!(opens.calls.get(), 0);
     }
 
-    /// 助手要跑的脚本（纯函数）：等的是**我们的进程号**，启动的是**那个安装包**，而且可被 PowerShell
-    /// 逐字还原 —— 路径里的空格、中文、单引号都不许把脚本带跑偏。
+    /// 助手要跑的脚本（纯函数）：等的是**我们的进程号**，启动的是**那个安装包**、而且**带上那几枚
+    /// 参数**，可被 PowerShell 逐字还原 —— 路径里的空格、中文、单引号都不许把脚本带跑偏。
     #[test]
     fn the_waiter_script_waits_for_us_and_then_starts_the_installer() {        let installer = Path::new("C:\\Users\\我 的 用户\\AppData\\Local\\com.dsh.wallpaper\\updates\\0.4.3\\dsh-wallpaper_0.4.3_x64-setup.exe");
         let script = installer_waiter_script(4242, installer);
@@ -1987,17 +2125,253 @@ mod tests {
         // （`Wait-Process -Id … -ErrorAction SilentlyContinue` 实测会退化成"立刻返回"，不许用。）
         assert!(script.contains("$p.WaitForExit()"));
         assert!(!script.contains("Wait-Process"));
-        assert!(script.contains(&format!("Start-Process -FilePath '{}'", installer.display())));
+        // 路径与参数在同一句里：参数漏掉的话安装器会以普通向导起来（用户看到的维护页就是它）。
+        assert!(script.contains(&format!(
+            "Start-Process -FilePath '{}' -ArgumentList '/P','/UPDATE','/R'",
+            installer.display()
+        )));
         // 固定延时的痕迹：这件事的语义是"等进程结束"，不是"等一会儿"。
         assert!(!script.contains("Start-Sleep"));
         assert!(!script.contains("timeout"));
 
         // PowerShell 单引号字符串里唯一的转义就是把 `'` 写成 `''`；别的字符（含 `$`、反引号、
-        // 空格、中文）在单引号里都是字面量，所以这里不该出现别的转义。
+        // 空格、中文）在单引号里都是字面量，所以这里不该出现别的转义。参数也不能因为路径难写
+        // 就掉队（这两半在同一条命令行上）。
         let awkward = Path::new("C:\\Users\\O'Brien\\更新 包\\setup.exe");
         let escaped = installer_waiter_script(4242, awkward);
-        assert!(escaped.contains("'C:\\Users\\O''Brien\\更新 包\\setup.exe'"));
+        assert!(escaped.contains("'C:\\Users\\O''Brien\\更新 包\\setup.exe' -ArgumentList '/P','/UPDATE','/R'"));
         assert!(!escaped.contains("`"));
+    }
+
+    /// 安装器参数的清单与拼法（纯函数）：`/P`（没有向导页）、`/UPDATE`（原地覆盖、不夹带快捷方式）、
+    /// `/R`（装完自动起新版）。**没有 `/S`**：那一枚会把进度窗口也去掉（理由写在常量上）。
+    ///
+    /// 单测钉的是"参数真的跟着 exe 走"这件事 —— 漏掉 `-ArgumentList` 时安装器会以普通向导起来，
+    /// 而症状是用户看到一个维护页，不是这里红。
+    #[test]
+    fn the_installer_arguments_ride_along_as_an_array() {
+        assert_eq!(INSTALLER_ARGUMENTS, ["/P", "/UPDATE", "/R"]);
+        assert_eq!(installer_arguments(), "'/P','/UPDATE','/R'");
+
+        let script = installer_waiter_script(7, Path::new("C:\\updates\\0.4.7\\setup.exe"));
+        assert!(script.contains(" -ArgumentList '/P','/UPDATE','/R'"));
+        // 数组形态：每枚参数各自一对单引号（写成 `'/P /UPDATE /R'` 也传得过去，但那样引号就得
+        // 自己管；分开写让 PowerShell 按 Windows 的规则拼）。
+        assert_eq!(script.matches("'/P'").count(), 1);
+        assert!(!script.contains("'/P /UPDATE /R'"));
+    }
+
+    /// 清理时留下的版本（纯函数）：**正在跑的这一版**，加上状态里记着的那一枚安装包所属的版本。
+    ///
+    /// 记着的那一枚不能漏：它是用户已经下好、准备装的那一个，删了就等于让用户白下 59 MB。
+    /// 两枚都读不出来时给的是空名单 —— 清理那一步会因此什么都不删（见 `stale_installer_dirs`）。
+    #[test]
+    fn the_versions_to_keep_cover_the_running_one_and_the_recorded_download() {
+        let recorded = UpdateState {
+            downloaded_path: Some(
+                "C:\\Users\\u\\AppData\\Local\\com.dsh.wallpaper\\updates\\0.4.7\\dsh-wallpaper_0.4.7_x64-setup.exe"
+                    .into(),
+            ),
+            ..Default::default()
+        };
+        let keep = versions_to_keep("0.4.6", &recorded);
+        assert_eq!(keep.len(), 2);
+        assert!(keep.contains(&Version::parse("0.4.6").unwrap()));
+        assert!(keep.contains(&Version::parse("0.4.7").unwrap()));
+
+        // 状态里记着的就是当前版本那一枚（真机上今天的形状）：只留一份，不重复。
+        let same_version = UpdateState {
+            downloaded_path: Some("C:\\updates\\0.4.6\\setup.exe".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            versions_to_keep("0.4.6", &same_version),
+            vec![Version::parse("0.4.6").unwrap()]
+        );
+
+        // 没有记录：只留当前版本。当前版本也读不出来：空名单（清理会因此停下，什么都不删）。
+        assert_eq!(
+            versions_to_keep("0.4.6", &UpdateState::default()),
+            vec![Version::parse("0.4.6").unwrap()]
+        );
+        assert!(versions_to_keep("说不清的版本", &UpdateState::default()).is_empty());
+        // 记录的父目录名不是版本（用户自己把安装包挪成了一枚散文件）：不参与保留。
+        let stranger = UpdateState {
+            downloaded_path: Some("C:\\updates\\setup.exe".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            versions_to_keep("0.4.6", &stranger),
+            vec![Version::parse("0.4.6").unwrap()]
+        );
+    }
+
+    /// 整个"顺手清理"跑一次：旧目录搬走、状态里那条路径跟着改、旧版本的安装包被删、
+    /// 状态里记着的那一枚留着。现场按真机上的形状摆（4 个安装包 + 一条指向当前版本的记录）。
+    #[test]
+    fn the_reconcile_moves_the_legacy_directory_and_prunes_other_versions() {
+        let directory = tempfile::tempdir().unwrap();
+        let local_app_data = directory.path().join(super::super::APP_IDENTIFIER);
+        let legacy = state::legacy_updates_dir(&local_app_data);
+        for version in ["0.4.3", "0.4.4", "0.4.5", "0.4.6"] {
+            std::fs::create_dir_all(legacy.join(version)).unwrap();
+            std::fs::write(
+                legacy
+                    .join(version)
+                    .join(format!("dsh-wallpaper_{version}_x64-setup.exe")),
+                b"installer",
+            )
+            .unwrap();
+        }
+        let recorded = legacy
+            .join("0.4.6")
+            .join("dsh-wallpaper_0.4.6_x64-setup.exe")
+            .display()
+            .to_string();
+        state::save(
+            &legacy.join(state::STATE_FILE_NAME),
+            &UpdateState {
+                latest_version: Some("0.4.6".into()),
+                downloaded_path: Some(recorded),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let updates = state::updates_dir(&local_app_data);
+        reconcile_updates_directory(&local_app_data, &updates, "0.4.6");
+
+        // 旧的嵌套目录连上面那层标识符目录一起收掉。
+        assert!(!legacy.exists());
+        assert!(!legacy.parent().unwrap().exists());
+        // 当前版本那一枚留着（状态里记着它），三个旧版本没了。
+        assert!(updates
+            .join("0.4.6")
+            .join("dsh-wallpaper_0.4.6_x64-setup.exe")
+            .is_file());
+        for gone in ["0.4.3", "0.4.4", "0.4.5"] {
+            assert!(!updates.join(gone).exists(), "{gone} 是旧版本，该删");
+        }
+        // 状态里的那条路径跟着搬到了新位置（不然后面「点击安装」会说文件已经不在了），
+        // 别的字段一个都没动。
+        let moved = state::load(&updates.join(state::STATE_FILE_NAME));
+        assert_eq!(
+            moved.downloaded_path,
+            Some(
+                updates
+                    .join("0.4.6")
+                    .join("dsh-wallpaper_0.4.6_x64-setup.exe")
+                    .display()
+                    .to_string()
+            )
+        );
+        assert_eq!(moved.latest_version.as_deref(), Some("0.4.6"));
+    }
+
+    /// 状态里记着的那一枚**还在旧目录**、又要被清理时：先改路径、再按新路径决定留谁 ——
+    /// 顺序颠倒了就会把用户刚下好的那一枚当场删掉。
+    #[test]
+    fn the_reconcile_keeps_the_downloaded_version_the_state_file_points_at() {
+        let directory = tempfile::tempdir().unwrap();
+        let local_app_data = directory.path().join(super::super::APP_IDENTIFIER);
+        let legacy = state::legacy_updates_dir(&local_app_data);
+        // 正在跑 0.4.6，而下好的那一枚是 0.4.7（升级中）。
+        for version in ["0.4.6", "0.4.7"] {
+            std::fs::create_dir_all(legacy.join(version)).unwrap();
+            std::fs::write(legacy.join(version).join("setup.exe"), b"installer").unwrap();
+        }
+        state::save(
+            &legacy.join(state::STATE_FILE_NAME),
+            &UpdateState {
+                downloaded_path: Some(legacy.join("0.4.7").join("setup.exe").display().to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let updates = state::updates_dir(&local_app_data);
+        reconcile_updates_directory(&local_app_data, &updates, "0.4.6");
+
+        assert!(updates.join("0.4.7").join("setup.exe").is_file());
+        assert!(updates.join("0.4.6").join("setup.exe").is_file());
+        assert_eq!(
+            state::load(&updates.join(state::STATE_FILE_NAME)).downloaded_path,
+            Some(updates.join("0.4.7").join("setup.exe").display().to_string())
+        );
+    }
+
+    /// **手动的一次真机验证**（`#[ignore]`：动的是这台机器上真实的
+    /// `%LOCALAPPDATA%\com.dsh.wallpaper`：把 0.4.6 写坏的嵌套目录搬走，并删掉旧版本的安装包）。
+    ///
+    /// 这是唯一能证明"路径真的修好了"的一条：真机上那份现场（4 个安装包、237 MB）造不出来 ——
+    /// `app_local_data_dir()` 得由 Tauri 在打包态给出。跑法：
+    ///
+    /// ```text
+    /// cargo test --manifest-path wallpaper/src-tauri/Cargo.toml --lib -- --ignored --nocapture \
+    ///   migrate_the_real_machine_updates_directory
+    /// ```
+    #[test]
+    #[ignore = "动本机 %LOCALAPPDATA% 下真实的更新目录，只在手动验证时跑"]
+    fn migrate_the_real_machine_updates_directory() {
+        let Some(local_app_data) =
+            dirs::data_local_dir().map(|directory| directory.join(super::super::APP_IDENTIFIER))
+        else {
+            println!("拿不到 %LOCALAPPDATA%，跳过");
+            return;
+        };
+        let updates = state::updates_dir(&local_app_data);
+        let legacy = state::legacy_updates_dir(&local_app_data);
+
+        println!("本地数据目录：{}", local_app_data.display());
+        println!("== 正确位置（之前）==\n{}", print_tree(&updates));
+        println!("== 旧位置（之前）==\n{}", print_tree(&legacy));
+
+        reconcile_updates_directory(&local_app_data, &updates, env!("CARGO_PKG_VERSION"));
+
+        println!("== 正确位置（之后）==\n{}", print_tree(&updates));
+        println!("== 旧位置（之后）==\n{}", print_tree(&legacy));
+        assert!(
+            !legacy.is_dir(),
+            "旧目录还在：\n{}（迁移应当把它清干净）",
+            print_tree(&legacy)
+        );
+    }
+
+    /// 一棵目录里的文件清单（真机验证那条测试的取证用）：路径、每个文件的字节数、合计。
+    fn print_tree(root: &Path) -> String {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return format!("（不存在：{}）", root.display());
+        };
+        let mut lines = vec![root.display().to_string()];
+        let mut total = 0u64;
+        let mut paths = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .collect::<Vec<PathBuf>>();
+        paths.sort();
+        for path in paths {
+            if path.is_file() {
+                let size = path.metadata().map(|meta| meta.len()).unwrap_or_default();
+                total += size;
+                lines.push(format!("  {size:>12}  {}", path.display()));
+                continue;
+            }
+            let mut inner = std::fs::read_dir(&path)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .map(|entry| entry.path())
+                        .collect::<Vec<PathBuf>>()
+                })
+                .unwrap_or_default();
+            inner.sort();
+            for file in inner {
+                let size = file.metadata().map(|meta| meta.len()).unwrap_or_default();
+                total += size;
+                lines.push(format!("  {size:>12}  {}", file.display()));
+            }
+        }
+        format!("合计 {total} 字节\n{}", lines.join("\n"))
     }
 
     /// 助手命令行：整段脚本按 **UTF-16LE + Base64** 走 `-EncodedCommand`，所以路径里的空格与中文
@@ -2116,6 +2490,68 @@ mod tests {
 
         assert!(early == 0, "闸门还活着（已 {awaited:?}），记事本不该已经起来 —— 助手没在等");
         assert!(notepad > 0, "助手退出之后安装器该起来了（等了 {awaited:?}）");
+    }
+
+    /// **手动的一次真机验证**（`#[ignore]`：真的起进程、真的跑一遍那段 PowerShell）。
+    ///
+    /// 说的是单测证明不了的那一半：脚本里的 `-ArgumentList '/P','/UPDATE','/R'` **真的**会跟着
+    /// 可执行文件走。目标不是安装器，是一个两行的 `.cmd`：把它收到的参数写进旁边的 `args.txt`
+    /// （`Start-Process` 收数组时由 PowerShell 按 Windows 的规则拼命令行，这一条正是"拼得对不对"
+    /// 的证据）。闸门用"临时起的一个 2 秒进程"，与上面那条一样。
+    ///
+    /// 跑法：`cargo test --lib -- --ignored real_launcher_passes_the_arguments --nocapture`
+    #[test]
+    #[ignore = "真的起进程（PowerShell + 一个临时 .cmd），只在手动验证时跑"]
+    fn real_launcher_passes_the_arguments() {
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let recorder = directory.path().join("record args.cmd");
+        let recorded = directory.path().join("args.txt");
+        std::fs::write(
+            &recorder,
+            format!(
+                "@echo off\r\necho %* > \"{}\"\r\n",
+                recorded.display()
+            ),
+        )
+        .unwrap();
+
+        let gate = std::process::Command::new(crate::update::commands::windows_powershell())
+            .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 2"])
+            .spawn()
+            .expect("a gate process");
+        let gate_id = gate.id();
+
+        let (program, arguments) = installer_launcher_argv(gate_id, &recorder);
+        let _helper = std::process::Command::new(&program)
+            .args(arguments)
+            .spawn()
+            .expect("the helper");
+
+        // 等闸门结束 + 记录文件出现（`.cmd` 会在自己的控制台里跑完就退出）。
+        let mut text = String::new();
+        for _ in 0..60 {
+            if let Ok(recorded_text) = std::fs::read_to_string(&recorded) {
+                text = recorded_text;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &gate_id.to_string(), "/F"])
+            .output();
+
+        // 路径里带空格（`record args.cmd`）：它得原样当**一个**参数传过去，参数还得排在它后面。
+        println!("脚本：{}", installer_waiter_script(gate_id, &recorder));
+        println!("recorder 收到的参数：{text:?}");
+        assert!(text.contains("/P"), "参数没跟着可执行文件走：{text:?}");
+        assert!(text.contains("/UPDATE"), "少了 /UPDATE：{text:?}");
+        assert!(text.contains("/R"), "少了 /R：{text:?}");
+        assert!(
+            text.contains("/P /UPDATE /R"),
+            "三枚参数该按顺序连着给：{text:?}"
+        );
     }
 
     /// 等一个 `notepad.exe` 出现（最多 `seconds` 秒），返回看到几个。
