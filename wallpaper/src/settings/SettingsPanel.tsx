@@ -1209,6 +1209,6 @@ export function SettingsPanel(props: SettingsPanelProps) {
       </>}
     </main>
 
-    <footer className="settings-statusbar"><span>dsh-wallpaper · v0.4.6</span><span><i />{t('statusbar.autosave')}</span></footer>
+    <footer className="settings-statusbar"><span>dsh-wallpaper · v0.4.7</span><span><i />{t('statusbar.autosave')}</span></footer>
   </div>
 }
