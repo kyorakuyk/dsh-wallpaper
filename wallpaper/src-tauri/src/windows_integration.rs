@@ -71,6 +71,10 @@ std::thread_local! {
 /// 撤销走 RAII：闭包里的 `return`（调用点就有几处提前返回）和 panic 都必须把标记还回去，
 /// 否则污染会留在线程局部量里，后面全变成假阳性。
 #[cfg(windows)]
+// 这条防线只抓一种错法：**后台线程带着主线程标记**（有人把后台工作塞进主线程闭包，或反过来复用了标记）。
+// 它**抓不到**另一种：后台线程不带标记、直接去碰运行期窗口状态 —— 那种写法照样会 clone wry 的引用计数而不报警。
+// 悬浮球那次就是漏在盲区里：`cursor_on_desktop_surface_via_label` 在球线程里取了 `background` 窗口对象。
+// 所以纪律不是"有防线就安全"，而是：**取窗口对象只能在主线程做**；线程里只允许出现纯值句柄（见句柄槽位）。
 fn run_main_thread_window_state_task(f: impl FnOnce()) {
     let previous_running = MAIN_THREAD_WINDOW_STATE_RUNNING.with(|flag| flag.replace(true));
     let reentrant = MAIN_THREAD_WINDOW_STATE_ACTING.with(|flag| flag.replace(true));
