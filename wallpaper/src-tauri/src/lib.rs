@@ -6,6 +6,7 @@ mod appearance;
 #[cfg(not(feature = "lite"))]
 mod chat;
 mod client_window;
+mod crash_report;
 pub mod desktop_repair;
 #[cfg(not(feature = "lite"))]
 mod deepseek_web;
@@ -5007,6 +5008,10 @@ macro_rules! register_edition_commands {
 }
 
 fn run_with_edition(lite: bool) {
+    // 崩溃自证（2026-10-05）：装上 SEH 处理器与 panic hook，让下一次「莫名其妙自动退出」
+    // 在 logs 目录里留下一份带模块基址与调用链的报告。装得越早覆盖越全，而且必须在
+    // Tauri/WebView2 起来之前 —— 顶层过滤器只有一个槽位，晚装就可能被别人顶掉。
+    crash_report::install(lite);
     // DPI 感知已在 main.rs 进程入口设置（Per-Monitor DPI Aware）。
     if !windows_integration::acquire_shared_wallpaper_host() {
         return;
@@ -5065,6 +5070,14 @@ fn run_with_edition(lite: bool) {
     register_edition_commands!(builder)
         .setup(move |app| {
             native_bootstrap::report_tauri_ready();
+            // 崩溃报告写到哪：启动时留一行，用户照着它就能找到下次崩溃的那份报告。
+            #[cfg(windows)]
+            match crash_report::report_directory() {
+                Some(directory) => log::info!(
+                    "崩溃自证已就绪：崩溃报告会写到 {directory}\\crash-<时间戳>.txt"
+                ),
+                None => log::warn!("崩溃自证未就绪：报告目录不可用"),
+            }
             // "这个孩子是不是我启动的"要跨壁纸重启成立，就得把记录落在本地数据目录里 ——
             // 这个路径只有 Tauri 算得准（打包应用会被重定向），不能靠环境变量硬拼。
             // `harness_launch` 是 `#[cfg(not(feature = "lite"))]` 的模块，所以这里必须同样受门控：
@@ -5080,6 +5093,12 @@ fn run_with_edition(lite: bool) {
                 // 不返回错误，失败绝不拖住启动链。
                 update::commands::reconcile_updates_at_startup(app.handle());
             }
+            // 窗口句柄槽位的第一次写入：这一行必须在三条监视线程启动之前。
+            // 线程不许自己回 Tauri 取窗口（那会 clone wry `Context` 的引用计数，见
+            // `windows_integration` 的说明），只能读这个槽位；而槽位要在窗口创建与重建处
+            // 由主线程写入。`background` 是 Tauri 按配置建好的，此时句柄已经能取到；
+            // 悬浮球还要晚一步才建，`ensure_ball` 会自己再写一次。
+            windows_integration::publish_current_window_channels(app.handle(), None);
             if let Err(error) = windows_integration::start_wallpaper_host(app.handle().clone()) {
                 log::error!("WorkerW wallpaper host failed: {error}");
             }
