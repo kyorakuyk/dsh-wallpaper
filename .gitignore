@@ -6,6 +6,10 @@ node_modules/
 wallpaper/dist/
 wallpaper/dist-lite/
 wallpaper/src-tauri/target/
+# 本机发布的产物与符号：dist\<版本>\ 下是 setup.exe 与带版本号的 .pdb。
+# 它们不进仓库（几十 MB 的二进制），但**每次发布都要留档**：崩溃转储要靠同一批构建出的
+# 这个 PDB 才能符号化，见 docs/diagnostics/crash-dumps.md。
+/dist/
 .tmp-lockscreen-target/
 .tmp-audit-r6/
 .tmp-chat-target/

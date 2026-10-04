@@ -23,12 +23,20 @@
   Gates mirror the MSIX publisher so both paths are held to the same bar:
   TypeScript types, the frontend and Bridge tests, and the Rust tests. The Lite
   edition adds its own cargo checks and the Lite bundle boundary script.
+
+  Symbols: the installer is built without symbols, so every release also copies
+  the build's .pdb next to the artifacts under dist\<version>\ and prints its
+  SHA-256. Keep that file with the release: it is the only way to turn an
+  address in a crash dump into a function name (see
+  docs/diagnostics/crash-dumps.md). The copy is fail-open — a missing .pdb
+  warns and the release still completes — and -SkipSymbols turns it off.
 #>
 [CmdletBinding()]
 param(
   [ValidateSet('full', 'lite')]
   [string]$Edition = 'full',
   [switch]$SkipChecks,
+  [switch]$SkipSymbols,
   [switch]$PlanOnly,
   [switch]$Install,
   [switch]$NoLaunch
@@ -40,9 +48,14 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $tauriRoot = Join-Path $repoRoot 'wallpaper\src-tauri'
 $bundleRoot = Join-Path $tauriRoot 'target\release\bundle\nsis'
+$releaseRoot = Join-Path $tauriRoot 'target\release'
 $installDir = Join-Path $env:LOCALAPPDATA 'dsh-wallpaper'
 $installExe = Join-Path $installDir 'dsh-wallpaper.exe'
 $confPath = Join-Path $tauriRoot $(if ($Edition -eq 'lite') { 'tauri.lite.conf.json' } else { 'tauri.conf.json' })
+# 符号（PDB）与产物放一起：dist\<version>\。这个名字进 .gitignore（构建产物不入库），
+# 但**发布附件必须带上它** —— 见 docs/diagnostics/crash-dumps.md。
+$distRoot = Join-Path $repoRoot 'dist'
+$symbolStem = if ($Edition -eq 'lite') { 'dsh_wallpaper_lite' } else { 'dsh_wallpaper' }
 
 function Invoke-Stage([string]$FilePath, [string[]]$Arguments, [string]$Stage) {
   Write-Host "`n==> $Stage"
@@ -79,6 +92,11 @@ if ($PlanOnly) {
   }
   Write-Host ("    pnpm " + ($buildArgs -join ' '))
   Write-Host "    产物：$bundleRoot\*-setup.exe（取最新一个）"
+  if (-not $SkipSymbols) {
+    Write-Host "    符号：$releaseRoot\$symbolStem.pdb → $distRoot\<版本>\$symbolStem`_<版本>.pdb（缺失只告警）"
+  } else {
+    Write-Host '    符号：已按 -SkipSymbols 跳过'
+  }
   if ($Install) {
     Write-Host "    安装：静默 /S 到 $installDir，$(if ($NoLaunch) { '随后不启动' } else { '随后启动' })"
   }
@@ -104,6 +122,27 @@ if (-not $installer) {
 
 $signature = (Get-AuthenticodeSignature -LiteralPath $installer.FullName).Status
 $sha256 = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash
+
+# 符号（PDB）必须与这一枚安装器同批留档：崩溃转储里只有地址与模块基址，
+# 把地址变成函数名靠的就是这一次构建出的那个 .pdb。丢了 PDB，全量转储也读不出东西。
+# 策略是**失败不拦发布**（缺 PDB 只告警并继续）：宁缺符号，也不要卡住一次已经装好的发布。
+$symbolSource = Join-Path $releaseRoot "$symbolStem.pdb"
+$symbolTarget = $null
+$symbolSha256 = $null
+if ($SkipSymbols) {
+  Write-Host "`n==> 符号：已按 -SkipSymbols 跳过（这一轮发布将没有 PDB）"
+} elseif (-not (Test-Path -LiteralPath $symbolSource -PathType Leaf)) {
+  Write-Warning "找不到符号文件：$symbolSource"
+  Write-Warning '这一轮发布没有 PDB；下次崩溃就只剩地址，没有函数名。'
+  Write-Warning '请确认这是 release 构建（cargo 在 target\release 下产出 dsh_wallpaper.pdb / dsh_wallpaper_lite.pdb）。'
+} else {
+  $symbolDirectory = Join-Path $distRoot $version
+  New-Item -ItemType Directory -Path $symbolDirectory -Force | Out-Null
+  $symbolTarget = Join-Path $symbolDirectory "$symbolStem`_$version.pdb"
+  Copy-Item -LiteralPath $symbolSource -Destination $symbolTarget -Force
+  $symbolSha256 = (Get-FileHash -LiteralPath $symbolTarget -Algorithm SHA256).Hash
+  Write-Host "`n==> 符号：$symbolTarget（$([math]::Round((Get-Item -LiteralPath $symbolTarget).Length / 1MB, 1)) MB）"
+}
 
 $installedVersion = $null
 if ($Install) {
@@ -131,6 +170,8 @@ if ($Install) {
   SizeMB        = [math]::Round($installer.Length / 1MB, 1)
   Signature     = $signature
   Sha256        = $sha256
+  Symbols       = $symbolTarget
+  SymbolsSha256 = $symbolSha256
   InstalledExe  = if ($installedVersion) { $installExe } else { $null }
   Installed     = $installedVersion
 } | Format-List
