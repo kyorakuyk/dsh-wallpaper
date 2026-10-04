@@ -33,8 +33,11 @@ use tauri::{Emitter, EventTarget, Manager, WebviewUrl, WebviewWindow, WebviewWin
 /// workspace events.  Keep native notifications out of the settings WebView:
 /// it has no need to observe chat/session state or to receive a future event
 /// carrying privacy-sensitive desktop metadata.
+///
+/// 悬浮球监控线程也要用这个标签：它在**主线程**解析桌面宿主的句柄并带成整数进线程
+/// （见 `floating_ball::start_ball_monitor`），标签单点定义在这里，免得那边写死一份字符串。
 #[cfg(windows)]
-const BACKGROUND_WINDOW_LABEL: &str = "background";
+pub(crate) const BACKGROUND_WINDOW_LABEL: &str = "background";
 
 // 主线程专属任务（读 Tauri 运行期窗口状态）的显式标记。
 //
@@ -95,7 +98,7 @@ fn is_running_on_main_thread() -> bool {
 /// 命中即说明有人把后台工作塞进了主线程闭包（或反过来复用了标记）。日志用 `error`
 /// 是为了在任何构建里都留痕；调试构建再断言一次，让写错的人立刻看到。
 #[cfg(windows)]
-fn assert_not_acting_as_main_thread() {
+pub(crate) fn assert_not_acting_as_main_thread() {
     if is_running_on_main_thread() {
         log::error!(
             "线程亲和性违例：后台线程被当成主线程使用；读运行期窗口状态的代码必须在事件循环线程上"
@@ -538,73 +541,88 @@ pub fn desktop_displays() -> Result<Vec<DesktopDisplayInfo>, String> {
     }])
 }
 
+/// 底部留白（逻辑像素）与任务栏可见性。
+///
+/// 这条路径本身就是**纯值**版本：它只问句柄与缩放因子，二者都由调用方给出。
+///
+/// 为什么要有这个纯值入口：悬浮球监控线程每 16ms 跑一拍，它拿不到也不该拿
+/// `WebviewWindow`（`get_webview_window` 会 `Webview::clone`，只能在主线程做），
+/// 但它必须能算底部留白。算法留在这里一份，两条调用路径共用 —— 不产生第二份实现，
+/// 也就不存在「线程版本和主线程版本算出不同留白」的可能。
+///
+/// `hwnd` 为 `None` 与旧写法里 `window.hwnd()` 返回 `Err` 等价：直接给兜底留白。
+#[cfg(windows)]
+pub fn desktop_layout_metrics_for_hwnd(
+    hwnd: Option<HWND>,
+    scale: f64,
+    display_id: Option<&str>,
+) -> DesktopLayoutMetrics {
+    let scale = scale.clamp(MIN_SCALE_FACTOR, MAX_SCALE_FACTOR);
+    let fallback = 48.0;
+    if let Ok(displays) = desktop_displays() {
+        let display = display_id
+            .and_then(|id| displays.iter().find(|display| display.id == id))
+            .or_else(|| displays.iter().find(|display| display.primary))
+            .or_else(|| displays.first());
+        if let Some(display) = display {
+            let bottom = display.bounds.y.saturating_add(display.bounds.height);
+            let work_bottom = display.work_area.y.saturating_add(display.work_area.height);
+            let top_gap = display.work_area.y.saturating_sub(display.bounds.y);
+            let bottom_gap = bottom.saturating_sub(work_bottom);
+            if bottom_gap > 0 && top_gap == 0 {
+                let logical_height = bottom_gap as f64
+                    / display
+                        .scale_factor
+                        .clamp(MIN_SCALE_FACTOR, MAX_SCALE_FACTOR);
+                if logical_height >= 12.0 {
+                    return DesktopLayoutMetrics {
+                        expanded_bottom_inset: logical_height * 2.0,
+                        taskbar_visible: true,
+                    };
+                }
+            }
+        }
+    }
+    let Some(background) = hwnd else {
+        return DesktopLayoutMetrics {
+            expanded_bottom_inset: fallback,
+            taskbar_visible: false,
+        };
+    };
+    let mut background_rect = RECT::default();
+    let mut taskbar_rect = RECT::default();
+    let taskbar = unsafe { FindWindowW(windows::core::w!("Shell_TrayWnd"), PCWSTR::null()) }.ok();
+    let visible = taskbar.is_some_and(|taskbar| unsafe { IsWindowVisible(taskbar).as_bool() })
+        && unsafe { GetWindowRect(background, &mut background_rect).is_ok() }
+        && taskbar.is_some_and(|taskbar| unsafe { GetWindowRect(taskbar, &mut taskbar_rect).is_ok() });
+    if visible {
+        let physical_height = (taskbar_rect.bottom - taskbar_rect.top).max(0);
+        let at_bottom = taskbar_rect.top >= background_rect.bottom.saturating_sub(physical_height + 2);
+        let logical_height = physical_height as f64 / scale;
+        if at_bottom && logical_height >= 12.0 {
+            return DesktopLayoutMetrics {
+                expanded_bottom_inset: logical_height * 2.0,
+                taskbar_visible: true,
+            };
+        }
+    }
+    DesktopLayoutMetrics {
+        expanded_bottom_inset: fallback,
+        taskbar_visible: false,
+    }
+}
+
 pub fn desktop_layout_metrics(
     window: &WebviewWindow,
     display_id: Option<&str>,
 ) -> DesktopLayoutMetrics {
     #[cfg(windows)]
     {
-        let scale = window
-            .scale_factor()
-            .unwrap_or(1.0)
-            .clamp(MIN_SCALE_FACTOR, MAX_SCALE_FACTOR);
-        let fallback = 48.0;
-        if let Ok(displays) = desktop_displays() {
-            let display = display_id
-                .and_then(|id| displays.iter().find(|display| display.id == id))
-                .or_else(|| displays.iter().find(|display| display.primary))
-                .or_else(|| displays.first());
-            if let Some(display) = display {
-                let bottom = display.bounds.y.saturating_add(display.bounds.height);
-                let work_bottom = display.work_area.y.saturating_add(display.work_area.height);
-                let top_gap = display.work_area.y.saturating_sub(display.bounds.y);
-                let bottom_gap = bottom.saturating_sub(work_bottom);
-                if bottom_gap > 0 && top_gap == 0 {
-                    let logical_height = bottom_gap as f64
-                        / display
-                            .scale_factor
-                            .clamp(MIN_SCALE_FACTOR, MAX_SCALE_FACTOR);
-                    if logical_height >= 12.0 {
-                        return DesktopLayoutMetrics {
-                            expanded_bottom_inset: logical_height * 2.0,
-                            taskbar_visible: true,
-                        };
-                    }
-                }
-            }
-        }
-        let Ok(raw) = window.hwnd() else {
-            return DesktopLayoutMetrics {
-                expanded_bottom_inset: fallback,
-                taskbar_visible: false,
-            };
-        };
-        let background = HWND(raw.0);
-        let mut background_rect = RECT::default();
-        let mut taskbar_rect = RECT::default();
-        let taskbar =
-            unsafe { FindWindowW(windows::core::w!("Shell_TrayWnd"), PCWSTR::null()) }.ok();
-        let visible = taskbar.is_some_and(|taskbar| unsafe { IsWindowVisible(taskbar).as_bool() })
-            && unsafe { GetWindowRect(background, &mut background_rect).is_ok() }
-            && taskbar.is_some_and(|taskbar| unsafe {
-                GetWindowRect(taskbar, &mut taskbar_rect).is_ok()
-            });
-        if visible {
-            let physical_height = (taskbar_rect.bottom - taskbar_rect.top).max(0);
-            let at_bottom =
-                taskbar_rect.top >= background_rect.bottom.saturating_sub(physical_height + 2);
-            let logical_height = physical_height as f64 / scale;
-            if at_bottom && logical_height >= 12.0 {
-                return DesktopLayoutMetrics {
-                    expanded_bottom_inset: logical_height * 2.0,
-                    taskbar_visible: true,
-                };
-            }
-        }
-        DesktopLayoutMetrics {
-            expanded_bottom_inset: fallback,
-            taskbar_visible: false,
-        }
+        // 这条入口只跑在主线程上（调用方是启动链与同步命令处理器），所以读窗口自身的
+        // 缩放因子与句柄都是合法的；算法与线程那侧共用同一个纯值核。
+        let scale = window.scale_factor().unwrap_or(1.0);
+        let hwnd = window.hwnd().ok().map(|raw| HWND(raw.0));
+        desktop_layout_metrics_for_hwnd(hwnd, scale, display_id)
     }
     #[cfg(not(windows))]
     {
@@ -640,6 +658,136 @@ fn desktop_foreground_state() -> &'static RwLock<Option<bool>> {
 #[cfg(windows)]
 fn wallpaper_host_status_state() -> &'static RwLock<WallpaperHostStatus> {
     WALLPAPER_HOST_STATUS.get_or_init(|| RwLock::new(WallpaperHostStatus::default()))
+}
+
+/// 监控线程用的"当前窗口句柄槽位"。
+///
+/// 一、它解决什么问题。三条监视线程（`start_desktop_workspace_monitor`、
+/// `start_foreground_monitor`、`floating_ball::start_ball_monitor`）不许在轮询里回 Tauri
+/// 取窗口（`get_webview_window` 会 `Webview::clone`，与 wry 的 `Context` 共用同一份引用
+/// 计数，见本文件顶部那段说明），于是句柄只能以**纯值**形式带进线程。此前那个纯值是在
+/// 线程启动时解析一次就固定下来的，代价是：`background` 一旦被销毁并重建
+/// （`recover_wallpaper_host` 的 `Recreate` 分支，自愈线程每 2 秒跑一次），线程手里的旧
+/// 句柄永远不再有效，`IsWindow` 会一直回答否，于是桌面工作区监视与前台监视退场、悬浮球
+/// 不再弹出——功能在窗口重建后**永久**失效，而继续取窗口又是要修的崩溃。句柄放进共享槽位
+/// 就把这两件事同时解决了：值的来源仍是主线程的解析，值的传递只是主线程的一次原子写。
+///
+/// 二、读的一侧绝不碰 Tauri。监视线程每拍只读这个原子值，拿到的是整数，不携带任何引用
+/// 计数。**这里没有任何"重新解析句柄"的路径**：重新解析必然要在后台线程调
+/// `get_webview_window`，那正是本轮要根治的崩溃来源，所以宁可让线程"看到 0 就等"，
+/// 也不许它自己去取窗口对象。
+///
+/// 三、谁写。句柄在**窗口创建的地方**由主线程写入：`lib.rs` 的启动接线
+/// （`publish_current_window_channels`，写 `background` 那一格）、`create_background_window`
+/// （重建 `background` 之后，同样只写那一格）、`floating_ball::ensure_ball`（球的唯一出生点，
+/// 写 `ball` 那一格）。这三处是全仓仅有的窗口出生点。
+///
+/// 四、句柄为 0 表示什么。0 是"此刻没有窗口"，不是"永久没有窗口"：`background` 由 Tauri
+/// 配置创建，而悬浮球在启动接线里晚于本槽位的第一写。读取方拿到 0 或已销毁句柄时该退场
+/// 还是该等，由各线程自己按语义决定（见 `background_handle_is_usable`）。
+#[cfg(windows)]
+static BACKGROUND_WINDOW_HANDLE: std::sync::atomic::AtomicIsize =
+    std::sync::atomic::AtomicIsize::new(0);
+
+/// 见 `BACKGROUND_WINDOW_HANDLE`。球自己的窗口句柄也走同一套槽位。
+#[cfg(windows)]
+static BALL_WINDOW_HANDLE: std::sync::atomic::AtomicIsize =
+    std::sync::atomic::AtomicIsize::new(0);
+
+/// 主线程写入当前 `background` / `ball` 的句柄（0 表示此刻没有）。
+///
+/// 两格是"此刻真实存在的窗口"这个语义，所以**重建 `background` 的路径不许只写半格**：
+/// 那条路径上球通常还活着，把它写成 0 等于让球监控线程以为球没了而退场。因此重建点用
+/// `publish_background_window_handle`，`ball` 那一格由 `floating_ball::ensure_ball` 自己维护。
+#[cfg(windows)]
+fn publish_window_channels(background: Option<HWND>, ball: Option<HWND>) {
+    publish_background_window_handle(background);
+    BALL_WINDOW_HANDLE.store(ball.map_or(0, |handle| handle.0 as isize), Ordering::Release);
+}
+
+/// 只写 `background` 那一格（重建路径专用，理由见 `publish_window_channels`）。
+#[cfg(windows)]
+pub(crate) fn publish_background_window_handle(background: Option<HWND>) {
+    BACKGROUND_WINDOW_HANDLE.store(
+        background.map_or(0, |handle| handle.0 as isize),
+        Ordering::Release,
+    );
+}
+
+/// 把槽位的两格一起刷成"此刻真实存在的窗口"。
+///
+/// **只在主线程调用**：`background` 那半格要走 `get_webview_window`（即 `Webview::clone`，
+/// 见本文件顶部那段说明），后台线程一旦调它就是要修的崩溃本身。球的半格由调用方给出：
+/// 悬浮球模块在 Lite 目标里根本不存在（`lib.rs` 里 `mod floating_ball` 受
+/// `not(feature = "lite")` 门控），所以这里不能自己去点名它。
+/// 调用点是 `lib.rs` 的启动接线（窗口由 Tauri 配置建好之后、三条监视线程启动之前）。
+#[cfg(windows)]
+pub(crate) fn publish_current_window_channels(app: &tauri::AppHandle, ball: Option<HWND>) {
+    let background = app
+        .get_webview_window(BACKGROUND_WINDOW_LABEL)
+        .and_then(|window| window.hwnd().ok())
+        .map(|handle| HWND(handle.0));
+    publish_window_channels(background, ball);
+}
+
+/// 当前 `background` 句柄的纯值形式。0 = 此刻没有窗口。
+///
+/// 只读原子量，不碰 Tauri、不碰窗口对象，后台线程可以每拍调用。
+#[cfg(windows)]
+pub(crate) fn background_window_handle_now() -> isize {
+    BACKGROUND_WINDOW_HANDLE.load(Ordering::Acquire)
+}
+
+/// 当前悬浮球句柄的纯值形式。0 = 此刻没有窗口。
+#[cfg(windows)]
+pub(crate) fn ball_window_handle_now() -> isize {
+    BALL_WINDOW_HANDLE.load(Ordering::Acquire)
+}
+
+/// 主线程写入当前悬浮球句柄（0 = 此刻没有）。**只在主线程调用**，由悬浮球模块在
+/// 它唯一的创建点 `ensure_ball` 里写。
+#[cfg(windows)]
+pub(crate) fn publish_ball_window_handle(ball: Option<HWND>) {
+    BALL_WINDOW_HANDLE.store(ball.map_or(0, |handle| handle.0 as isize), Ordering::Release);
+}
+
+/// 槽位里的句柄此刻是不是**一个能用的桌面宿主窗口**。
+///
+/// 判据刻意**不**把"句柄在但已销毁"当作不可用：那正是重建的中间态
+/// （`recover_wallpaper_host` 的 `Recreate` 分支先 `destroy` 再 `create`）。
+/// 句柄只解析一次的旧写法在这段里把线程结束了，重建完成也回不来——这就是本轮要修的
+/// "窗口重建后功能失效"。因此这里只在**槽位为空**（连一个候选都没有）时说不；
+/// 其余情况一律认为"等一下就会有"。
+///
+/// 三条监视线程据此决定这一拍做不做事：
+///   * `background` 相关的两条（桌面工作区、前台）：句柄不可用就跳过这一拍、**继续等**，
+///     因为 `background` 在正常运行期始终存在，重建由主线程每 2 秒一次的自愈线程完成，
+///     "等"不会变成永久的无主轮询。
+///   * 悬浮球的球句柄语义**不同**，由 `floating_ball::current_ball_handle` 自己判断
+///     （全仓只有 `ensure_ball` 一个出生点，球没了就是进程在收尾，该退场）。
+#[cfg(windows)]
+fn background_handle_is_usable(handle: isize) -> bool {
+    if handle == 0 {
+        return false;
+    }
+    keep_watching_after_tick(
+        true,
+        unsafe { IsWindow(Some(HWND(handle as *mut core::ffi::c_void))).as_bool() },
+    )
+}
+
+/// `background_handle_is_usable` 里那个与 `IsWindow` 无关的部分。
+///
+/// 它存在的唯一理由是可测：`IsWindow` 需要一个真正的窗口句柄，而单测里造不出
+/// （句柄空间是会话级的，随便写一个整数当句柄是在赌另一个进程没有占用它，那种测试只会
+/// 偶发失败，见本模块测试里的说明）。所以判据被拆成"槽位里有没有候选"与"候选是不是活的"
+/// 两步，前一步可以在这里断言，"已销毁"那一步由调用方传进来。
+///
+/// 现在的答案只在槽位为空时为否（理由见 `background_handle_is_usable`）。保留两个参数是
+/// 为了让测试能把四种组合都摆出来，防止将来有人把"已销毁"误当成不可用。
+#[cfg(windows)]
+fn keep_watching_after_tick(handle_present: bool, _handle_alive: bool) -> bool {
+    handle_present
 }
 
 #[cfg(windows)]
@@ -1838,6 +1986,13 @@ fn create_background_window(app: &tauri::AppHandle) -> Result<WebviewWindow, Str
     crate::native_bootstrap::record_startup_diagnostic(
         "event=background-webview-created visible=false",
     );
+    // 句柄槽位必须在这里跟上：三条监视线程读的就是它，写晚一步（或漏写）就等于把刚修好的
+    // "重建后功能失效"又放回去。句柄在主线程上取，且这是创建点，不是后台线程的重新解析。
+    // 只传 `None` 给球那半格会把它抹成 0，所以这里只写 `background` 那一格：
+    // `publish_window_channels` 的两格是"此刻真实存在"的语义，球由 `ensure_ball` 自己写。
+    if let Ok(handle) = window.hwnd() {
+        publish_background_window_handle(Some(HWND(handle.0)));
+    }
     Ok(window)
 }
 
@@ -2574,21 +2729,22 @@ fn install_desktop_hit_testing(root_hwnd: HWND) -> Result<(), String> {
 
 #[cfg(windows)]
 pub fn start_foreground_monitor(app: tauri::AppHandle) {
-    // 同 `start_desktop_workspace_monitor`：句柄在主线程解析一次，轮询里只留纯值 HWND，
-    // "窗口还在不在"问 Win32，不回 Tauri 取运行期窗口状态。
-    // `HWND` 内部是裸指针、不是 `Send`，所以跨线程搬的是它的**整数**形式，进闭包再还原。
-    let background_raw = app
-        .get_webview_window(BACKGROUND_WINDOW_LABEL)
-        .and_then(|window| window.hwnd().ok())
-        .map(|handle| handle.0 as isize)
-        .unwrap_or_default();
+    // 与前两族监视同形：轮询里**只出现纯值**，不回 Tauri 取运行期窗口状态
+    // （`get_webview_window` 会 `Webview::clone`，见本文件顶部那段说明）。
+    // 与旧写法的唯一区别是句柄不再在启动时冻结：每拍从句柄槽位读一次，`background`
+    // 被销毁并重建之后自动跟上新句柄（见 `BACKGROUND_WINDOW_HANDLE`）。
+    // `HWND` 内部是裸指针、不是 `Send`，所以跨线程搬的是它的**整数**形式。
     std::thread::Builder::new()
         .name("foreground-monitor".into())
         .spawn(move || {
         assert_not_acting_as_main_thread();
-        let background = HWND(background_raw as *mut core::ffi::c_void);
         loop {
         std::thread::sleep(std::time::Duration::from_millis(120));
+        // 窗口重建期间（槽位是 0，或槽位里的句柄刚被销毁）不做事，但继续等：这条线程的
+        // 主要职责本来是"桌面成为前台"，退场才是重建之后永久失效的原因。
+        let background_raw = background_window_handle_now();
+        let window_present = background_handle_is_usable(background_raw);
+        if window_present {
         let foreground = unsafe { GetForegroundWindow() };
         let foreground_class = window_class(foreground);
         let shell = foreground == unsafe { GetDesktopWindow() }
@@ -2623,8 +2779,6 @@ pub fn start_foreground_monitor(app: tauri::AppHandle) {
                 emit_to_background(&app, "app-snapshot", &snapshot);
             }
         }
-        if background.0.is_null() || !unsafe { IsWindow(Some(background)) }.as_bool() {
-            break;
         }
         }
         })
@@ -2799,7 +2953,24 @@ pub(crate) fn desktop_point_verdict() -> DesktopPointVerdict {
   );
   verdict
 }
-fn cursor_is_on_desktop_surface(background: HWND) -> bool {
+/// 「光标是否落在桌面表面」：只有光标下的窗口属于桌面（父链能走到桌面宿主本身、
+/// 桌面窗口，或类名属于桌面/WorkerW）时才为真。
+///
+/// 这里刻意**不**重算一遍桌面宿主规则：表/里桌面双击判定用的就是这一条，两处各写
+/// 一份迟早会漂移。
+///
+/// 这条判据**只依赖一个纯值 `HWND`**，不碰任何 Tauri 运行期窗口状态，所以可以安全地
+/// 从后台线程调用：悬浮球的靠近检测（`floating_ball::start_ball_monitor`）在主线程把
+/// 桌面宿主的句柄解析成整数带进线程，线程里只还原成 `HWND` 再交给这里。
+/// **不要**再为它套一层 `app.get_webview_window(...)` 的封装（曾有一个
+/// `cursor_on_desktop_surface_via_label`，已删除）：那会把唯一的调用方拽回"后台线程
+/// 逐拍 clone wry `Context` 引用计数"的老路上（0.4.7 转储那一族）。
+///
+/// 句柄已经不在（窗口销毁）时，调用方必须先判否 —— 见
+/// `floating_ball::desktop_surface_allows_pop`：下面 `current == background` 不成立时，
+/// 判据仍可能命中 `GetDesktopWindow` 与窗口类名两条分支而返回真。
+#[cfg(windows)]
+pub(crate) fn cursor_is_on_desktop_surface(background: HWND) -> bool {
     let mut point = POINT::default();
     unsafe {
         if GetCursorPos(&mut point).is_err() {
@@ -2828,21 +2999,26 @@ fn cursor_is_on_desktop_surface(background: HWND) -> bool {
     false
 }
 
-/// 「光标是否落在桌面表面」这条判据供其它模块复用时的薄封装。
+/// 「此刻光标是否落在桌面表面」，句柄取自**槽位**而不是启动时冻结的那一个。
 ///
-/// 悬浮球的靠近检测需要它：只有光标下的窗口属于桌面（父链能走到 Progman）时
-/// 才允许弹出，否则最大化应用盖住桌面时球会从应用底边冒出来。
-/// 这里刻意**不**重算一遍桌面宿主规则——`cursor_is_on_desktop_surface` 是
-/// 表/里桌面双击判定唯一可用的判据，两处各写一份迟早会漂移。
+/// 悬浮球的靠近检测每拍调它一次。读槽位是纯原子操作，所以这条函数与
+/// `cursor_is_on_desktop_surface` 一样可以从后台线程调用；区别只在句柄是不是最新的：
+/// `background` 被重建之后（`recover_wallpaper_host` 的 `Recreate`），旧句柄永远不再有效，
+/// 球的"只在桌面上弹"这条判据就会一直判否，看起来就是球再也不弹了。槽位让它自动跟上新句柄。
 ///
-/// 悬浮球只存在于完整版（`floating_ball` 模块本身也按 edition 收窄），所以这个
-/// 薄封装在 Lite 构建里没有调用者，一并收窄以保持 Lite 门禁的警告数与之前一致。
-#[cfg(all(windows, not(feature = "lite")))]
-pub(crate) fn cursor_on_desktop_surface_via_label(app: &tauri::AppHandle) -> bool {
-    app.get_webview_window(BACKGROUND_WINDOW_LABEL)
-        .and_then(|window| window.hwnd().ok())
-        .map(|handle| cursor_is_on_desktop_surface(HWND(handle.0)))
-        .unwrap_or(false)
+/// 判据本身的边界见 `cursor_is_on_desktop_surface`：句柄不在时必须先判否，因为那条函数在
+/// `current == background` 不成立时仍可能命中 `GetDesktopWindow` 与窗口类名两条分支。
+#[cfg(windows)]
+pub(crate) fn desktop_surface_allows_pop_now() -> bool {
+    let handle = background_window_handle_now();
+    if handle == 0 {
+        return false;
+    }
+    let background = HWND(handle as *mut core::ffi::c_void);
+    if !unsafe { IsWindow(Some(background)) }.as_bool() {
+        return false;
+    }
+    cursor_is_on_desktop_surface(background)
 }
 
 #[cfg(windows)]
@@ -3003,28 +3179,28 @@ fn log_workspace_toggle_decision(hits_interaction: bool, automation_blank: bool)
 
 #[cfg(windows)]
 pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
-    // ⚠ 运行期窗口状态**只能在本线程（主线程）上取**：`get_webview_window` 会 `Webview::clone`
+    // 运行期窗口状态**只能在本线程（主线程）上取**：`get_webview_window` 会 `Webview::clone`
     // —— 那一步会去动 `DetachedWebview` 的引用计数对象，而该对象的计数与 wry 的 `Context`
-    // 是同一份共享状态（`Context::clone` 溢出哨兵 = `ud2` / `__fastfail(7)`）。后台线程取一次
+    // 是同一份共享状态（`Context::clone` 溢出哨兵 = `ud2` / `__fastfail(7)`；见本文件顶部）。后台线程取一次
     // 就等于并发改这份计数，破坏是滞后的：后台线程先打坏，很久以后主线程在窗口消息里拿垃圾
     // 指针崩（本仓库的 0.2.0/0.4.7 两份转储同构，见 dsh-wallpaper.exe.8376.dmp）。
     //
-    // 因此句柄在**这里**（主线程）解析一次，线程闭包里只留 `HWND` 这个纯值：它不携带任何
-    // 引用计数，跨线程搬运完全安全，而"窗口还在不在"改用 Win32 的 `IsWindow` 直接问。
-    // 旧代码是在 16ms 轮询里每轮 `app.get_webview_window("background").is_none()` —— 那正是
-    // 后台线程逐轮 clone 引用计数的那一处，已删除。
-    let background_raw = app
-        .get_webview_window(BACKGROUND_WINDOW_LABEL)
-        .and_then(|window| window.hwnd().ok())
-        .map(|handle| handle.0 as isize)
-        .unwrap_or_default();
+    // 因此句柄在**主线程**解析，线程闭包里只留 `HWND` 这个纯值：它不携带任何引用计数，
+    // 跨线程搬运完全安全，而"窗口还在不在"改用 Win32 的 `IsWindow` 直接问。旧代码是在
+    // 16ms 轮询里每轮 `app.get_webview_window("background").is_none()` —— 那正是后台线程
+    // 逐轮 clone 引用计数的那一处，已删除。
+    //
+    // 与上一版（提交 `ab9c9f3`）的唯一区别：这个纯值**每拍从句柄槽位重读一次**，而不是
+    // 启动时冻结。冻结的写法在 `background` 被销毁并重建之后（`recover_wallpaper_host` 的
+    // `Recreate` 分支）手里只剩一个永远无效的旧句柄，`IsWindow` 一直回答否，线程遂退场，
+    // "双击桌面进里桌面 / 离开里桌面"就此永久失效。槽位由主线程在创建与重建处写入
+    // （见 `BACKGROUND_WINDOW_HANDLE`），线程只做一次原子读 + 一次 `IsWindow`。
     std::thread::Builder::new()
         .name("desktop-workspace-monitor".into())
         .spawn(move || {
         // 防线：这条闭包**绝不允许**再回 Tauri 取运行期窗口状态（见上）。真这么干了，
         // 调试构建会在这里带线程名喊出来，而不是等几个月后在主线程里崩成垃圾指针。
         assert_not_acting_as_main_thread();
-        let background = HWND(background_raw as *mut core::ffi::c_void);
         // UIA requires COM initialization on the monitor thread. A prior COM
         // mode is harmless: UIA can still be created on that thread.
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
@@ -3044,11 +3220,21 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
         let mut press: Option<(std::time::Instant, (i32, i32), bool, bool)> = None;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(16));
-            // 窗口销毁 = 监控线程该退场。这里直接问 Win32（纯值 HWND），
-            // 不再回到 Tauri 的窗口注册表去 clone 引用计数。
-            if background.0.is_null() || !unsafe { IsWindow(Some(background)) }.as_bool() {
-                break;
+            // 每拍从槽位取当前句柄：窗口重建之后这里拿到的就是新句柄。
+            //
+            // 这里**不是**"后台线程重新解析窗口"：解析仍然只发生在主线程的创建/重建点，
+            // 本线程拿到的只是一个整数。真要在后台线程"重新解析"，就必须调
+            // `get_webview_window`，那正是 0.4.7 转储里那条崩溃路径，故绝不允许。
+            //
+            // 拿不到句柄（0）或槽位里的句柄刚被销毁时**不做事但继续等**，不退场：
+            // `recover_wallpaper_host` 会先 `destroy` 再重建 `background`，中间那一小段
+            // 就是这个状态；退场正是"重建后功能永久失效"的成因。等着的代价是每拍一次原子读，
+            // 而 `background` 在正常运行期始终存在，所以这不是一个会永远转下去的无主轮询。
+            let background_raw = background_window_handle_now();
+            if !background_handle_is_usable(background_raw) {
+                continue;
             }
+            let background = HWND(background_raw as *mut core::ffi::c_void);
             let down = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0;
             // 松开时成形：拖动（按下-移动-松开）天然被排除，不需要额外判断。
 if !down && was_down {
@@ -4921,6 +5107,68 @@ mod tests {
         // 第二次派发不能被误判成重入（`acting` 也必须干净）。
         run_main_thread_window_state_task(|| {});
         assert!(!is_running_on_main_thread());
+    }
+
+    /// 句柄槽位的读侧判据：「窗口重建期间」必须继续看，而不是退场。
+    ///
+    /// 这一条锁的就是本轮修的缺陷本身：句柄只解析一次的旧写法在 `background` 被销毁重建时
+    /// 手里是旧句柄，三条线程据此退场，重建之后也回不来。**已销毁必须仍然算"可用"** ——
+    /// 那是重建的中间态，不是"这个窗口永远不会再回来"。
+    ///
+    /// 判据拆成纯函数是因为 `IsWindow` 需要真正的句柄：句柄空间是会话级的，单测里
+    /// **不能**拿一个随便写的整数当"已销毁句柄"——那个值有可能正被本机另一个进程的窗口
+    /// 占用（实测就撞上过，属于会偶发失败的写法）。所以这里测的是判据的四种输入组合，
+    /// `IsWindow` 本身是系统行为，不需要也不应该由本仓库的测试来断言。
+    #[cfg(windows)]
+    #[test]
+    fn a_missing_or_destroyed_window_keeps_the_watching_thread_alive() {
+        // 槽位为空：没有候选窗口，这一拍不做事。
+        assert!(!keep_watching_after_tick(false, false));
+        // 槽位里有句柄、句柄已销毁（重建的中间态）：仍然算"等一下就有"，不许退场。
+        assert!(keep_watching_after_tick(true, false));
+        // 句柄在且活着：照常做事。
+        assert!(keep_watching_after_tick(true, true));
+        // 槽位为 0 而"活着"这一位没有被 `IsWindow` 赋值过（调用方不会这样传）：
+        // 结论仍按槽位来，不会因为一个无关的布尔位翻成"可用"。
+        assert!(!keep_watching_after_tick(false, true));
+    }
+
+    /// 悬浮球那半格写的是"此刻真实存在的窗口"，读侧与主线程的写侧必须对上。
+    ///
+    /// 这条测试只碰纯原子量，不建窗口：它要证明的是「主线程写下的整数能在读侧原样取到」，
+    /// 也就是 `ensure_ball` 与监控线程之间的接线语义。
+    #[cfg(windows)]
+    #[test]
+    fn the_ball_handle_slot_round_trips_the_value_the_main_thread_wrote() {
+        let previous = ball_window_handle_now();
+        publish_ball_window_handle(Some(HWND(0x1234 as *mut core::ffi::c_void)));
+        assert_eq!(ball_window_handle_now(), 0x1234);
+        publish_ball_window_handle(None);
+        assert_eq!(ball_window_handle_now(), 0);
+        // 还原现场：槽位是进程级的，别把别的测试（或运行的进程）带歪。
+        publish_ball_window_handle(if previous == 0 {
+            None
+        } else {
+            Some(HWND(previous as *mut core::ffi::c_void))
+        });
+    }
+
+    /// 「此刻光标是否落在桌面表面」在句柄槽位为空（或指向已销毁窗口）时必须判否。
+    ///
+    /// 判否的理由见 `desktop_surface_allows_pop_now`：那条判据在 `current == background`
+    /// 不成立时仍可能命中 `GetDesktopWindow` 与窗口类名两条分支而返回真，所以句柄不可用
+    /// 必须先挡在门外。槽位默认是 0（除非别处刚写过），这里显式按 0 断言。
+    #[cfg(windows)]
+    #[test]
+    fn a_missing_desktop_handle_never_allows_a_pop_now() {
+        let previous = background_window_handle_now();
+        publish_background_window_handle(None);
+        assert!(!desktop_surface_allows_pop_now());
+        publish_background_window_handle(if previous == 0 {
+            None
+        } else {
+            Some(HWND(previous as *mut core::ffi::c_void))
+        });
     }
 
     #[cfg(windows)]
