@@ -30,6 +30,8 @@ mod floating_ball;
 mod lock_screen_backup;
 mod native_bootstrap;
 mod native_handoff;
+// 启动时间线的锚点与统一写法（只测量，不改启动顺序）：见模块头部说明。
+mod startup_timeline;
 // 更新检测（第一片：原生侧）：版本读取、GitHub 检查、状态文件与 6 小时节流。完整版专属 ——
 // 取数用的是 `reqwest`，那是 `full` 特性后面的依赖，Lite 只给提示（计划书 §七）。
 #[cfg(not(feature = "lite"))]
@@ -57,6 +59,12 @@ use tauri::{Emitter, EventTarget, Manager, WebviewUrl, WebviewWindowBuilder};
 /// keeps a valid Progman fallback until the Explorer host can be recovered.
 pub fn prepare_native_bootstrap() {
     native_bootstrap::prepare();
+}
+
+/// 启动时间线的进程入口锚点。给两个二进制（完整版 `main.rs` 与 Lite）的第一行用，
+/// 让「相对进程入口的毫秒」在一个进程里只有一个原点。只读时钟，不改变任何启动顺序。
+pub fn startup_timeline_entry() {
+    startup_timeline::anchor_process_entry();
 }
 
 #[derive(serde::Serialize)]
@@ -5012,10 +5020,13 @@ fn run_with_edition(lite: bool) {
     // 在 logs 目录里留下一份带模块基址与调用链的报告。装得越早覆盖越全，而且必须在
     // Tauri/WebView2 起来之前 —— 顶层过滤器只有一个槽位，晚装就可能被别人顶掉。
     crash_report::install(lite);
+    startup_timeline::log_point("crash_report 就绪（进程入口的第二站）");
     // DPI 感知已在 main.rs 进程入口设置（Per-Monitor DPI Aware）。
     if !windows_integration::acquire_shared_wallpaper_host() {
+        startup_timeline::log_point("未拿到单实例宿主权，进程在此退出");
         return;
     }
+    startup_timeline::log_point("单实例宿主权已确认，即将创建 Tauri Builder");
     let mut builder = tauri::Builder::default()
         // This must be registered before plugins that start resident services
         // or create native windows. A second launch then exits before it can
@@ -5034,6 +5045,9 @@ fn run_with_edition(lite: bool) {
         )
         .plugin(tauri_plugin_dialog::init())
         .manage(AppCore::default());
+    // 这一条量的是「Tauri Builder 装配完插件与状态」这一步到哪里为止：插件链里已经含了
+    // 日志插件（所以这一条起，日志终于落到文件里）与单实例插件。
+    startup_timeline::log_point("Tauri Builder 插件链装配完成（logging 与单实例插件已注册）");
 
     // The Lite process has no chat or theme-library surface. Avoid opening
     // SQLite, allocating the encrypted API store, or creating a managed DSH
@@ -5070,6 +5084,7 @@ fn run_with_edition(lite: bool) {
     register_edition_commands!(builder)
         .setup(move |app| {
             native_bootstrap::report_tauri_ready();
+            startup_timeline::mark("setup-enter", "Tauri setup 回调进入");
             // 崩溃报告写到哪：启动时留一行，用户照着它就能找到下次崩溃的那份报告。
             #[cfg(windows)]
             match crash_report::report_directory() {
@@ -5092,6 +5107,7 @@ fn run_with_edition(lite: bool) {
                 // 在启动时就做一次：不按任何按钮的一次启动也会把旧目录收干净。它只记日志、
                 // 不返回错误，失败绝不拖住启动链。
                 update::commands::reconcile_updates_at_startup(app.handle());
+                startup_timeline::mark("update-reconcile-done", "更新目录启动清理完成");
             }
             // 窗口句柄槽位的第一次写入：这一行必须在三条监视线程启动之前。
             // 线程不许自己回 Tauri 取窗口（那会 clone wry `Context` 的引用计数，见
@@ -5115,6 +5131,7 @@ fn run_with_edition(lite: bool) {
                 windows_integration::start_foreground_monitor(app.handle().clone());
                 windows_integration::start_desktop_workspace_monitor(app.handle().clone());
                 start_harness_monitor(app.handle().clone());
+                startup_timeline::mark("harness-monitor-started", "Harness 监视已启动");
                 // 悬浮球（interaction-handover §3.1 的增量 1）：独立顶层窗口，
                 // 平时停在屏幕之外，鼠标靠近底边才滑入。它是人工入口而不是常驻
                 // 服务，因此创建失败只记日志，绝不打断启动链（也绝不 `?`）。
@@ -5122,6 +5139,7 @@ fn run_with_edition(lite: bool) {
                     Ok(_) => floating_ball::start_ball_monitor(app.handle().clone()),
                     Err(error) => log::warn!("floating ball unavailable: {error}"),
                 }
+                startup_timeline::mark("floating-ball-ready", "悬浮球创建与监视已就绪");
             }
             // Keep an enabled pre-StartupTask installation running across a
             // package update. The migration is best-effort and leaves the

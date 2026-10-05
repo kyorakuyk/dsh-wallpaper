@@ -826,11 +826,21 @@ fn publish_wallpaper_host_status(
         let before = core.snapshot().wallpaper_host;
         if before != status {
             match status.mode {
-                WallpaperHostMode::WorkerW => log::info!(
-                    "wallpaper host ready: mode=workerw generation={} recoveries={}",
-                    status.generation,
-                    status.recovery_count
-                ),
+                WallpaperHostMode::WorkerW => {
+                    let point = crate::startup_timeline::sample();
+                    log::info!(
+                        "wallpaper host ready: mode=workerw generation={} recoveries={} absolute={} elapsed_ms={}",
+                        status.generation,
+                        status.recovery_count,
+                        point.wall_clock,
+                        point.anchor_ms
+                    );
+                    // 这一行说的是「宿主窗口就绪」：从主机进程入口算起多少毫秒。
+                    // 它只在状态真的变化时到达这里，不是每轮轮询都打。
+                    crate::native_bootstrap::record_startup_diagnostic(
+                        "event=host-ready-workerw 宿主窗口就绪（mode=workerw）",
+                    );
+                }
                 WallpaperHostMode::ProgmanFallback => log::warn!(
                     "wallpaper host degraded: mode=progman generation={} recoveries={}",
                     status.generation,
@@ -1898,6 +1908,8 @@ fn attach_hwnd_to_workerw(background: HWND) -> Result<HWND, String> {
         record_wallpaper_window_state("native-cover", cover);
     }
     crate::native_bootstrap::record_startup_diagnostic("event=webview-attached-and-visible");
+    // WebView 第一次真正可见的时刻就在这里（上面那次 `ShowWindow(SW_SHOWNA)`）。
+    crate::startup_timeline::mark("webview-visible", "背景 WebView 已显示（首帧可见）");
     log::info!(
         "background 0x{:X} attached to WorkerW 0x{:X}",
         background.0 as usize,

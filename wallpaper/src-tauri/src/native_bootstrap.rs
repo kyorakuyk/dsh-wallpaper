@@ -260,7 +260,23 @@ pub(crate) fn record_startup_diagnostic(event: &str) {
         let _ = fs::write(&path, b"");
     }
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "elapsed_ms={} {}", elapsed_ms(), event);
+        // 前缀带上绝对时间与纪元毫秒（见 `startup_timeline::diagnostic_prefix`）：
+        // 纪元毫秒是脚本把这一行与 `Win32_Process.CreationDate` 精确对齐用的。
+        //
+        // `event=` 一律存在：现有的调用点都自带 `event=` 或 `outcome=`，但显式补一个
+        // 空值占位，读这个文件的脚本（`scripts/measure-startup-gap.ps1`）就不必为
+        // 「以后有人新加一条不带事件名的记录」留特例。
+        let event = if event.is_empty() {
+            "event=none"
+        } else {
+            event
+        };
+        let _ = writeln!(
+            file,
+            "{} {}",
+            crate::startup_timeline::diagnostic_prefix(),
+            event
+        );
     }
 }
 
@@ -695,9 +711,14 @@ pub fn prepare() {
     if BOOTSTRAP_HWND.load(Ordering::Acquire) != 0 {
         return;
     }
+    // 启动时间线：这一条是原来那套 `elapsed_ms` 的原点，同时记进新口径（相对进程入口）。
+    // 只取时间，不改这一函数的任何顺序与判断。
+    crate::startup_timeline::mark_prepare_start();
     let _ = BOOTSTRAP_STARTED.set(Instant::now());
     let generation = begin_handoff();
-    record_startup_diagnostic("event=process-entry");
+    // 进程入口的读数统一由 `startup_timeline` 给（它带绝对时间与纪元毫秒）。
+    // 原来这一行的文案 `event=process-entry` 由新写法原样保留。
+    crate::startup_timeline::mark("process-entry", "进程入口（native bootstrap 准备开始）");
     record_startup_diagnostic("event=native-prepare-start");
     let Some(path) = find_asset(SLEEP_ASSET, "LockScreenSleep.png") else {
         remember_outcome(OUTCOME_ASSET_MISSING, "outcome=asset-missing");
@@ -852,6 +873,9 @@ pub fn prepare() {
         height
     );
     record_startup_diagnostic("event=native-cover-visible");
+    // 原生首帧窗口显示那一刻。原来的 `elapsed_ms`（相对 `prepare()`）不动，
+    // 新口径（相对进程入口）另外记一条，两者并排可读。
+    crate::startup_timeline::mark("native-cover-visible", "原生首帧窗口已显示");
     // The hand-off layer is now visible above the desktop, so start the
     // fallback that removes it if the renderer never reports its own frame.
     arm_watchdog(generation);

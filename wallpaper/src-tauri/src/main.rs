@@ -1,6 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // 启动时间线的锚点：整个进程里最早能记的位置，就在这一行。只读时钟，不改变任何
+    // 启动顺序；它量的是「进程被 Windows 拉起来的那一刻」到后面各个时间点的毫秒差。
+    dsh_wallpaper_lib::startup_timeline_entry();
     // Desktop repair helper: a separate, short-lived invocation of this same
     // binary whose only job is to undo the desktop changes a crashed wallpaper
     // left behind. Handled before any Tauri/Tao/WebView initialisation, because
