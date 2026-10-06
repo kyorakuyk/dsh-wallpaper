@@ -484,6 +484,11 @@
   isolation: isolate;
 }
 
+.settings-choice.is-open-upward .settings-choice__menu {
+  top: auto;
+  bottom: calc(100% + 5px);
+}
+
 .settings-choice__menu button {
   min-width: 100%;
   min-height: 36px;
