@@ -32,6 +32,7 @@ export const zhFull = {
 
   // 状态栏
   'statusbar.autosave': '设置会自动保存',
+  'statusbar.saved': '已保存',
 
   // 语言卡片
   'language.card': '语言',

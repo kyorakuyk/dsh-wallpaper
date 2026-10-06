@@ -24,6 +24,7 @@ export const enFull: FullOnlyDict = {
   'nav.system.hint': 'Windows integration',
 
   'statusbar.autosave': 'Changes are saved automatically',
+  'statusbar.saved': 'Saved',
 
   'language.card': 'Language',
 

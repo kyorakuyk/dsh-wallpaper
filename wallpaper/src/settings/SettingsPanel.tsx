@@ -14,10 +14,10 @@ import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, DesktopWorkspa
 import { downloadPercent, offeredUpdate, updatePhase, type UpdateDownloadState } from '../features/update/updateState.ts'
 import { downloadFailedMessage, downloadProgressMessage, updateOutcomeMessage } from '../features/update/updateCopy.ts'
 import { preferredDisplayId } from '../runtime/displayLayout.ts'
-import { harnessStateLabel } from '../connect/harnessLabels.ts'
 import type { AutostartStatus, HarnessEndpointScan, HarnessTarget } from '../native/runtime.ts'
 import { autostartDetail, autostartKnown } from './autostartCopy.ts'
 import { SettingsIcon, type SettingsIconName } from './SettingsIcon.tsx'
+import { SettingsPersonaBadge } from './SettingsPersonaBadge.tsx'
 // ---------------------------------------------------------------------------
 // FREEZE（临时冻结，不是删除）：「起别名」与实例下拉被冻在这个 build 之外，所以它们要的两样东西
 // 也一起冻住 —— `instanceLabel` 只给实例下拉的行文字用，`subjectAlias` 只给「起别名」输入框回显用，
@@ -554,7 +554,17 @@ export function SettingsPanel(props: SettingsPanelProps) {
   // FREEZE(1B)：解构里去掉已冻结的 translucentTb。
   // const { settings, harnessStatus, onChange, onClose, translucentTb, page } = props
   const { settings, harnessStatus, onChange, onClose, page } = props
-  const set = (patch: Partial<WallpaperSettings>) => onChange({ ...settings, ...patch })
+  const [savedAt, setSavedAt] = useState<number>()
+  const savedTimer = useRef<ReturnType<typeof setTimeout>>()
+  const set = (patch: Partial<WallpaperSettings>) => {
+    onChange({ ...settings, ...patch })
+    setSavedAt(Date.now())
+    if (savedTimer.current !== undefined) clearTimeout(savedTimer.current)
+    savedTimer.current = setTimeout(() => setSavedAt(undefined), 1600)
+  }
+  useEffect(() => () => {
+    if (savedTimer.current !== undefined) clearTimeout(savedTimer.current)
+  }, [])
   // 语言变了要重渲染：词条是在渲染时取的，所以订阅一下就够。
   const language = useLanguage()
   /** 「清除全部用户数据」的结果（成功后把"删了什么、还剩什么要你手动删"写在这一行里）。 */
@@ -678,20 +688,17 @@ export function SettingsPanel(props: SettingsPanelProps) {
       <div className="settings-titlebar__drag" aria-hidden="true" onMouseDown={(event) => {
         if (event.button === 0) void invoke('start_settings_drag')
       }} />
-      <div className="settings-brand"><img className="settings-brand__mark" src="/brand/persona-mark.png" alt="" draggable={false} /><div><strong>Wallpaper</strong><small>{t('settings.brand.subtitle')}</small></div></div>
+      <div className="settings-brand"><div><strong>Wallpaper</strong><small>{t('settings.brand.subtitle')}</small></div></div>
       <button className="settings-window-close" aria-label={t('settings.window.close')} onClick={onClose}><SettingsIcon name="close" /></button>
     </header>
 
     <aside className="settings-sidebar">
+      <SettingsPersonaBadge backend={backend} backgroundId={settings.background} harnessStatus={harnessStatus} />
       <nav>{pages.map((item) => <button key={item.id} className={page === item.id ? 'is-active' : ''} onClick={() => props.onPageChange(item.id)}><span className="settings-nav__icon"><SettingsIcon name={item.icon} /></span><span><strong>{t(item.labelKey)}</strong></span></button>)}</nav>
-      <div className="settings-sidebar__status">
-        <i className={harnessStatus === 'bridge-ready' ? 'is-online' : harnessStatus === 'offline' ? '' : 'is-pending'} />
-        <span>{harnessStateLabel(harnessStatus)}</span>
-      </div>
     </aside>
 
     <main className="settings-content">
-      <div className="settings-page-heading"><div><span>{t('settings.page.heading', { page: t(pageMeta.labelKey) })}</span><h1>{t(pageMeta.labelKey)}</h1></div><p>{t(pageMeta.hintKey)}</p></div>
+      <div className="settings-page-heading"><span>{t('settings.page.heading', { page: t(pageMeta.labelKey) })}</span><h1>{t(pageMeta.labelKey)}</h1><p>{t(pageMeta.hintKey)}</p></div>
 
       {page === 'general' && <>
         <Card title={t('settings.general.interaction.title')} description={t('settings.general.interaction.description')}>
@@ -1213,6 +1220,6 @@ export function SettingsPanel(props: SettingsPanelProps) {
       </>}
     </main>
 
-    <footer className="settings-statusbar"><span>dsh-wallpaper · v0.4.9</span><span><i />{t('statusbar.autosave')}</span></footer>
+    <footer className="settings-statusbar"><span>dsh-wallpaper · v0.4.9</span><span aria-live="polite">{savedAt ? <><SettingsIcon name="check" size={14} />{t('statusbar.saved')}</> : <><i />{t('statusbar.autosave')}</>}</span></footer>
   </div>
 }
