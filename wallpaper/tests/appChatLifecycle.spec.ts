@@ -106,6 +106,30 @@ describe('App chat lifecycle isolation', () => {
   })
 
   /**
+   * 用户报告："点击滑槽无法切换为网页或 API 前端"（2026-10-06）。实测证据：`conversations:v1`
+   * 里 API 与 Harness 两个后端的 `updatedAt` 成对相差不到一秒，连拨七轮 —— 也就是说拨过去**成
+   * 了**，只是立刻被拨回来。拨回来的两条规则里，"壁纸自己复位过"那条会被手动拨动清掉（见上一条
+   * 测试），所以留在场上的只有设置那条：`canAutoSelectHarness` 不看滑槽是谁拨的。
+   *
+   * 这一条钉住的是：手动拨过之后，两条自动规则都不许再把滑槽搬走；而用户没碰过滑槽时（以及壁纸
+   * 自己复位滑槽之后），设置要求的自动切换照旧生效。
+   */
+  it('never moves the switch back to Harness after the user moved it by hand', async () => {
+    const { harnessMayTakeOver } = await import('../src/App.tsx')
+
+    // 现状：桥就绪、仍在左侧、设置要求自动切换、壁纸没有复位过滑槽 —— 用户不碰它时照旧自动切。
+    expect(harnessMayTakeOver('bridge-ready', 'deepseek-api', true, false, false)).toBe(true)
+    expect(harnessMayTakeOver('bridge-ready', 'deepseek-web', false, true, false)).toBe(true)
+    // 用户手动拨到左侧之后：设置那条路不再生效。
+    expect(harnessMayTakeOver('bridge-ready', 'deepseek-api', true, false, true)).toBe(false)
+    // 凭据那条路同样被它挡住（两条规则合起来才是完整判据）。
+    expect(harnessMayTakeOver('bridge-ready', 'deepseek-web', false, true, true)).toBe(false)
+    // 没就绪、或者本来就在 Harness 上：本来就没有可做的动作。
+    expect(harnessMayTakeOver('bridge-loading', 'deepseek-api', true, false, false)).toBe(false)
+    expect(harnessMayTakeOver('bridge-ready', 'harness', true, true, false)).toBe(false)
+  })
+
+  /**
    * 聊天层的通知必须和原生宿主的 rror **分开存**：后者会被原生快照整体覆写，挤在一起时
    * 通知刚写进去就被下一条快照擦掉（用户实测："顶上弹了一下，消失得极快"）。
    */

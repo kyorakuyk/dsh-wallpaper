@@ -208,6 +208,30 @@ export function harnessResetClaimed(inMemory: boolean, persistedAt: number | und
 }
 
 /**
+ * 壁纸此刻是否可以**自己**把滑槽拨回 Harness。
+ *
+ * 两条规则合成一个判据：设置要求的自动切换（`canAutoSelectHarness`），以及壁纸复位过滑槽之后
+ * 的回切（`shouldReturnToHarness`）。`manualChoice` 为真时两条都不成立 —— 用户手动选的那一侧
+ * 永远优先。这条规矩本来只落在"凭据"那一侧（`harnessResetClaimed`：用户手动拨动会清掉凭据），
+ * 而设置那条路不经过凭据，于是绕过了它；这一格就是把它补回来。
+ *
+ * 为什么要有这一格：`canAutoSelectHarness` 只看设置与桥的就绪，拨回来的动作不区分是谁拨的。
+ * 于是开启「DSH 就绪时自动切换」之后，用户拨到左侧的每一下都会被立刻拨回来（实测见
+ * `userParkedOnNonHarnessRef`）。纯函数，因为"用户在错误的时刻被搬走"这件事要能在单测里钉住。
+ */
+export function harnessMayTakeOver(
+  availability: RuntimeState['harness'],
+  backend: BackendMode,
+  autoSwitchHarness: boolean,
+  autoResetClaimed: boolean,
+  manualChoice: boolean,
+): boolean {
+  if (manualChoice) return false
+  return canAutoSelectHarness(availability, backend, autoSwitchHarness)
+    || shouldReturnToHarness(availability, backend, autoResetClaimed)
+}
+
+/**
  * 黄灯：连接与断开之间的**中间态**。
  *
  * 用户要的三段语义是"连上（绿）／正在连（黄呼吸）／不在了（熄灭）"，所以中间态覆盖三种真实
@@ -714,9 +738,29 @@ export function App({ surface = 'combined' }: AppProps) {
    */
   const autoResetFromHarnessRef = useRef(false)
   const [autoResetFromHarness, setAutoResetFromHarness] = useState(false)
+  /**
+   * 用户**手动**把滑槽拨到左侧了（网页入口或 API 那一侧）。这一格只回答一件事：壁纸还可以
+   * 自己把滑槽拨回 Harness 吗 —— 不可以。
+   *
+   * 为什么单独立一格：`canAutoSelectHarness` 只看设置与桥的就绪，不看滑槽是谁拨的。于是
+   * 「DSH 就绪时自动切换」开着时，用户拨过去的每一下都会被立刻拨回来。实测（2026-10-06，
+   * 用户报告"点击滑槽无法切换为网页或 API 前端"）：API 适配器刚建好就被 Harness 适配器取代，
+   * 一秒钟一轮，连拨七轮都是同一个结果（`dsh-wallpaper:conversations:v1` 里 API 与 Harness
+   * 的 `updatedAt` 成对相差不到一秒）。`harnessResetClaimed` 那条路上写的"他选的那一侧永远
+   * 优先"，在设置这条路上必须同样成立。
+   *
+   * 何时解除：壁纸**自己**复位滑槽时（`markAutoResetFromHarness(true)`，主体退出）解除，之后
+   * 自动回切仍按原规则工作；进程重启也解除（这是 ref），所以设置本身的作用范围不变 —— 用户没
+   * 碰过滑槽的那次启动，桥一就绪仍然自动切到 Harness。
+   */
+  const userParkedOnNonHarnessRef = useRef(false)
   const markAutoResetFromHarness = (value: boolean) => {
     autoResetFromHarnessRef.current = value
     setAutoResetFromHarness(value)
+    if (value) {
+      // 壁纸自己复位了滑槽：用户上一次的"停在左边"到此为止，回切的权利交回自动规则。
+      userParkedOnNonHarnessRef.current = false
+    }
     // 同一件事写进设置，让它活过下一个进程：装一次新版就重启一次壁纸，只记在内存里的规则
     // 会在重启那一刻悄悄失效（见 `harnessResetClaimed`）。用户手动选后端会清掉它。
     const current = settingsRef.current
@@ -1824,8 +1868,13 @@ const enterInnerWorkspace = () => {
       onChange: ({ status }) => {
         patchRuntime({ harness: status.availability, model: status.model ?? runtimeRef.current.model, provider: status.provider ?? runtimeRef.current.provider, reasoningEffort: status.reasoningEffort })
         if (isHarnessReady(status.availability) && runtimeRef.current.backend !== 'harness') {
-          if (canAutoSelectHarness(status.availability, runtimeRef.current.backend, settings.autoSwitchHarness)
-            || shouldReturnToHarness(status.availability, runtimeRef.current.backend, harnessResetClaimed(autoResetFromHarnessRef.current, settingsRef.current.harnessAutoResetAt))) {
+          if (harnessMayTakeOver(
+            status.availability,
+            runtimeRef.current.backend,
+            settings.autoSwitchHarness,
+            harnessResetClaimed(autoResetFromHarnessRef.current, settingsRef.current.harnessAutoResetAt),
+            userParkedOnNonHarnessRef.current,
+          )) {
             markAutoResetFromHarness(false)
             changeBackend('harness', { automatic: true })
           }
@@ -1843,8 +1892,13 @@ const enterInnerWorkspace = () => {
   useEffect(() => {
     if (!appCoreClient.native) return
     if (isHarnessReady(runtime.harness) && runtime.backend !== 'harness') {
-      if (canAutoSelectHarness(runtime.harness, runtime.backend, settings.autoSwitchHarness)
-        || shouldReturnToHarness(runtime.harness, runtime.backend, harnessResetClaimed(autoResetFromHarnessRef.current, settings.harnessAutoResetAt))) {
+      if (harnessMayTakeOver(
+        runtime.harness,
+        runtime.backend,
+        settings.autoSwitchHarness,
+        harnessResetClaimed(autoResetFromHarnessRef.current, settings.harnessAutoResetAt),
+        userParkedOnNonHarnessRef.current,
+      )) {
         markAutoResetFromHarness(false)
         changeBackend('harness', { automatic: true })
       }
@@ -1898,7 +1952,13 @@ const enterInnerWorkspace = () => {
       patchRuntime({ activity: 'idle', ...bridgeUnavailableNotice(harnessSelectionUnavailableNotice(runtimeRef.current.harness)) })
       return
     }
-    if (!options?.automatic) markAutoResetFromHarness(false)
+    if (!options?.automatic) {
+      markAutoResetFromHarness(false)
+      // 用户自己拨的这一下要留住：拨到左侧（网页入口或 API）之后，壁纸不再自己把它拨回
+      // Harness —— 理由与实测见 `userParkedOnNonHarnessRef`。拨到 Harness 那一侧时这格为假，
+      // 自动规则照旧（用户要的就是 Harness）。
+      userParkedOnNonHarnessRef.current = backend !== 'harness'
+    }
     // Clear backend-scoped UI immediately. The effect below repeats this while
     // creating the next adapter, which prevents one paint of API usage or a
     // partial answer under the newly selected backend label.
