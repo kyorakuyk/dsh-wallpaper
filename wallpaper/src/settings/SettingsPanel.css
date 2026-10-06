@@ -4,7 +4,7 @@
  * 若这里的半径**大于**系统半径（以前是 22px），两道弧之间会露出透明缺口；
  * **小于**则系统那道裁不到东西，实际形状完全由 CSS 决定。取 8px = "就用 Windows 默认"。 */
 .settings-app {
-  --s-bg: rgba(11, 20, 34, .97);
+  --s-bg: #0B1422;
   --s-line: #1C2A3B;
   --s-control-bg: #08101B;
   --s-control-line: #2A3A4E;
@@ -1137,8 +1137,8 @@
 }
 
 .settings-content {
-  max-width: 860px;
-  padding: 26px 36px 30px;
+  max-width: none;
+  padding: 26px clamp(24px, 4vw, 56px) 30px;
 }
 
 .settings-page-heading {
@@ -1164,25 +1164,21 @@
   margin: 0;
 }
 
+/* 分组列表：分区标题在面板外，同一分区的设置项装进一块纯色面板（不加渐变、不加阴影、不嵌套）。
+   面板不能 overflow:hidden —— 下拉菜单是绝对定位在触发条下面的，一裁就看不见了。 */
 .settings-card {
-  margin: 0;
-  padding: 22px 0 6px;
+  margin: 0 0 28px;
+  padding: 0;
   overflow: visible;
   border: 0;
-  border-top: 1px solid var(--s-line);
   border-radius: 0;
   background: none;
   box-shadow: none;
 }
 
-.settings-card:first-of-type {
-  padding-top: 4px;
-  border-top: 0;
-}
-
 .settings-card h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 700;
 }
 
@@ -1194,11 +1190,31 @@
 }
 
 .settings-card > header {
-  padding: 0 0 10px;
+  padding: 0 2px 10px;
 }
 
 .settings-card__body {
-  padding: 0;
+  padding: 0 18px;
+  border: 1px solid var(--s-line);
+  border-radius: 10px;
+  background: #0E1928;
+}
+
+.settings-card__body > .settings-field {
+  padding: 12px 0;
+}
+
+.settings-card__body > .settings-field:first-child {
+  border-top: 0;
+}
+
+/* 面板里不是"一行设置"的内容（缩略图网格、按钮条、示意图、列表）：首尾留出与行高相称的空隙。 */
+.settings-card__body > :not(.settings-field):first-child {
+  margin-top: 16px;
+}
+
+.settings-card__body > :not(.settings-field):last-child {
+  margin-bottom: 16px;
 }
 
 .settings-persona-badge {
