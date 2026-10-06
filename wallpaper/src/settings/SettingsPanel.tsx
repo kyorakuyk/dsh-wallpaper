@@ -1297,6 +1297,6 @@ export function SettingsPanel(props: SettingsPanelProps) {
       </>}
     </main>
 
-    <footer className="settings-statusbar"><span>dsh-wallpaper · v0.4.9</span><span aria-live="polite">{savedAt ? <><SettingsIcon name="check" size={14} />{t('statusbar.saved')}</> : <><i />{t('statusbar.autosave')}</>}</span></footer>
+    <footer className="settings-statusbar"><span>dsh-wallpaper · v0.4.10</span><span aria-live="polite">{savedAt ? <><SettingsIcon name="check" size={14} />{t('statusbar.saved')}</> : <><i />{t('statusbar.autosave')}</>}</span></footer>
   </div>
 }
