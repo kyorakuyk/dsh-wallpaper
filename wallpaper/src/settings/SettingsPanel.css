@@ -1309,3 +1309,251 @@
     display: block;
   }
 }
+
+/* 第三阶段 A：以真实桌面坐标绘制可选的显示器布局。 */
+.settings-display-map-panel {
+  display: grid;
+  gap: 12px;
+  margin: 4px 0 16px;
+}
+
+.settings-display-map-frame {
+  box-sizing: border-box;
+  overflow: hidden;
+  padding: 24px;
+  border: 1px solid var(--s-line);
+  border-radius: 12px;
+  background: var(--s-control-bg);
+}
+
+.settings-display-map__canvas {
+  position: relative;
+  max-width: 100%;
+  margin: 0 auto;
+}
+
+.settings-display-map__tile {
+  position: absolute;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: space-between;
+  overflow: hidden;
+  padding: 0;
+  border: 2px solid var(--s-control-line);
+  border-radius: 8px;
+  background: var(--blank-background);
+  color: var(--s-text);
+  text-align: left;
+  cursor: pointer;
+  transition: background .16s ease, border-color .16s ease, color .16s ease;
+}
+
+.settings-display-map__tile.is-selected {
+  border-color: var(--s-accent);
+  box-shadow: 0 0 0 4px var(--s-accent-soft);
+}
+
+.settings-display-map__background {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: .8;
+}
+
+.settings-display-map__tags {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px;
+}
+
+.settings-display-map__tags > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 11px;
+  background: rgba(5, 9, 15, .82);
+  color: var(--s-accent);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.settings-display-map__info {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 22px 8px 7px;
+  background: linear-gradient(180deg, transparent, rgba(5, 9, 15, .82));
+}
+
+.settings-display-map__info strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-display-map__info small {
+  overflow: hidden;
+  color: var(--s-text-2);
+  font-family: var(--dsh-font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-display-map__tile[data-small='true'] .settings-display-map__info {
+  padding-top: 4px;
+}
+
+.settings-display-map__tile[data-small='true'] .settings-display-map__info small {
+  display: none;
+}
+
+.settings-display-map__number {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(5, 9, 15, .55);
+  color: var(--s-text);
+  font-size: 64px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.settings-display-map__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settings-display-map__actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-display-background-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.settings-display-background-grid > button {
+  position: relative;
+  min-width: 0;
+  padding: 5px 5px 9px;
+  border: 1.5px solid var(--s-line);
+  border-radius: 10px;
+  background: #0E1928;
+  color: var(--s-text-2);
+  text-align: left;
+  cursor: pointer;
+  transition: background .16s ease, border-color .16s ease, color .16s ease;
+}
+
+.settings-display-background-grid > button.is-active {
+  border-color: var(--s-accent);
+  box-shadow: 0 0 0 3px var(--s-accent-soft);
+  color: var(--s-text);
+}
+
+.settings-display-background-grid > button > span {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 10;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #162D45, #0B1626);
+  background-size: cover;
+  background-position: center;
+}
+
+.settings-display-background-grid > button > strong {
+  display: block;
+  overflow: hidden;
+  margin: 7px 4px 0;
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-display-background-grid > .settings-display-background__follow {
+  border-style: dashed;
+}
+
+.settings-display-background__follow > span {
+  color: var(--s-accent);
+}
+
+.settings-display-background-grid > button[data-background='default'] > span {
+  background: var(--blank-background);
+}
+
+.settings-segmented {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  min-width: 260px;
+  max-width: 440px;
+  padding: 3px;
+  border: 1px solid var(--s-line);
+  border-radius: 9px;
+  background: var(--s-control-bg);
+}
+
+.settings-segmented button {
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--s-text-2);
+  font: inherit;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .16s ease, border-color .16s ease, color .16s ease;
+}
+
+.settings-segmented button.is-selected {
+  border-color: var(--s-accent);
+  background: var(--s-accent-soft);
+  color: var(--s-text);
+  font-weight: 500;
+}
+
+@media (max-width: 780px) {
+  .settings-display-map-frame {
+    padding: 16px;
+  }
+
+  .settings-display-background-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-segmented {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+  }
+}

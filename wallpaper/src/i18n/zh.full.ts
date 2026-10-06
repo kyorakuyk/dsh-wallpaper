@@ -90,6 +90,15 @@ export const zhFull = {
   'settings.general.display.portrait.title': '立绘所在屏幕',
   'settings.general.display.portrait.detail': '立绘和头顶气泡只挂载到选中的屏幕。',
   'settings.general.display.refresh': '刷新显示器检测',
+  'settings.general.display-map.label': '显示器布局',
+  'settings.general.display-map.identify': '识别屏幕',
+  'settings.general.display-map.hide-numbers': '隐藏编号',
+  'settings.general.display-map.select': '选择{display}',
+  'settings.general.display-map.portrait-tag': '立绘',
+  'settings.general.display-map.chat-tag': '对话窗',
+  'settings.general.display-map.background-of': '{display}的背景',
+  'settings.general.display-map.background-hint': '只影响这一块屏幕',
+  'settings.general.display-map.follow-global': '跟随全局',
 
   // 常规 · 会话生命周期
   'settings.general.conversation-lifecycle.title': '会话生命周期',

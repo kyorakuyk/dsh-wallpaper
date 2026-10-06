@@ -14,10 +14,12 @@ import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, DesktopWorkspa
 import { downloadPercent, offeredUpdate, updatePhase, type UpdateDownloadState } from '../features/update/updateState.ts'
 import { downloadFailedMessage, downloadProgressMessage, updateOutcomeMessage } from '../features/update/updateCopy.ts'
 import { preferredDisplayId } from '../runtime/displayLayout.ts'
+import { assetUrl } from '../runtime/assets.ts'
 import type { AutostartStatus, HarnessEndpointScan, HarnessTarget } from '../native/runtime.ts'
 import { autostartDetail, autostartKnown } from './autostartCopy.ts'
 import { SettingsIcon, type SettingsIconName } from './SettingsIcon.tsx'
 import { SettingsPersonaBadge } from './SettingsPersonaBadge.tsx'
+import { DisplayLayoutMap } from './DisplayLayoutMap.tsx'
 // ---------------------------------------------------------------------------
 // FREEZE（临时冻结，不是删除）：「起别名」与实例下拉被冻在这个 build 之外，所以它们要的两样东西
 // 也一起冻住 —— `instanceLabel` 只给实例下拉的行文字用，`subjectAlias` 只给「起别名」输入框回显用，
@@ -306,6 +308,11 @@ function Toggle({ checked, onChange, label, disabled = false }: { checked: boole
   return <button type="button" role="switch" aria-checked={checked} aria-label={label} disabled={disabled} className={`settings-toggle ${checked ? 'is-on' : ''}`} onClick={() => onChange(!checked)}><span /></button>
 }
 
+function Segmented({ value, options, onChange, label }: { value: string; options: Array<{ value: string; label: string }>; onChange: (value: string) => void; label: string }) {
+  return <div className="settings-segmented" role="radiogroup" aria-label={label}>{options.map((option) =>
+    <button type="button" key={option.value} role="radio" aria-checked={option.value === value} className={option.value === value ? 'is-selected' : ''} onClick={() => onChange(option.value)}>{option.label}</button>)}</div>
+}
+
 function Choice({ value, options, onChange, label, disabled = false, emptyMessage, emptyLabel }: { value: string; options: Array<{ value: string; label: string }>; onChange: (value: string) => void; label: string; disabled?: boolean; emptyMessage?: string; emptyLabel: string }) {
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLDivElement>(null)
@@ -556,6 +563,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
   const { settings, harnessStatus, onChange, onClose, page } = props
   const [savedAt, setSavedAt] = useState<number>()
   const savedTimer = useRef<ReturnType<typeof setTimeout>>()
+  const [selectedDisplayId, setSelectedDisplayId] = useState<string>()
+  const [showDisplayNumbers, setShowDisplayNumbers] = useState(false)
   const set = (patch: Partial<WallpaperSettings>) => {
     onChange({ ...settings, ...patch })
     setSavedAt(Date.now())
@@ -654,6 +663,15 @@ export function SettingsPanel(props: SettingsPanelProps) {
   // const updateRule = (index: number, patch: Partial<ModelTierRule>) => set({ modelTierRules: settings.modelTierRules.map((rule, i) => i === index ? { ...rule, ...patch } : rule) })
   const pageMeta = pages.find((item) => item.id === page)!
   const displayOptions = props.desktopDisplays.map((display, index) => ({ value: display.id, label: displayLabel(display, index) }))
+  const selectedDisplayIdForView = preferredDisplayId(props.desktopDisplays, selectedDisplayId ?? settings.multiScreen.portraitDisplayId) ?? ''
+  const selectedDisplayLabel = displayOptions.find((option) => option.value === selectedDisplayIdForView)?.label ?? ''
+  const portraitDisplayId = preferredDisplayId(props.desktopDisplays, settings.multiScreen.portraitDisplayId)
+  const conversationDisplayId = preferredDisplayId(props.desktopDisplays, settings.multiScreen.conversationDisplayId)
+  const backgroundUrlForDisplay = (displayId: string) => {
+    const backgroundId = settings.multiScreen.backgrounds[displayId] ?? settings.background
+    const path = BACKGROUND_OPTIONS.find((background) => background.id === backgroundId)?.path
+    return path ? assetUrl(path) : undefined
+  }
   const setDisplayBackground = (displayId: string, value: string) => {
     const backgrounds = { ...settings.multiScreen.backgrounds }
     if (value) backgrounds[displayId] = value as WallpaperSettings['background']
@@ -715,9 +733,29 @@ export function SettingsPanel(props: SettingsPanelProps) {
         {props.desktopDisplays.length > 1 && <Card title={t('settings.general.multi-screen.title', { count: props.desktopDisplays.length })} description={t('settings.general.multi-screen.description')}>
           <Field title={t('settings.general.multi-screen.toggle')} detail={settings.multiScreen.enabled ? t('settings.general.multi-screen.on') : t('settings.general.multi-screen.off')}><Toggle label={t('settings.general.multi-screen.toggle')} checked={settings.multiScreen.enabled} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, enabled: value } })} /></Field>
           {settings.multiScreen.enabled && <>
-            {props.desktopDisplays.map((display, index) => <Field key={display.id} title={displayOptions[index]?.label ?? t('settings.general.display.fallback', { index: index + 1 })} detail={`${t('settings.general.display.metrics', { width: display.bounds.width, height: display.bounds.height, scale: Math.round(display.scaleFactor * 100) })}${display.primary ? t('settings.general.display.primary') : ''}`}><Choice emptyLabel={t('settings.choice.empty')} label={t('settings.general.display.background', { display: displayOptions[index]?.label ?? display.id })} value={settings.multiScreen.backgrounds[display.id] ?? ''} onChange={(value) => setDisplayBackground(display.id, value)} options={[{ value: '', label: t('settings.general.display.follow-global') }, ...BACKGROUND_OPTIONS.map((background) => ({ value: background.id, label: background.name }))]} /></Field>)}
-            <Field title={t('settings.general.display.conversation.title')} detail={t('settings.general.display.conversation.detail')}><Choice emptyLabel={t('settings.choice.empty')} label={t('settings.general.display.conversation.title')} value={preferredDisplayId(props.desktopDisplays, settings.multiScreen.conversationDisplayId) ?? ''} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, conversationDisplayId: value || undefined } })} options={displayOptions} /></Field>
-            <Field title={t('settings.general.display.portrait.title')} detail={t('settings.general.display.portrait.detail')}><Choice emptyLabel={t('settings.choice.empty')} label={t('settings.general.display.portrait.title')} value={preferredDisplayId(props.desktopDisplays, settings.multiScreen.portraitDisplayId) ?? ''} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, portraitDisplayId: value || undefined } })} options={displayOptions} /></Field>
+            <DisplayLayoutMap displays={props.desktopDisplays} labels={displayOptions.map((option) => option.label)} backgroundUrlFor={backgroundUrlForDisplay} portraitDisplayId={portraitDisplayId} conversationDisplayId={conversationDisplayId} selectedId={selectedDisplayIdForView} onSelect={setSelectedDisplayId} showNumbers={showDisplayNumbers} onToggleNumbers={() => setShowDisplayNumbers((shown) => !shown)} />
+            <Field title={t('settings.general.display-map.background-of', { display: selectedDisplayLabel })} detail={t('settings.general.display-map.background-hint')}>
+              <div className="settings-display-background-grid" role="group" aria-label={t('settings.general.display-map.background-of', { display: selectedDisplayLabel })}>
+                <button type="button" className={`settings-display-background__follow ${!settings.multiScreen.backgrounds[selectedDisplayIdForView] ? 'is-active' : ''}`} aria-pressed={!settings.multiScreen.backgrounds[selectedDisplayIdForView]} onClick={() => setDisplayBackground(selectedDisplayIdForView, '')}>
+                  <span><SettingsIcon name="check" size={16} /></span>
+                  <strong>{t('settings.general.display-map.follow-global')}</strong>
+                </button>
+                {BACKGROUND_OPTIONS.map((background) => <button type="button" key={background.id} data-background={background.id} className={settings.multiScreen.backgrounds[selectedDisplayIdForView] === background.id ? 'is-active' : ''} aria-pressed={settings.multiScreen.backgrounds[selectedDisplayIdForView] === background.id} onClick={() => setDisplayBackground(selectedDisplayIdForView, background.id)}>
+                  <span style={background.path ? { backgroundImage: `url(${assetUrl(background.path)})` } : undefined} />
+                  <strong>{background.name}</strong>
+                </button>)}
+              </div>
+            </Field>
+            <Field title={t('settings.general.display.portrait.title')} detail={t('settings.general.display.portrait.detail')}>
+              {props.desktopDisplays.length <= 4
+                ? <Segmented label={t('settings.general.display.portrait.title')} value={portraitDisplayId ?? ''} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, portraitDisplayId: value || undefined } })} options={displayOptions} />
+                : <Choice emptyLabel={t('settings.choice.empty')} label={t('settings.general.display.portrait.title')} value={portraitDisplayId ?? ''} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, portraitDisplayId: value || undefined } })} options={displayOptions} />}
+            </Field>
+            <Field title={t('settings.general.display.conversation.title')} detail={t('settings.general.display.conversation.detail')}>
+              {props.desktopDisplays.length <= 4
+                ? <Segmented label={t('settings.general.display.conversation.title')} value={conversationDisplayId ?? ''} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, conversationDisplayId: value || undefined } })} options={displayOptions} />
+                : <Choice emptyLabel={t('settings.choice.empty')} label={t('settings.general.display.conversation.title')} value={conversationDisplayId ?? ''} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, conversationDisplayId: value || undefined } })} options={displayOptions} />}
+            </Field>
           </>}
           <div className="integration-actions"><button className="settings-action secondary" onClick={() => void props.onRefreshDesktopDisplays()}>{t('settings.general.display.refresh')}</button></div>
         </Card>}
