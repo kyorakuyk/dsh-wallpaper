@@ -61,6 +61,8 @@ export const enFull: FullOnlyDict = {
   'settings.general.multi-screen.off': 'Off keeps the single scene that spans the virtual desktop; turning it on reveals the per-display choices.',
   'settings.general.display.number': 'Display {number}',
   'settings.general.display.fallback': 'Display {index}',
+  'settings.general.display.primary-name': 'Primary display',
+  'settings.general.display.secondary-name': 'Secondary display {number}',
   'settings.general.display.metrics': '{width} × {height} px · {scale}% scale',
   'settings.general.display.primary': ' · primary',
   'settings.general.display.background': 'Background for {display}',

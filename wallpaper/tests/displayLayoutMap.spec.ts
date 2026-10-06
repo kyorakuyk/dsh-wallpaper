@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DesktopDisplayInfo } from '../src/native/runtime.ts'
-import { layoutDisplays } from '../src/settings/displayLayoutMap.ts'
+import { displayNumbers, layoutDisplays } from '../src/settings/displayLayoutMap.ts'
 
 function display(id: string, x: number, y: number, width: number, height: number): DesktopDisplayInfo {
   return {
@@ -14,6 +14,24 @@ function display(id: string, x: number, y: number, width: number, height: number
 }
 
 describe('layoutDisplays', () => {
+  it('numbers the primary display first without changing the input order', () => {
+    const displays = [
+      display('DISPLAY5', -1920, 0, 1920, 1080),
+      display('DISPLAY1', 0, 0, 2560, 1440),
+      display('DISPLAY3', 2560, 0, 1920, 1080),
+    ]
+    displays[1].primary = true
+
+    expect(displayNumbers(displays)).toEqual([2, 1, 3])
+  })
+
+  it('uses the first display as the fallback primary when Windows reports none', () => {
+    expect(displayNumbers([
+      display('DISPLAY5', 0, 0, 1920, 1080),
+      display('DISPLAY3', 1920, 0, 1920, 1080),
+    ])).toEqual([1, 2])
+  })
+
   it('preserves left-to-right placement and monitor size ratio', () => {
     const result = layoutDisplays([
       display('primary', 0, 0, 2560, 1600),

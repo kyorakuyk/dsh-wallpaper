@@ -8,6 +8,19 @@ export interface DisplayTile {
   height: number
 }
 
+/**
+ * Assign the identify overlay numbers using the same primary-first order as
+ * the settings labels. The display array itself stays in its native order so
+ * the drawn topology is never rearranged.
+ */
+export function displayNumbers(displays: readonly DesktopDisplayInfo[]): number[] {
+  if (displays.length === 0) return []
+  const primaryIndex = displays.findIndex((display) => display.primary)
+  const mainIndex = primaryIndex < 0 ? 0 : primaryIndex
+  let nextSecondary = 2
+  return displays.map((_, index) => index === mainIndex ? 1 : nextSecondary++)
+}
+
 /** Scale physical display bounds into one centered, bottom-aligned preview frame. */
 export function layoutDisplays(
   displays: DesktopDisplayInfo[],

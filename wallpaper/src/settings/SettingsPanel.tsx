@@ -1,6 +1,6 @@
 import { openRoutesFor, selectedOpenRoute } from '../connect/openRoutes.ts'
 import { formatMessage, formatSentence, msg, sentenceOf, setLanguage, t, useLanguage, type Language, type Message, type MessageKey } from '../i18n/index.ts'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 // `ModelTierRule` 随「模型与形态映射」卡片一起被冻结，解冻时连同上面那行 `updateRule` 一起加回来。
 import type { BackendMode } from '../domain/types.ts'
@@ -20,6 +20,7 @@ import { autostartDetail, autostartKnown } from './autostartCopy.ts'
 import { SettingsIcon, type SettingsIconName } from './SettingsIcon.tsx'
 import { SettingsPersonaBadge } from './SettingsPersonaBadge.tsx'
 import { DisplayLayoutMap } from './DisplayLayoutMap.tsx'
+import { displayNumbers } from './displayLayoutMap.ts'
 import { AppearancePreview } from './AppearancePreview.tsx'
 // ---------------------------------------------------------------------------
 // FREEZE（临时冻结，不是删除）：「起别名」与实例下拉被冻在这个 build 之外，所以它们要的两样东西
@@ -325,7 +326,7 @@ function Choice({ value, options, onChange, label, disabled = false, emptyMessag
     window.addEventListener('mousedown', close)
     return () => window.removeEventListener('mousedown', close)
   }, [])
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) {
       setOpenUpward(false)
       return
@@ -446,10 +447,10 @@ export function harnessEndpointKindLabel(kind: HarnessEndpointScan['kind']): str
 // }
 // ---------------------------------------------------------------------------
 
-function displayLabel(display: DesktopDisplayInfo, index: number): string {  const number = /DISPLAY(\d+)/i.exec(display.id)?.[1]
-  return number
-    ? t('settings.general.display.number', { number })
-    : display.name.trim() || t('settings.general.display.fallback', { index: index + 1 })
+function displayLabel(number: number): string {
+  return number === 1
+    ? t('settings.general.display.primary-name')
+    : t('settings.general.display.secondary-name', { number })
 }
 
 /**
@@ -683,7 +684,12 @@ export function SettingsPanel(props: SettingsPanelProps) {
   // 与被冻结的「模型与形态映射」卡片同进退：它唯一的用途就是在那张卡片里改规则。
   // const updateRule = (index: number, patch: Partial<ModelTierRule>) => set({ modelTierRules: settings.modelTierRules.map((rule, i) => i === index ? { ...rule, ...patch } : rule) })
   const pageMeta = pages.find((item) => item.id === page)!
-  const displayOptions = props.desktopDisplays.map((display, index) => ({ value: display.id, label: displayLabel(display, index) }))
+  const monitorNumbers = displayNumbers(props.desktopDisplays)
+  const displayOptions = props.desktopDisplays.map((display, index) => ({
+    value: display.id,
+    label: displayLabel(monitorNumbers[index]),
+    number: monitorNumbers[index],
+  }))
   const selectedDisplayIdForView = preferredDisplayId(props.desktopDisplays, selectedDisplayId ?? settings.multiScreen.portraitDisplayId) ?? ''
   const selectedDisplayLabel = displayOptions.find((option) => option.value === selectedDisplayIdForView)?.label ?? ''
   const portraitDisplayId = preferredDisplayId(props.desktopDisplays, settings.multiScreen.portraitDisplayId)
@@ -757,7 +763,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
         {props.desktopDisplays.length > 1 && <Card title={t('settings.general.multi-screen.title', { count: props.desktopDisplays.length })} description={t('settings.general.multi-screen.description')}>
           <Field title={t('settings.general.multi-screen.toggle')} detail={settings.multiScreen.enabled ? t('settings.general.multi-screen.on') : t('settings.general.multi-screen.off')}><Toggle label={t('settings.general.multi-screen.toggle')} checked={settings.multiScreen.enabled} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, enabled: value } })} /></Field>
           {settings.multiScreen.enabled && <>
-            <DisplayLayoutMap displays={props.desktopDisplays} labels={displayOptions.map((option) => option.label)} backgroundUrlFor={backgroundUrlForDisplay} portraitDisplayId={portraitDisplayId} conversationDisplayId={conversationDisplayId} selectedId={selectedDisplayIdForView} onSelect={setSelectedDisplayId} showNumbers={showDisplayNumbers} onToggleNumbers={() => setShowDisplayNumbers((shown) => !shown)} />
+            <DisplayLayoutMap displays={props.desktopDisplays} labels={displayOptions.map((option) => option.label)} numbers={displayOptions.map((option) => option.number)} backgroundUrlFor={backgroundUrlForDisplay} portraitDisplayId={portraitDisplayId} conversationDisplayId={conversationDisplayId} selectedId={selectedDisplayIdForView} onSelect={setSelectedDisplayId} showNumbers={showDisplayNumbers} onToggleNumbers={() => setShowDisplayNumbers((shown) => !shown)} />
             <Field title={t('settings.general.display-map.background-of', { display: selectedDisplayLabel })} detail={t('settings.general.display-map.background-hint')}>
               <div className="settings-display-background-grid" role="group" aria-label={t('settings.general.display-map.background-of', { display: selectedDisplayLabel })}>
                 <button type="button" className={`settings-display-background__follow ${!settings.multiScreen.backgrounds[selectedDisplayIdForView] ? 'is-active' : ''}`} aria-pressed={!settings.multiScreen.backgrounds[selectedDisplayIdForView]} onClick={() => setDisplayBackground(selectedDisplayIdForView, '')}>

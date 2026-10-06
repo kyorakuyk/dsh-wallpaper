@@ -3,9 +3,10 @@ import { t } from '../i18n/index.ts'
 import { SettingsIcon } from './SettingsIcon.tsx'
 import { layoutDisplays } from './displayLayoutMap.ts'
 
-export function DisplayLayoutMap({ displays, labels, backgroundUrlFor, portraitDisplayId, conversationDisplayId, selectedId, onSelect, showNumbers, onToggleNumbers }: {
+export function DisplayLayoutMap({ displays, labels, numbers, backgroundUrlFor, portraitDisplayId, conversationDisplayId, selectedId, onSelect, showNumbers, onToggleNumbers }: {
   displays: DesktopDisplayInfo[]
   labels: string[]
+  numbers: number[]
   backgroundUrlFor: (displayId: string) => string | undefined
   portraitDisplayId?: string
   conversationDisplayId?: string
@@ -53,7 +54,7 @@ export function DisplayLayoutMap({ displays, labels, backgroundUrlFor, portraitD
               <strong>{label}</strong>
               {!tile || tile.width >= 160 ? <small>{metrics}</small> : null}
             </span>
-            {showNumbers && <span className="settings-display-map__number" aria-hidden="true">{index + 1}</span>}
+            {showNumbers && <span className="settings-display-map__number" aria-hidden="true">{numbers[index] ?? index + 1}</span>}
           </button>
         })}
       </div>

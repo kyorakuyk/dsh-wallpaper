@@ -240,19 +240,6 @@
   font-size: 13px;
 }
 
-.settings-card {
-  margin-bottom: 14px;
-  overflow: hidden;
-  border: 1px solid var(--s-line);
-  border-radius: 12px;
-  background: #0E1928;
-  box-shadow: none;
-}
-
-.settings-card > header {
-  padding: 17px 20px 13px;
-}
-
 .settings-card h2 {
   margin: 0;
   font-size: 15px;
@@ -264,10 +251,6 @@
   color: var(--s-text-3);
   font-size: 12px;
   line-height: 1.55;
-}
-
-.settings-card__body {
-  padding: 0 20px 7px;
 }
 
 /* 一行的两列：左边文案（`__copy`），右边控件（`__control`）。**两列都必须能收缩**
@@ -1290,6 +1273,11 @@
 
 .settings-persona-badge__caption i.is-online {
   background: #52D8A0;
+}
+
+.settings-persona-badge__caption i.is-pending {
+  background: #D9B478;
+  box-shadow: 0 0 8px rgba(217, 180, 120, .45);
 }
 
 .settings-statusbar [aria-live] {

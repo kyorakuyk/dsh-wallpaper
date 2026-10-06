@@ -81,6 +81,8 @@ export const zhFull = {
   // 显示器的名字与它那一行参数；`{number}` / `{index}` 是系统给的编号，只有句子随语言走。
   'settings.general.display.number': '显示器 {number}',
   'settings.general.display.fallback': '显示器 {index}',
+  'settings.general.display.primary-name': '主屏',
+  'settings.general.display.secondary-name': '副屏 {number}',
   'settings.general.display.metrics': '{width} × {height} 像素 · 缩放 {scale}%',
   'settings.general.display.primary': ' · 主显示器',
   'settings.general.display.background': '{display} 背景',
