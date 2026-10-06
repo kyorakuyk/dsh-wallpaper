@@ -20,6 +20,7 @@ import { autostartDetail, autostartKnown } from './autostartCopy.ts'
 import { SettingsIcon, type SettingsIconName } from './SettingsIcon.tsx'
 import { SettingsPersonaBadge } from './SettingsPersonaBadge.tsx'
 import { DisplayLayoutMap } from './DisplayLayoutMap.tsx'
+import { AppearancePreview } from './AppearancePreview.tsx'
 // ---------------------------------------------------------------------------
 // FREEZE（临时冻结，不是删除）：「起别名」与实例下拉被冻在这个 build 之外，所以它们要的两样东西
 // 也一起冻住 —— `instanceLabel` 只给实例下拉的行文字用，`subjectAlias` 只给「起别名」输入框回显用，
@@ -30,6 +31,7 @@ import { DisplayLayoutMap } from './DisplayLayoutMap.tsx'
 // import { catalogAgeLabel, displaySubjectPath, instanceLabel, sameSubject, subjectAlias, subjectOptionLabel } from '../connect/harnessSubjects.ts'
 import { catalogAgeLabel, displaySubjectPath, sameSubject, subjectOptionLabel } from '../connect/harnessSubjects.ts'
 // import { launchArgsIssue } from '../connect/launchArgs.ts'
+import { officialPersonaCardFor } from '../persona/officialCatalog.ts'
 import { OfficialPersonaCards } from '../persona/OfficialPersonaCards.tsx'
 import './SettingsPanel.css'
 
@@ -700,6 +702,9 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
   const backend = props.liveBackend ?? settings.defaultBackend
   const themeClass = backend === 'harness' ? 'settings-app--harness' : 'settings-app--deepseek'
+  const previewBackground = BACKGROUND_OPTIONS.find((background) => background.id === settings.background)
+  const previewBackgroundUrl = previewBackground?.path ? assetUrl(previewBackground.path) : undefined
+  const previewPortraitUrl = assetUrl(officialPersonaCardFor(backend, 'pro').portraitPath)
 
   return <div className={`settings-app ${themeClass}`}>
     <header className="settings-titlebar">
@@ -1060,7 +1065,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
       </>}
 
       {page === 'appearance' && <>
-        <Card title={t('settings.appearance.background.title')} description={t('settings.appearance.background.description')}><div className="background-grid">{BACKGROUND_OPTIONS.map((background) => <button key={background.id} data-background={background.id} className={settings.background === background.id ? 'is-active' : ''} onClick={() => set({ background: background.id })}><span style={background.path ? { backgroundImage: `url(${background.path})` } : undefined} /><strong>{background.name}</strong>{settings.background === background.id && <i>{t('settings.appearance.background.current')}</i>}</button>)}</div></Card>
+        <AppearancePreview backgroundUrl={previewBackgroundUrl} portraitUrl={previewPortraitUrl} ambientStrength={settings.portraitAmbientStrength} bubbleText={t('settings.appearance.preview.bubble')} />
+        <Card title={t('settings.appearance.background.title')} description={t('settings.appearance.background.description')}><div className="background-grid">{BACKGROUND_OPTIONS.map((background) => <button key={background.id} data-background={background.id} className={settings.background === background.id ? 'is-active' : ''} onClick={() => set({ background: background.id })}><span style={background.path ? { backgroundImage: `url(${assetUrl(background.path)})` } : undefined} /><strong>{background.name}</strong>{settings.background === background.id && <i>{t('settings.appearance.background.current')}</i>}</button>)}</div></Card>
         <Card title={t('settings.appearance.library.title')} description={t('settings.appearance.library.description')}>
           <div className="asset-library-toolbar"><button className="settings-action" onClick={props.onImportAppearance} disabled={props.appearanceBusy}>{t('settings.appearance.library.import')}</button><span>{t('settings.appearance.library.counts', { inbox: props.appearanceAssets.filter((asset) => asset.status === 'inbox').length, usable: props.appearanceAssets.filter((asset) => asset.status === 'classified').length })}</span></div>
           {props.appearanceAssets.filter((asset) => asset.status === 'inbox').length > 0 && <div className="asset-inbox">{props.appearanceAssets.filter((asset) => asset.status === 'inbox').map((asset) => <div className="asset-inbox-row" key={asset.id}><span><strong>{asset.originalName}</strong><small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : t('settings.appearance.asset.image')}{asset.hasAlpha ? t('settings.appearance.asset.transparent') : ''}</small></span><Choice emptyLabel={t('settings.choice.empty')} label={t('settings.appearance.asset.purpose', { name: asset.originalName })} value="" onChange={(slot) => props.onClassifyAppearance(asset.id, slot as AppearanceSlot)} disabled={props.appearanceBusy} options={[{ value: '', label: t('settings.appearance.asset.choose-purpose') }, ...componentSlots.map(({ slot, labelKey }) => ({ value: slot, label: t(labelKey) }))]} /></div>)}</div>}

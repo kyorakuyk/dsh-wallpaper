@@ -80,6 +80,10 @@ export const enFull: FullOnlyDict = {
   'settings.general.display-map.background-hint': 'Applies to this display only',
   'settings.general.display-map.follow-global': 'Follow global',
 
+  'settings.appearance.preview.label': 'Appearance preview',
+  'settings.appearance.preview.bubble': 'Good morning! What shall we do today?',
+  'settings.appearance.preview.caption': 'Approximate preview; the desktop is the reference',
+
   'settings.general.conversation-lifecycle.title': 'Conversation lifetime',
   'settings.general.conversation-policy.title': 'New conversation policy',
   'settings.general.conversation-policy.detail': 'Web mode pins one DeepSeek conversation address; every other backend keeps its own most recent conversation.',

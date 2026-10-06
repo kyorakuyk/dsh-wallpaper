@@ -100,6 +100,10 @@ export const zhFull = {
   'settings.general.display-map.background-hint': '只影响这一块屏幕',
   'settings.general.display-map.follow-global': '跟随全局',
 
+  'settings.appearance.preview.label': '外观预览',
+  'settings.appearance.preview.bubble': '早上好！今天要做什么呢？',
+  'settings.appearance.preview.caption': '预览为近似效果，以桌面实际显示为准',
+
   // 常规 · 会话生命周期
   'settings.general.conversation-lifecycle.title': '会话生命周期',
   'settings.general.conversation-policy.title': '新会话策略',
