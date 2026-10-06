@@ -240,19 +240,6 @@
   font-size: 13px;
 }
 
-.settings-card h2 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
-}
-
-.settings-card header p {
-  margin: 6px 0 0;
-  color: var(--s-text-3);
-  font-size: 12px;
-  line-height: 1.55;
-}
-
 /* 一行的两列：左边文案（`__copy`），右边控件（`__control`）。**两列都必须能收缩**
  * （`flex-shrink: 1` 加上 `min-width: 0`），否则其中一列会一直长到把另一列压没。
  *
@@ -400,13 +387,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* A card clips its own rounded corners, which also clipped an open dropdown menu:
-   the menu is absolutely positioned below its trigger and z-index cannot escape a clip.
-   Let it overflow only while a choice inside it is actually open. */
-.settings-card:has(.settings-choice.is-open) {
-  overflow: visible;
 }
 
 .settings-choice.is-open {
@@ -1200,6 +1180,19 @@
   border-top: 0;
 }
 
+.settings-card h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.settings-card header p {
+  margin: 6px 0 0;
+  color: var(--s-text-3);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .settings-card > header {
   padding: 0 0 10px;
 }
@@ -1232,9 +1225,9 @@
 .settings-persona-badge__portrait {
   position: absolute;
   z-index: 1;
-  top: -8px;
-  right: -6px;
-  width: 150px;
+  top: -20px;
+  right: -26px;
+  width: 210px;
   max-width: none;
   max-height: none;
   filter: brightness(.9);
@@ -1442,9 +1435,33 @@
   gap: 8px;
 }
 
+.settings-display-background {
+  display: grid;
+  gap: 10px;
+  margin: 4px 0 16px;
+  padding: 16px 0 4px;
+  border-top: 1px solid var(--s-line);
+}
+
+.settings-display-background__heading {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-display-background__heading strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.settings-display-background__heading span {
+  color: var(--s-text-3);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .settings-display-background-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
   width: 100%;
 }

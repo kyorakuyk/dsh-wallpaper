@@ -587,6 +587,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
   const savedTimer = useRef<ReturnType<typeof setTimeout>>()
   const [selectedDisplayId, setSelectedDisplayId] = useState<string>()
   const [showDisplayNumbers, setShowDisplayNumbers] = useState(false)
+  const settingsContentRef = useRef<HTMLElement>(null)
   const set = (patch: Partial<WallpaperSettings>) => {
     onChange({ ...settings, ...patch })
     setSavedAt(Date.now())
@@ -596,6 +597,9 @@ export function SettingsPanel(props: SettingsPanelProps) {
   useEffect(() => () => {
     if (savedTimer.current !== undefined) clearTimeout(savedTimer.current)
   }, [])
+  useLayoutEffect(() => {
+    if (settingsContentRef.current) settingsContentRef.current.scrollTop = 0
+  }, [page])
   // 语言变了要重渲染：词条是在渲染时取的，所以订阅一下就够。
   const language = useLanguage()
   /** 「清除全部用户数据」的结果（成功后把"删了什么、还剩什么要你手动删"写在这一行里）。 */
@@ -745,7 +749,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
       <nav>{pages.map((item) => <button key={item.id} className={page === item.id ? 'is-active' : ''} onClick={() => props.onPageChange(item.id)}><span className="settings-nav__icon"><SettingsIcon name={item.icon} /></span><span><strong>{t(item.labelKey)}</strong></span></button>)}</nav>
     </aside>
 
-    <main className="settings-content">
+    <main className="settings-content" ref={settingsContentRef}>
       <div className="settings-page-heading"><span>{t('settings.page.heading', { page: t(pageMeta.labelKey) })}</span><h1>{t(pageMeta.labelKey)}</h1><p>{t(pageMeta.hintKey)}</p></div>
 
       {page === 'general' && <>
@@ -764,7 +768,11 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <Field title={t('settings.general.multi-screen.toggle')} detail={settings.multiScreen.enabled ? t('settings.general.multi-screen.on') : t('settings.general.multi-screen.off')}><Toggle label={t('settings.general.multi-screen.toggle')} checked={settings.multiScreen.enabled} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, enabled: value } })} /></Field>
           {settings.multiScreen.enabled && <>
             <DisplayLayoutMap displays={props.desktopDisplays} labels={displayOptions.map((option) => option.label)} numbers={displayOptions.map((option) => option.number)} backgroundUrlFor={backgroundUrlForDisplay} portraitDisplayId={portraitDisplayId} conversationDisplayId={conversationDisplayId} selectedId={selectedDisplayIdForView} onSelect={setSelectedDisplayId} showNumbers={showDisplayNumbers} onToggleNumbers={() => setShowDisplayNumbers((shown) => !shown)} />
-            <Field title={t('settings.general.display-map.background-of', { display: selectedDisplayLabel })} detail={t('settings.general.display-map.background-hint')}>
+            <div className="settings-display-background">
+              <div className="settings-display-background__heading">
+                <strong>{t('settings.general.display-map.background-of', { display: selectedDisplayLabel })}</strong>
+                <span>{t('settings.general.display-map.background-hint')}</span>
+              </div>
               <div className="settings-display-background-grid" role="group" aria-label={t('settings.general.display-map.background-of', { display: selectedDisplayLabel })}>
                 <button type="button" className={`settings-display-background__follow ${!settings.multiScreen.backgrounds[selectedDisplayIdForView] ? 'is-active' : ''}`} aria-pressed={!settings.multiScreen.backgrounds[selectedDisplayIdForView]} onClick={() => setDisplayBackground(selectedDisplayIdForView, '')}>
                   <span><SettingsIcon name="check" size={16} /></span>
@@ -775,7 +783,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
                   <strong>{background.name}</strong>
                 </button>)}
               </div>
-            </Field>
+            </div>
             <Field title={t('settings.general.display.portrait.title')} detail={t('settings.general.display.portrait.detail')}>
               {props.desktopDisplays.length <= 4
                 ? <Segmented label={t('settings.general.display.portrait.title')} value={portraitDisplayId ?? ''} onChange={(value) => set({ multiScreen: { ...settings.multiScreen, portraitDisplayId: value || undefined } })} options={displayOptions} />
