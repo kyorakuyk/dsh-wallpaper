@@ -1655,3 +1655,46 @@
     max-width: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   默认窗口宽度（920 逻辑像素）下，面板里一行只有约 580px：左边说明 + 右边「下拉 + 按钮」
+   放不下。控件列允许收缩（见上面 `.settings-field__control` 的注释与测试），于是按钮被挤成
+   一字一行（「重 / 新 / 扫 / 描」），下拉框向左溢出、压到说明文字上。
+
+   处理分两步，都按**面板自身的宽度**判断（容器查询），不按屏幕宽度：
+   1. 按钮文字永不折行、不被压缩；控件之间留 8px；
+   2. 面板窄于 720px 时，只有「宽控件」那几行（下拉、输入框、分段按钮、两个以上按钮）改成
+      上下排列：说明在上、控件在下。开关、单个按钮这类窄控件仍留在右侧，不必一起换行。
+
+   `container-type` 会让面板成为一个层叠上下文，打开的下拉菜单若伸出面板底部，会被**下一块**
+   面板盖住；所以下拉打开时把它所在的分区整体抬到上面。 */
+.settings-card__body {
+  container-type: inline-size;
+}
+
+.settings-card:has(.settings-choice.is-open) {
+  position: relative;
+  z-index: 5;
+}
+
+.settings-field__control {
+  gap: 8px;
+}
+
+.settings-field__control :is(button, .settings-action) {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+@container (max-width: 720px) {
+  .settings-field:has(> .settings-field__control :is(.settings-choice, select, input:not([type=range]), .settings-segmented, .api-key-actions, .settings-static, .settings-action ~ .settings-action)) {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .settings-field:has(> .settings-field__control :is(.settings-choice, select, input:not([type=range]), .settings-segmented, .api-key-actions, .settings-static, .settings-action ~ .settings-action)) > .settings-field__control {
+    justify-content: flex-start;
+    width: 100%;
+  }
+}
