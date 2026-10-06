@@ -17,6 +17,7 @@ import { preferredDisplayId } from '../runtime/displayLayout.ts'
 import { harnessStateLabel } from '../connect/harnessLabels.ts'
 import type { AutostartStatus, HarnessEndpointScan, HarnessTarget } from '../native/runtime.ts'
 import { autostartDetail, autostartKnown } from './autostartCopy.ts'
+import { SettingsIcon, type SettingsIconName } from './SettingsIcon.tsx'
 // ---------------------------------------------------------------------------
 // FREEZE（临时冻结，不是删除）：「起别名」与实例下拉被冻在这个 build 之外，所以它们要的两样东西
 // 也一起冻住 —— `instanceLabel` 只给实例下拉的行文字用，`subjectAlias` 只给「起别名」输入框回显用，
@@ -237,13 +238,13 @@ const componentSlots: Array<{ slot: AppearanceSlot; labelKey: MessageKey; detail
   { slot: 'persona.harness.pro', labelKey: 'settings.appearance.component.persona-harness-pro.label', detailKey: 'settings.appearance.component.persona-harness-pro.detail' },
 ]
 
-const pages: Array<{ id: Page; icon: string; labelKey: MessageKey; hintKey: MessageKey }> = [
-  { id: 'general', icon: '⌂', labelKey: 'nav.general.label', hintKey: 'nav.general.hint' },
-  { id: 'connections', icon: '⌁', labelKey: 'nav.connections.label', hintKey: 'nav.connections.hint' },
-  { id: 'appearance', icon: '◐', labelKey: 'nav.appearance.label', hintKey: 'nav.appearance.hint' },
-  { id: 'personas', icon: '◇', labelKey: 'nav.personas.label', hintKey: 'nav.personas.hint' },
-  { id: 'history', icon: '☰', labelKey: 'nav.history.label', hintKey: 'nav.history.hint' },
-  { id: 'system', icon: '⚙', labelKey: 'nav.system.label', hintKey: 'nav.system.hint' },
+const pages: Array<{ id: Page; icon: SettingsIconName; labelKey: MessageKey; hintKey: MessageKey }> = [
+  { id: 'general', icon: 'general', labelKey: 'nav.general.label', hintKey: 'nav.general.hint' },
+  { id: 'connections', icon: 'connections', labelKey: 'nav.connections.label', hintKey: 'nav.connections.hint' },
+  { id: 'appearance', icon: 'appearance', labelKey: 'nav.appearance.label', hintKey: 'nav.appearance.hint' },
+  { id: 'personas', icon: 'personas', labelKey: 'nav.personas.label', hintKey: 'nav.personas.hint' },
+  { id: 'history', icon: 'history', labelKey: 'nav.history.label', hintKey: 'nav.history.hint' },
+  { id: 'system', icon: 'system', labelKey: 'nav.system.label', hintKey: 'nav.system.hint' },
 ]
 
 /** `18.4 MB`-style size for the history rows. */
@@ -669,17 +670,20 @@ export function SettingsPanel(props: SettingsPanelProps) {
     ? formatHistoryTime(updateReport.checkedAtMs)
     : t('settings.system.update.last-check.never')
 
-  return <div className="settings-app">
+  const backend = props.liveBackend ?? settings.defaultBackend
+  const themeClass = backend === 'harness' ? 'settings-app--harness' : 'settings-app--deepseek'
+
+  return <div className={`settings-app ${themeClass}`}>
     <header className="settings-titlebar">
       <div className="settings-titlebar__drag" aria-hidden="true" onMouseDown={(event) => {
         if (event.button === 0) void invoke('start_settings_drag')
       }} />
       <div className="settings-brand"><img className="settings-brand__mark" src="/brand/persona-mark.png" alt="" draggable={false} /><div><strong>Wallpaper</strong><small>{t('settings.brand.subtitle')}</small></div></div>
-      <button className="settings-window-close" aria-label={t('settings.window.close')} onClick={onClose}>×</button>
+      <button className="settings-window-close" aria-label={t('settings.window.close')} onClick={onClose}><SettingsIcon name="close" /></button>
     </header>
 
     <aside className="settings-sidebar">
-      <nav>{pages.map((item) => <button key={item.id} className={page === item.id ? 'is-active' : ''} onClick={() => props.onPageChange(item.id)}><span className="settings-nav__icon">{item.icon}</span><span><strong>{t(item.labelKey)}</strong><small>{t(item.hintKey)}</small></span></button>)}</nav>
+      <nav>{pages.map((item) => <button key={item.id} className={page === item.id ? 'is-active' : ''} onClick={() => props.onPageChange(item.id)}><span className="settings-nav__icon"><SettingsIcon name={item.icon} /></span><span><strong>{t(item.labelKey)}</strong></span></button>)}</nav>
       <div className="settings-sidebar__status">
         <i className={harnessStatus === 'bridge-ready' ? 'is-online' : harnessStatus === 'offline' ? '' : 'is-pending'} />
         <span>{harnessStateLabel(harnessStatus)}</span>
