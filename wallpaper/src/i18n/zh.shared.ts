@@ -34,7 +34,7 @@ export const zhShared = {
   // ---------------------------------------------------------------------------
   // Lite 设置窗口（`lite/LiteSettingsWindow.tsx`）：品牌下一行、三张卡片、选项格子与提示条。
   // `Wallpaper Lite` / `DSH` / `Windows 11` 是产品名，两种语言里一样，所以不在这里。
-  // FREEZE 冻结的那几张卡（锁屏、登录过渡底图、TranslucentTB）整块在注释里，不占词条。
+  // 冻结的那几张卡（锁屏、登录过渡底图、TranslucentTB）已整块迁出到仓库的归档目录，不占词条。
   // ---------------------------------------------------------------------------
   'lite.settings.brand.tagline': '轻量桌面壁纸',
   'lite.settings.window.close': '关闭设置',

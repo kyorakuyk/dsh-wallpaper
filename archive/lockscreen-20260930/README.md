@@ -13,8 +13,9 @@
 （`lockscreen-probe` feature 与 `[[bin]]`）。
 
 当前状态（2026-10）：Rust 侧已全部迁出到这里——锁屏实现见下文 B2，`lib.rs` 里注释掉的锁屏命令、
-handler 注释行、`build.rs` 的命令登记与 permissions 文件见下文 B3；前端部分仍在原位按 FREEZE 注释，
-待 B4。最初按 FREEZE 注释的代码块清单见 `docs/plans/release-scope-cleanup-plan.md` 第一节。
+handler 注释行、`build.rs` 的命令登记与 permissions 文件见下文 B3；前端的冻结片段（门面包装、两个设置窗口的
+状态与界面、设置字段、孤儿 CSS）也已迁出，见下文 B4。现役 `wallpaper/src` 里不再有锁屏代码（外观素材槽
+`lockscreen.image` 是现役功能，与此无关）。最初按 FREEZE 注释的代码块清单见 `docs/plans/release-scope-cleanup-plan.md` 第一节。
 
 ## 2026-10 第二批归档（B2）：Rust 锁屏实现
 
@@ -154,3 +155,68 @@ handler 接线（恢复时取消注释即可；原样列出）：
 7. 运行全套门禁：`cargo test --manifest-path wallpaper/src-tauri/Cargo.toml --locked --all-targets`、Lite 的
    `cargo check … --no-default-features --features lite --bin dsh-wallpaper-lite` 与 `cargo test … --no-default-features --features lite --lib`、
    前端测试与 typecheck。
+
+## 2026-10 第四批归档（B4）：前端锁屏代码
+
+来源 commit `3c92772`（tag `pre-freeze-isolation`）；下列行号均指该 commit（B1-B3 没有改这些前端文件）。
+这一批把仍在 `wallpaper/src` 里的锁屏（1A）冻结片段迁到 `wallpaper/src/` 下的片段文件。它们在原文件里几乎都是
+`//` 或 `{/* */}` 注释；片段里去掉了注释外壳、恢复成普通 TS/TSX（FREEZE 说明保留为注释），每段前用
+`// ---- 原 N-M 行：位置 ----` 写明原位置。片段不在任何构建里，单独编译不通过、IDE 报未解析符号属预期。
+唯一仍是现役代码的是 `native/runtime.ts:30` 的导出 `LockScreenDiagnostics`（B4 时全仓已无引用），一并移出；
+只被冻结 JSX 使用的 CSS 也随 UI 迁出。
+
+| 归档片段（`wallpaper/src/` 下） | 原文件（`wallpaper/src/` 下）与原行 | 迁出的内容 |
+| --- | --- | --- |
+| `native/runtime.lockscreen.ts` | `native/runtime.ts` 30；453-458；470-471；723-740；769-774 | 导出 `interface LockScreenDiagnostics`；`NativeRuntime` 的 `setLockScreen`、`clearStaleLockScreenBackup(confirmed)`、`lockScreenDiagnostics`、`openWindowsLockScreenSettings` 声明及 `nativeRuntime` 里的实现 |
+| `lite/native.lockscreen.ts` | `lite/native.ts` 1-2；28-31；33-36；48-51；76-79（各段后的空行一并删除） | 带 `LockScreenDiagnostics` 的 import；`lockScreenDiagnostics`、`setLockScreen`、`clearStaleLockScreenBackup`、`openWindowsLockScreenSettings` |
+| `lite/LiteSettingsWindow.lockscreen.tsx` | `lite/LiteSettingsWindow.tsx` 4-5；36-37；45-46；49-50；70-88；149-150；212-228；246-254；256-271；308；310；313-314 | import；state `lockScreenDiagnostics`、`lockScreenBusy`；`lockOperationRef`；`refreshDiagnostics` 与挂载时的调用；`setLockScreen`、`openLockScreenSettings`、`clearStaleLockScreenBackup`（含 `window.confirm`）；`01 · SYSTEM` 卡片的说明注释、"接管 Windows 锁屏图片"行、按钮行与诊断块 |
+| `lite/LiteSettingsWindow.lockscreen.css` | `lite/LiteSettingsWindow.css` 28-30 | `.lite-actions`（及其 `button` 状态）、`.lite-diagnostics`、`.lite-diagnostics-action` |
+| `lite/settings.lockscreen.ts` | `lite/settings.ts` 37；71 | `lockScreenEnabled` 的默认值与规范化 |
+| `lite/types.lockscreen.ts` | `lite/types.ts` 13 | `LiteSettings.lockScreenEnabled` |
+| `settings/SettingsWindow.lockscreen.tsx` | `settings/SettingsWindow.tsx` 7-8；147-148；150-151；215-216；237-238；375-387；604-606；835-881；979-980；982-988；1157-1164 | import；state `lockScreenDiagnostics`、`lockScreenBusy`；`lockScreenOperationRef`、`lockScreenDiagnosticsRequestRef`；`refreshLockScreenDiagnostics`；`probeRunners.lockScreenDiagnostics`；`setLockScreenEnabled`、`openWindowsLockScreenSettings`、`clearStaleLockScreenBackup`（含 `window.confirm`）；`change` 里把锁屏字段排除在即时保存之外的合并；传给 `SettingsPanel` 的 6 个 prop |
+| `settings/SettingsPanel.lockscreen.tsx` | `settings/SettingsPanel.tsx` 11-12；192-198；1283-1290 | 带 `LockScreenDiagnostics` 的 import；`SettingsPanelProps` 的 `lockScreenDiagnostics`、`onRefreshLockScreenDiagnostics`、`onRestoreLockScreen`、`onClearStaleLockScreenBackup`、`onSetLockScreenEnabled`、`lockScreenBusy`；系统页 Windows 卡片里的"接管锁屏图片"行与诊断块 |
+| `settings/SettingsPanel.lockscreen.css` | `settings/SettingsPanel.css` 810-846（847 的空行一并删除） | `.lockscreen-diagnostics`、`.lockscreen-diagnostics__row`、`.lockscreen-diagnostics__row > div`、`.lockscreen-diagnostics strong`、`small`/`li`、`ul` |
+| `settings/settingsProbes.lockscreen.ts` | `settings/settingsProbes.ts` 29-31；53-54；203-204 | `SETTINGS_PROBES` 的 `'lockScreenDiagnostics'`；`PAGE_PROBES.system` 的旧值；`PROBE_ERROR_MESSAGES.lockScreenDiagnostics` |
+| `settings/store.lockscreen.ts` | `settings/store.ts` 192；255；391 | `WallpaperSettings.lockScreenEnabled` 字段、默认值与规范化（原为不带 FREEZE 标记的注释） |
+
+1A 与 1B 交错处的分拣（两个归档按各自标记拿走自己那几行，没有一行被拆成两半）：
+
+- 四处 `native/runtime.ts` 类型 import 的注释行（`lite/native.ts` 1-2、`LiteSettingsWindow.tsx` 4-5、`SettingsWindow.tsx` 7-8，
+  以及 `SettingsPanel.tsx` 11-12）按 FREEZE(1A) 标记归这里；其中前三行同时列着 1B 的 `TranslucentTbStatus`，只恢复锁屏时去掉它。
+- Lite 诊断块（原 `LiteSettingsWindow.tsx:314`）标着 FREEZE(1A)，但里面引用了 1B 的 `desktopFallbackStatus`；整行归这里，
+  只恢复锁屏时删掉那一小段。
+- `.lite-actions` 同时被锁屏按钮行（原 313）与 1B 的 TranslucentTB 卡片（原 338）使用，两个归档的 CSS 片段各存一份，
+  都恢复时只放回一次。
+
+留在现役、只改措辞（不是迁移）：
+
+- `settings/SettingsWindow.tsx` 211-214 `settingsRef` 的说明原写 "a successful lock-screen request"，改为 "a successful async request"。
+- `settings/SettingsWindow.tsx` 989 的 `const normalNext = next` 留在现役（它前面那段合并逻辑已迁出）。
+- `i18n/zh.shared.ts:37`、`i18n/en.shared.ts:28` 的说明注释改为"已整块迁出到仓库的归档目录"（不写 `archive/` 路径，现役源码不引用归档）。用户可见文案（词条、README、tauri conf）本批未动。
+
+### 恢复接线（B4）
+
+1. 先按上文 B2、B3 恢复 Rust 实现、四条命令、`build.rs` 登记与权限；设置窗口要调用它们，还需在 `capabilities/settings.json`
+   里授予对应的 `allow-…`。
+2. 把每个片段按"原 N-M 行"所写的位置放回原文件，作为现役代码（不要再加注释外壳）：`LockScreenDiagnostics` 导出、
+   `NativeRuntime` 声明与实现、Lite 门面函数、两个设置窗口的状态 / ref / 函数 / JSX、`SettingsPanelProps` 与系统页 JSX。
+3. 恢复 import：三处 `native/runtime.ts` 类型 import 换成片段里带 `LockScreenDiagnostics` 的版本（只恢复锁屏时去掉
+   `TranslucentTbStatus`；`SettingsPanel.tsx` 要保留现役行里的 `UpdateCheckReport`）。
+4. 恢复设置字段与接线：`store.ts`、Lite `settings.ts`/`types.ts` 的 `lockScreenEnabled`；`SettingsWindow` 的 `change`
+   换回合并逻辑；`settingsProbes.ts` 的探针名单（`PAGE_PROBES.system` 要同时保留 `updateStatus`）与错误词条映射。
+5. 恢复 CSS：把两个 `.css` 片段放回原位置（`.lite-actions` 只放一次）。
+6. 词条：片段里的界面文案是冻结前写死的中文，`PROBE_ERROR_MESSAGES` 引用的 `settings.probe.lock-screen` 当前也不在词典里；
+   恢复为现役代码前要把它们迁进 `i18n/`（否则 `noHardcodedCopy.spec.ts` 会红、`MessageKey` 类型不过），`setNotice`
+   现在接的是 `Sentence`/`Message`。
+7. 测试：`nativeChatBoundary.spec.ts` 的 "requires explicit confirmation before deleting a saved lock-screen original"
+   现在钉的是"现役里没有 `clearStaleLockScreenBackup`、归档片段里确认在先"，恢复时改回读现役文件；
+   `settingsProbes.spec.ts`、`settingsStore.spec.ts` 里注释掉的锁屏断言取消注释。
+8. 运行 `pnpm typecheck && pnpm test && pnpm build && pnpm build:lite`，以及 Lite bundle boundary（`scripts/verify-lite-bundle.ps1`）。
+
+### 未验证范围（B4）
+
+- 本批在没有 node_modules 的环境里完成，没有运行 tsc / vitest / vite。依据是逐文件比对：剥掉注释后，现役代码与迁移前
+  逐字相同，差别只有 `runtime.ts` 的 `LockScreenDiagnostics` 导出（全仓无引用）与 JSX 里 `{/* */}` 留下的空表达式
+  `{}`；import 行没有变化。由 CI（tsc -b、vitest、vite build、build:lite、Lite bundle boundary）最终确认。
+- 片段不再被类型检查。它们在冻结期间本来就是注释、从未被编译，恢复时可能与现役接口有漂移（见上面第 6 条）。
+- CI 的 `paths-ignore` 含 `archive/**`，只改动这里不会触发 CI。

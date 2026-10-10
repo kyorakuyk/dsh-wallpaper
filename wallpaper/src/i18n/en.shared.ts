@@ -25,7 +25,7 @@ export const enShared: SharedDict = {
   // The Lite settings window (`lite/LiteSettingsWindow.tsx`): the line under the brand, three
   // cards, the option tiles, and the notice bar. `Wallpaper Lite`, `DSH`, and `Windows 11` are
   // product names and read the same in both languages, so they are not entries. The frozen cards
-  // (lock screen, sign-in wallpaper, TranslucentTB) live entirely in comments and take no entries.
+  // (lock screen, sign-in wallpaper, TranslucentTB) now live in the repository archive and take no entries.
   // ---------------------------------------------------------------------------
   'lite.settings.brand.tagline': 'A lightweight desktop wallpaper',
   'lite.settings.window.close': 'Close settings',

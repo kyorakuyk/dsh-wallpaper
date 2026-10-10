@@ -21,6 +21,9 @@ async function readNative(relativePath: string): Promise<string> {
 const archiveRoot = resolve(wallpaperRoot, '..', 'archive')
 const archivedLockScreenCommandsPath = 'lockscreen-20260930/wallpaper/src-tauri/src/lib.lock-screen-commands.rs'
 const archivedIntegrationCommandsPath = 'integrations-20260930/wallpaper/src-tauri/src/lib.system-integration-commands.rs'
+// B4 moved the frozen front-end lock-screen code out of wallpaper/src as well; the fragments are
+// ordinary TypeScript (the `//` and `{/* */}` shells removed), named after the file they came from.
+const archivedLockScreenFrontendRoot = 'lockscreen-20260930/wallpaper/src'
 const frozenLockScreenCommands = [
   'set_lock_screen_enabled',
   'clear_stale_lock_screen_backup',
@@ -260,7 +263,10 @@ describe('native chat boundary', () => {
   })
 
   it('requires explicit confirmation before deleting a saved lock-screen original', async () => {
-    const [runtime, liteNative, settings, liteSettings, lib, integration, archivedLockScreen, archivedCommands] = await Promise.all([
+    const [
+      runtime, liteNative, settings, liteSettings, lib, integration, archivedLockScreen, archivedCommands,
+      archivedRuntime, archivedLiteNative, archivedSettings, archivedLiteSettings,
+    ] = await Promise.all([
       readFile(resolve(wallpaperRoot, 'src/native/runtime.ts'), 'utf8'),
       readFile(resolve(wallpaperRoot, 'src/lite/native.ts'), 'utf8'),
       readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8'),
@@ -272,12 +278,25 @@ describe('native chat boundary', () => {
       readFile(resolve(wallpaperRoot, '../archive/lockscreen-20260930/wallpaper/src-tauri/src/windows_integration/lock_screen.rs'), 'utf8'),
       // B3 moved the (commented-out) Tauri command itself into the archive as well.
       readArchive(archivedLockScreenCommandsPath),
+      // B4 moved the (commented-out) front-end wrappers and settings handlers too.
+      readArchive(`${archivedLockScreenFrontendRoot}/native/runtime.lockscreen.ts`),
+      readArchive(`${archivedLockScreenFrontendRoot}/lite/native.lockscreen.ts`),
+      readArchive(`${archivedLockScreenFrontendRoot}/settings/SettingsWindow.lockscreen.tsx`),
+      readArchive(`${archivedLockScreenFrontendRoot}/lite/LiteSettingsWindow.lockscreen.tsx`),
     ])
-    expect(runtime).toContain('clearStaleLockScreenBackup(confirmed: boolean)')
-    expect(runtime).toContain("{ confirmed }")
-    expect(liteNative).toContain('clearStaleLockScreenBackup(confirmed: boolean)')
-    expect(settings).toContain('window.confirm(')
-    expect(liteSettings).toContain('window.confirm(')
+    // The live front end no longer carries the frozen wrappers or handlers, not even as comments.
+    for (const live of [runtime, liteNative, settings, liteSettings]) {
+      expect(live).not.toContain('clearStaleLockScreenBackup')
+    }
+    // The archived wrappers still pass the explicit confirmation through to the command…
+    expect(archivedRuntime).toContain('clearStaleLockScreenBackup(confirmed: boolean)')
+    expect(archivedRuntime).toContain("{ confirmed }")
+    expect(archivedLiteNative).toContain('clearStaleLockScreenBackup(confirmed: boolean)')
+    expect(archivedLiteNative).toContain("{ confirmed }")
+    // …and both archived settings pages still ask the user before they call it.
+    const confirmsBeforeDeleting = /const clearStaleLockScreenBackup = async \(\) => \{[\s\S]*?window\.confirm\([\s\S]*?\.clearStaleLockScreenBackup\(true\)/
+    expect(archivedSettings).toMatch(confirmsBeforeDeleting)
+    expect(archivedLiteSettings).toMatch(confirmsBeforeDeleting)
     expect(lib).not.toContain('clear_stale_lock_screen_backup')
     expect(archivedCommands).toMatch(/async fn clear_stale_lock_screen_backup\([\s\S]*?confirmed: bool,[\s\S]*?windows_integration::clear_stale_lock_screen_backup\(&app, confirmed\)/)
     expect(integration).not.toContain('fn clear_stale_lock_screen_backup')

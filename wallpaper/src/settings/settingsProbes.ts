@@ -22,13 +22,8 @@ export type SettingsPage = (typeof SETTINGS_PAGES)[number]
 export const DISPLAY_LIST_FALLBACK_INTERVAL_MS = 30_000
 
 export const SETTINGS_PROBES = [
-  // FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30），这条探针退出。恢复办法：取消注释。
-  // 'translucentTb',
   'managedDsh',
   'deepseekWebAdapterConfig',
-  // FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
-  // 恢复办法：取消这里的注释，并把下面 PAGE_PROBES.system 与 PROBE_ERROR_MESSAGES 里同名的两处一起还原。
-  // 'lockScreenDiagnostics',
   'autostartStatus',
   'desktopDisplays',
   'apiHistory',
@@ -44,14 +39,10 @@ export type SettingsProbe = (typeof SETTINGS_PROBES)[number]
  */
 export const PAGE_PROBES: Record<SettingsPage, readonly SettingsProbe[]> = {
   general: ['desktopDisplays'],
-    // FREEZE(1B)：
-  // connections: ['managedDsh', 'translucentTb', 'deepseekWebAdapterConfig'],
   connections: ['managedDsh', 'deepseekWebAdapterConfig'],
   appearance: [],
   personas: [],
   history: ['apiHistory'],
-  // FREEZE(1A)：同上。
-  // system: ['lockScreenDiagnostics', 'autostartStatus'],
   system: ['autostartStatus', 'updateStatus'],
 }
 
@@ -62,8 +53,6 @@ export const PAGE_PROBES: Record<SettingsPage, readonly SettingsProbe[]> = {
  * "启动 DSH" button, so it belongs to the required group.
  */
 export const LOW_PRIORITY_PROBES: ReadonlySet<SettingsProbe> = new Set<SettingsProbe>([
-  // FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30），这条探针退出。恢复办法：取消注释。
-  // 'translucentTb',
   'deepseekWebAdapterConfig',
 ])
 
@@ -196,12 +185,8 @@ export function createSettingsProbeController(options: {
 
 // 键而不是句子：这张表在 import 时建好，句子要等到真出错那一刻才取（见 `t()` 的说明）。
 const PROBE_ERROR_MESSAGES: Record<SettingsProbe, MessageKey> = {
-  // FREEZE(1B)：
-  // translucentTb: 'settings.probe.translucent-tb',
   managedDsh: 'settings.probe.managed-dsh',
   deepseekWebAdapterConfig: 'settings.probe.web-adapter-config',
-  // FREEZE(1A)：同上。
-  // lockScreenDiagnostics: 'settings.probe.lock-screen',
   autostartStatus: 'settings.probe.autostart-status',
   desktopDisplays: 'settings.probe.desktop-displays',
   apiHistory: 'settings.probe.api-history',

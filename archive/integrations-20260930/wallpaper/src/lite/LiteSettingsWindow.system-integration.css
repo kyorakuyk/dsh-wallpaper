@@ -1,0 +1,16 @@
+/*
+ * 归档片段（B4，2026-10）：`wallpaper/src/lite/LiteSettingsWindow.css` 中系统集成（1B：TranslucentTB / 登录过渡底图）的冻结代码。
+ * 来源 commit 3c92772（tag pre-freeze-isolation）；下文行号均指该 commit 中的原文件。
+ * 这些规则在原文件里是生效的 CSS，但只被已冻结的 JSX 使用（孤儿样式），所以随 UI 一起迁出；与现役共用的选择器只迁出冻结的那一半。
+ * 本文件不在任何构建里。
+ * 恢复办法见 `archive/integrations-20260930/README.md` 的 B4 小节。
+ */
+
+/* ---- 原第 17 行：原为 `.lite-hero p, .lite-card-description { … }`；现役只留 `.lite-hero p` ---- */
+.lite-card-description { margin: 0; color: var(--lite-muted); line-height: 1.55; font-size: 13px; }
+
+/* ---- 原第 32 行开头：同一行后面的 `.lite-footer`、`.lite-notice` 仍在现役 ---- */
+.lite-pill { padding: 5px 9px; border: 1px solid rgba(160,193,232,.14); border-radius: 999px; color: var(--lite-muted); font-size: 10px; }.lite-pill.is-online { border-color: rgba(114,221,181,.35); color: #8be3c3; }
+
+/* ---- 原第 28 行（同一份也在锁屏归档的 CSS 片段里）：TranslucentTB 卡片的按钮行用它；两者都恢复时只放回一次 ---- */
+.lite-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }.lite-actions button { min-height: 32px; padding: 0 12px; border: 1px solid rgba(160,193,232,.18); border-radius: 9px; background: rgba(255,255,255,.045); color: #cfe4ff; font-size: 11px; cursor: pointer; }.lite-actions button:hover:not(:disabled), .lite-actions button:focus-visible { border-color: rgba(120,183,255,.55); background: rgba(120,183,255,.13); outline: none; }.lite-actions button:disabled { cursor: not-allowed; opacity: .4; }

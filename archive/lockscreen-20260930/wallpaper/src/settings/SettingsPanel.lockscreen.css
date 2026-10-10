@@ -1,0 +1,46 @@
+/*
+ * 归档片段（B4，2026-10）：`wallpaper/src/settings/SettingsPanel.css` 中锁屏（1A）的冻结代码。
+ * 来源 commit 3c92772（tag pre-freeze-isolation）；下文行号均指该 commit 中的原文件。
+ * 这些规则在原文件里是生效的 CSS，但只被已冻结的 JSX 使用（孤儿样式），所以随 UI 一起迁出；与现役共用的选择器只迁出冻结的那一半。
+ * 本文件不在任何构建里。
+ * 恢复办法见 `archive/lockscreen-20260930/README.md` 的 B4 小节。
+ */
+
+/* ---- 原 810-846 行：`.asset-inbox-row select` 之后、`.settings-statusbar` 之前 ---- */
+.lockscreen-diagnostics {
+  display: grid;
+  gap: 10px;
+  padding: 12px 0 15px;
+  border-top: 1px solid var(--s-line);
+}
+
+.lockscreen-diagnostics__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.lockscreen-diagnostics__row > div {
+  display: flex;
+  flex-direction: column;
+}
+
+.lockscreen-diagnostics strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.lockscreen-diagnostics small,
+.lockscreen-diagnostics li {
+  margin-top: 4px;
+  color: var(--s-text-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.lockscreen-diagnostics ul {
+  margin: 0;
+  padding: 8px 0 0 17px;
+  border-top: 1px solid var(--s-line);
+}

@@ -189,7 +189,6 @@ export interface WallpaperSettings {
   animationSpeed: number
   playWakeOnEveryUnlock: boolean
   skipWakeAnimation: boolean
-  // lockScreenEnabled: boolean
   autostart: boolean
   /** 界面语言。默认中文 —— 与这个产品一直以来的表现一致，升级不会突然换语言。 */
   language: Language
@@ -252,7 +251,6 @@ export const DEFAULT_SETTINGS: WallpaperSettings = {
   animationSpeed: 1,
   playWakeOnEveryUnlock: true,
   skipWakeAnimation: false,
-  // lockScreenEnabled: false,
   autostart: false,
   language: 'zh',
   sendShortcut: 'Enter',
@@ -388,7 +386,6 @@ export function normalizeSettings(raw: unknown): WallpaperSettings {
     animationSpeed: boundedNumber(value.animationSpeed, DEFAULT_SETTINGS.animationSpeed, 0.5, 2),
     playWakeOnEveryUnlock: settingsBool(value.playWakeOnEveryUnlock, DEFAULT_SETTINGS.playWakeOnEveryUnlock),
     skipWakeAnimation: settingsBool(value.skipWakeAnimation, DEFAULT_SETTINGS.skipWakeAnimation),
-    // lockScreenEnabled: settingsBool(value.lockScreenEnabled, DEFAULT_SETTINGS.lockScreenEnabled),
     autostart: settingsBool(value.autostart, DEFAULT_SETTINGS.autostart),
     language: oneOf(value.language, SETTING_LANGUAGES, DEFAULT_SETTINGS.language),
     sendShortcut: oneOf(value.sendShortcut, ['Enter', 'Ctrl+Enter'] as const, DEFAULT_SETTINGS.sendShortcut),

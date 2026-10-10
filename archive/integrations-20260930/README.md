@@ -10,7 +10,7 @@
 以及它们在两处 `invoke_handler` 里的八个注册项。当前状态（2026-10）：Rust 侧已全部迁出——这些注释块、
 handler 注释行、`build.rs` 的命令登记与 permissions 文件都在本目录（见下文 B3），`lib.rs` 里不再出现；
 前端侧（完整版"透明任务栏"卡片、Lite 的 `04 · COMPATIBILITY` 卡片与"登录过渡底图"行、两个门面的包装、
-设置字段）仍在原位按 FREEZE 注释，待 B4。
+设置字段、只被它们使用的 CSS）也已迁出，见下文 B4；现役 `wallpaper/src` 里不再有这些代码。
 
 **开机自启**（`set_autostart` / `autostart_status` 与 `HKCU\...\Run` 那条链）**保持不动**。
 
@@ -88,3 +88,59 @@ handler 接线（恢复时取消注释即可；原样列出）：
 6. 运行全套门禁：`cargo test --manifest-path wallpaper/src-tauri/Cargo.toml --locked --all-targets`、Lite 的
    `cargo check … --no-default-features --features lite --bin dsh-wallpaper-lite` 与 `cargo test … --no-default-features --features lite --lib`、
    前端测试与 typecheck。
+
+## 2026-10 第四批归档（B4）：前端系统集成代码
+
+来源 commit `3c92772`（tag `pre-freeze-isolation`）；下列行号均指该 commit（B1-B3 没有改这些前端文件）。
+这一批把仍在 `wallpaper/src` 里的系统集成（1B：TranslucentTB、登录过渡底图）冻结片段迁到 `wallpaper/src/` 下的片段文件。
+它们在原文件里都是 `//` 或 `{/* */}` 注释；片段里去掉了注释外壳、恢复成普通 TS/TSX（FREEZE 说明保留为注释），每段前用
+`// ---- 原 N-M 行：位置 ----` 写明原位置。片段不在任何构建里，单独编译不通过、IDE 报未解析符号属预期。
+只被冻结 JSX 使用的 CSS 随 UI 迁出；与现役共用的选择器只迁出 1B 那一半。
+
+| 归档片段（`wallpaper/src/` 下） | 原文件（`wallpaper/src/` 下）与原行 | 迁出的内容 |
+| --- | --- | --- |
+| `native/runtime.system-integration.ts` | `native/runtime.ts` 28-29；466-469；755-768 | `TranslucentTbStatus`；`NativeRuntime` 的 `translucentTbStatus`、`launchTranslucentTb`、`openTranslucentTbInstall` 声明及实现 |
+| `lite/native.system-integration.ts` | `lite/native.ts` 3-4；8-13；38-41；43-46；61-64；66-69；71-74（各段后的空行一并删除） | 带 `TranslucentTbStatus` 的 import；`DesktopWallpaperFallbackStatus`；`setDesktopWallpaperFallback`、`desktopWallpaperFallbackStatus`、`translucentTbStatus`、`launchTranslucentTb`、`openTranslucentTbInstall` |
+| `lite/LiteSettingsWindow.system-integration.tsx` | `lite/LiteSettingsWindow.tsx` 6-7；38-41；47-48；104-121；123-130；152-155；230-244；311；334-340 | import；state `desktopFallbackStatus`、`translucentTb`、`desktopFallbackBusy`；`refreshDesktopFallback`、`refreshTranslucentTb` 与挂载时的调用；`setDesktopFallback`；"登录过渡底图"行；`04 · COMPATIBILITY` TranslucentTB 卡片 |
+| `lite/LiteSettingsWindow.system-integration.css` | `lite/LiteSettingsWindow.css` 17（选择器拆分）；32（行首两条规则）；28（与锁屏归档共用的一份） | `.lite-card-description`、`.lite-pill`、`.lite-pill.is-online`、`.lite-actions` |
+| `lite/settings.system-integration.ts` | `lite/settings.ts` 38-39；72-73 | `desktopWallpaperFallback` 的默认值与规范化 |
+| `lite/types.system-integration.ts` | `lite/types.ts` 14-16 | `LiteSettings.desktopWallpaperFallback` 及其文档注释（冻结后这条 `/** */` 误挂在了 `autostart` 上，B4 一并移出） |
+| `settings/SettingsWindow.system-integration.tsx` | `settings/SettingsWindow.tsx` 9-10；123-124；588-592；639-640；1048-1049；1146-1149 | import；state `translucentTb`；`probeRunners.translucentTb`；`refreshTranslucentTb`；传给 `SettingsPanel` 的 `translucentTb`、`onRefreshTranslucentTb`、`onLaunchTranslucentTb`、`onInstallTranslucentTb` |
+| `settings/SettingsPanel.system-integration.tsx` | `settings/SettingsPanel.tsx` 94-98；583-584；1292-1296 | `SettingsPanelProps` 的四个 TranslucentTB prop；带 `translucentTb` 的解构；系统页"透明任务栏"卡片 |
+| `settings/SettingsPanel.system-integration.css` | `settings/SettingsPanel.css` 194、203（选择器拆分）；598-625（626 的空行一并删除） | `.integration-status i`、`.integration-status i.is-online`、`.integration-status` 及其 `> div:first-child`、`span`、`strong`、`small`（`.integration-actions` 仍被现役卡片使用，留在原处） |
+| `settings/settingsProbes.system-integration.ts` | `settings/settingsProbes.ts` 25-26；47-48；65-66；199-200 | `SETTINGS_PROBES`、`LOW_PRIORITY_PROBES` 的 `'translucentTb'`；`PAGE_PROBES.connections` 的旧值；`PROBE_ERROR_MESSAGES.translucentTb` |
+
+现役里只改的地方：`LiteSettingsWindow.css:17` 由 `.lite-hero p, .lite-card-description { … }` 改为 `.lite-hero p { … }`；
+第 32 行删掉行首两条 `.lite-pill` 规则；`SettingsPanel.css:193`、`202` 由两选择器改为只剩 `.settings-sidebar__status i`
+与 `.settings-sidebar__status i.is-online`。Lite / 完整版设置的持久化兼容键（Rust `lite_settings_save` 允许键里的
+`"desktopWallpaperFallback"`）是 B3 以前就留在现役的兼容项，本批不动。
+
+与锁屏（1A）交错处的分拣见锁屏归档 README 的 B4 小节：四处 import 注释行按 FREEZE(1A) 标记归锁屏归档（其中三行带着
+`TranslucentTbStatus`），本归档的 import 片段是只含 1B 的那一行；Lite 诊断块里引用 `desktopFallbackStatus` 的那一小段
+随诊断块在锁屏归档里；`.lite-actions` 两边各存一份。
+
+### 恢复接线（B4）
+
+1. 先按上文 B3 恢复 Rust 命令（与 `desktop_fallback.rs`）、`build.rs` 登记与权限；完整版设置窗口与 Lite 设置窗口要调用它们，
+   还需在对应的 `capabilities/*.json` 里授予 `allow-…`。
+2. 把每个片段按"原 N-M 行"所写的位置放回原文件，作为现役代码（不要再加注释外壳）：`TranslucentTbStatus` 与
+   `NativeRuntime` 声明 / 实现、Lite 门面与 `DesktopWallpaperFallbackStatus`、两个设置窗口的状态 / 函数 / JSX、
+   `SettingsPanelProps`、解构与"透明任务栏"卡片。
+3. 恢复 import：`native/runtime.ts` 类型 import 换成片段里带 `TranslucentTbStatus` 的版本（若锁屏也恢复，用锁屏归档里同时带两者的那一行）。
+4. 恢复设置字段与接线：Lite `settings.ts`/`types.ts` 的 `desktopWallpaperFallback`（含文档注释，放在 `autostart` 之前）；
+   `settingsProbes.ts` 的探针名单、低优先集合与错误词条映射。
+5. 恢复 CSS：选择器拆分处改回两选择器，`.integration-status*`、`.lite-pill*`、`.lite-card-description` 放回原位；
+   `.lite-actions` 若锁屏未恢复则从这里放回，否则只放一次。
+6. 词条：片段里的界面文案是冻结前写死的中文，`PROBE_ERROR_MESSAGES` 引用的 `settings.probe.translucent-tb` 当前也不在词典里；
+   恢复为现役代码前要把它们迁进 `i18n/`（否则 `noHardcodedCopy.spec.ts` 会红、`MessageKey` 类型不过），`setNotice`
+   现在接的是 `Sentence`/`Message`。
+7. 测试：`settingsProbes.spec.ts` 里注释掉的 TranslucentTB 断言取消注释，并把待调度数等随之改回。
+8. 运行 `pnpm typecheck && pnpm test && pnpm build && pnpm build:lite`，以及 Lite bundle boundary（`scripts/verify-lite-bundle.ps1`）。
+
+### 未验证范围（B4）
+
+- 本批在没有 node_modules 的环境里完成，没有运行 tsc / vitest / vite。依据是逐文件比对：剥掉注释后，现役代码与迁移前
+  逐字相同（差别只有 JSX 里 `{/* */}` 留下的空表达式 `{}`，以及锁屏归档记录的 `LockScreenDiagnostics` 导出）；import 行没有变化。
+  CSS 的改动只有上面列出的选择器拆分与孤儿规则删除。由 CI 最终确认。
+- 片段不再被类型检查。它们在冻结期间本来就是注释、从未被编译，恢复时可能与现役接口有漂移（见上面第 6 条）。
+- CI 的 `paths-ignore` 含 `archive/**`，只改动这里不会触发 CI。
