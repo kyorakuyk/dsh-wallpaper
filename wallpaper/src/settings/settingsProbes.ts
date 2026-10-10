@@ -2,9 +2,10 @@
  * Page-scoped, once-only system probes for the settings window.
  *
  * Opening settings used to fan out every Win32/PowerShell/IPC probe at once:
- * TranslucentTB detection, a full DSH directory scan, managed-DSH status,
- * autostart state, lock-screen diagnostics, display enumeration and the web
- * adapter configuration. That burst is what made the first paint wait on a
+ * a full DSH directory scan, managed-DSH status, autostart state, display
+ * enumeration and the web adapter configuration (the TranslucentTB and
+ * lock-screen diagnostics probes it also started have since moved to the
+ * archive and are no longer part of the live settings window). That burst is what made the first paint wait on a
  * black frame. This module keeps the window's first frame free of probes and
  * starts each group only when its page is actually shown, at most once.
  */

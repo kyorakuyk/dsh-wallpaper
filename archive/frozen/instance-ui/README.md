@@ -49,6 +49,7 @@
 - `wallpaper/src/settings/store.ts`：`dshLaunch.aliases?` 与 `normalizeSubjectAliases`（持久化兼容，已存的别名照常读写）。
 - `wallpaper/src/native/runtime.ts`：`ManagedDshInstance` / `ManagedDshStatus.instances`、`managedDshStatus(subjectId?)`、`stopManagedDsh(instanceKey?)` 原生契约。
 - `wallpaper/src/settings/SettingsWindow.tsx`：`stopManagedInstance(instanceKey?)`（被 `onStopAllManagedDsh` 使用）、`managedDshBusy`、`refreshManagedDsh`；`SettingsPanel.tsx` 卡片底部的「停止本应用启动的 DSH」与「刷新」。
+- 依赖：无专属 npm/crate 依赖；依赖的共享能力见本节上面的列表。
 
 ## 恢复步骤
 1. 把片段按"原 N-M 行"放回：`SettingsPanel.tsx` 换回带 `instanceLabel` / `subjectAlias` 的 import、补 `ManagedDshInstance` 类型 import、加回两个 prop（建议改为必填）、`RunningInstances` 组件、Card 的 `action`、「起别名」`Field`，并按需给 `subjectOptionLabel` 加回别名实参；`SettingsWindow.tsx` 加回 `onSelectSubjectAlias`、`onStopManagedInstance`、`refreshManagedDsh()` 与 `managedDshStatus` 的主体实参；`App.tsx` 加回 `managedDshStatus` 的主体实参。
@@ -64,5 +65,5 @@
 
 ## 注意
 - 片段是从 props、JSX、函数体中间截出来的，单独打开时 IDE 报语法错误或未解析的符号属于预期。
-- CI 的 `paths-ignore` 包含 `archive/**`，只改归档不会触发流水线。
+- 现役测试会读取部分归档文件做完整性断言，因此修改归档（除纯 .md 外）会触发 CI。
 - Vitest 的发现根是 `wallpaper/`，仓库根的 `archive/` 不会被默认测试发现，所以这里的 spec 不会运行。

@@ -3457,7 +3457,7 @@ pub(crate) fn current_run_entry_command() -> Result<String, String> {
         ));
     }
     // The length includes the terminator; supply one spare element and pass the
-    // capacity back explicitly, as `GetCurrentPackagePath` requires above.
+    // capacity back explicitly so the second call can report how much was written.
     let mut buffer = vec![0u16; length as usize + 1];
     let mut capacity = buffer.len() as u32;
     let read =

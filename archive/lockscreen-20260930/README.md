@@ -1,7 +1,7 @@
 # 归档：锁屏相关（2026-09-30）
 
 用户决定**壁纸不再触碰锁屏**：现在做的和用户自己在 Windows 设置里换一张没有区别，却多出风险，
-而且不能回滚。所以整块退出——整文件进这里归档，代码块在原处按 FREEZE 注释。
+而且不能回滚。所以整块退出——整文件进这里归档；代码块一度在原处按 FREEZE 注释，现状见下面的“当前状态”（现役代码里已不再保留这些注释块）。
 
 | 归档文件 | 原位置 |
 | --- | --- |
@@ -81,7 +81,7 @@ handler 注释行、`build.rs` 的命令登记与 permissions 文件见下文 B3
 - 归档代码不再被编译检查；恢复前须重新编译并运行
   `cargo test --manifest-path wallpaper/src-tauri/Cargo.toml --locked --all-targets`（以及 Lite 的 `--no-default-features --features lite`）。
 - IDE 中归档文件的 import 无法解析属预期（它们不在任何 crate 的模块树里）。
-- CI 的 `paths-ignore` 含 `archive/**`，只改动这里不会触发 CI。
+- 现役测试会读取部分归档文件做完整性断言，因此修改归档（除纯 .md 外）会触发 CI。
 
 ## 2026-10 第三批归档（B3）：lib.rs 注释命令、build.rs 登记与权限文件
 
@@ -101,9 +101,9 @@ handler 注释行、`build.rs` 的命令登记与 permissions 文件见下文 B3
 - 1755-1756：`lite_settings_save` 的 Lite 允许键里 `"lockScreenEnabled"` 的 FREEZE 注释（位于 `"skipWakeAnimation"`
   与 `"desktopWallpaperFallback"` 之间；后者是持久化兼容键，留在现役）
 - 1973-2003：`set_lock_screen_enabled`、`clear_stale_lock_screen_backup`、`get_lock_screen_diagnostics`（位于
-  `notify_appearance_changed` 与 `set_autostart_blocking` 之间；2003 为空行）
+  `notify_appearance_changed` 与 `set_autostart_blocking` 之间；2003 是 `// }`，2004 为空行）
 - 2163-2187：`open_windows_lock_screen_settings`（含其 `///` 文档注释；位于 TranslucentTB 命令段之后、
-  `DESKTOP_WORKSPACE_DIRECTORY_NAME` 之前；2187 为空行）
+  `DESKTOP_WORKSPACE_DIRECTORY_NAME` 之前；2187 是 `// }`，2188 为空行）
 - handler 注释行：Lite 4895-4898、4904-4905；完整版 4926-4929、4946-4947
 - 留在现役、只改措辞：`run_lite` 的文档注释（4874-4877）原说两版共享 "Windows host and lock-screen
   implementation"，现改为只说共享 Windows 桌面宿主。
@@ -219,4 +219,11 @@ handler 接线（恢复时取消注释即可；原样列出）：
   逐字相同，差别只有 `runtime.ts` 的 `LockScreenDiagnostics` 导出（全仓无引用）与 JSX 里 `{/* */}` 留下的空表达式
   `{}`；import 行没有变化。由 CI（tsc -b、vitest、vite build、build:lite、Lite bundle boundary）最终确认。
 - 片段不再被类型检查。它们在冻结期间本来就是注释、从未被编译，恢复时可能与现役接口有漂移（见上面第 6 条）。
-- CI 的 `paths-ignore` 含 `archive/**`，只改动这里不会触发 CI。
+- 现役测试会读取部分归档文件做完整性断言，因此修改归档（除纯 .md 外）会触发 CI。
+
+## 依赖
+
+- `sha2`：现役仍在用，保留（见 `wallpaper/src-tauri/Cargo.toml` 的注释）。
+- `tempfile`：dev 依赖，现役测试仍在用。
+- `tokio`：共享依赖；锁屏段只用了 `tokio::sync::Mutex`。
+- `windows` crate 的 `Storage`、`Storage_Streams`、`System_UserProfile` features：现役 `src` 里只有锁屏段用到 `StorageFile` 与 `UserProfilePersonalizationSettings`；本轮没有从 `Cargo.toml` 移除，能否去掉需要在 Windows 上编译验证。

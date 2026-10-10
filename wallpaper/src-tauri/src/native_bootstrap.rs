@@ -470,8 +470,8 @@ fn asset_candidates(relative: &str, package_name: &str) -> Vec<PathBuf> {
         }
     }
     // Development/NSIS builds keep the canonical public tree beside the
-    // Tauri crate. This is a best-effort fallback only; lock-screen writes
-    // remain MSIX-gated in the owning integration module.
+    // Tauri crate. This is a best-effort fallback only; the lock-screen write
+    // implementation has moved out to the archive and is not in the default build.
     if let Some(root) = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent() {
         candidates.push(root.join("public").join(relative));
     }

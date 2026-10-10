@@ -6,6 +6,8 @@ name: CI
 #    实测最近 12 次运行里有 10 次是 docs/release/license 提交，合计吃掉约 40 分钟 runner 时间。
 # 2. 拆成三个并行作业（前端 / Rust 全量 / Lite）。此前所有步骤在同一个作业里顺序跑，总时长是
 #    **各步骤之和**（5 分半，其中 Rust 测试独自占 152 秒）；拆开后墙钟时间约等于最慢的那一个。
+#
+# 2026-10-11 去掉 paths-ignore 里的 archive/**：现役测试会读取部分归档文件做完整性断言，只改归档的提交也必须跑 CI。
 on:
   push:
     branches:
@@ -15,7 +17,6 @@ on:
       - 'docs/**'
       - '**.md'
       - 'LICENSE*'
-      - 'archive/**'
       - '.gitignore'
   pull_request:
     branches:
@@ -24,7 +25,6 @@ on:
       - 'docs/**'
       - '**.md'
       - 'LICENSE*'
-      - 'archive/**'
 
 permissions:
   contents: read
@@ -60,12 +60,25 @@ jobs:
 
       # 冻结代码保留在仓库根 archive/，只退出默认构建（docs/plans/code-structure-refactor-plan.md 第一节）。
       # 这一步防止现役代码重新 import / #[path] / include_str! 归档里的文件；测试读取归档做完整性断言不在检查范围内。
+      # 源码目录用引号内路径正则检查；Cargo.toml / tsconfig / index.html / tauri conf / package.json 等配置文件出现 archive 关键字即算违规。
       - name: Check live code does not reference archive/
         shell: bash
         run: |
-          pattern='(from|import\(|require\()[[:space:]]*['"'"'"][^'"'"'"]*archive/|#\[path[[:space:]]*=[[:space:]]*"[^"]*archive/|include_(str|bytes)!\([[:space:]]*"[^"]*archive/'
-          if git grep -nE "$pattern" -- wallpaper/src wallpaper/src-tauri/src wallpaper/src-tauri/build.rs wallpaper/vite.config.ts bridge/src; then
-            echo "::error::Live code references archive/. Frozen code must stay out of the default build."
+          set -uo pipefail
+          # 源码：任何引号内出现 archive/ 或 archive\ 的路径，以及 CSS @import / url()、Rust include!/include_str!/include_bytes!、#[path]。
+          src_pattern='["'"'"'`][^"'"'"'`]*archive[/\\]'
+          # 配置：只要出现 archive 关键字就算（这些文件不应提到归档）；Cargo.toml 的 # 注释行允许说明归档位置，只检查非注释部分。
+          cfg_pattern='archive'
+          toml_pattern='^[^#]*archive'
+          status=0
+          git grep -nE "$src_pattern" -- wallpaper/src wallpaper/src-tauri/src wallpaper/src-tauri/tests wallpaper/src-tauri/build.rs wallpaper/vite.config.ts bridge/src; rc=$?
+          if [ $rc -eq 0 ]; then status=1; elif [ $rc -gt 1 ]; then echo "::error::git grep failed ($rc)"; exit $rc; fi
+          git grep -nE "$toml_pattern" -- wallpaper/src-tauri/Cargo.toml; rc=$?
+          if [ $rc -eq 0 ]; then status=1; elif [ $rc -gt 1 ]; then echo "::error::git grep failed ($rc)"; exit $rc; fi
+          git grep -nwE "$cfg_pattern" -- wallpaper/tsconfig.json 'wallpaper/index*.html' 'wallpaper/src-tauri/tauri*.conf.json' wallpaper/package.json; rc=$?
+          if [ $rc -eq 0 ]; then status=1; elif [ $rc -gt 1 ]; then echo "::error::git grep failed ($rc)"; exit $rc; fi
+          if [ $status -ne 0 ]; then
+            echo "::error::Live code or build config references archive/. Frozen code must stay out of the default build."
             exit 1
           fi
           echo "Archive boundary: OK"

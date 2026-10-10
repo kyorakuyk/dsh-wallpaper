@@ -1,6 +1,6 @@
 # 归档：系统集成（2026-09-30）
 
-用户决定**系统集成暂时只保留开机自启**，其余整块退出——整文件归档到这里，代码块在原处按 FREEZE 注释。
+用户决定**系统集成暂时只保留开机自启**，其余整块退出——整文件归档到这里；代码块一度在原处按 FREEZE 注释，现状见下面的“当前状态”（现役代码里已不再保留这些注释块）。
 
 | 归档文件 | 原位置 | 为什么 |
 | --- | --- | --- |
@@ -34,11 +34,11 @@ handler 注释行、`build.rs` 的命令登记与 permissions 文件都在本目
 
 - 23-24：`// mod desktop_fallback;` 及其 FREEZE 说明（位于 `mod harness_catalog;` 之后）
 - 1904-1931：`set_desktop_wallpaper_fallback` 的 `///` 文档注释（1904-1907）与两条桌面底图命令
-  `set_desktop_wallpaper_fallback`、`desktop_wallpaper_fallback_status`（1908-1930，均为 `#[cfg(feature = "lite")]`；1931 为空行）。
+  `set_desktop_wallpaper_fallback`、`desktop_wallpaper_fallback_status`（1908-1930，均为 `#[cfg(feature = "lite")]`；1931 是 `// }`，1932 为空行）。
   那段 `///` 在命令被注释后仍是生效的文档注释，实际挂到了下面的 `mod lite_asset_tests` 上；现在随命令一起归档，
   `mod lite_asset_tests` 保留自己的 `#[cfg(all(test, feature = "lite"))]`。
 - 2034-2161：`TranslucentTbStatus`、`hide_child_console`、`translucent_tb_status_blocking`、`translucent_tb_status`、
-  `launch_translucent_tb`、`open_translucent_tb_install`（位于 `autostart_status` 之后；2161 为空行）
+  `launch_translucent_tb`、`open_translucent_tb_install`（位于 `autostart_status` 之后；2161 是 `// }`，2162 为空行）
 - handler 注释行：Lite 4893-4894、4901-4903；完整版 4943-4945
 - 留在现役：Lite 允许键 `"desktopWallpaperFallback"`（原 1757，持久化兼容）、开机自启命令（原 2005-2032）。
 
@@ -143,4 +143,4 @@ handler 接线（恢复时取消注释即可；原样列出）：
   逐字相同（差别只有 JSX 里 `{/* */}` 留下的空表达式 `{}`，以及锁屏归档记录的 `LockScreenDiagnostics` 导出）；import 行没有变化。
   CSS 的改动只有上面列出的选择器拆分与孤儿规则删除。由 CI 最终确认。
 - 片段不再被类型检查。它们在冻结期间本来就是注释、从未被编译，恢复时可能与现役接口有漂移（见上面第 6 条）。
-- CI 的 `paths-ignore` 含 `archive/**`，只改动这里不会触发 CI。
+- 现役测试会读取部分归档文件做完整性断言，因此修改归档（除纯 .md 外）会触发 CI。
