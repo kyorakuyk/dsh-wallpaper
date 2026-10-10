@@ -183,28 +183,6 @@ describe('DSH autostart wiring', () => {  it('starts DSH from the background hos
     expect(settingsWindow).not.toContain('autostartManagedDsh')
   })
 
-  // 冻结（与「启动参数」一起）：它钉的是"自动启动这条路上带着参数"（`App.tsx` 里那行
-  // `args: parseLaunchArgs(settings.dshLaunch.args)`）以及界面上「启动参数」那个控件 —— 两者都
-  // 随这次冻结被注释掉了（参数不再上路，"控件在不在"由注释决定）。`launch-args-invalid` 那句话
-  // 本身仍然钉在上面那两条报告类测试里；"启动参数不再上路"改由 launchArgsAndInstances.spec.ts
-  // 里那一组「启动参数冻结之后：没有参数流出去」钉住。
-  it.skip('gives the automatic path the same launcher and the same args as the button', async () => {
-    const app = await source('src/App.tsx')
-    // 「启动参数」在两条路上一视同仁：加的是参数，跑的是谁由本应用决定，所以这里不再需要
-    // 任何"要不要授权"的字段。
-    expect(app).toContain('args: parseLaunchArgs(settings.dshLaunch.args)')
-    const panel = await source('src/settings/SettingsPanel.tsx')
-    // 那个授权复选框与它那一行随「启动命令」一起消失；界面上不该再留一个不生效的开关。
-    expect(panel).not.toContain('trustedCommandForAutoStart')
-    expect(panel).not.toContain('自动启动不使用自定义启动命令')
-    expect(panel).not.toContain('允许自动启动使用该命令')
-    // 而**控件本身**也换了：没有「启动命令」这个输入框了，只有「启动参数」。
-    // （注释里还会出现"启动命令"三个字，那是说明为什么它没了 —— 所以这里钉的是字段标题。）
-    expect(panel).not.toContain('title="启动命令"')
-    expect(panel).toContain('title="启动参数"')
-    expect(panel).toContain('aria-label="启动参数"')
-  })
-
   it('decides the profile itself instead of asking the user', async () => {
     // 用户 2026-09-30 的决定：把「数据档案（Profile）」这一行藏掉。理由不是"太复杂"，而是它**没有第二个
     // 正确答案**：官壳用自己独占的 desktop、TUI 用它自己的 dsh-tui（两者都不看这个值），而 CLI 与源码

@@ -338,10 +338,6 @@ export function launchOutcomeNotice(outcome: {
     case 'port-occupied-external':
       // The port number is an implementation fact; the user's situation is that
       // something is already running and this application is leaving it alone.
-      // FREEZE（临时冻结，不是删除）：这句话原来还有半句"在「启动参数」里换一个端口可以并行再起
-      // 一个实例"。本 build 里「启动参数」不在界面上（它随这次冻结一起关掉了），把用户指向一个
-      // 不存在的入口比不说更坏 —— 指向不存在的入口正是这个项目一直在修的那种失败。恢复办法：
-      // 把原来那半句加回来（它随「启动参数」一起复活）。
       return msg('harness.subject.launch.port-occupied-external')
     default:
       // No code, no path: the log does name both, and that is where a bug report

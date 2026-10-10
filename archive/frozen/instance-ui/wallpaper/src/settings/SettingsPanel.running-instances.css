@@ -1,0 +1,32 @@
+/* 归档片段（B6，2026-10）：`wallpaper/src/settings/SettingsPanel.css` 中实例下拉与卡片 header 两列布局的冻结规则。
+   来源 commit 3c92772（tag pre-freeze-isolation）；下文行号均指该 commit 中的原文件。
+   原文件里这些规则整块包在一个注释里；这里把说明留作注释、规则恢复成普通 CSS。
+   本文件不在任何构建里。恢复办法见 `archive/frozen/instance-ui/README.md`。 */
+
+/* ---- 原 1083-1108 行：`.settings-hint` 之后、`.settings-app :is(...):focus-visible` 之前 ---- */
+/* ---------------------------------------------------------------------------
+   FREEZE（临时冻结，不是删除）：「当前已启动实例」下拉与它的 header 布局。
+
+   为什么关：那个下拉（标题右上角的控件）冻住了，`<Card>` 也不再有 `action`，所以 header 不需要
+   两列布局 —— 留着 `display:flex` 只会让 `__heading` 变成收缩的 flex 项，说明文字被挤窄，
+   与这个功能之前的卡片长得不一样（这条规则本来就是随那个下拉一起加进来的）。
+   怎么恢复：取消这一整块的注释，并恢复 `SettingsPanel.tsx` 里 `<Card>` 的 `action` 与
+   `RunningInstances` 组件。
+
+   「当前已启动实例」：卡片标题右上角的下拉 + 全部停止。
+   header 现在是一个两列容器（标题文案 / 右上角控件），所以原来那条 `.settings-card header p`
+   的边距规则仍然按文案那一列生效 —— 把它包进 __heading 才不会让说明文字被压缩。
+   --------------------------------------------------------------------------- */
+.settings-card>header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}
+.settings-card__heading{min-width:0}
+.settings-card__action{flex:0 0 auto;display:flex;align-items:center;gap:8px}
+.settings-instances{position:relative;display:flex;align-items:center;gap:8px}
+.settings-instances .settings-choice__trigger{max-width:280px}
+.settings-instances__menu{min-width:280px;gap:2px}
+.settings-instances__row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:4px 4px 4px 9px;border-radius:6px}
+.settings-instances__row:hover{background:rgba(58,163,225,.12)}
+.settings-instances__name{overflow:hidden;color:#cfe2ef;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.settings-instances__stop{min-width:0 !important;width:22px;height:22px;padding:0 !important;border-radius:6px !important;color:#9dbdd4;font-size:14px;line-height:1;text-align:center;background:transparent}
+.settings-instances__stop:hover:not(:disabled){background:rgba(224,92,92,.22) !important;color:#fff}
+.settings-instances__stop:disabled{opacity:.4;cursor:default}
+.settings-instances__footer{display:flex;justify-content:flex-end;padding:5px 4px 3px;border-top:1px solid rgba(158,205,239,.09);margin-top:3px}

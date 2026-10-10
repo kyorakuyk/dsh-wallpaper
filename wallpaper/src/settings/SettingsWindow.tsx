@@ -20,13 +20,6 @@ import {
 } from '../connect/endpoints.ts'
 import { launchOutcomeNotice, reachNeedsBrowser, subjectChoicePrompt } from '../connect/harnessSubjects.ts'
 import { profileForLaunch } from '../connect/harnessProfiles.ts'
-// ---------------------------------------------------------------------------
-// FREEZE（临时冻结，不是删除）：本窗口里「启动参数」的分词只服务两处 —— 传给 `ensureHarnessUi` 的
-// `args`，以及 `openSubjectTui` 的 `args`。两处都冻住了（各有一处 FREEZE 注释），所以这一行也随之
-// 冻住。`connect/launchArgs.ts` 本身一行都没动；原生侧 `args` 都是可选参数，不传就是空参数列表。
-// 怎么恢复：取消这一行，并取消那两处 `args:` 的注释。
-// ---------------------------------------------------------------------------
-// import { parseLaunchArgs } from '../connect/launchArgs.ts'
 import { SettingsPanel, backendModeMessage, type SettingsPanelHarnessStatus } from './SettingsPanel.tsx'
 import { autostartRefusalNotice } from './autostartCopy.ts'
 import { createAutostartQueue, type AutostartQueue } from './autostartQueue.ts'
@@ -133,9 +126,8 @@ export function SettingsWindow() {
    * 与 `managedDsh` 分开，因为按钮的可用性要跟**动作**走而不是跟状态走：停止一个实例要起
    * taskkill 并等它结束，那几百毫秒里再点一次不该发出第二条命令。
    *
-   * FREEZE（临时冻结，不是删除）：它原来只喂给标题右上角那个实例下拉，现在改喂卡片底部的
-   * 「停止本应用启动的 DSH」与它旁边的「刷新」（同一个 `stopManagedInstance`）。所以它没有跟着
-   * 下拉一起冻住 —— 底部那个按钮需要它来挡住重复点击。恢复办法：什么都不用做。
+   * 它喂给卡片底部的「停止本应用启动的 DSH」与它旁边的「刷新」（同一个 `stopManagedInstance`），
+   * 用来挡住重复点击。
    */
   const [managedDshBusy, setManagedDshBusy] = useState(false)
   const [desktopDisplays, setDesktopDisplays] = useState<DesktopDisplayInfo[]>([])
@@ -430,9 +422,6 @@ export function SettingsWindow() {
         targetId: subjectId,
         port,
         profile: profileForLaunch(),
-        // FREEZE（临时冻结，不是删除）：「打开界面」这条路不带任何启动参数。恢复办法：取消下面
-        // 这一行，并恢复本文件顶部的 `parseLaunchArgs` import。
-        // args: parseLaunchArgs(current.args),
       })
       // A start that failed is the actionable half: it names what to fix.
       if (ensured.started && ensured.outcome === 'not-running') {
@@ -454,9 +443,6 @@ export function SettingsWindow() {
         }
         // 门票是**按端口**存的（`known_web_handoff(port)`）。
         await nativeRuntime.openClientInBrowser(live)
-        // FREEZE（临时冻结，不是删除）：这里原来刷新标题右上角那份实例清单（"刚才可能启动了一个
-        // 新实例，免得它还停在上一秒的样子"）。下拉冻住了，没有清单可刷。恢复办法：取消下面这一行。
-        // refreshManagedDsh()
         showNotice(msg('settings.window.reach.browser-opened', { port: live }))
         return
       }
@@ -478,10 +464,8 @@ export function SettingsWindow() {
    * 那一行藏起来"：停止成不成功由原生回答，界面只做它说的那一件事 —— 否则一次失败会留下
    * "已经停掉了"的假象，而那个假象比一行红字更坏。
    *
-   * FREEZE（临时冻结，不是删除）：`instanceKey` 那一条路（下拉里某一行的 ×）冻住了，但"不给
-   * instanceKey"这条路**正在用** —— 卡片底部恢复的「停止本应用启动的 DSH」走的就是它，语义与
-   * 从前逐字相同（停全部）。恢复办法：把 `onStopManagedInstance` 的传参加回来（取消注释下方
-   * 那一处 FREEZE），这个函数不用改。
+   * `instanceKey` 是原生契约（`stop_managed_dsh` 按实例停止）留下的可选参数；现役界面只走不给
+   * instanceKey 的那条路 —— 卡片底部的「停止本应用启动的 DSH」，语义是停全部。
    */
   const stopManagedInstance = async (instanceKey?: string) => {
     setManagedDshBusy(true)
@@ -558,9 +542,6 @@ export function SettingsWindow() {
   const probeControllerHolder = useRef<{ refresh: (probe: SettingsProbe) => Promise<void> }>()
   const probeRunners = useMemo<Record<SettingsProbe, () => Promise<unknown>>>(() => ({
     managedDsh: async () => {
-      // FREEZE（临时冻结，不是删除）：这里原来带上主体 id（`managedDshStatus(subjectId)`），
-      // 问的是"我这次启动的那个孩子还在不在"。不带主体问的是同一件事的单实例形态。
-      // 恢复办法：把那个实参加回去（一行）。
       const status = await nativeRuntime.managedDshStatus()
       if (mountedRef.current) setManagedDsh(status)
     },
@@ -990,49 +971,8 @@ export function SettingsWindow() {
       managedDsh={managedDsh}
       managedDshBusy={managedDshBusy}
       onRefreshManagedDsh={refreshManagedDsh}
-      // FREEZE（临时冻结，不是删除）：标题右上角那个按实例停止的入口（下拉里某一行的 ×）。
-      // 它随下拉一起冻住；不丢动作 —— 没有 instanceKey 的那一条路由 `onStopAllManagedDsh` 承担，
-      // 也就是卡片底部恢复的「停止本应用启动的 DSH」。恢复办法：取消下面这一行。
-      // onStopManagedInstance={(instanceKey) => { void stopManagedInstance(instanceKey) }}
       onStopAllManagedDsh={() => { void stopManagedInstance() }}
-      // FREEZE（临时冻结，不是删除）：「起别名」与「启动参数」两个 handler。它们的输入控件冻住了
-      // （`SettingsPanel.tsx` 里对应的 Field 都注释了），所以这里也一起冻 —— 留着就是两段永远
-      // 不会跑的回调，而"改了没反应"是比"没有这个入口"更难懂的状态。
-      // 这一段里的规则本身一行都没改，恢复办法就是取消这一整块的注释。
-      // onSelectSubjectAlias={(alias) => {
-      //   // 别名按主体 id 存：用户可能在两棵树之间来回切，名字必须跟着树走。空串表示"用目录名"，
-      //   // 所以它**删掉**那个键，而不是存一个空值 —— 让"没起别名"只有一种表示。
-      //   const subjectId = settingsRef.current.dshLaunch.subjectId
-      //   if (!subjectId) return
-      //   const aliases = { ...(settingsRef.current.dshLaunch.aliases ?? {}) }
-      //   const name = alias.trim()
-      //   if (name) aliases[subjectId] = name
-      //   else delete aliases[subjectId]
-      //   change({
-      //     ...settingsRef.current,
-      //     dshLaunch: {
-      //       ...settingsRef.current.dshLaunch,
-      //       ...(Object.keys(aliases).length > 0 ? { aliases } : { aliases: undefined }),
-      //     },
-      //   })
-      // }}
-      // onSelectLaunchArgs={(value) => {
-      //   const args = value.trim() ? value : undefined
-      //   change({
-      //     ...settingsRef.current,
-      //     dshLaunch: {
-      //       ...settingsRef.current.dshLaunch,
-      //       args,
-      //       // 换参数就清掉显式端口 pin：那条 pin 是"上一次启动选的那个端口"，参数已经把它推翻了。
-      //       // 留着它，「打开界面」会去敲上一代端口（与"换主体就清 pin"是同一条理由）。
-      //       endpointPort: undefined,
-      //     },
-      //   })
-      // }}
       onOpenTui={() => void nativeRuntime.openSubjectTui().then((result) => {
-        // FREEZE（临时冻结，不是删除）：这里原来把「启动参数」分好词再交给 TUI（`openSubjectTui(
-        // parseLaunchArgs(settingsRef.current.dshLaunch.args))`）。这一版不带参数。恢复办法：把那个
-        // 实参加回去，并恢复本文件顶部的 `parseLaunchArgs` import。
         // 契约：没装 TUI 时原生返回 `opened: false` 与一句"怎么办"。**把那句显示出来**，
         // 绝不静默改成打开浏览器 —— 那等于替用户换了一条他没选的路。
         if (!result.opened) {
