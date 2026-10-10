@@ -27,7 +27,6 @@ mod harness_catalog;
 // 在 Lite 构建里全部不可达，会给 Lite 门禁凭空加一串 dead_code 警告。
 #[cfg(not(feature = "lite"))]
 mod floating_ball;
-mod lock_screen_backup;
 mod native_bootstrap;
 mod native_handoff;
 // 启动时间线的锚点与统一写法（只测量，不改启动顺序）：见模块头部说明。
