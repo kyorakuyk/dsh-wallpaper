@@ -58,6 +58,18 @@ jobs:
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile
 
+      # 冻结代码保留在仓库根 archive/，只退出默认构建（docs/plans/code-structure-refactor-plan.md 第一节）。
+      # 这一步防止现役代码重新 import / #[path] / include_str! 归档里的文件；测试读取归档做完整性断言不在检查范围内。
+      - name: Check live code does not reference archive/
+        shell: bash
+        run: |
+          pattern='(from|import\(|require\()[[:space:]]*['"'"'"][^'"'"'"]*archive/|#\[path[[:space:]]*=[[:space:]]*"[^"]*archive/|include_(str|bytes)!\([[:space:]]*"[^"]*archive/'
+          if git grep -nE "$pattern" -- wallpaper/src wallpaper/src-tauri/src wallpaper/src-tauri/build.rs wallpaper/vite.config.ts bridge/src; then
+            echo "::error::Live code references archive/. Frozen code must stay out of the default build."
+            exit 1
+          fi
+          echo "Archive boundary: OK"
+
       - name: Type check
         run: pnpm typecheck
 
