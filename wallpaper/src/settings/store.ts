@@ -37,9 +37,9 @@ export interface BackgroundOption {
 }
 
 export const BACKGROUND_OPTIONS: readonly BackgroundOption[] = [
-  { id: 'workspace', get name() { return t('settings.appearance.background.workspace') }, path: 'personas/deepsea-bg/deepsea-studio.png' },
-  { id: 'deepsea-2', get name() { return t('settings.appearance.background.deepsea-2') }, path: 'personas/deepsea-bg/deepsea-dome.png' },
-  { id: 'deepsea-3', get name() { return t('settings.appearance.background.deepsea-3') }, path: 'personas/deepsea-bg/deepsea-study.png' },
+  { id: 'workspace', get name() { return t('settings.appearance.background.workspace') }, path: 'personas/deepsea-bg/deepsea-studio.webp' },
+  { id: 'deepsea-2', get name() { return t('settings.appearance.background.deepsea-2') }, path: 'personas/deepsea-bg/deepsea-dome.webp' },
+  { id: 'deepsea-3', get name() { return t('settings.appearance.background.deepsea-3') }, path: 'personas/deepsea-bg/deepsea-study.webp' },
   { id: 'default', get name() { return t('settings.appearance.background.default') }, path: '' },
 ]
 

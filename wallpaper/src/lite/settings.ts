@@ -14,9 +14,9 @@ export interface LiteOption<Id extends string> {
 }
 
 export const LITE_BACKGROUND_OPTIONS: Array<LiteOption<LiteBackgroundId>> = [
-  { id: 'workspace', get label() { return t('lite.option.background.workspace') }, path: 'personas/deepsea-bg/deepsea-studio.png' },
-  { id: 'deepsea-2', get label() { return t('lite.option.background.deepsea-2') }, path: 'personas/deepsea-bg/deepsea-dome.png' },
-  { id: 'deepsea-3', get label() { return t('lite.option.background.deepsea-3') }, path: 'personas/deepsea-bg/deepsea-study.png' },
+  { id: 'workspace', get label() { return t('lite.option.background.workspace') }, path: 'personas/deepsea-bg/deepsea-studio.webp' },
+  { id: 'deepsea-2', get label() { return t('lite.option.background.deepsea-2') }, path: 'personas/deepsea-bg/deepsea-dome.webp' },
+  { id: 'deepsea-3', get label() { return t('lite.option.background.deepsea-3') }, path: 'personas/deepsea-bg/deepsea-study.webp' },
 ]
 
 export const LITE_PORTRAIT_OPTIONS: Array<LiteOption<Exclude<LitePortraitId, 'custom'>>> = [
