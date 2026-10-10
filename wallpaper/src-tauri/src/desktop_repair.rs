@@ -33,7 +33,8 @@ use std::path::PathBuf;
 /// Set on the command line to run as the repair helper instead of as the wallpaper.
 pub const REPAIR_ARGUMENT: &str = "--desktop-repair";
 
-/// Shared with the lock-screen directory so both surfaces agree on one root.
+/// Lives under the app's own `DSHWallpaper` directory in `LOCALAPPDATA` (the
+/// lock-screen config directory it once shared a root with has been archived).
 /// Resolved without Tauri so the helper can find it on its own.
 pub fn repair_state_dir() -> Option<PathBuf> {
     let root = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?;

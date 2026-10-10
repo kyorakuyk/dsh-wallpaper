@@ -51,8 +51,9 @@ futures-util = { version = "0.3", optional = true }
 urlencoding = { version = "2", optional = true }
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 base64 = { version = "0.22", optional = true }
-# 锁屏托管图按**内容**命名（同一张素材永远同一个文件名，否则 Windows 的"最近使用的图像"
-# 会给同一张图留多个栏位）。两版都要用，所以它不再是 full 专属的可选依赖。
+# 内容哈希（SHA-256）：外观导入/导出给素材与主题包文件算哈希（按哈希去重、写进导出清单、
+# 导入时核对；见 src/appearance/importer.rs、exporter.rs），更新下载核对 GitHub 给出的
+# `sha256:` digest（src/update/download.rs）。这几处目前都只在完整版编译；它仍是非可选依赖。
 sha2 = "0.10"
 zip = { version = "2.2", optional = true }
 

@@ -1,7 +1,7 @@
 # 归档：锁屏相关（2026-09-30）
 
 用户决定**壁纸不再触碰锁屏**：现在做的和用户自己在 Windows 设置里换一张没有区别，却多出风险，
-而且不能回滚。所以整块退出——整文件进这里归档，代码块在原处按 FREEZE 注释。
+而且不能回滚。所以整块退出——整文件进这里归档；代码块一度在原处按 FREEZE 注释，现状见下面的“当前状态”（现役代码里已不再保留这些注释块）。
 
 | 归档文件 | 原位置 |
 | --- | --- |
@@ -10,5 +10,220 @@
 | packaging/msix/LockScreenProbe.AppxManifest.xml | 探针的 MSIX 清单 |
 
 恢复办法：把文件放回原位，并取消 `wallpaper/src-tauri/Cargo.toml` 里那段注释
-（`lockscreen-probe` feature 与 `[[bin]]`）。其余仍在原处、按 FREEZE 注释的代码块见
-`docs/plans/release-scope-cleanup-plan.md` 第一节。
+（`lockscreen-probe` feature 与 `[[bin]]`）。
+
+当前状态（2026-10）：Rust 侧已全部迁出到这里——锁屏实现见下文 B2，`lib.rs` 里注释掉的锁屏命令、
+handler 注释行、`build.rs` 的命令登记与 permissions 文件见下文 B3；前端的冻结片段（门面包装、两个设置窗口的
+状态与界面、设置字段、孤儿 CSS）也已迁出，见下文 B4。现役 `wallpaper/src` 里不再有锁屏代码（外观素材槽
+`lockscreen.image` 是现役功能，与此无关）。最初按 FREEZE 注释的代码块清单见 `docs/plans/release-scope-cleanup-plan.md` 第一节。
+
+## 2026-10 第二批归档（B2）：Rust 锁屏实现
+
+来源 commit `3c92772`（迁移前打了 tag `pre-freeze-isolation`）；下列行号均指该 commit。
+这一批把锁屏的 Rust 实现移出默认构建。开机自启、`has_package_identity`、首帧素材
+`LockScreenSleep.png`（`native_bootstrap.rs` 的 `find_asset`）属于共享/现役能力，仍留在原处。
+
+| 归档文件 | 原位置 |
+| --- | --- |
+| wallpaper/src-tauri/src/lock_screen_backup.rs | 同路径整文件（`git mv`），含 `file_content_hash` 与 17 条单元测试 |
+| wallpaper/src-tauri/tests/lock_screen_backup.rs | 同路径整文件（`git mv`），Cargo 自动发现的独立测试目标（`#[path]` 引入上面的模块） |
+| wallpaper/src-tauri/src/windows_integration/lock_screen.rs | 新文件：从 `wallpaper/src-tauri/src/windows_integration.rs` 逐字抽出的锁屏段（按原顺序，含注释与 `#[cfg]`） |
+
+`windows_integration.rs` 中被移出的符号（按区段，原行号）：
+
+- 283-335：`LOCK_SCREEN_TRANSACTION`、`LOCK_SCREEN_TRANSACTION_MUTEX_NAME`、`CrossProcessLockScreenTransaction`（含 impl 与 `Drop`）
+- 3355-3373：`lock_screen_config_dir`
+- 3375-3638：`set_lock_screen`（Windows）
+- 3640-3671：`clear_stale_lock_screen_backup`
+- 3673-3758：`restore_precondition_is_satisfied`、`finish_lock_screen_takeover_attempt`、`abort_lock_screen_takeover_before_set`、`finish_verified_lock_screen_restore`
+- 4711-4724：`can_attempt_lock_screen_takeover`、`bundled_sleep_resource_candidates`
+- 4726-4754：`current_package_install_root`
+- 4756-4846：`bundled_sleep_image_path`
+- 4848-4938：`managed_image_path_for_state`、`copy_sleep_image_without_overwrite`、`remove_backup_after_restore`
+- 4940-5015：`LockScreenDiagnostics`、`lock_screen_diagnostics`（Windows）
+- 5033-5068：非 Windows 桩 `set_lock_screen`、`LockScreenDiagnostics`、`lock_screen_diagnostics`
+
+被移出的测试：`lock_screen_backup.rs` 内 17 条（它们原本经 `lib.rs` 的 `mod lock_screen_backup;`
+编进 lib 测试，又经独立测试目标再跑一遍）；`windows_integration.rs` 测试模块里 6 条，现放在
+`lock_screen.rs` 末尾的 `#[cfg(test)] mod tests`：
+
+- `packaged_builds_are_always_eligible_for_lock_screen_takeover`（原 5190-5194）
+- `unpackaged_lock_screen_takeover_is_never_eligible`（原 5196-5199）
+- `packaged_sleep_resource_uses_tauris_verified_windows_path_first`（原 5487-5493）
+- `v2_backup_uses_its_manifest_managed_filename`（原 5495-5518）
+- `managed_sleep_copy_never_overwrites_an_existing_path`（原 5520-5541）
+- `restore_precondition_requires_the_current_managed_image`（原 5543-5558）
+
+从现役删除的 import（都只被锁屏段使用；`lock_screen.rs` 顶部原样保留了这些 `use`）：
+
+- `wallpaper/src-tauri/src/lib.rs:30` `mod lock_screen_backup;`
+- `windows_integration.rs:19-27` `use crate::lock_screen_backup::{…}` 整块
+- `windows::Storage::StorageFile`
+- `windows::System::UserProfile::{LockScreen, UserProfilePersonalizationSettings}`
+- `windows::Win32::Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0}`
+- `windows::Win32::Storage::Packaging::Appx::GetCurrentPackagePath`（现役里只剩 `current_run_entry_command` 的一句注释提到它）
+- `windows::Win32::System::Threading::{ReleaseMutex, WaitForSingleObject}`（`CreateMutexW` 仍被壁纸宿主互斥锁使用，保留）
+- 测试模块的 `use tempfile::tempdir;`
+
+### 恢复接线
+
+1. 把两个整文件移回 `wallpaper/src-tauri/src/lock_screen_backup.rs` 与 `wallpaper/src-tauri/tests/lock_screen_backup.rs`，
+   并在 `lib.rs` 重新加 `mod lock_screen_backup;`。
+2. 把 `lock_screen.rs` 的内容按原行号并回 `windows_integration.rs`；或把它放到
+   `src/windows_integration/lock_screen.rs`，在 `windows_integration.rs` 里 `mod lock_screen;`，
+   并调整 `use`（子模块需 `use super::*;` 或显式引入 `has_package_identity` 等父模块项，
+   被调用的项改成 `pub(super)`/`pub(crate)`，`lib.rs` 的调用路径相应改为 `windows_integration::lock_screen::…`）。
+3. 恢复上面列出的被删 import（文件顶部已原样写出），测试里的 `tempfile::tempdir` 同样恢复。
+4. `lib.rs` 里注释掉的锁屏命令与 handler 注释行、`build.rs` 的命令名单、`permissions/` 下的锁屏权限：见下文 B3。
+
+### 未验证范围（B2）
+
+- 归档代码不再被编译检查；恢复前须重新编译并运行
+  `cargo test --manifest-path wallpaper/src-tauri/Cargo.toml --locked --all-targets`（以及 Lite 的 `--no-default-features --features lite`）。
+- IDE 中归档文件的 import 无法解析属预期（它们不在任何 crate 的模块树里）。
+- 现役测试会读取部分归档文件做完整性断言，因此修改归档（除纯 .md 外）会触发 CI。
+
+## 2026-10 第三批归档（B3）：lib.rs 注释命令、build.rs 登记与权限文件
+
+来源 commit `3c92772`（tag `pre-freeze-isolation`）；下列行号均指该 commit。这一批把仍留在现役文件里的
+锁屏**注释块与接线**移出：`lib.rs` 不再出现这几条命令（连注释也没有），`build.rs` 不再为它们生成 ACL 条目。
+
+| 归档文件 | 原位置 |
+| --- | --- |
+| wallpaper/src-tauri/src/lib.lock-screen-commands.rs | 新文件：`wallpaper/src-tauri/src/lib.rs` 中注释掉的锁屏命令，去掉 `// ` 前缀恢复成普通 Rust（FREEZE 说明行原样保留）；文件末尾用注释原样列出接线行 |
+| wallpaper/src-tauri/permissions/autogenerated/set_lock_screen_enabled.toml | 同路径（`git mv`） |
+| wallpaper/src-tauri/permissions/autogenerated/clear_stale_lock_screen_backup.toml | 同路径（`git mv`） |
+| wallpaper/src-tauri/permissions/autogenerated/get_lock_screen_diagnostics.toml | 同路径（`git mv`） |
+| wallpaper/src-tauri/permissions/autogenerated/open_windows_lock_screen_settings.toml | 同路径（`git mv`） |
+
+从 `lib.rs` 移出的区段（原行号）：
+
+- 1755-1756：`lite_settings_save` 的 Lite 允许键里 `"lockScreenEnabled"` 的 FREEZE 注释（位于 `"skipWakeAnimation"`
+  与 `"desktopWallpaperFallback"` 之间；后者是持久化兼容键，留在现役）
+- 1973-2003：`set_lock_screen_enabled`、`clear_stale_lock_screen_backup`、`get_lock_screen_diagnostics`（位于
+  `notify_appearance_changed` 与 `set_autostart_blocking` 之间；2003 是 `// }`，2004 为空行）
+- 2163-2187：`open_windows_lock_screen_settings`（含其 `///` 文档注释；位于 TranslucentTB 命令段之后、
+  `DESKTOP_WORKSPACE_DIRECTORY_NAME` 之前；2187 是 `// }`，2188 为空行）
+- handler 注释行：Lite 4895-4898、4904-4905；完整版 4926-4929、4946-4947
+- 留在现役、只改措辞：`run_lite` 的文档注释（4874-4877）原说两版共享 "Windows host and lock-screen
+  implementation"，现改为只说共享 Windows 桌面宿主。
+
+`build.rs`（`tauri_build::AppManifest::new().commands(&[…])`）删除的登记，原第 21-23 行与第 47 行：
+
+```rust
+            // 原第 21-23 行，紧跟 "notify_appearance_changed" 之后：
+            "set_lock_screen_enabled",
+            "clear_stale_lock_screen_backup",
+            "get_lock_screen_diagnostics",
+            // 原第 47 行，紧跟 "open_translucent_tb_install" 之后（若 1B 未恢复，则放在 "stop_managed_dsh" 之后）：
+            "open_windows_lock_screen_settings",
+```
+
+handler 接线（恢复时取消注释即可；原样列出）：
+
+```rust
+// Lite 的 generate_handler!，原 4895-4898（"set_autostart," 之前）与 4904-4905（TranslucentTB 三行之后）：
+// FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
+//             set_lock_screen_enabled,
+//             clear_stale_lock_screen_backup,
+//             get_lock_screen_diagnostics,
+// FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
+//             open_windows_lock_screen_settings,
+
+// 完整版的 generate_handler!，原 4926-4929（"notify_appearance_changed," 之后）与 4946-4947（"save_api_key," 之前）：
+// FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
+//             set_lock_screen_enabled,
+//             clear_stale_lock_screen_backup,
+//             get_lock_screen_diagnostics,
+// FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30 决定，理由见 docs/plans/release-scope-cleanup-plan.md 第一节）。
+//             open_windows_lock_screen_settings,
+```
+
+`capabilities/*.json` 在 `3c92772` 时已不引用这 4 条权限（`allow-set-lock-screen-enabled` 等），所以本批不涉及 capability。
+`gen/schemas/*.json` 是构建生成物，本批没有改，里面仍列着这 4 条权限；下次本地构建后需重新生成并提交。
+
+### 恢复接线（B3）
+
+1. 先按上文 B2 的步骤恢复 Rust 锁屏实现（这些命令调用 `windows_integration::set_lock_screen` 等）。
+2. 把 `lib.lock-screen-commands.rs` 里的命令按上面的原位置放回 `lib.rs`，并在 Lite 允许键里恢复 `"lockScreenEnabled",`。
+3. 在 `build.rs` 重新登记上面四条命令；在两处 `generate_handler!` 里加回对应的四个注册项。
+4. 把四个 permission toml `git mv` 回 `wallpaper/src-tauri/permissions/autogenerated/`（构建也会按 `build.rs` 重新生成它们）；
+   功能需要哪个窗口调用，就在对应的 `capabilities/*.json` 里显式授予 `allow-…`。
+5. 本地构建一次，重新生成 `gen/schemas/*.json` 并提交。
+6. `wallpaper/tests/nativeChatBoundary.spec.ts` 里 "keeps the frozen lock-screen and system-integration commands out of
+   the live build" 等断言钉的是"现役入口关闭、归档完整"，恢复时要相应改回现役断言。
+7. 运行全套门禁：`cargo test --manifest-path wallpaper/src-tauri/Cargo.toml --locked --all-targets`、Lite 的
+   `cargo check … --no-default-features --features lite --bin dsh-wallpaper-lite` 与 `cargo test … --no-default-features --features lite --lib`、
+   前端测试与 typecheck。
+
+## 2026-10 第四批归档（B4）：前端锁屏代码
+
+来源 commit `3c92772`（tag `pre-freeze-isolation`）；下列行号均指该 commit（B1-B3 没有改这些前端文件）。
+这一批把仍在 `wallpaper/src` 里的锁屏（1A）冻结片段迁到 `wallpaper/src/` 下的片段文件。它们在原文件里几乎都是
+`//` 或 `{/* */}` 注释；片段里去掉了注释外壳、恢复成普通 TS/TSX（FREEZE 说明保留为注释），每段前用
+`// ---- 原 N-M 行：位置 ----` 写明原位置。片段不在任何构建里，单独编译不通过、IDE 报未解析符号属预期。
+唯一仍是现役代码的是 `native/runtime.ts:30` 的导出 `LockScreenDiagnostics`（B4 时全仓已无引用），一并移出；
+只被冻结 JSX 使用的 CSS 也随 UI 迁出。
+
+| 归档片段（`wallpaper/src/` 下） | 原文件（`wallpaper/src/` 下）与原行 | 迁出的内容 |
+| --- | --- | --- |
+| `native/runtime.lockscreen.ts` | `native/runtime.ts` 30；453-458；470-471；723-740；769-774 | 导出 `interface LockScreenDiagnostics`；`NativeRuntime` 的 `setLockScreen`、`clearStaleLockScreenBackup(confirmed)`、`lockScreenDiagnostics`、`openWindowsLockScreenSettings` 声明及 `nativeRuntime` 里的实现 |
+| `lite/native.lockscreen.ts` | `lite/native.ts` 1-2；28-31；33-36；48-51；76-79（各段后的空行一并删除） | 带 `LockScreenDiagnostics` 的 import；`lockScreenDiagnostics`、`setLockScreen`、`clearStaleLockScreenBackup`、`openWindowsLockScreenSettings` |
+| `lite/LiteSettingsWindow.lockscreen.tsx` | `lite/LiteSettingsWindow.tsx` 4-5；36-37；45-46；49-50；70-88；149-150；212-228；246-254；256-271；308；310；313-314 | import；state `lockScreenDiagnostics`、`lockScreenBusy`；`lockOperationRef`；`refreshDiagnostics` 与挂载时的调用；`setLockScreen`、`openLockScreenSettings`、`clearStaleLockScreenBackup`（含 `window.confirm`）；`01 · SYSTEM` 卡片的说明注释、"接管 Windows 锁屏图片"行、按钮行与诊断块 |
+| `lite/LiteSettingsWindow.lockscreen.css` | `lite/LiteSettingsWindow.css` 28-30 | `.lite-actions`（及其 `button` 状态）、`.lite-diagnostics`、`.lite-diagnostics-action` |
+| `lite/settings.lockscreen.ts` | `lite/settings.ts` 37；71 | `lockScreenEnabled` 的默认值与规范化 |
+| `lite/types.lockscreen.ts` | `lite/types.ts` 13 | `LiteSettings.lockScreenEnabled` |
+| `settings/SettingsWindow.lockscreen.tsx` | `settings/SettingsWindow.tsx` 7-8；147-148；150-151；215-216；237-238；375-387；604-606；835-881；979-980；982-988；1157-1164 | import；state `lockScreenDiagnostics`、`lockScreenBusy`；`lockScreenOperationRef`、`lockScreenDiagnosticsRequestRef`；`refreshLockScreenDiagnostics`；`probeRunners.lockScreenDiagnostics`；`setLockScreenEnabled`、`openWindowsLockScreenSettings`、`clearStaleLockScreenBackup`（含 `window.confirm`）；`change` 里把锁屏字段排除在即时保存之外的合并；传给 `SettingsPanel` 的 6 个 prop |
+| `settings/SettingsPanel.lockscreen.tsx` | `settings/SettingsPanel.tsx` 11-12；192-198；1283-1290 | 带 `LockScreenDiagnostics` 的 import；`SettingsPanelProps` 的 `lockScreenDiagnostics`、`onRefreshLockScreenDiagnostics`、`onRestoreLockScreen`、`onClearStaleLockScreenBackup`、`onSetLockScreenEnabled`、`lockScreenBusy`；系统页 Windows 卡片里的"接管锁屏图片"行与诊断块 |
+| `settings/SettingsPanel.lockscreen.css` | `settings/SettingsPanel.css` 810-846（847 的空行一并删除） | `.lockscreen-diagnostics`、`.lockscreen-diagnostics__row`、`.lockscreen-diagnostics__row > div`、`.lockscreen-diagnostics strong`、`small`/`li`、`ul` |
+| `settings/settingsProbes.lockscreen.ts` | `settings/settingsProbes.ts` 29-31；53-54；203-204 | `SETTINGS_PROBES` 的 `'lockScreenDiagnostics'`；`PAGE_PROBES.system` 的旧值；`PROBE_ERROR_MESSAGES.lockScreenDiagnostics` |
+| `settings/store.lockscreen.ts` | `settings/store.ts` 192；255；391 | `WallpaperSettings.lockScreenEnabled` 字段、默认值与规范化（原为不带 FREEZE 标记的注释） |
+
+1A 与 1B 交错处的分拣（两个归档按各自标记拿走自己那几行，没有一行被拆成两半）：
+
+- 四处 `native/runtime.ts` 类型 import 的注释行（`lite/native.ts` 1-2、`LiteSettingsWindow.tsx` 4-5、`SettingsWindow.tsx` 7-8，
+  以及 `SettingsPanel.tsx` 11-12）按 FREEZE(1A) 标记归这里；其中前三行同时列着 1B 的 `TranslucentTbStatus`，只恢复锁屏时去掉它。
+- Lite 诊断块（原 `LiteSettingsWindow.tsx:314`）标着 FREEZE(1A)，但里面引用了 1B 的 `desktopFallbackStatus`；整行归这里，
+  只恢复锁屏时删掉那一小段。
+- `.lite-actions` 同时被锁屏按钮行（原 313）与 1B 的 TranslucentTB 卡片（原 338）使用，两个归档的 CSS 片段各存一份，
+  都恢复时只放回一次。
+
+留在现役、只改措辞（不是迁移）：
+
+- `settings/SettingsWindow.tsx` 211-214 `settingsRef` 的说明原写 "a successful lock-screen request"，改为 "a successful async request"。
+- `settings/SettingsWindow.tsx` 989 的 `const normalNext = next` 留在现役（它前面那段合并逻辑已迁出）。
+- `i18n/zh.shared.ts:37`、`i18n/en.shared.ts:28` 的说明注释改为"已整块迁出到仓库的归档目录"（不写 `archive/` 路径，现役源码不引用归档）。用户可见文案（词条、README、tauri conf）本批未动。
+
+### 恢复接线（B4）
+
+1. 先按上文 B2、B3 恢复 Rust 实现、四条命令、`build.rs` 登记与权限；设置窗口要调用它们，还需在 `capabilities/settings.json`
+   里授予对应的 `allow-…`。
+2. 把每个片段按"原 N-M 行"所写的位置放回原文件，作为现役代码（不要再加注释外壳）：`LockScreenDiagnostics` 导出、
+   `NativeRuntime` 声明与实现、Lite 门面函数、两个设置窗口的状态 / ref / 函数 / JSX、`SettingsPanelProps` 与系统页 JSX。
+3. 恢复 import：三处 `native/runtime.ts` 类型 import 换成片段里带 `LockScreenDiagnostics` 的版本（只恢复锁屏时去掉
+   `TranslucentTbStatus`；`SettingsPanel.tsx` 要保留现役行里的 `UpdateCheckReport`）。
+4. 恢复设置字段与接线：`store.ts`、Lite `settings.ts`/`types.ts` 的 `lockScreenEnabled`；`SettingsWindow` 的 `change`
+   换回合并逻辑；`settingsProbes.ts` 的探针名单（`PAGE_PROBES.system` 要同时保留 `updateStatus`）与错误词条映射。
+5. 恢复 CSS：把两个 `.css` 片段放回原位置（`.lite-actions` 只放一次）。
+6. 词条：片段里的界面文案是冻结前写死的中文，`PROBE_ERROR_MESSAGES` 引用的 `settings.probe.lock-screen` 当前也不在词典里；
+   恢复为现役代码前要把它们迁进 `i18n/`（否则 `noHardcodedCopy.spec.ts` 会红、`MessageKey` 类型不过），`setNotice`
+   现在接的是 `Sentence`/`Message`。
+7. 测试：`nativeChatBoundary.spec.ts` 的 "requires explicit confirmation before deleting a saved lock-screen original"
+   现在钉的是"现役里没有 `clearStaleLockScreenBackup`、归档片段里确认在先"，恢复时改回读现役文件；
+   `settingsProbes.spec.ts`、`settingsStore.spec.ts` 里注释掉的锁屏断言取消注释。
+8. 运行 `pnpm typecheck && pnpm test && pnpm build && pnpm build:lite`，以及 Lite bundle boundary（`scripts/verify-lite-bundle.ps1`）。
+
+### 未验证范围（B4）
+
+- 本批在没有 node_modules 的环境里完成，没有运行 tsc / vitest / vite。依据是逐文件比对：剥掉注释后，现役代码与迁移前
+  逐字相同，差别只有 `runtime.ts` 的 `LockScreenDiagnostics` 导出（全仓无引用）与 JSX 里 `{/* */}` 留下的空表达式
+  `{}`；import 行没有变化。由 CI（tsc -b、vitest、vite build、build:lite、Lite bundle boundary）最终确认。
+- 片段不再被类型检查。它们在冻结期间本来就是注释、从未被编译，恢复时可能与现役接口有漂移（见上面第 6 条）。
+- 现役测试会读取部分归档文件做完整性断言，因此修改归档（除纯 .md 外）会触发 CI。
+
+## 依赖
+
+- `sha2`：现役仍在用，保留（见 `wallpaper/src-tauri/Cargo.toml` 的注释）。
+- `tempfile`：dev 依赖，现役测试仍在用。
+- `tokio`：共享依赖；锁屏段只用了 `tokio::sync::Mutex`。
+- `windows` crate 的 `Storage`、`Storage_Streams`、`System_UserProfile` features：现役 `src` 里只有锁屏段用到 `StorageFile` 与 `UserProfilePersonalizationSettings`；本轮没有从 `Cargo.toml` 移除，能否去掉需要在 Windows 上编译验证。

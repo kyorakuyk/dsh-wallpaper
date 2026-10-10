@@ -5,12 +5,18 @@ import { describe, expect, it } from 'vitest'
 import { launchArgsIssue, launchPortFromArgs, launchSettingsPort, parseLaunchArgs } from '../src/connect/launchArgs.ts'
 import { endpointScopeOf, subjectEndpointPorts, WALLPAPER_HOST_PORT } from '../src/connect/endpoints.ts'
 import { instanceLabel, subjectOptionLabel } from '../src/connect/harnessSubjects.ts'
-import { normalizeSettings } from '../src/settings/store.ts'
 import type { HarnessTarget } from '../src/native/runtime.ts'
 
 const wallpaperRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const source = async (relative: string): Promise<string> =>
   (await readFile(resolve(wallpaperRoot, relative), 'utf8')).replace(/\r\n?/g, '\n')
+
+// B6 of the freeze isolation moved the commented-out launch-args and instance UI out of
+// wallpaper/src into readable fragments under archive/frozen/. The revival checks read them.
+const archiveRoot = resolve(wallpaperRoot, '..', 'archive')
+const archivedLaunchUiRoot = 'frozen/launch-ui/wallpaper/src'
+const readArchive = async (relative: string): Promise<string> =>
+  (await readFile(resolve(archiveRoot, relative), 'utf8')).replace(/\r\n?/g, '\n')
 
 function checkout(rootPath: string, version?: string): HarnessTarget {
   return {
@@ -161,16 +167,6 @@ describe('端口从设置一路流到「打开界面」', () => {
     const targets = await source('src-tauri/src/harness_targets.rs')
     expect(targets).toContain('declared_port: Option<u16>')
   })
-
-  // 冻结（与「启动参数」一起）：它钉的是"改参数就清掉显式端口 pin"那个 handler 的**源码**，
-  // 而那个 handler 现在整块被注释掉了（输入控件也不在界面上）。
-  it.skip('is cleared of the explicit pin when the args change, so the browser cannot chase a dead port', async () => {
-    // 与"换主体就清 pin"是同一条理由：那条 pin 是上一次启动选的那个端口，参数已经把它推翻了。
-    const window = await source('src/settings/SettingsWindow.tsx')
-    const handler = window.slice(window.indexOf('onSelectLaunchArgs={(value) =>'), window.indexOf('onOpenTui='))
-    expect(handler).toContain('endpointPort: undefined')
-    expect(handler).toContain('args,')
-  })
 })
 
 /**
@@ -213,89 +209,57 @@ describe('别名与实例行', () => {
     // 扫描之后目录消失了：至少还要叫得出名字。
     expect(instanceLabel('D:\\gone\\my-tree', 3081, [])).toBe('my-tree · 3081')
   })
-
-  // 冻结（与「起别名」一起）：前半段仍然是纯逻辑（别名表照常存储与读取 ✓），后半段钉的是
-  // SettingsWindow 里"清空就删键"那段代码的源码 —— 而那段 handler 现在整块被注释掉了。
-  it.skip('keeps one alias per subject, and drops a cleared one instead of storing an empty string', async () => {
-    const settings = normalizeSettings({
-      dshLaunch: { profile: 'desktop', aliases: { 'D:\\a': '主树', 'D:\\b': '旧树' } },
-    })
-    expect(settings.dshLaunch.aliases).toEqual({ 'D:\\a': '主树', 'D:\\b': '旧树' })
-    // 界面上清空 ⇒ 删键（见 SettingsWindow 的处理），所以"没起别名"只有一种表示。
-    const window = await source('src/settings/SettingsWindow.tsx')
-    expect(window).toContain('else delete aliases[subjectId]')
-  })
 })
 
 /**
  * 冻结后的形状：这个功能的**入口**全都不在了，而原生侧一行都没动。
  *
  * 这一组是"复活时该从哪里开始"的清单：它钉住的是"现在没有参数流出去"，所以哪天有人把某条
- * `args:` 打开而忘了另一条，这里会立刻失败，而不是等到用户发现只有自动启动带参数。
- * 它替换了 `it.skip` 掉的那几条 UI 断言 —— 那些钉的是被冻结的控件，钉不住了，但"参数不再
- * 上路"这件事仍然可以钉。
+ * `args:` 加回来而忘了另一条，这里会立刻失败，而不是等到用户发现只有自动启动带参数。
+ * 冻结隔离（B6）把那几行注释掉的 `args:` 连同说明一起移进了 `archive/frozen/launch-ui/`：现役源码
+ * 只钉"没有参数上路"，"恢复材料还在"改由读取归档来钉。被冻结控件的那几条 UI 断言也随 `it.skip`
+ * 一起迁进了那份归档（以及 `archive/frozen/instance-ui/`）。
  */
 describe('启动参数冻结之后：没有参数流出去', () => {
   const LAUNCH_CALL_NAMES = ['ensureHarnessUi', 'autostartHarnessTarget', 'launchHarnessTarget'] as const
 
-  it('comments out the args property at every launch call site', async () => {
+  it('keeps the args property out of every live launch call site, with the revival lines in the archive', async () => {
     const app = await source('src/App.tsx')
+    // 冻结隔离（B6）之后，现役 App.tsx 连那行注释掉的 import 也不再带着：没有 `parseLaunchArgs` 的任何痕迹。
+    expect(app).not.toContain('parseLaunchArgs')
     for (const call of LAUNCH_CALL_NAMES) {
       const from = app.indexOf(`nativeRuntime.${call}({`)
       expect(from, call).toBeGreaterThanOrEqual(0)
       const callText = app.slice(from, app.indexOf('})', from))
       expect(callText, `${call} 仍然带着参数上路`).not.toMatch(/^\s*args:/m)
-      // 而且留了话：取消注释就能复活，不必去 git 历史里找那一行。
+    }
+    // 而且留了话：可恢复的那三行在 launch-ui 归档里逐个调用列着，不必去 git 历史里找。
+    const archived = await readArchive(`${archivedLaunchUiRoot}/App.launch-args.tsx`)
+    expect(archived).toContain("import { parseLaunchArgs } from './connect/launchArgs.ts'")
+    for (const call of LAUNCH_CALL_NAMES) {
+      const from = archived.indexOf(`nativeRuntime.${call}({`)
+      expect(from, `归档里缺少 ${call}`).toBeGreaterThanOrEqual(0)
+      const callText = archived.slice(from, archived.indexOf('})', from))
       expect(callText, `${call} 缺少 FREEZE 说明`).toContain('FREEZE')
-      expect(callText, `${call} 缺少可恢复的那一行`).toMatch(/^\s*\/\/ args: parseLaunchArgs/m)
+      expect(callText, `${call} 缺少可恢复的那一行`).toMatch(/^\s*args: parseLaunchArgs\(/m)
     }
   })
 
-  it('comments out the args property in the settings window too', async () => {
+  it('keeps the args property out of the settings window too, with the revival lines in the archive', async () => {
     const window = await source('src/settings/SettingsWindow.tsx')
     // 两条路：手动「打开界面」（ensureHarnessUi）与「拉起 TUI」（openSubjectTui）。
     expect(window).not.toMatch(/^\s*args: parseLaunchArgs/m)
-    expect(window).toContain('// args: parseLaunchArgs(current.args),')
+    const archived = await readArchive(`${archivedLaunchUiRoot}/settings/SettingsWindow.launch-args.tsx`)
+    expect(archived).toContain('args: parseLaunchArgs(current.args),')
     // TUI 那一条原来是直接传实参的（`openSubjectTui(parseLaunchArgs(…))`），所以它的恢复形态是
-    // "把那个实参加回来"，而且现在是无参调用。
+    // "把那个实参加回来"（归档里写着那一行），而现役是无参调用。
+    expect(archived).toContain('nativeRuntime.openSubjectTui(parseLaunchArgs(settingsRef.current.dshLaunch.args))')
     expect(window).toContain('nativeRuntime.openSubjectTui()')
     expect(window).not.toContain('openSubjectTui(parseLaunchArgs')
   })
 })
 
 describe('实例下拉与「全部停止」的接线', () => {
-  // 冻结（与实例下拉一起）：它钉的是标题右上角那个控件的**存在**（Card 的 action、每一行的 ×、
-  // 「全部停止」），而那个控件现在整块被注释掉了 —— 底部「停止本应用启动的 DSH」那一行恢复了。
-  it.skip('renders the dropdown in the card header, with 全部停止 beside it', async () => {
-    const panel = await source('src/settings/SettingsPanel.tsx')
-    // 用户画红框的位置就是卡片标题右上角，所以控件是 Card 的 action，不是又一行 Field。
-    expect(panel).toContain('action={<RunningInstances')
-    expect(panel).toContain('aria-label="当前已启动实例"')
-    expect(panel).toContain('全部停止')
-    // 每一行一个 ×，且那个 × 说的是"停这一个实例"，不是一个通用的关闭图标。
-    expect(panel).toContain('aria-label={`停止实例 ${label}`}')
-    expect(panel).toContain('onStopInstance(instance.instanceKey)')
-    // 行文字就是 `别名 · 端口` 那一条规则渲染出来的。
-    expect(panel).toContain('instanceLabel(instance.subjectId, instance.port, targets, aliases)')
-  })
-
-  // 冻结（与实例下拉一起）：它钉的正是"底部那个按钮**不在了**"（`not.toContain('onStopManagedDsh')`
-  // 等三条断言），而冻结的一部分工作就是把它**恢复**回来 —— 那三条断言与被冻结的界面互相矛盾。
-  it.skip('consolidated the two stop controls into one action', async () => {
-    const panel = await source('src/settings/SettingsPanel.tsx')
-    // 底部那个按钮已经不在了：它与「全部停止」是同一个动作，两个控件做同一件事用户就得猜区别。
-    // （注释里还会提到那个旧按钮的名字，所以这里钉的是**控件**：那行 JSX 与那个 prop 都没了。）
-    expect(panel).not.toContain('onStopManagedDsh')
-    expect(panel).not.toContain('>停止本应用启动的 DSH<')
-    expect(panel).toContain('>全部停止<')
-    // 一个动作、一个实现：同一个命令，多了（或者少了）一个 instanceKey。
-    const window = await source('src/settings/SettingsWindow.tsx')
-    expect(window).toContain('nativeRuntime.stopManagedDsh(instanceKey)')
-    expect(window).toContain('onStopAllManagedDsh={() => { void stopManagedInstance() }}')
-    // 「刷新」跟着搬到了下拉里（它不是停止，所以留着不会造成两个控件做同一件事）。
-    expect(panel).toContain('onRefresh={props.onRefreshManagedDsh}')
-  })
-
   it('never offers the official desktop shell as something to stop', async () => {
     // 规则在原生侧是明写的（清单过滤 + 命令里的拒绝），不在界面侧靠"不显示它"来成立。
     const launch = await source('src-tauri/src/harness_launch.rs')

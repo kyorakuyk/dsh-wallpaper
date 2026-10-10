@@ -190,8 +190,7 @@
   font-size: 12px;
 }
 
-.settings-sidebar__status i,
-.integration-status i {
+.settings-sidebar__status i {
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -199,8 +198,7 @@
   box-shadow: 0 0 0 4px rgba(101, 116, 132, .1);
 }
 
-.settings-sidebar__status i.is-online,
-.integration-status i.is-online {
+.settings-sidebar__status i.is-online {
   background: #52D8A0;
   box-shadow: 0 0 12px rgba(82, 216, 160, .65);
 }
@@ -595,35 +593,6 @@
   font-size: 12px;
 }
 
-.integration-status {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 13px 0 15px;
-}
-
-.integration-status > div:first-child {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.integration-status span {
-  display: flex;
-  flex-direction: column;
-}
-
-.integration-status strong {
-  font-size: 14px;
-}
-
-.integration-status small {
-  margin-top: 4px;
-  color: var(--s-text-3);
-  font-size: 12px;
-}
-
 .integration-actions {
   display: flex;
   gap: 7px;
@@ -805,44 +774,6 @@
 .asset-inbox-row select,
 .asset-component-row select {
   min-width: 220px;
-}
-
-.lockscreen-diagnostics {
-  display: grid;
-  gap: 10px;
-  padding: 12px 0 15px;
-  border-top: 1px solid var(--s-line);
-}
-
-.lockscreen-diagnostics__row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.lockscreen-diagnostics__row > div {
-  display: flex;
-  flex-direction: column;
-}
-
-.lockscreen-diagnostics strong {
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.lockscreen-diagnostics small,
-.lockscreen-diagnostics li {
-  margin-top: 4px;
-  color: var(--s-text-3);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.lockscreen-diagnostics ul {
-  margin: 0;
-  padding: 8px 0 0 17px;
-  border-top: 1px solid var(--s-line);
 }
 
 .settings-statusbar {
@@ -1079,33 +1010,6 @@
   font-size: 12px;
   line-height: 1.55;
 }
-
-/* ---------------------------------------------------------------------------
-   FREEZE（临时冻结，不是删除）：「当前已启动实例」下拉与它的 header 布局。
-
-   为什么关：那个下拉（标题右上角的控件）冻住了，`<Card>` 也不再有 `action`，所以 header 不需要
-   两列布局 —— 留着 `display:flex` 只会让 `__heading` 变成收缩的 flex 项，说明文字被挤窄，
-   与这个功能之前的卡片长得不一样（这条规则本来就是随那个下拉一起加进来的）。
-   怎么恢复：取消这一整块的注释，并恢复 `SettingsPanel.tsx` 里 `<Card>` 的 `action` 与
-   `RunningInstances` 组件。
-
-   「当前已启动实例」：卡片标题右上角的下拉 + 全部停止。
-   header 现在是一个两列容器（标题文案 / 右上角控件），所以原来那条 `.settings-card header p`
-   的边距规则仍然按文案那一列生效 —— 把它包进 __heading 才不会让说明文字被压缩。
-.settings-card>header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}
-.settings-card__heading{min-width:0}
-.settings-card__action{flex:0 0 auto;display:flex;align-items:center;gap:8px}
-.settings-instances{position:relative;display:flex;align-items:center;gap:8px}
-.settings-instances .settings-choice__trigger{max-width:280px}
-.settings-instances__menu{min-width:280px;gap:2px}
-.settings-instances__row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:4px 4px 4px 9px;border-radius:6px}
-.settings-instances__row:hover{background:rgba(58,163,225,.12)}
-.settings-instances__name{overflow:hidden;color:#cfe2ef;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
-.settings-instances__stop{min-width:0 !important;width:22px;height:22px;padding:0 !important;border-radius:6px !important;color:#9dbdd4;font-size:14px;line-height:1;text-align:center;background:transparent}
-.settings-instances__stop:hover:not(:disabled){background:rgba(224,92,92,.22) !important;color:#fff}
-.settings-instances__stop:disabled{opacity:.4;cursor:default}
-.settings-instances__footer{display:flex;justify-content:flex-end;padding:5px 4px 3px;border-top:1px solid rgba(158,205,239,.09);margin-top:3px}
-   --------------------------------------------------------------------------- */
 
 .settings-app :is(button, input, select, [tabindex]):focus-visible {
   outline: 2px solid var(--s-accent);

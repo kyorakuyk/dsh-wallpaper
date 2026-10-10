@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,6 +13,34 @@ async function readNative(relativePath: string): Promise<string> {
   // applying source-boundary assertions so CI verifies the contract rather
   // than the runner's checkout line-ending policy.
   return (await readFile(resolve(nativeRoot, relativePath), 'utf8')).replace(/\r\n?/g, '\n')
+}
+
+// B3 of the freeze isolation moved the commented-out frozen commands out of lib.rs and
+// their build.rs / permission wiring out of the build. The source-shape assertions that
+// covered them now read the archived copies, which are ordinary Rust (no `//` prefix).
+const archiveRoot = resolve(wallpaperRoot, '..', 'archive')
+const archivedLockScreenCommandsPath = 'lockscreen-20260930/wallpaper/src-tauri/src/lib.lock-screen-commands.rs'
+const archivedIntegrationCommandsPath = 'integrations-20260930/wallpaper/src-tauri/src/lib.system-integration-commands.rs'
+// B4 moved the frozen front-end lock-screen code out of wallpaper/src as well; the fragments are
+// ordinary TypeScript (the `//` and `{/* */}` shells removed), named after the file they came from.
+const archivedLockScreenFrontendRoot = 'lockscreen-20260930/wallpaper/src'
+const frozenLockScreenCommands = [
+  'set_lock_screen_enabled',
+  'clear_stale_lock_screen_backup',
+  'get_lock_screen_diagnostics',
+  'open_windows_lock_screen_settings',
+] as const
+const frozenIntegrationCommands = [
+  'set_desktop_wallpaper_fallback',
+  'desktop_wallpaper_fallback_status',
+  'translucent_tb_status',
+  'launch_translucent_tb',
+  'open_translucent_tb_install',
+] as const
+
+async function readArchive(relativePath: string): Promise<string> {
+  // Same normalization as `readNative`: the archive is checked out under the same policy.
+  return (await readFile(resolve(archiveRoot, relativePath), 'utf8')).replace(/\r\n?/g, '\n')
 }
 
 async function readCapability(name: 'background' | 'settings'): Promise<{ windows?: unknown; permissions?: unknown }> {
@@ -234,21 +263,45 @@ describe('native chat boundary', () => {
   })
 
   it('requires explicit confirmation before deleting a saved lock-screen original', async () => {
-    const [runtime, liteNative, settings, liteSettings, lib, integration] = await Promise.all([
+    const [
+      runtime, liteNative, settings, liteSettings, lib, integration, archivedLockScreen, archivedCommands,
+      archivedRuntime, archivedLiteNative, archivedSettings, archivedLiteSettings,
+    ] = await Promise.all([
       readFile(resolve(wallpaperRoot, 'src/native/runtime.ts'), 'utf8'),
       readFile(resolve(wallpaperRoot, 'src/lite/native.ts'), 'utf8'),
       readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8'),
       readFile(resolve(wallpaperRoot, 'src/lite/LiteSettingsWindow.tsx'), 'utf8'),
       readNative('src/lib.rs'),
       readNative('src/windows_integration.rs'),
+      // B2 moved the native lock-screen implementation out of the build; its confirmation
+      // copy is kept in the archive, and the live module must no longer define it.
+      readFile(resolve(wallpaperRoot, '../archive/lockscreen-20260930/wallpaper/src-tauri/src/windows_integration/lock_screen.rs'), 'utf8'),
+      // B3 moved the (commented-out) Tauri command itself into the archive as well.
+      readArchive(archivedLockScreenCommandsPath),
+      // B4 moved the (commented-out) front-end wrappers and settings handlers too.
+      readArchive(`${archivedLockScreenFrontendRoot}/native/runtime.lockscreen.ts`),
+      readArchive(`${archivedLockScreenFrontendRoot}/lite/native.lockscreen.ts`),
+      readArchive(`${archivedLockScreenFrontendRoot}/settings/SettingsWindow.lockscreen.tsx`),
+      readArchive(`${archivedLockScreenFrontendRoot}/lite/LiteSettingsWindow.lockscreen.tsx`),
     ])
-    expect(runtime).toContain('clearStaleLockScreenBackup(confirmed: boolean)')
-    expect(runtime).toContain("{ confirmed }")
-    expect(liteNative).toContain('clearStaleLockScreenBackup(confirmed: boolean)')
-    expect(settings).toContain('window.confirm(')
-    expect(liteSettings).toContain('window.confirm(')
-    expect(lib).toContain('confirmed: bool')
-    expect(integration).toContain('永久删除已保存的原锁屏图片副本')
+    // The live front end no longer carries the frozen wrappers or handlers, not even as comments.
+    for (const live of [runtime, liteNative, settings, liteSettings]) {
+      expect(live).not.toContain('clearStaleLockScreenBackup')
+    }
+    // The archived wrappers still pass the explicit confirmation through to the command…
+    expect(archivedRuntime).toContain('clearStaleLockScreenBackup(confirmed: boolean)')
+    expect(archivedRuntime).toContain("{ confirmed }")
+    expect(archivedLiteNative).toContain('clearStaleLockScreenBackup(confirmed: boolean)')
+    expect(archivedLiteNative).toContain("{ confirmed }")
+    // …and both archived settings pages still ask the user before they call it.
+    const confirmsBeforeDeleting = /const clearStaleLockScreenBackup = async \(\) => \{[\s\S]*?window\.confirm\([\s\S]*?\.clearStaleLockScreenBackup\(true\)/
+    expect(archivedSettings).toMatch(confirmsBeforeDeleting)
+    expect(archivedLiteSettings).toMatch(confirmsBeforeDeleting)
+    expect(lib).not.toContain('clear_stale_lock_screen_backup')
+    expect(archivedCommands).toMatch(/async fn clear_stale_lock_screen_backup\([\s\S]*?confirmed: bool,[\s\S]*?windows_integration::clear_stale_lock_screen_backup\(&app, confirmed\)/)
+    expect(integration).not.toContain('fn clear_stale_lock_screen_backup')
+    expect(archivedLockScreen).toContain('fn clear_stale_lock_screen_backup')
+    expect(archivedLockScreen).toContain('永久删除已保存的原锁屏图片副本')
   })
 
   it('bounds appearance assets before they cross the IPC base64 boundary', async () => {
@@ -284,15 +337,21 @@ describe('native chat boundary', () => {
   })
 
   it('keeps settings probes off the UI thread and gives migrated DSH paths feedback', async () => {
-    const [lib, settings, runtime] = await Promise.all([
+    const [lib, settings, runtime, archivedLockScreen, archivedIntegration] = await Promise.all([
       readNative('src/lib.rs'),
       readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8'),
       readFile(resolve(wallpaperRoot, 'src/native/runtime.ts'), 'utf8'),
+      readArchive(archivedLockScreenCommandsPath),
+      readArchive(archivedIntegrationCommandsPath),
     ])
-    expect(lib).toMatch(/async\s+fn\s+translucent_tb_status[\s\S]*?spawn_blocking\(translucent_tb_status_blocking\)/)
-    expect(lib).toMatch(/async\s+fn\s+get_lock_screen_diagnostics[\s\S]*?spawn_blocking\(move \|\| windows_integration::lock_screen_diagnostics/)
+    // The frozen TranslucentTB and lock-screen diagnostics probes are no longer in lib.rs, not
+    // even as comments; their archived copies still keep the work off the UI thread.
+    expect(lib).not.toMatch(/\b(?:translucent_tb_status|get_lock_screen_diagnostics|hide_child_console)\b/)
+    expect(archivedIntegration).toMatch(/async\s+fn\s+translucent_tb_status[\s\S]*?spawn_blocking\(translucent_tb_status_blocking\)/)
+    expect(archivedLockScreen).toMatch(/async\s+fn\s+get_lock_screen_diagnostics[\s\S]*?spawn_blocking\(move \|\| windows_integration::lock_screen_diagnostics/)
     expect(lib).toMatch(/async\s+fn\s+scan_dsh_paths[\s\S]*?spawn_blocking\(move \|\| \{[\s\S]*?scan_dsh_paths_blocking/)
-    expect(lib).toContain('hide_child_console')
+    expect(archivedIntegration).toMatch(/fn hide_child_console\(command: &mut std::process::Command\)/)
+    expect(archivedIntegration).toContain('hide_child_console(&mut packaged_command)')
     expect(lib).toContain('本机 3080 端口已被其他进程占用')
     expect(settings).toContain('dshScanBusy')
     // 文案搬进了字典（i18n）：窗口里只剩键，所以那两句话本身要在字典里核对。
@@ -343,15 +402,24 @@ describe('native chat boundary', () => {
   })
 
   it('keeps system-setting and desktop-input commands bound to their owning surface', async () => {
-    const lib = await readNative('src/lib.rs')
+    const [lib, archivedLockScreen, archivedIntegration] = await Promise.all([
+      readNative('src/lib.rs'),
+      readArchive(archivedLockScreenCommandsPath),
+      readArchive(archivedIntegrationCommandsPath),
+    ])
+    const settingsOnly = (command: string) =>
+      new RegExp(`(?:async\\s+)?fn\\s+${command}\\s*\\([\\s\\S]*?\\)\\s*->[^\\{]*\\{[\\s\\S]*?require_settings\\(&caller\\)\\?;`)
 
-    for (const command of [
-      'set_lock_screen_enabled', 'get_lock_screen_diagnostics', 'set_autostart', 'autostart_status',
-      'translucent_tb_status', 'launch_translucent_tb', 'open_translucent_tb_install',
-      'start_settings_drag', 'hide_settings_window',
-    ]) {
-      const signature = new RegExp(`(?:async\\s+)?fn\\s+${command}\\s*\\([\\s\\S]*?\\)\\s*->[^\\{]*\\{[\\s\\S]*?require_settings\\(&caller\\)\\?;`)
-      expect(lib, command).toMatch(signature)
+    for (const command of ['set_autostart', 'autostart_status', 'start_settings_drag', 'hide_settings_window']) {
+      expect(lib, command).toMatch(settingsOnly(command))
+    }
+    // Frozen commands (B3): the archived copies keep the same settings-only gate, so a
+    // restore brings the guard back with them.
+    for (const command of ['set_lock_screen_enabled', 'get_lock_screen_diagnostics']) {
+      expect(archivedLockScreen, command).toMatch(settingsOnly(command))
+    }
+    for (const command of ['translucent_tb_status', 'launch_translucent_tb', 'open_translucent_tb_install']) {
+      expect(archivedIntegration, command).toMatch(settingsOnly(command))
     }
     for (const command of ['begin_interaction_region_session', 'update_interaction_regions', 'probe_harness']) {
       const signature = new RegExp(`(?:async\\s+)?fn\\s+${command}\\s*\\([\\s\\S]*?\\)\\s*->[^\\{]*\\{[\\s\\S]*?require_background\\(&caller\\)\\?;`)
@@ -359,6 +427,38 @@ describe('native chat boundary', () => {
     }
     expect(lib).toMatch(/fn show_deepseek_login[\s\S]*?require_wallpaper_surface\(&caller\)\?;/)
     expect(lib).toMatch(/fn get_app_snapshot[\s\S]*?require_wallpaper_surface\(&caller\)\?;/)
+  })
+
+  it('keeps the frozen lock-screen and system-integration commands out of the live build', async () => {
+    const [lib, build, archivedLockScreen, archivedIntegration] = await Promise.all([
+      readNative('src/lib.rs'),
+      readNative('build.rs'),
+      readArchive(archivedLockScreenCommandsPath),
+      readArchive(archivedIntegrationCommandsPath),
+    ])
+    const handlers = [...lib.matchAll(/tauri::generate_handler!\[([\s\S]*?)\]\)/g)].map((match) => match[1])
+    expect(handlers).toHaveLength(2)
+
+    for (const [commands, archived, archiveDirectory] of [
+      [frozenLockScreenCommands, archivedLockScreen, 'lockscreen-20260930'],
+      [frozenIntegrationCommands, archivedIntegration, 'integrations-20260930'],
+    ] as const) {
+      for (const command of commands) {
+        // Live entry points are closed: no definition or commented copy in lib.rs, no ACL
+        // entry in build.rs, no line in either handler, no permission file.
+        expect(lib, command).not.toContain(command)
+        expect(build, command).not.toContain(`"${command}"`)
+        for (const handler of handlers) expect(handler, command).not.toContain(command)
+        expect(existsSync(resolve(nativeRoot, 'permissions', 'autogenerated', `${command}.toml`)), command).toBe(false)
+        // The archive is complete: the command itself and its permission file.
+        expect(archived, command).toMatch(new RegExp(`#\\[tauri::command\\]\\n(?:#\\[cfg\\([^\\n]*\\)\\]\\n)?(?:async\\s+)?fn\\s+${command}\\s*\\(`))
+        expect(existsSync(resolve(archiveRoot, archiveDirectory, 'wallpaper', 'src-tauri', 'permissions', 'autogenerated', `${command}.toml`)), command).toBe(true)
+      }
+    }
+    // The persisted Lite key stays accepted for compatibility; the frozen one does not.
+    expect(lib).toContain('"desktopWallpaperFallback",')
+    expect(lib).not.toContain('lockScreenEnabled')
+    expect(archivedLockScreen).toContain('"lockScreenEnabled",')
   })
 
   it('keeps appearance library management in settings while the background can only resolve active assets', async () => {

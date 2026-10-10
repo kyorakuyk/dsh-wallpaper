@@ -1,0 +1,12 @@
+/*
+ * 归档片段（B4，2026-10）：`wallpaper/src/lite/LiteSettingsWindow.css` 中锁屏（1A）的冻结代码。
+ * 来源 commit 3c92772（tag pre-freeze-isolation）；下文行号均指该 commit 中的原文件。
+ * 这些规则在原文件里是生效的 CSS，但只被已冻结的 JSX 使用（孤儿样式），所以随 UI 一起迁出；与现役共用的选择器只迁出冻结的那一半。
+ * 本文件不在任何构建里。
+ * 恢复办法见 `archive/lockscreen-20260930/README.md` 的 B4 小节。
+ */
+
+/* ---- 原 28-30 行：`.lite-range` 之后、`.lite-choice-label` 之前。`.lite-actions` 同时被 1B 的 TranslucentTB 卡片使用（集成归档的 CSS 片段里有同一份），两者都恢复时只放回一次 ---- */
+.lite-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }.lite-actions button { min-height: 32px; padding: 0 12px; border: 1px solid rgba(160,193,232,.18); border-radius: 9px; background: rgba(255,255,255,.045); color: #cfe4ff; font-size: 11px; cursor: pointer; }.lite-actions button:hover:not(:disabled), .lite-actions button:focus-visible { border-color: rgba(120,183,255,.55); background: rgba(120,183,255,.13); outline: none; }.lite-actions button:disabled { cursor: not-allowed; opacity: .4; }
+.lite-diagnostics { display: grid; gap: 5px; margin-top: 13px; padding: 10px 12px; border: 1px solid rgba(120,183,255,.14); border-radius: 10px; background: rgba(10,20,36,.42); color: var(--lite-muted); font-size: 11px; line-height: 1.4; }.lite-diagnostics strong { color: #bfe0ff; font-size: 12px; }.lite-diagnostics span { overflow-wrap: anywhere; }
+.lite-diagnostics-action { justify-self: start; min-height: 27px; margin-top: 3px; padding: 0 9px; border: 1px solid rgba(255, 194, 115, .32); border-radius: 8px; background: rgba(255, 194, 115, .08); color: #ffd59f; font-size: 10px; cursor: pointer; }.lite-diagnostics-action:hover:not(:disabled), .lite-diagnostics-action:focus-visible { border-color: rgba(255, 194, 115, .65); background: rgba(255, 194, 115, .14); outline: none; }.lite-diagnostics-action:disabled { cursor: wait; opacity: .45; }

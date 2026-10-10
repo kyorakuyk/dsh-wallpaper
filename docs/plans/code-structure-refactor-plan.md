@@ -100,6 +100,38 @@
 - **测试基线**：现役用例不得因整理而丢失；明确列出一起归档的历史用例，分别报告现役与归档测试数量。后续拆分步骤以本节完成后的现役测试基线验收。
 - **启用侧证据**：选择默认关闭的 feature 时，若声称启用后能编译或恢复，必须运行对应 opt-in 门禁；未运行就标注未验证。归档默认不编译，不作持续兼容保证。
 
+### 5. 执行结果（2026-10-11，分支 `refactor/freeze-isolation`）
+
+迁移前锚点：tag `pre-freeze-isolation`（`3c92772`）。迁移清单见项目文档 `plans/code-structure-step1-inventory.md`；每个归档单元的 README 记录了原路径、迁出符号与测试、恢复接线与未验证范围。
+
+| 批次 | 提交 | 内容 |
+| --- | --- | --- |
+| B1 | `bb20f1d` | v0.1 状态机 → `archive/frozen/state-machine-v01/` |
+| B2 | `876d566`、`1eb7556` | 锁屏 Rust 实现、`lock_screen_backup` 模块及其独立测试目标 → `archive/lockscreen-20260930/` |
+| B3 | `79ed691` | `lib.rs` 冻结命令注释、`build.rs` 9 条登记、9 个 permission toml → 两个归档 |
+| B4 | `9b24ed3` | 前端锁屏与系统集成片段、孤儿 CSS → 两个归档 |
+| B6 | `1d541bc` | 启动参数 / 别名 / 实例下拉 UI → `archive/frozen/launch-ui/`、`archive/frozen/instance-ui/` |
+| B7 | `8395a1d`、`67b4342`、`51a7ea6` 及本地重新生成的 `gen/schemas` | CI 归档边界检查；archive 改动触发 CI；过时注释与 README 修正；权限 schema 去掉 9 条冻结命令 |
+
+源码形状断言随对应批次在同一提交中改写为"现役入口关闭 + 归档完整"，未单独成批。
+
+**现役门禁（CI，`1d541bc`）**
+
+| 项 | 迁移前 | 迁移后 | 差值来源 |
+| --- | --- | --- | --- |
+| 前端 vitest | 551 passed + 5 skipped（556） | 548 passed（548） | 归档 4 条状态机 + 5 条 skip；新增 1 条边界断言 |
+| bridge vitest | 96 passed + 1 skipped | 不变 | — |
+| Rust full lib | 427 passed / 14 ignored | 404 / 14 | 归档 23 条（`lock_screen_backup` 17 + `windows_integration` 6） |
+| Rust full 独立测试目标 | 含 `lock_screen_backup`（17） | 该目标移出 | 同上 |
+| Lite lib | 144 passed / 2 ignored | 121 / 2 | 同上 23 条 |
+| full lib 警告 | 101 | 45 | 锁屏 never-used 警告随实现移出，无新增 |
+| Lite lib 警告 | 208 | 152 | 同上 |
+| Lite bundle boundary | OK | OK | — |
+
+**归档测试**：前端 9 条（状态机 4、launch-ui 2、instance-ui 3），Rust 23 条；归档测试不参与默认运行。
+
+**未完成 / 未验证**：装机运行验证未单独执行（被移出的代码在迁移前已无现役调用方，运行行为按构造不变）；用户可见文案中的锁屏残留留待另批。
+
 ## 二、Harness 连接状态收成一处（收益最大）
 
 ### 现状
@@ -222,4 +254,4 @@ interface HarnessConnection {
 
 - 哪些功能确实需要持续验证恢复能力，以及对应 feature 命名、opt-in 验证矩阵与是否增加可选的归档检查；不再要求在"永久删除 / 临时关闭"之间二选一。
 - 第五节的行数阈值（建议 1,500）与是否在 CI 里加检查。
-- 作者本机的 MSIX 测试安装是否还处于锁屏接管态，以及可用的恢复路径（隔离锁屏代码前确认；不自动清理已有备份）。
+- ~~作者本机的 MSIX 测试安装是否还处于锁屏接管态~~：2026-10-10 作者确认**不处于**接管态，已据此进行锁屏源码隔离。

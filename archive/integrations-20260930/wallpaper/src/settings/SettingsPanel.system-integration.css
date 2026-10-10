@@ -1,0 +1,52 @@
+/*
+ * 归档片段（B4，2026-10）：`wallpaper/src/settings/SettingsPanel.css` 中系统集成（1B：TranslucentTB / 登录过渡底图）的冻结代码。
+ * 来源 commit 3c92772（tag pre-freeze-isolation）；下文行号均指该 commit 中的原文件。
+ * 这些规则在原文件里是生效的 CSS，但只被已冻结的 JSX 使用（孤儿样式），所以随 UI 一起迁出；与现役共用的选择器只迁出冻结的那一半。
+ * 本文件不在任何构建里。
+ * 恢复办法见 `archive/integrations-20260930/README.md` 的 B4 小节。
+ */
+
+/* ---- 原 193-200 行：原为 `.settings-sidebar__status i, .integration-status i { … }`；现役只留 `.settings-sidebar__status i` ---- */
+.integration-status i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #657484;
+  box-shadow: 0 0 0 4px rgba(101, 116, 132, .1);
+}
+
+/* ---- 原 202-206 行：原为 `.settings-sidebar__status i.is-online, .integration-status i.is-online { … }`；现役只留前者 ---- */
+.integration-status i.is-online {
+  background: #52D8A0;
+  box-shadow: 0 0 12px rgba(82, 216, 160, .65);
+}
+
+/* ---- 原 598-625 行：`.settings-empty span` 之后、`.integration-actions` 之前（`.integration-actions` 仍被现役卡片使用，留在原处） ---- */
+.integration-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 0 15px;
+}
+
+.integration-status > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.integration-status span {
+  display: flex;
+  flex-direction: column;
+}
+
+.integration-status strong {
+  font-size: 14px;
+}
+
+.integration-status small {
+  margin-top: 4px;
+  color: var(--s-text-3);
+  font-size: 12px;
+}

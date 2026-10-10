@@ -8,8 +8,6 @@ import { BACKGROUND_OPTIONS, MAX_PRICE_PER_MILLION, normalizedPrice, type Wallpa
 import { type SettingsPage } from './settingsProbes.ts'
 import type { AppearanceAssetSummary } from '../features/appearance/appearanceViewModel.ts'
 import type { AppearanceSlot } from '../appearance/theme/index.ts'
-// FREEZE(1A)：锁屏退出，LockScreenDiagnostics 一并冻结（单行 import 列表里不能用 // 注释单项，所以整行注释、旁边写出不含它的版本）。
-// import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, DesktopWorkspaceStatus, LockScreenDiagnostics, ManagedDshStatus, ApiConversationListing, ApiKeyStatus } from '../native/runtime.ts'
 import type { DeepSeekWebAdapterConfigStatus, DesktopDisplayInfo, DesktopWorkspaceStatus, ManagedDshStatus, ApiConversationListing, ApiKeyStatus, UpdateCheckReport } from '../native/runtime.ts'
 import { downloadPercent, offeredUpdate, updatePhase, type UpdateDownloadState } from '../features/update/updateState.ts'
 import { downloadFailedMessage, downloadProgressMessage, updateOutcomeMessage } from '../features/update/updateCopy.ts'
@@ -22,16 +20,7 @@ import { SettingsPersonaBadge } from './SettingsPersonaBadge.tsx'
 import { DisplayLayoutMap } from './DisplayLayoutMap.tsx'
 import { displayNumbers } from './displayLayoutMap.ts'
 import { AppearancePreview } from './AppearancePreview.tsx'
-// ---------------------------------------------------------------------------
-// FREEZE（临时冻结，不是删除）：「起别名」与实例下拉被冻在这个 build 之外，所以它们要的两样东西
-// 也一起冻住 —— `instanceLabel` 只给实例下拉的行文字用，`subjectAlias` 只给「起别名」输入框回显用，
-// `launchArgsIssue` 只给「启动参数」那行的校验提示用。三个函数本身一行都没动（
-// `connect/harnessSubjects.ts` / `connect/launchArgs.ts` 里的纯逻辑与它们的测试照常跑）。
-// 怎么恢复：取消注释下面两个 import，再去掉本文件里对应的三处 FREEZE 注释。
-// ---------------------------------------------------------------------------
-// import { catalogAgeLabel, displaySubjectPath, instanceLabel, sameSubject, subjectAlias, subjectOptionLabel } from '../connect/harnessSubjects.ts'
 import { catalogAgeLabel, displaySubjectPath, sameSubject, subjectOptionLabel } from '../connect/harnessSubjects.ts'
-// import { launchArgsIssue } from '../connect/launchArgs.ts'
 import { officialPersonaCardFor } from '../persona/officialCatalog.ts'
 import { OfficialPersonaCards } from '../persona/OfficialPersonaCards.tsx'
 import './SettingsPanel.css'
@@ -91,11 +80,6 @@ export interface SettingsPanelProps {
   onClose: () => void
   interactionEnabled: boolean
   onSetInteractionEnabled: (enabled: boolean) => void
-  // FREEZE(1B)：系统集成暂时只留开机自启（2026-09-30），透明任务栏这块随之冻结。恢复办法：取消注释。
-  // translucentTb: { installed: boolean; running: boolean; source?: string }
-  // onRefreshTranslucentTb: () => void
-  // onLaunchTranslucentTb: () => void
-  // onInstallTranslucentTb: () => void
   /**
    * The execution subjects the shim found: shells that carry their own checkout,
    * and source trees (§3). Choosing one fixes which service the wallpaper starts;
@@ -151,22 +135,6 @@ export interface SettingsPanelProps {
   /** 本机有没有 TUI（扫描结果）。没有就不摆出那一项。 */
   tuiAvailable: boolean
   /**
-   * FREEZE（临时冻结，不是删除）：「启动参数」的输入框不在这一版里，所以它的三个 prop 与
-   * 「起别名」的那一个也一起冻住。
-   *
-   * 为什么关：本 build 有意回到 a8e2e91 之前的行为 —— 界面上没有「启动参数」行、没有「起别名」
-   * 行，也没有标题右上角的实例下拉，启动链不接受任何参数（`App.tsx` / `SettingsWindow.tsx` 里
-   * 三个入口都冻结了）。留着一个改了没用的输入框，比它不在更坏。
-   *
-   * 为什么标成可选而不是删掉：这样 `SettingsWindow` 给不给都不算类型错误，而恢复时两边一起取消
-   * 注释就行 —— 这也是 `LayoutProbe` 那套"冻结就注释掉、复活就打开"的做法。
-   *
-   * 怎么恢复：取消注释这四个 prop，并在 `SettingsWindow.tsx` 里恢复对应的两个 handler 与两处传参。
-   */
-  // onSelectLaunchArgs: (args: string) => void
-  // onSelectSubjectAlias: (alias: string) => void
-  // onStopManagedInstance: (instanceKey: string) => void
-  /**
    * Which action the current selection takes, for the button label.
    */
   reachAction: 'browser' | 'window'
@@ -189,13 +157,6 @@ export interface SettingsPanelProps {
   onClassifyAppearance: (assetId: string, slot: AppearanceSlot) => void
   onSelectAppearance: (slot: AppearanceSlot, assetId: string) => void
   onClearAppearance: (slot: AppearanceSlot) => void
-  // FREEZE(1A)：锁屏退出，这 6 个 prop 随之冻结（见 docs/plans/release-scope-cleanup-plan.md 第一节）。
-  // lockScreenDiagnostics?: LockScreenDiagnostics
-  // onRefreshLockScreenDiagnostics: () => void
-  // onRestoreLockScreen: () => void
-  // onClearStaleLockScreenBackup: () => void
-  // onSetLockScreenEnabled: (enabled: boolean) => void
-  // lockScreenBusy: boolean
   autostartBusy: boolean
   desktopDisplays: DesktopDisplayInfo[]
   onRefreshDesktopDisplays: () => void | Promise<void>
@@ -360,93 +321,6 @@ export function harnessEndpointKindLabel(kind: HarnessEndpointScan['kind']): str
   }
 }
 
-// ---------------------------------------------------------------------------
-// FREEZE（临时冻结，不是删除）：「当前已启动实例」下拉（`RunningInstances`）。
-//
-// 为什么关：本 build 回到 `a8e2e91` 之前的行为 —— 停止入口只有一个，就是卡片底部那行
-// 「本应用启动的 DSH」+「停止本应用启动的 DSH」（那个按钮已经恢复了，见连接卡片底部）。标题
-// 右上角的下拉在这个世界里没有第二个实例可列，留着它只会与底部那个按钮做同一件事。
-//
-// 怎么恢复：把下面这个组件取消注释，恢复连接卡片上的 `action={<RunningInstances … />}`，并在
-// `SettingsWindow.tsx` 里恢复 `onStopManagedInstance` 的传参（三处传参各有自己的 FREEZE 注释）；
-// 再把底部那行改回注释（它就在那里留档）。原生侧一行都不用动：`managed_dsh_status` 仍然返回
-// 列表、`stop_managed_dsh` 仍然接受 instanceKey、`managedDshBusy` 这个 prop 现在钉着底部那个
-// 按钮的可用性。
-//
-// 卡片标题右上角的「当前已启动实例」。
-//
-// 每一行读作 `别名 · 端口`，行尾的 × 停掉**那一个**实例。同一个源码目录起了两个端口时，这是
-// 唯一能分清"我要停的是哪一个"的地方 —— 所以行文字必须带端口，而不是只写一个名字。
-//
-// 行**不是**可选项：这里的下拉是一个清单，不是单选。点行不做任何事（没有"选中"这个状态），
-// 要动就动行尾那个 ×。做成"可选"会让人以为选中它就会改掉「打开界面」的目标，而那条路由
-// 「启动参数」里的端口决定（`endpoints.ts`），两个真相来源只会互相打架。
-//
-// 它复用了 `Choice` 的那套样式类，因为外观该与同一个窗口里的其他下拉一致。
-//
-// function RunningInstances({ instances, targets, aliases, busy, onStopInstance, onStopAll, onRefresh }: {
-//   instances: readonly ManagedDshInstance[]
-//   targets: readonly HarnessTarget[]
-//   aliases: Readonly<Record<string, string>> | undefined
-//   busy: boolean
-//   onStopInstance: (instanceKey: string) => void
-//   onStopAll: () => void
-//   onRefresh: () => void
-// }) {
-//   const [open, setOpen] = useState(false)
-//   const root = useRef<HTMLDivElement>(null)
-//   useEffect(() => {
-//     const close = (event: MouseEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false) }
-//     window.addEventListener('mousedown', close)
-//     return () => window.removeEventListener('mousedown', close)
-//   }, [])
-//   const labelFor = (instance: ManagedDshInstance) => instanceLabel(instance.subjectId, instance.port, targets, aliases)
-//   // 只有一行时直接把那一行写在按钮上：用户不必为了读到一个名字而先点开一次。
-//   const triggerText = instances.length === 0
-//     ? '当前已启动实例（无）'
-//     : instances.length === 1
-//       ? labelFor(instances[0]!)
-//       : `当前已启动实例（${instances.length} 个）`
-//   return <div className={`settings-choice settings-instances ${open ? 'is-open' : ''}`} ref={root}>
-//     <button
-//       type="button"
-//       className="settings-choice__trigger"
-//       aria-label="当前已启动实例"
-//       aria-expanded={open}
-//       onClick={() => setOpen((shown) => !shown)}
-//     >
-//       <span>{triggerText}</span><i>⌄</i>
-//     </button>
-//     {open && <div className="settings-choice__menu settings-instances__menu" role="list" aria-label="当前已启动实例">
-//       {instances.length === 0
-//         ? <span className="settings-choice__empty">本应用没有启动 DSH；其他人启动的实例不会被列在这里，也不会被停止。</span>
-//         : instances.map((instance) => {
-//             const label = labelFor(instance)
-//             return <div className="settings-instances__row" role="listitem" key={instance.instanceKey}>
-//               <span className="settings-instances__name" title={instance.subjectId}>{label}</span>
-//               <button
-//                 type="button"
-//                 className="settings-instances__stop"
-//                 aria-label={`停止实例 ${label}`}
-//                 disabled={busy}
-//                 onClick={() => onStopInstance(instance.instanceKey)}
-//               >
-//                 ×
-//               </button>
-//             </div>
-//           })}
-//       <div className="settings-instances__footer">
-//         <button type="button" className="settings-action secondary" disabled={busy} onClick={onRefresh}>刷新</button>
-//       </div>
-//     </div>}
-//     // 「全部停止」紧挨着下拉，因为它们是同一个动作的两个范围：一个是"停这一个"，一个是"都停"。
-//     // 原来卡片底部那个「停止本应用启动的 DSH」按钮已经被它取代 —— 两个控件做同一件事，
-//     // 用户就得猜它们有什么区别（而答案曾经是"没有区别"）。
-//     <button className="settings-action secondary" disabled={busy || instances.length === 0} onClick={onStopAll}>全部停止</button>
-//   </div>
-// }
-// ---------------------------------------------------------------------------
-
 function displayLabel(number: number): string {
   return number === 1
     ? t('settings.general.display.primary-name')
@@ -580,8 +454,6 @@ export function PriceInput({
 }
 
 export function SettingsPanel(props: SettingsPanelProps) {
-  // FREEZE(1B)：解构里去掉已冻结的 translucentTb。
-  // const { settings, harnessStatus, onChange, onClose, translucentTb, page } = props
   const { settings, harnessStatus, onChange, onClose, page } = props
   const [savedAt, setSavedAt] = useState<number>()
   const savedTimer = useRef<ReturnType<typeof setTimeout>>()
@@ -657,17 +529,6 @@ export function SettingsPanel(props: SettingsPanelProps) {
   // 已安装的 CLI 没有"源码目录"这回事：它拿的是别人装好的东西，路径只有它的启动器有意义，
   // 而启动器由扫描决定、不由用户填写。所以给这一类别单独收起那一行，而不是让它显示一个空框。
   const cliSelected = selectedSubject?.kind === 'installed-cli'
-  /**
-   * FREEZE（临时冻结，不是删除）：「启动参数」那一串现在能不能用。
-   *
-   * 判据是"启动器会不会收到一个它理解不了的词"，而不是"这串字好不好看"：条数、长度、控制字符。
-   * 有意见时那句话**顶掉**用法说明 —— 一行同时说两件事，用户只会读到第一件。
-   *
-   * 为什么关：这一版没有「启动参数」输入框（见下面那条 Field 的 FREEZE 注释），所以没有东西
-   * 可以把校验结果显示出来；一个算了没人看的变量在本项目里会被 `noUnusedLocals` 拦下。
-   * 恢复办法：取消注释这一行，并把下面的 Field 一起打开（`launchArgsIssue` 的规则一行都没动）。
-   */
-  // const argsIssue = launchArgsIssue(settings.dshLaunch.args)
   // 「打开」能做什么，由主体决定：官壳只有自己的窗口，源码树只有浏览器，只有"已安装的 CLI"真的有
   // 两条路可选。**单项不做成下拉** —— 那是一个点了没反应、也无法改变的控件。
   // 这条规则住在 connect/openRoutes.ts：它有单测，包括「没装 TUI 就不给选项」与「卸掉 TUI 之后不回落到死选项」。
@@ -832,19 +693,6 @@ export function SettingsPanel(props: SettingsPanelProps) {
         <Card
           title={t('settings.connections.harness.title')}
           description={t('settings.connections.harness.description')}
-          // FREEZE（临时冻结，不是删除）：卡片标题右上角的「当前已启动实例」下拉。它随
-          // 「启动参数」一起冻住（本 build 回到单实例行为，停止入口只有下面那行）。恢复办法：
-          // 取消注释下面这个 `action`，并恢复 `RunningInstances` 组件（本文件内，注释里留着）
-          // 与 `SettingsWindow.tsx` 里那两处传参。
-          // action={<RunningInstances
-          //   instances={props.managedDsh.instances}
-          //   targets={props.harnessTargets}
-          //   aliases={settings.dshLaunch.aliases}
-          //   busy={props.managedDshBusy}
-          //   onStopInstance={props.onStopManagedInstance}
-          //   onStopAll={props.onStopAllManagedDsh}
-          //   onRefresh={props.onRefreshManagedDsh}
-          // />}
         >
           {/* 旧的卡片描述留档（不再显示）：选择由谁来接管复杂工作：客户端自带运行环境，源码目录由本应用启动。
               已经在运行的实例不会被接管或关闭。 */}
@@ -880,11 +728,6 @@ export function SettingsPanel(props: SettingsPanelProps) {
                     ...(settings.dshLaunch.subjectId && !props.harnessTargets.some((target) => sameSubject(target.id, settings.dshLaunch.subjectId))
                       ? [{ value: settings.dshLaunch.subjectId, label: t('settings.connections.subject.current', { path: displaySubjectPath(settings.dshLaunch.subjectId) }) }]
                       : []),
-                    // FREEZE（临时冻结，不是删除）：这一行原来把别名表传进去（`subjectOptionLabel(
-                    // target, props.harnessTargets, settings.dshLaunch.aliases)`）。不传就是"用目录名
-                    // 区分两个同名克隆"——也就是这个功能之前的行文字（`源码目录 · DeepSeekHarness.old
-                    // · 0.1.0-rc.5`）。恢复办法：把第三个实参加回去（`subjectOptionLabel` 的别名规则
-                    // 一行都没动，`subjectOptionVersion.spec.ts` 仍然钉着它）。
                     ...props.harnessTargets.map((target) => ({ value: target.id, label: subjectOptionLabel(target, props.harnessTargets) })),
                   ]}
                 />
@@ -899,57 +742,9 @@ export function SettingsPanel(props: SettingsPanelProps) {
               这几项属于**源码目录**，所以选中客户端时整块消失；选中已安装的 CLI 时只有"源码目录"
               一行消失（其余几项对它仍然有意义：档案名、启动参数）。目录本身是只读的：没有手工
               填写的地方，列表由扫描填，可编辑的字段会是一个改了也没用的输入框。
-              关于「启动参数」：它取代了原来的「启动命令」——不是换了措辞，而是**收掉了一项能力**
-              （原来的框里可以填任意一个程序、由壁纸去执行它；「启动参数」只能往我们自己选定的那个
-              启动器后面加词，于是"自动启动要不要用这个自定义命令"那一次授权也不再需要）。本 build
-              把这一项整个冻住，见下面那个输入框上的 FREEZE 注释。
             */}
             {!cliSelected && <Field title={t('settings.connections.root-path.title')} detail={t('settings.connections.root-path.detail')}><span className="settings-static">{displaySubjectPath(selectedSubject?.identity.rootPath ?? settings.dshLaunch.rootPath)}</span></Field>}
-            {/* FREEZE（临时冻结，不是删除）：「起别名」输入框。
-                为什么关：别名唯一的作用就是顶替「运行方式」和实例下拉里的"上级目录名"那一段，而
-                那个下拉现在按目录名走、实例下拉整个冻住了 —— 留着这个框就是多一个改了也不影响
-                任何显示的输入框。别名表本身没删：`dshLaunch.aliases` 与它的归一化测试照常跑，
-                写进设置里的值只是暂时不显示。
-                怎么恢复：取消下面这个 Field 的注释，并恢复 `props.onSelectSubjectAlias` 那个 prop
-                与它在本文件顶部的 `subjectAlias` import。 */}
-            {/*
-            {!cliSelected && <Field
-              title="起别名"
-              detail={`只在「运行方式」和实例下拉里显示，留空就用目录名（${selectedSubject?.label ?? '目录名'}）。两个同名目录原本靠上一级目录区分，别名会顶替那一段。`}
-            >
-              <input
-                value={subjectAlias(settings.dshLaunch.subjectId, settings.dshLaunch.aliases)}
-                placeholder="留空时使用目录名"
-                aria-label="起别名"
-                maxLength={64}
-                onChange={(e) => props.onSelectSubjectAlias(e.target.value)}
-              />
-            </Field>}
-            */}
             {/* 由用户决定隐藏（2026-09-30）：它不是偏好，而是我们走哪条启动链的结果 —— 官壳用自己独占的 desktop、TUI 用它自己的 dsh-tui、CLI 与检出只认能提供 HTTP 的 web。理由见 connect/harnessProfiles.ts。 */}
-            {/* FREEZE（临时冻结，不是删除）：「启动参数」行。
-                为什么关：本 build 有意回到这个功能之前的行为 —— 没有参数这一项，启动链也不接受
-                参数（`App.tsx` 里三个入口、`SettingsWindow.tsx` 里两个入口都冻结了）。界面上留着
-                一个改了没用的框，比它不在更坏；而它旁边的说明还在讲端口与并行实例，那些话在
-                单实例的世界里只会让人以为改得动。
-                怎么恢复：取消下面这个 Field 的注释，并恢复 `props.onSelectLaunchArgs` 那个 prop、
-                本文件顶部的 `launchArgsIssue` import，以及下面那条 `argsIssue` 计算
-                （`connect/launchArgs.ts` 本身一行都没动，分词与读端口的测试照常跑）。
-                校验逻辑的落点也留档在这里：`launchArgsIssue(settings.dshLaunch.args)`。 */}
-            {/*
-            <Field
-              title="启动参数"
-              detail={launchArgsIssue(settings.dshLaunch.args) ?? `追加到启动器后面的参数，例如 --port 3081。留空就用默认端口；参数按你写的原样传递，不经过命令行解释器（引号只在这里解释一次）。TUI 没有端口概念。目前支持的组合是官方桌面客户端加一个实例；换端口不隔离会话与工作区（隔离单位是 DSH_HOME，不是端口），再起第二个实例会与它共用同一份会话与工作区记录。`}
-            >
-              <input
-                value={settings.dshLaunch.args ?? ''}
-                placeholder="留空时使用默认启动方式"
-                aria-label="启动参数"
-                maxLength={512}
-                onChange={(e) => props.onSelectLaunchArgs(e.target.value)}
-              />
-            </Field>
-            */}
           </>}
           {/*
             One action, named for what the user wants (see it), not for the two things it
@@ -1280,20 +1075,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
         </Card>
         <Card title={t('settings.system.windows.title')}>
           <Field title={t('settings.system.autostart.title')} detail={props.autostartBusy ? t('settings.system.autostart.busy') : autostartDetail(props.autostart)}><Toggle label={t('settings.system.autostart.toggle')} checked={settings.autostart} onChange={(value) => set({ autostart: value })} disabled={props.autostartBusy} /></Field>
-          {/* FREEZE(1A)：壁纸不再触碰锁屏（2026-09-30）。恢复办法：还原这段，并恢复接口里的 6 个 prop 与 SettingsWindow 的传参。
-          <Field title="接管锁屏图片" detail={props.lockScreenBusy ? '正在应用系统锁屏设置，请稍候。' : '使用内置且已审计的熟睡画面；密码界面仍由 Windows 原生安全桌面处理。正式版需要 MSIX 包身份。'}><Toggle label="接管锁屏图片" checked={settings.lockScreenEnabled} onChange={props.onSetLockScreenEnabled} disabled={props.lockScreenBusy} /></Field>
-          <div className="lockscreen-diagnostics">
-            <div className="lockscreen-diagnostics__row"><div><strong>接管状态</strong><small>{props.lockScreenDiagnostics?.managedImageActive ? '正在使用大肥鱼的熟睡画面' : '未检测到本应用的锁屏图片'}</small></div>{props.lockScreenDiagnostics?.managedImageActive ? <button className="settings-action secondary" disabled={props.lockScreenBusy} onClick={props.onRestoreLockScreen}>打开 Windows 锁屏设置</button> : props.lockScreenDiagnostics?.staleBackup ? <button className="settings-action secondary" disabled={props.lockScreenBusy} onClick={props.onClearStaleLockScreenBackup}>{props.lockScreenBusy ? '正在清理…' : '清理旧恢复点（删除原图副本）'}</button> : null}</div>
-            <div className="lockscreen-diagnostics__row"><div><strong>接管前检查</strong><small>{props.lockScreenDiagnostics ? props.lockScreenDiagnostics.takeoverAvailable ? 'Windows 与当前应用身份允许尝试设置锁屏图片' : props.lockScreenDiagnostics.supported ? 'Windows 允许，但当前正式版需要 MSIX 包身份' : '当前系统不允许应用修改锁屏图片' : '正在读取系统状态…'}</small></div><button className="settings-action secondary" disabled={props.lockScreenBusy} onClick={props.onRefreshLockScreenDiagnostics}>{props.lockScreenBusy ? '正在应用…' : '刷新检查'}</button></div>
-            {props.lockScreenDiagnostics && <ul><li>备份：{props.lockScreenDiagnostics.staleBackup ? '已保留，但当前锁屏已被外部更改' : props.lockScreenDiagnostics.backupValid ? '原静态图片可恢复' : props.lockScreenDiagnostics.backupExists ? '备份失效' : '尚未创建（首次接管时保存）'}</li><li>托管睡眠图：{props.lockScreenDiagnostics.managedImageReady ? '已准备' : '首次接管时准备'}</li>{props.lockScreenDiagnostics.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
-          </div>
-          */}
         </Card>
-        {/* FREEZE(1B)：透明任务栏卡片随系统集成一起冻结。恢复办法：去掉这对注释，并恢复接口与传参。
-        <Card title="透明任务栏" description="通过松耦合方式连接独立安装的 TranslucentTB，本应用不会修改其配置。">
-          <div className="integration-status"><div><i className={translucentTb.running ? 'is-online' : ''} /><span><strong>{translucentTb.running ? 'TranslucentTB 正在运行' : translucentTb.installed ? 'TranslucentTB 已安装' : 'TranslucentTB 未安装'}</strong><small>{translucentTb.source ?? '由用户独立安装和管理'}</small></span></div><div className="integration-actions"><button className="settings-action secondary" onClick={props.onRefreshTranslucentTb}>刷新</button><button className="settings-action" onClick={translucentTb.installed ? props.onLaunchTranslucentTb : props.onInstallTranslucentTb}>{translucentTb.installed ? '启动' : '前往商店'}</button></div></div>
-        </Card>
-        */}
       </>}
     </main>
 

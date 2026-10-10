@@ -10,9 +10,5 @@ export interface LiteSettings {
   animationSpeed: number
   playWakeOnEveryUnlock: boolean
   skipWakeAnimation: boolean
-  // lockScreenEnabled: boolean
-  /** Keep Explorer's desktop wallpaper on the sleep artwork during startup. */
-  // FREEZE(1B)：随系统集成冻结（2026-09-30）。
-  // desktopWallpaperFallback: boolean
   autostart: boolean
 }
