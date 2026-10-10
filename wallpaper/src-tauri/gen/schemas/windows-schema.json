@@ -297,12 +297,6 @@
           "markdownDescription": "Enables the clear_api_history command without any pre-configured scope."
         },
         {
-          "description": "Enables the clear_stale_lock_screen_backup command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-clear-stale-lock-screen-backup",
-          "markdownDescription": "Enables the clear_stale_lock_screen_backup command without any pre-configured scope."
-        },
-        {
           "description": "Enables the clear_user_data command without any pre-configured scope.",
           "type": "string",
           "const": "allow-clear-user-data",
@@ -357,12 +351,6 @@
           "markdownDescription": "Enables the desktop_layout_metrics command without any pre-configured scope."
         },
         {
-          "description": "Enables the desktop_wallpaper_fallback_status command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-desktop-wallpaper-fallback-status",
-          "markdownDescription": "Enables the desktop_wallpaper_fallback_status command without any pre-configured scope."
-        },
-        {
           "description": "Enables the desktop_workspace_status command without any pre-configured scope.",
           "type": "string",
           "const": "allow-desktop-workspace-status",
@@ -397,12 +385,6 @@
           "type": "string",
           "const": "allow-get-app-snapshot",
           "markdownDescription": "Enables the get_app_snapshot command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the get_lock_screen_diagnostics command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-get-lock-screen-diagnostics",
-          "markdownDescription": "Enables the get_lock_screen_diagnostics command without any pre-configured scope."
         },
         {
           "description": "Enables the harness_controls command without any pre-configured scope.",
@@ -481,12 +463,6 @@
           "type": "string",
           "const": "allow-launch-harness-target",
           "markdownDescription": "Enables the launch_harness_target command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the launch_translucent_tb command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-launch-translucent-tb",
-          "markdownDescription": "Enables the launch_translucent_tb command without any pre-configured scope."
         },
         {
           "description": "Enables the leave_inner_workspace command without any pre-configured scope.",
@@ -585,18 +561,6 @@
           "markdownDescription": "Enables the open_subject_tui command without any pre-configured scope."
         },
         {
-          "description": "Enables the open_translucent_tb_install command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-open-translucent-tb-install",
-          "markdownDescription": "Enables the open_translucent_tb_install command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the open_windows_lock_screen_settings command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-open-windows-lock-screen-settings",
-          "markdownDescription": "Enables the open_windows_lock_screen_settings command without any pre-configured scope."
-        },
-        {
           "description": "Enables the probe_harness command without any pre-configured scope.",
           "type": "string",
           "const": "allow-probe-harness",
@@ -669,12 +633,6 @@
           "markdownDescription": "Enables the set_autostart command without any pre-configured scope."
         },
         {
-          "description": "Enables the set_desktop_wallpaper_fallback command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-set-desktop-wallpaper-fallback",
-          "markdownDescription": "Enables the set_desktop_wallpaper_fallback command without any pre-configured scope."
-        },
-        {
           "description": "Enables the set_harness_endpoint command without any pre-configured scope.",
           "type": "string",
           "const": "allow-set-harness-endpoint",
@@ -685,12 +643,6 @@
           "type": "string",
           "const": "allow-set-interaction-enabled",
           "markdownDescription": "Enables the set_interaction_enabled command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the set_lock_screen_enabled command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-set-lock-screen-enabled",
-          "markdownDescription": "Enables the set_lock_screen_enabled command without any pre-configured scope."
         },
         {
           "description": "Enables the show_deepseek_login command without any pre-configured scope.",
@@ -709,12 +661,6 @@
           "type": "string",
           "const": "allow-stop-managed-dsh",
           "markdownDescription": "Enables the stop_managed_dsh command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the translucent_tb_status command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-translucent-tb-status",
-          "markdownDescription": "Enables the translucent_tb_status command without any pre-configured scope."
         },
         {
           "description": "Enables the update_check command without any pre-configured scope.",
@@ -873,12 +819,6 @@
           "markdownDescription": "Denies the clear_api_history command without any pre-configured scope."
         },
         {
-          "description": "Denies the clear_stale_lock_screen_backup command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-clear-stale-lock-screen-backup",
-          "markdownDescription": "Denies the clear_stale_lock_screen_backup command without any pre-configured scope."
-        },
-        {
           "description": "Denies the clear_user_data command without any pre-configured scope.",
           "type": "string",
           "const": "deny-clear-user-data",
@@ -933,12 +873,6 @@
           "markdownDescription": "Denies the desktop_layout_metrics command without any pre-configured scope."
         },
         {
-          "description": "Denies the desktop_wallpaper_fallback_status command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-desktop-wallpaper-fallback-status",
-          "markdownDescription": "Denies the desktop_wallpaper_fallback_status command without any pre-configured scope."
-        },
-        {
           "description": "Denies the desktop_workspace_status command without any pre-configured scope.",
           "type": "string",
           "const": "deny-desktop-workspace-status",
@@ -973,12 +907,6 @@
           "type": "string",
           "const": "deny-get-app-snapshot",
           "markdownDescription": "Denies the get_app_snapshot command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the get_lock_screen_diagnostics command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-get-lock-screen-diagnostics",
-          "markdownDescription": "Denies the get_lock_screen_diagnostics command without any pre-configured scope."
         },
         {
           "description": "Denies the harness_controls command without any pre-configured scope.",
@@ -1057,12 +985,6 @@
           "type": "string",
           "const": "deny-launch-harness-target",
           "markdownDescription": "Denies the launch_harness_target command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the launch_translucent_tb command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-launch-translucent-tb",
-          "markdownDescription": "Denies the launch_translucent_tb command without any pre-configured scope."
         },
         {
           "description": "Denies the leave_inner_workspace command without any pre-configured scope.",
@@ -1161,18 +1083,6 @@
           "markdownDescription": "Denies the open_subject_tui command without any pre-configured scope."
         },
         {
-          "description": "Denies the open_translucent_tb_install command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-open-translucent-tb-install",
-          "markdownDescription": "Denies the open_translucent_tb_install command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the open_windows_lock_screen_settings command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-open-windows-lock-screen-settings",
-          "markdownDescription": "Denies the open_windows_lock_screen_settings command without any pre-configured scope."
-        },
-        {
           "description": "Denies the probe_harness command without any pre-configured scope.",
           "type": "string",
           "const": "deny-probe-harness",
@@ -1245,12 +1155,6 @@
           "markdownDescription": "Denies the set_autostart command without any pre-configured scope."
         },
         {
-          "description": "Denies the set_desktop_wallpaper_fallback command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-set-desktop-wallpaper-fallback",
-          "markdownDescription": "Denies the set_desktop_wallpaper_fallback command without any pre-configured scope."
-        },
-        {
           "description": "Denies the set_harness_endpoint command without any pre-configured scope.",
           "type": "string",
           "const": "deny-set-harness-endpoint",
@@ -1261,12 +1165,6 @@
           "type": "string",
           "const": "deny-set-interaction-enabled",
           "markdownDescription": "Denies the set_interaction_enabled command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the set_lock_screen_enabled command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-set-lock-screen-enabled",
-          "markdownDescription": "Denies the set_lock_screen_enabled command without any pre-configured scope."
         },
         {
           "description": "Denies the show_deepseek_login command without any pre-configured scope.",
@@ -1285,12 +1183,6 @@
           "type": "string",
           "const": "deny-stop-managed-dsh",
           "markdownDescription": "Denies the stop_managed_dsh command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the translucent_tb_status command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-translucent-tb-status",
-          "markdownDescription": "Denies the translucent_tb_status command without any pre-configured scope."
         },
         {
           "description": "Denies the update_check command without any pre-configured scope.",
