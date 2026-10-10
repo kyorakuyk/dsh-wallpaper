@@ -234,13 +234,16 @@ describe('native chat boundary', () => {
   })
 
   it('requires explicit confirmation before deleting a saved lock-screen original', async () => {
-    const [runtime, liteNative, settings, liteSettings, lib, integration] = await Promise.all([
+    const [runtime, liteNative, settings, liteSettings, lib, integration, archivedLockScreen] = await Promise.all([
       readFile(resolve(wallpaperRoot, 'src/native/runtime.ts'), 'utf8'),
       readFile(resolve(wallpaperRoot, 'src/lite/native.ts'), 'utf8'),
       readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8'),
       readFile(resolve(wallpaperRoot, 'src/lite/LiteSettingsWindow.tsx'), 'utf8'),
       readNative('src/lib.rs'),
       readNative('src/windows_integration.rs'),
+      // B2 moved the native lock-screen implementation out of the build; its confirmation
+      // copy is kept in the archive, and the live module must no longer define it.
+      readFile(resolve(wallpaperRoot, '../archive/lockscreen-20260930/wallpaper/src-tauri/src/windows_integration/lock_screen.rs'), 'utf8'),
     ])
     expect(runtime).toContain('clearStaleLockScreenBackup(confirmed: boolean)')
     expect(runtime).toContain("{ confirmed }")
@@ -248,7 +251,9 @@ describe('native chat boundary', () => {
     expect(settings).toContain('window.confirm(')
     expect(liteSettings).toContain('window.confirm(')
     expect(lib).toContain('confirmed: bool')
-    expect(integration).toContain('永久删除已保存的原锁屏图片副本')
+    expect(integration).not.toContain('fn clear_stale_lock_screen_backup')
+    expect(archivedLockScreen).toContain('fn clear_stale_lock_screen_backup')
+    expect(archivedLockScreen).toContain('永久删除已保存的原锁屏图片副本')
   })
 
   it('bounds appearance assets before they cross the IPC base64 boundary', async () => {
