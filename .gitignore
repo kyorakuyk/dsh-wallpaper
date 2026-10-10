@@ -69,3 +69,9 @@ Thumbs.db
 docs/media/hero.gif
 docs/media/mode-switch.gif
 docs/media/getin.gif
+
+# 个人材料（求职、宣传稿）与本机工具/调试配置，不进仓库
+docs/interview-narrative-manual.md
+docs/media/promo-bilibili-script.md
+.zcodeignore
+wallpaper/src-tauri/tauri.settings-preview.conf.json
