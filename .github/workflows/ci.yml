@@ -65,17 +65,18 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
+          # GitHub 的 bash 默认带 -e：git grep 无命中返回 1 会直接结束脚本，所以用 `|| rc=$?` 接住退出码。
           # 源码：任何引号内出现 archive/ 或 archive\ 的路径，以及 CSS @import / url()、Rust include!/include_str!/include_bytes!、#[path]。
           src_pattern='["'"'"'`][^"'"'"'`]*archive[/\\]'
           # 配置：只要出现 archive 关键字就算（这些文件不应提到归档）；Cargo.toml 的 # 注释行允许说明归档位置，只检查非注释部分。
           cfg_pattern='archive'
           toml_pattern='^[^#]*archive'
           status=0
-          git grep -nE "$src_pattern" -- wallpaper/src wallpaper/src-tauri/src wallpaper/src-tauri/tests wallpaper/src-tauri/build.rs wallpaper/vite.config.ts bridge/src; rc=$?
+          rc=0; git grep -nE "$src_pattern" -- wallpaper/src wallpaper/src-tauri/src wallpaper/src-tauri/tests wallpaper/src-tauri/build.rs wallpaper/vite.config.ts bridge/src || rc=$?
           if [ $rc -eq 0 ]; then status=1; elif [ $rc -gt 1 ]; then echo "::error::git grep failed ($rc)"; exit $rc; fi
-          git grep -nE "$toml_pattern" -- wallpaper/src-tauri/Cargo.toml; rc=$?
+          rc=0; git grep -nE "$toml_pattern" -- wallpaper/src-tauri/Cargo.toml || rc=$?
           if [ $rc -eq 0 ]; then status=1; elif [ $rc -gt 1 ]; then echo "::error::git grep failed ($rc)"; exit $rc; fi
-          git grep -nwE "$cfg_pattern" -- wallpaper/tsconfig.json 'wallpaper/index*.html' 'wallpaper/src-tauri/tauri*.conf.json' wallpaper/package.json; rc=$?
+          rc=0; git grep -nwE "$cfg_pattern" -- wallpaper/tsconfig.json 'wallpaper/index*.html' 'wallpaper/src-tauri/tauri*.conf.json' wallpaper/package.json || rc=$?
           if [ $rc -eq 0 ]; then status=1; elif [ $rc -gt 1 ]; then echo "::error::git grep failed ($rc)"; exit $rc; fi
           if [ $status -ne 0 ]; then
             echo "::error::Live code or build config references archive/. Frozen code must stay out of the default build."
