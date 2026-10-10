@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { nextState, TRANSITIONS, WallpaperStateMachine } from '../src/scenes/stateMachine.ts'
+import { nextState, TRANSITIONS, WallpaperStateMachine } from '../src/scenes/stateMachine.v01.ts'
 
 describe('状态迁移表', () => {
   it('覆盖所有已声明迁移', () => {
