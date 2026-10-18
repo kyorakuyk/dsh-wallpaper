@@ -1308,6 +1308,7 @@ mod native {
 
     /// 报告文件是否已经存在（同一毫秒内的撞名避让用）。
     fn file_exists(path: &[u16]) -> bool {
+        // SAFETY: path is the scratch buffer filled by join_path; a nonzero return guarantees its NUL terminator and ReportGuard keeps it alive.
         unsafe { GetFileAttributesW(PCWSTR::from_raw(path.as_ptr())) != INVALID_FILE_ATTRIBUTES }
     }
 
@@ -1510,6 +1511,7 @@ mod native {
         fault: std::cell::UnsafeCell<Fault>,
     }
 
+    // SAFETY: Production access is serialized by ReportGuard; direct test emit calls use serial_emit, and Scratch fields are separate UnsafeCells.
     unsafe impl Sync for Scratch {}
 
     static SCRATCH: Scratch = Scratch {
@@ -1602,8 +1604,10 @@ mod native {
         }
 
         install_panic_hook();
+        // SAFETY: unhandled_filter is a process-lifetime function pointer and this call passes no borrowed data.
         let previous = unsafe { SetUnhandledExceptionFilter(Some(unhandled_filter)) };
         let _ = PREVIOUS_FILTER.set(previous);
+        // SAFETY: vectored_handler is a process-lifetime function pointer; registration retains no borrowed Rust data.
         unsafe {
             AddVectoredExceptionHandler(1, Some(vectored_handler));
         }
@@ -1656,6 +1660,7 @@ mod native {
                 let Some(_guard) = enter() else {
                     return;
                 };
+                // SAFETY: GetCurrentThreadId has no pointer arguments and reads the currently executing thread identifier.
                 let thread_id = unsafe { GetCurrentThreadId() };
                 let facts = PanicFacts {
                     message,
@@ -1663,6 +1668,7 @@ mod native {
                     backtrace: &backtrace,
                 };
                 // 报告配额由 `emit_from_installed` → `emit_with_dump` 自己记账。
+                // SAFETY: _guard owns exclusive SCRATCH access; facts and backtrace remain alive through this synchronous report call.
                 unsafe {
                     emit_from_installed(ReportOrigin::RustPanic, None, Some(&facts), &[], thread_id);
                 }
@@ -1672,6 +1678,7 @@ mod native {
     }
 
     /// 第一机会：只在致命异常码上落盘。
+    // SAFETY: Windows supplies a live ExceptionPointers block for this synchronous callback; the record is null-checked and pointers do not escape.
     unsafe extern "system" fn vectored_handler(pointers: *mut ExceptionPointers) -> i32 {
         if pointers.is_null() {
             return EXCEPTION_CONTINUE_SEARCH;
@@ -1684,6 +1691,7 @@ mod native {
             return EXCEPTION_CONTINUE_SEARCH;
         };
         let environment = paths.environment();
+        // SAFETY: the OS callback pointers were null-checked above and remain valid for this synchronous handler call.
         handle_native(
             &environment,
             ReportOrigin::VectoredFirstChance,
@@ -1694,12 +1702,14 @@ mod native {
     }
 
     /// 顶层过滤器：进程确定要死了。任何未处理异常都落盘，除非第一机会那条已经写过同一处。
+    // SAFETY: Windows supplies a live ExceptionPointers block for this synchronous callback; the record is null-checked and pointers do not escape.
     unsafe extern "system" fn unhandled_filter(pointers: *const ExceptionPointers) -> i32 {
         if !pointers.is_null() {
             let record = (*pointers).record;
             if !record.is_null() {
                 if let Some(paths) = PATHS.get() {
                     let environment = paths.environment();
+                    // SAFETY: the OS callback pointers were null-checked above and remain valid for this synchronous handler call.
                     handle_native(
                         &environment,
                         ReportOrigin::UnhandledFilter,
@@ -1713,6 +1723,7 @@ mod native {
         // 交给之前装过的过滤器（返回值也照它给），没有就继续搜索 —— 两种情况都等价于
         // 「装我们之前的默认行为」，WER 与系统错误提示照旧。
         match PREVIOUS_FILTER.get().copied().flatten() {
+            // SAFETY: previous is the system handler returned by SetUnhandledExceptionFilter; pointers remains live for this callback.
             Some(previous) => previous(pointers),
             None => EXCEPTION_CONTINUE_SEARCH,
         }
@@ -1723,6 +1734,7 @@ mod native {
     /// **返回值永远、也只能是 [`EXCEPTION_CONTINUE_SEARCH`]**：它由这一个函数决定，
     /// 单测直接钉住这个数。返回 `EXCEPTION_EXECUTE_HANDLER` 会吞掉异常、连 WER 都不跑，
     /// 那正是这里绝不能发生的事。
+    // SAFETY: Callers must pass a live ExceptionRecord for the synchronous call; context may be null and is only forwarded to the dump writer.
     pub(crate) unsafe fn handle_native(
         environment: &ReportEnvironment<'_>,
         origin: ReportOrigin,
@@ -1764,7 +1776,9 @@ mod native {
         if report_budget_left() {
             let frames_buffer: &mut [u64] = &mut *SCRATCH.frames.get();
             let frames = capture_frames(frames_buffer);
+            // SAFETY: record remains valid for this callback and the resulting facts are consumed synchronously under _guard; context is not dereferenced here.
             let facts = exception_facts(record, context, thread_id);
+            // SAFETY: _guard remains held, and facts, frames, environment, and the OS context remain live until this synchronous call completes.
             if emit_with_dump(environment, origin, Some(&facts), None, frames, thread_id) {
                 let fault = &mut *SCRATCH.fault.get();
                 if origin == ReportOrigin::VectoredFirstChance {
@@ -1799,6 +1813,7 @@ mod native {
     }
 
     /// 把异常记录摊成报告要的字段。参数只取真正有意义的那些（其余是未初始化的槽位）。
+    // SAFETY: record must remain valid through conversion and synchronous report writing; context is copied without dereference.
     unsafe fn exception_facts(
         record: *const ExceptionRecord,
         context: *mut c_void,
@@ -1824,6 +1839,7 @@ mod native {
         if count == 0 {
             return &[];
         }
+        // SAFETY: out is uniquely borrowed; count is at most out.len() and MAX_FRAMES, so the API writes only within the frame storage.
         let captured = unsafe {
             RtlCaptureStackBackTrace(
                 0,
@@ -1841,10 +1857,12 @@ mod native {
     /// 先走 PEB 里的加载器链表（只读内存、不分配、不取加载器锁 —— 崩溃发生在加载器锁被持有
     /// 的时候也不至于把自己挂死），失败再退回 ToolHelp 快照。
     pub(crate) fn collect_modules(out: &mut [ModuleRecord]) -> (usize, usize) {
+        // SAFETY: TODO(review): out is exclusive and writes are bounded, but the lock-free loader-list stability assumption is documented at walk_loader_modules.
         let (total, written) = unsafe { walk_loader_modules(out) };
         if written > 0 {
             return (total, written);
         }
+        // SAFETY: out is uniquely borrowed; toolhelp_modules bounds writes to its length and closes its snapshot before returning.
         unsafe { toolhelp_modules(out) }
     }
 
@@ -1853,6 +1871,7 @@ mod native {
     /// 这些偏移来自 winternl.h 的结构定义，几十年没变过；为了少写一份拿不准的偏移表，
     /// 这里**只声明 x64 的那一份**，其它架构直接交给 ToolHelp（本项目发布的就是 x64）。
     #[cfg(target_arch = "x86_64")]
+    // SAFETY: The x64 TEB/PEB offsets are documented below and output writes are bounded; see the caller TODO for concurrent loader-list stability.
     unsafe fn walk_loader_modules(out: &mut [ModuleRecord]) -> (usize, usize) {
         // x64：`gs:[0x30]` 是 TEB 自身，TEB+0x60 是 PEB；PEB+0x18 是 Ldr；
         // PEB_LDR_DATA+0x20 是 InMemoryOrderModuleList；LDR_DATA_TABLE_ENTRY 里
@@ -1917,12 +1936,14 @@ mod native {
     }
 
     #[cfg(not(target_arch = "x86_64"))]
+    // SAFETY: this non-x64 fallback ignores its slice and performs no pointer access.
     unsafe fn walk_loader_modules(_out: &mut [ModuleRecord]) -> (usize, usize) {
         (0, 0)
     }
 
     /// 退路：ToolHelp 快照。要内核替我们建一份模块列表，所以它自己会分配，
     /// 但在 PEB 结构不可信的时候它是唯一还能用的办法。
+    // SAFETY: out must be exclusively borrowed for the call; writes are bounded to out.len() and the snapshot stays open through enumeration.
     pub(crate) unsafe fn toolhelp_modules(out: &mut [ModuleRecord]) -> (usize, usize) {
         let flags = CREATE_TOOLHELP_SNAPSHOT_FLAGS(TH32CS_SNAPMODULE.0 | TH32CS_SNAPMODULE32.0);
         let snapshot = match CreateToolhelp32Snapshot(flags, GetCurrentProcessId()) {
@@ -1970,6 +1991,7 @@ mod native {
     ///
     /// 打开方式是只读 + 全共享：日志文件正被日志插件打开着，轮换时还会被改名/删除，
     /// 全共享能让这些操作都不被我们挡住。
+    // SAFETY: log_wide must be NUL-terminated; the caller must hold ReportGuard so the static log buffer stays exclusive through use.
     unsafe fn read_log_tail(log_wide: &[u16]) -> &'static str {
         let bytes: *mut u8 = (*SCRATCH.log_bytes.get()).as_mut_ptr();
         let capacity = LOG_TAIL_BYTES;
@@ -2016,6 +2038,7 @@ mod native {
     }
 
     /// 尽最大努力把「这一条异常」写成一份报告，返回是否真的写出了文件。
+    // SAFETY: the caller must hold ReportGuard; PATHS and all borrowed report inputs remain live through the synchronous call.
     unsafe fn emit_from_installed(
         origin: ReportOrigin,
         exception: Option<&ExceptionFacts<'_>>,
@@ -2026,6 +2049,7 @@ mod native {
         match PATHS.get() {
             Some(paths) => {
                 let environment = paths.environment();
+                // SAFETY: the caller holds ReportGuard, PATHS is process-static, and all borrowed inputs remain live for this synchronous call.
                 emit_with_dump(&environment, origin, exception, panic, frames, thread_id)
             }
             None => false,
@@ -2037,6 +2061,7 @@ mod native {
     /// 入口条件：调用方已经抢到「正在写报告」那把旗（见 [`enter`]）。**自己不再抢旗**——
     /// 那把旗是排他锁，重入会把自己挡在门外。公开入口是 [`emit_with_dump`] 与
     /// [`handle_native`]，两者都先抢旗再走到这里。
+    // SAFETY: the caller must hold ReportGuard; path buffers are NUL-terminated and borrowed report facts remain live through the write.
     pub(crate) unsafe fn emit(
         environment: &ReportEnvironment<'_>,
         origin: ReportOrigin,
@@ -2093,6 +2118,7 @@ mod native {
         let modules: &mut [ModuleRecord] = &mut *SCRATCH.modules.get();
         let (module_total, listed) = collect_modules(modules);
         sort_modules(&mut modules[..listed]);
+        // SAFETY: emit is reached under ReportGuard and log_wide is the NUL-terminated path copied by install.
         let log_tail = read_log_tail(environment.log_wide);
 
         let mut os_version_buffer = [0u8; 32];
@@ -2148,6 +2174,7 @@ mod native {
     /// 这里不再抢第二次：重入会被自己挡在门外，那会让所有原生崩溃与 panic 一个字节都写不出来。
     ///
     /// 返回值与 [`emit`] 一样：**报告**是否真的写出了文件。转储写没写成，看报告。
+    // SAFETY: the caller must hold ReportGuard; borrowed exception, panic, frame, and environment data remain live through completion.
     pub(crate) unsafe fn emit_with_dump(
         environment: &ReportEnvironment<'_>,
         origin: ReportOrigin,
@@ -2164,6 +2191,7 @@ mod native {
         let stamp_length = local_time.write_file_stamp(&mut stamp);
         let stamp = ascii_str(&stamp[..stamp_length.min(stamp.len())]);
 
+        // SAFETY: emit_with_dump is reached under ReportGuard; environment and any non-null exception context remain live through the call.
         let dump_write = write_dump(environment, exception, stamp, thread_id);
 
         // 报告里的这一段要区分两件事：转储写成了（给路径与大小），还是没写成（给原因）。
@@ -2185,6 +2213,7 @@ mod native {
                     .position(|byte| *byte == 0)
                     .unwrap_or(name_buffer.len());
                 let name = ascii_str(&name_buffer[..length.min(name_buffer.len())]);
+                // SAFETY: the path buffer was filled by join_path under this ReportGuard and remains exclusively borrowed during conversion.
                 let path = dump_path_display(dump_path_buffer());
                 DumpFacts {
                     directory: environment.dump_directory_display,
@@ -2198,6 +2227,7 @@ mod native {
             }
         };
 
+        // SAFETY: emit_with_dump is reached under ReportGuard and all borrowed facts remain live through the synchronous write.
         if emit(environment, origin, exception, panic, frames, thread_id, Some(facts)) {
             spend_report_budget();
             true
@@ -2211,11 +2241,13 @@ mod native {
 
     /// 报告目录里那份转储的 **UTF-16** 路径暂存（文本报告里把它当 `dump.path` 用）。
     fn dump_path_buffer() -> &'static mut [u16] {
+        // SAFETY: write_dump calls this accessor while emit_with_dump holds ReportGuard; no other writer can alias this UnsafeCell.
         unsafe { &mut *SCRATCH.dump_path.get() }
     }
 
     /// 报告里那份转储的 **UTF-8** 名字暂存（`emit` 拿它填 `DumpFacts`）。
     fn dump_name_buffer() -> &'static mut [u8] {
+        // SAFETY: emit_with_dump holds ReportGuard while reading this field; no other writer can alias this UnsafeCell.
         unsafe { &mut *SCRATCH.dump_name.get() }
     }
 
@@ -2251,6 +2283,7 @@ mod native {
     ///
     /// 入口条件：调用方已经抢到「正在写报告」那把旗（见 [`enter`]），所以这里对
     /// `SCRATCH` 的写入是排他的，且这一次崩溃只会有一次转储尝试。
+    // SAFETY: the caller must hold ReportGuard; a non-null exception context must remain valid until MiniDumpWriteDump returns.
     unsafe fn write_dump(
         environment: &ReportEnvironment<'_>,
         exception: Option<&ExceptionFacts<'_>>,
@@ -2325,6 +2358,7 @@ mod native {
             // 0：进程内写自己的转储，指针就是本进程的地址（跨进程才需要置 1）。
             client_pointers: 0,
         };
+        // SAFETY: handle is open, exception_information is live stack storage, and a non-null context points to the active exception callback data.
         let written = MiniDumpWriteDump(
             GetCurrentProcess(),
             GetCurrentProcessId(),
@@ -2374,6 +2408,7 @@ mod native {
     ///
     /// 报告里要的是**看得懂的路径**，而路径缓冲是 UTF-16。这里不分配：直接借用静态缓冲
     /// （报告写完之后没人再用它），代价是报告里那句 `dump.path` 的生命周期与整个进程一样长。
+    // SAFETY: path_wide must remain a live slice; the byte view length is bounded by the slice allocation and the caller holds ReportGuard.
     unsafe fn dump_path_display(path_wide: &[u16]) -> &'static str {
         // 结尾 NUL 之前的那一段才是路径。
         let length = path_wide
@@ -2395,6 +2430,7 @@ mod native {
     ///
     /// `FindFirstFileW` 而不是 `std::fs::read_dir`：后者要分配堆，而这条路的调用方
     /// 可能正处在堆已经坏掉的崩溃现场。这里只用栈上定长结构。
+    // SAFETY: directory_wide must be a valid UTF-16 slice; output is exclusively borrowed and all writes are bounded.
     unsafe fn enumerate_dumps(directory_wide: &[u16], out: &mut [DumpEntry; DUMP_LIST_CAP]) -> (usize, usize) {
         // 目录 + `\*`：`FindFirstFileW` 只认通配符形式的目录名。
         let mut pattern = [0u16; PATH_UNITS];
@@ -2473,6 +2509,7 @@ mod native {
     pub(super) fn prune_dumps(environment: &ReportEnvironment<'_>) {
         // `out` 放在堆以外的栈上：这一步在启动时跑，堆是好的，但保持同一套纪律没有坏处。
         let mut entries = [DumpEntry::EMPTY; DUMP_LIST_CAP];
+        // SAFETY: environment path storage is NUL-terminated and entries is a unique fixed-size stack array; enumeration bounds writes.
         let (total, listed) = unsafe { enumerate_dumps(environment.dump_directory_wide, &mut entries) };
         if total == 0 {
             return;
@@ -2487,6 +2524,7 @@ mod native {
             if join_path(environment.dump_directory_wide, entry.name(), &mut path) == 0 {
                 continue;
             }
+            // SAFETY: join_path returned nonzero for this local path buffer, so it is NUL-terminated and stays alive during DeleteFileW.
             unsafe {
                 let _ = DeleteFileW(PCWSTR::from_raw(path.as_ptr()));
             }
@@ -2504,6 +2542,7 @@ mod native {
             second: 0,
             milliseconds: 0,
         };
+        // SAFETY: raw is an initialized, uniquely borrowed SYSTEMTIME-compatible stack output structure.
         unsafe { GetLocalTime(&mut raw) };
         LocalTime {
             year: raw.year,
@@ -2527,6 +2566,7 @@ mod native {
             second: 0,
             milliseconds: 0,
         };
+        // SAFETY: raw is an initialized, uniquely borrowed SYSTEMTIME-compatible stack output structure.
         unsafe { GetSystemTime(&mut raw) };
         LocalTime {
             year: raw.year,
@@ -2549,6 +2589,7 @@ mod native {
             platform_id: 0,
             csd_version: [0u16; 128],
         };
+        // SAFETY: info is an initialized OSVERSIONINFO-compatible stack structure with its size field set before the call.
         let status = unsafe { RtlGetVersion(&mut info) };
         if status != 0 {
             return 0;
@@ -2578,6 +2619,7 @@ mod native {
                 return;
             }
             let mut written = 0u32;
+            // SAFETY: handle remains open through flush; the input slice is limited to filled <= buffer.len() and written is live output storage.
             let ok = unsafe {
                 WriteFile(
                     self.handle,
@@ -3479,6 +3521,7 @@ note.8: 同一目录（dump.path 所在的 crashes 目录）里最多保留最�
             let (_, loaded_listed) = platform::collect_modules(&mut from_loader);
             let mut from_toolhelp = [ModuleRecord::EMPTY; MODULE_CAP];
             let (toolhelp_total, toolhelp_listed) =
+                // SAFETY: from_toolhelp is a unique fixed-size stack slice; toolhelp_modules bounds writes and owns the snapshot lifetime.
                 unsafe { platform::toolhelp_modules(&mut from_toolhelp) };
             assert!(loaded_listed > 10 && toolhelp_listed > 10);
             assert!(
@@ -3576,6 +3619,7 @@ note.8: 同一目录（dump.path 所在的 crashes 目录）里最多保留最�
             };
             let wrote = {
                 let _serial = serial_emit();
+                // SAFETY: _serial excludes other test writers to SCRATCH; the environment and report data remain live until emit returns.
                 unsafe {
                     platform::emit(
                         &environment,
@@ -3661,6 +3705,7 @@ note.8: 同一目录（dump.path 所在的 crashes 目录）里最多保留最�
             );
             let wrote = {
                 let _serial = serial_emit();
+                // SAFETY: _serial excludes other test writers to SCRATCH; this test process does not install the native crash handlers.
                 unsafe { platform::emit(&environment, ReportOrigin::RustPanic, None, None, &[], 7, None) }
             };
             assert!(wrote, "日志缺失不该让报告写不出来");
@@ -3689,6 +3734,7 @@ note.8: 同一目录（dump.path 所在的 crashes 目录）里最多保留最�
             );
             let _serial = serial_emit();
             for _ in 0..2 {
+                // SAFETY: _serial excludes other test writers to SCRATCH; this test process does not install the native crash handlers.
                 assert!(unsafe {
                     platform::emit(&environment, ReportOrigin::RustPanic, None, None, &[], 7, None)
                 });
@@ -3733,6 +3779,7 @@ note.8: 同一目录（dump.path 所在的 crashes 目录）里最多保留最�
             );
             let wrote = {
                 let _serial = serial_emit();
+                // SAFETY: _serial excludes other test writers to SCRATCH; this test process does not install the native crash handlers.
                 unsafe { platform::emit(&environment, ReportOrigin::RustPanic, None, None, &[], 7, None) }
             };
             assert!(wrote);
@@ -3769,6 +3816,7 @@ note.8: 同一目录（dump.path 所在的 crashes 目录）里最多保留最�
 
             // 致命码：第一机会就落盘，返回码仍然是「交回系统」。
             let mut record = platform::exception_record(0xc000_0005, 0x1000, &[0, 0x1234]);
+            // SAFETY: record is a live local ExceptionRecord, context is null and only forwarded, and _serial excludes concurrent test access to SCRATCH.
             let code = unsafe {
                 platform::handle_native(
                     &environment,
@@ -3782,6 +3830,7 @@ note.8: 同一目录（dump.path 所在的 crashes 目录）里最多保留最�
             assert_eq!(crash_reports_in(directory.path()).len(), 1);
 
             // 同一条异常随后走到顶层过滤器：不再写第二份（同一个现场的副本没有价值）。
+            // SAFETY: record is a live local ExceptionRecord, context is null and only forwarded, and _serial excludes concurrent test access to SCRATCH.
             let code = unsafe {
                 platform::handle_native(
                     &environment,
@@ -3800,6 +3849,7 @@ note.8: 同一目录（dump.path 所在的 crashes 目录）里最多保留最�
 
             // 控制流异常（C++ EH）在第一机会里记都不记，但照样交回系统。
             let mut control_flow = platform::exception_record(0xe06d_7363, 0x1000, &[]);
+            // SAFETY: record is a live local ExceptionRecord, context is null and only forwarded, and _serial excludes concurrent test access to SCRATCH.
             let code = unsafe {
                 platform::handle_native(
                     &environment,
@@ -3817,6 +3867,7 @@ note.8: 同一目录（dump.path 所在的 crashes 目录）里最多保留最�
             );
 
             // 同一个控制流异常真的一路没人处理（顶层过滤器）：那时它就是要命的了，照样留证据。
+            // SAFETY: record is a live local ExceptionRecord, context is null and only forwarded, and _serial excludes concurrent test access to SCRATCH.
             let code = unsafe {
                 platform::handle_native(
                     &environment,
@@ -3848,6 +3899,7 @@ note.8: 同一目录（dump.path 所在的 crashes 目录）里最多保留最�
 
             let held = crate::crash_report::enter().expect("旗此刻应当是空的");
             let mut record = platform::exception_record(0xc000_0005, 0x1000, &[0, 0]);
+            // SAFETY: record is a live local ExceptionRecord, context is null and only forwarded, and _serial excludes concurrent test access to SCRATCH.
             let code = unsafe {
                 platform::handle_native(
                     &environment,
@@ -3865,6 +3917,7 @@ note.8: 同一目录（dump.path 所在的 crashes 目录）里最多保留最�
             drop(held);
 
             // 旗放开之后同一条异常才真正落盘。
+            // SAFETY: record is a live local ExceptionRecord, context is null and only forwarded, and _serial excludes concurrent test access to SCRATCH.
             let code = unsafe {
                 platform::handle_native(
                     &environment,
@@ -3908,6 +3961,7 @@ note.8: 同一目录（dump.path 所在的 crashes 目录）里最多保留最�
             let _serial = serial_emit();
 
             let mut record = platform::exception_record(0xc000_0005, address, &[0, 0x1234]);
+            // SAFETY: record is a live local ExceptionRecord, context is null and only forwarded, and _serial excludes concurrent test access to SCRATCH.
             let code = unsafe {
                 platform::handle_native(
                     &environment,
