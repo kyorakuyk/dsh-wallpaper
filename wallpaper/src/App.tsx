@@ -14,19 +14,14 @@ import { isEmbeddedShellSubject, isInstalledCliSubject, reachNeedsBrowser, subje
 import { conversationHostChip } from './connect/conversationHost.ts'
 import { profileForLaunch } from './connect/harnessProfiles.ts'
 import type { HarnessLaunchKind } from './features/harness/harnessConnection.ts'
-import {
-  HARNESS_SWITCH_BUFFER_MS,
-  IMMEDIATE_EXIT_GRACE_MS,
-  harnessLaunchOutcome,
-  isHarnessTransitioning,
-} from './features/harness/harnessLaunch.ts'
+import { useHarnessConnection } from './features/harness/useHarnessConnection.ts'
 
 export {
   HARNESS_SWITCH_BUFFER_MS,
   IMMEDIATE_EXIT_GRACE_MS,
   harnessLaunchOutcome,
-  isHarnessTransitioning,
-}
+} from './features/harness/harnessLaunch.ts'
+export { isHarnessTransitioning } from './features/harness/harnessLaunch.ts'
 import {
   apiModelDirectory,
   bridgeModelDirectory,
@@ -139,17 +134,6 @@ function bridgeUnavailableNotice(message: Message): Pick<RuntimeState, 'error' |
  * WebView, or HMR, because a fresh JS realm starts with this flag false again.
  */
 let dshAutostartRequestedInProcess = false
-
-/**
- * Which class the last launch started, so the 45-second supervision knows whether
- * "not managed" means anything.
- *
- * A checkout is a child of this process and its exit is observable; a shell is an
- * application the Windows shell starts on our behalf, and nothing about it is
- * owned here. Same module-scope reasoning as above: this survives a remount, and
- * it is only a label — the native side decides what actually happens.
- */
-let harnessLaunchedKind: HarnessLaunchKind = 'checkout'
 
 export function canAutoSelectHarness(
   availability: RuntimeState['harness'],
@@ -550,6 +534,7 @@ export function App({ surface = 'combined' }: AppProps) {
   // 语言以设置文档为准：启动时回填、另一个窗口切过来时跟上（两个 WebView 各有一份运行时）。
   useStoredLanguage(settings.language)
   const [runtime, baseDispatch] = useReducer(reduceRuntime, { ...INITIAL_RUNTIME_STATE, backend: settings.defaultBackend })
+  const patchRuntime = (patch: Partial<RuntimeState>) => baseDispatch({ type: 'PATCH', patch })
   const [resolvedAssets, setResolvedAssets] = useState<Partial<Record<AppearanceSlot, string>>>({})
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [streamingText, setStreamingText] = useState('')
@@ -560,8 +545,6 @@ export function App({ surface = 'combined' }: AppProps) {
   const [harnessModelChoice, setHarnessModelChoice] = useState<string | undefined>()
   // 枚举出来的模型目录。初始是"还没查"，不是"没有模型"——区别见 connect/modelDirectory.ts。
   const [harnessModelDir, setHarnessModelDir] = useState<ModelDirectory>({ kind: 'unavailable', reason: msg('app.bubble.model.harness-reading') })
-  /** 就绪过的桥接正在失联（黄灯），但还没到"确认掉线"。 */
-  const [harnessProbing, setHarnessProbing] = useState(false)
   const [apiModelDir, setApiModelDir] = useState<ModelDirectory>({ kind: 'unavailable', reason: msg('app.bubble.model.endpoint-reading') })
   const [interactionState, setInteractionState] = useState<'collapsed' | 'expanded'>('collapsed')
   const [interactionEnabled, setInteractionEnabled] = useState(true)
@@ -618,25 +601,8 @@ export function App({ surface = 'combined' }: AppProps) {
   const [presetOptions, setPresetOptions] = useState<Array<{ id: string; name?: string; broken?: string; isDefault: boolean }>>([])
   const [selectedPreset, setSelectedPreset] = useState<string>()
   const [harnessControls, setHarnessControls] = useState<{ permission: { current: string; options: string[] }; commands: Array<{ name: string; description: string; input?: { hint: string } }> }>()
-  const [harnessStarting, setHarnessStarting] = useState(false)
-  /**
-   * 握手**失败**过（不是"还没连"）。
-   *
-   * 与黄灯（连接中）必须分开：黄灯是"还没定"，红灯是"试过了、没成"。用户要的动作也不同——
-   * 红灯时点滑槽＝立刻拉起对应 harness 进程并发一次握手申请，而黄灯时只需要等。
-   */
-  const [harnessFailed, setHarnessFailed] = useState(false)
-  /** 切换主体之后黄灯的**最短**停留（见 `HARNESS_SWITCH_BUFFER_MS`）。 */
-  const [harnessBuffering, setHarnessBuffering] = useState(false)
   const [nativeHandoffGeneration, setNativeHandoffGeneration] = useState<number>()
-  const harnessLaunchPendingRef = useRef(false)
-  const harnessLaunchStartedAtRef = useRef<number>()
-  /**
-   * 上面那个失败分支要用的两样东西，用 ref 拿最新值。
-   *
-   * 那个 effect 只在 `[harnessStarting, runtime.harness]` 变化时重建，直接闭包捕获 `changeBackend`
-   * 会拿到**过期的**那一份（它每次渲染都重建）。失败复位滑槽是一次性动作，必须用当下这一份。
-   */
+  /** 失败复位滑槽要用的两样东西，放在 ref 里供 hook 的最新回调读取。 */
   const changeBackendRef = useRef<((backend: 'deepseek-web' | 'deepseek-api' | 'harness', options?: { keepTranscript?: boolean; automatic?: boolean }) => void) | undefined>(undefined)
   const nonHarnessBackendRef = useRef<'deepseek-web' | 'deepseek-api'>('deepseek-web')
   /**
@@ -686,22 +652,21 @@ export function App({ surface = 'combined' }: AppProps) {
   // each IPC call. Serialize this queue so a late `streaming` dispatch cannot
   // be processed after the terminal `done` dispatch.
   const coreDispatchQueueRef = useRef<Promise<unknown>>(Promise.resolve())
-  /**
-   * 切换主体之后，黄灯**至少**亮满 `HARNESS_SWITCH_BUFFER_MS`。
-   *
-   * 依赖与下面那个"把主体范围交给原生"的 effect 相同 —— 同一件事触发两处：原生开始按新主体探测，
-   * 界面则先进入"连接中"。启动时也会走一次，那是对的：那时确实还在连。
-   */
-  useEffect(() => {
-    setHarnessBuffering(true)
-    const timer = window.setTimeout(() => setHarnessBuffering(false), HARNESS_SWITCH_BUFFER_MS)
-    return () => window.clearTimeout(timer)
-  }, [
-    settings.dshLaunch.subjectId,
-    settings.dshLaunch.rootPath,
-    settings.dshLaunch.endpointPort,
-    settings.dshLaunch.extraEndpointPorts,
-  ])
+  const harnessConnection = useHarnessConnection({
+    subjectId: settings.dshLaunch.subjectId,
+    rootPath: settings.dshLaunch.rootPath,
+    endpointPort: settings.dshLaunch.endpointPort,
+    extraEndpointPorts: settings.dshLaunch.extraEndpointPorts,
+    availability: runtime.harness,
+    reasonCode: runtime.harnessReasonCode,
+    probing: runtime.harnessProbing === true,
+    onLaunchFailed: (reason) => {
+      // 握手失败：灯转红，滑槽拨回左边。旧连接保持不动。
+      changeBackendRef.current?.(nonHarnessBackendRef.current)
+      patchRuntime({ error: reason })
+    },
+    onSupervisionError: (error) => patchRuntime({ error: sentenceOf(error) }),
+  })
   // Do not put mutable API request settings in the adapter lifecycle effect.
   // The adapter captures this object by reference and snapshots it only when
   // sending, so a settings edit changes the next request without disconnecting
@@ -823,7 +788,6 @@ export function App({ surface = 'combined' }: AppProps) {
   // monotonic epoch, so a slower pre-change resolve can never repaint the
   // previous background/persona after a user has selected a new one.
   const appearanceRefreshEpochRef = useRef(0)
-  const patchRuntime = (patch: Partial<RuntimeState>) => baseDispatch({ type: 'PATCH', patch })
   const dispatchCore = (action: Parameters<typeof appCoreClient.dispatch>[0], options?: Parameters<typeof appCoreClient.dispatch>[1]) => {
     if (!appCoreClient.native) return
     coreDispatchQueueRef.current = coreDispatchQueueRef.current
@@ -1038,16 +1002,8 @@ export function App({ surface = 'combined' }: AppProps) {
     window: settings.dshLaunch.window,
     alias: subjectAlias(settings.dshLaunch.subjectId, settings.dshLaunch.aliases),
   })
-  /**
-   * 黄灯：中间态，规则见 `isHarnessTransitioning`（纯函数，可测）。两个来源各自算：原生监控
-   * 把 `harnessProbing` 随快照发下来（它能看到端口属主的进程是否还活着），浏览器预览那条路
-   * 自己在本地探针里判断。
-   */
-  const harnessTransitioning = isHarnessTransitioning({
-    starting: harnessStarting,
-    availability: runtime.harness,
-    probing: harnessProbing || runtime.harnessProbing === true,
-  })
+  // The hook combines launch, subject-switch buffering and the runtime's probe state for the lamp.
+  const harnessLamp = harnessConnection.lamp
   // The WorkerW host is permanently desktop-sized. Both the floating window
   // and the taskbar capsule now use CSS placement inside that one viewport.
   const interactionDirection = 'center' as const
@@ -1311,64 +1267,6 @@ const enterInnerWorkspace = () => {
     void nativeRuntime.harnessControls().then(setHarnessControls).catch(() => setHarnessControls(undefined))
   }, [runtime.backend, runtime.harness, conversationGeneration])
 
-  // The launcher returns before DSH has finished booting. Keep the switch in
-  // its starting state until the Bridge is genuinely ready, and surface an
-  // early child exit instead of letting the old eight-second timer make the
-  // button look available again while nothing is listening on 3080.
-  useEffect(() => {
-    if (harnessStarting && !harnessLaunchPendingRef.current) {
-      harnessLaunchPendingRef.current = true
-      harnessLaunchStartedAtRef.current = Date.now()
-    }
-  }, [harnessStarting])
-
-  // 桥就绪后必须清掉失败标记：它记录的是**上一次尝试**，不是当前连接。实测症状是绿灯配"连接失败"——
-  // 那次尝试失败后标记粘住，而下面那个 effect 的清除分支有"握手中"前置条件，此后再也不会执行，
-  // 于是常驻监视器后来把桥连上了，界面上仍写着失败。
-  useEffect(() => {
-    if (runtime.harness === 'bridge-ready') setHarnessFailed(false)
-  }, [runtime.harness])
-
-  useEffect(() => {
-    if (!nativeRuntime.isNative || !harnessLaunchPendingRef.current) return
-    if (runtime.harness === 'bridge-ready') {
-      harnessLaunchPendingRef.current = false
-      harnessLaunchStartedAtRef.current = undefined
-      setHarnessFailed(false)
-      if (harnessStarting) setHarnessStarting(false)
-      return
-    }
-    if (!harnessStarting) setHarnessStarting(true)
-    let disposed = false
-    const check = async () => {
-      try {
-        const managed = await nativeRuntime.managedDshStatus()
-        if (disposed || !harnessLaunchPendingRef.current) return
-        const outcome = harnessLaunchOutcome(
-          { availability: runtime.harness, reasonCode: runtime.harnessReasonCode },
-          Date.now() - (harnessLaunchStartedAtRef.current ?? Date.now()),
-          managed,
-          45_000,
-          harnessLaunchedKind,
-        )
-        if (!outcome) return
-        harnessLaunchPendingRef.current = false
-        harnessLaunchStartedAtRef.current = undefined
-        setHarnessStarting(false)
-        // 握手失败：灯转红（"试过、没成"），滑槽拨回左边。旧的那条连接**不动** —— 连接层是
-        // make-before-break，没有成功的新会话就不会拆旧的；它只是不再冒充"已连接"。
-        setHarnessFailed(true)
-        changeBackendRef.current?.(nonHarnessBackendRef.current)
-        patchRuntime({ error: outcome.message })
-      } catch (error) {
-        if (!disposed) patchRuntime({ error: sentenceOf(error) })
-      }
-    }
-    void check()
-    const timer = window.setInterval(() => { void check() }, 1000)
-    return () => { disposed = true; window.clearInterval(timer) }
-  }, [harnessStarting, runtime.harness])
-
   /**
    * Start the configured DSH once, when `autoStartWithWallpaper` is on.
    *
@@ -1405,14 +1303,12 @@ const enterInnerWorkspace = () => {
           // Reuse the manual launch's readiness window, so the same 45-second
           // supervision, timeout message and exit detection apply. A shell is
           // supervised on the bridge probe alone: nothing here owns its process.
-          harnessLaunchedKind = isEmbeddedShellSubject(subjectId)
+          const launchKind: HarnessLaunchKind = isEmbeddedShellSubject(subjectId)
             ? 'embedded-shell'
             : isInstalledCliSubject(subjectId)
               ? 'installed-cli'
               : 'checkout'
-          harnessLaunchStartedAtRef.current = Date.now()
-          harnessLaunchPendingRef.current = true
-          setHarnessStarting(true)
+          harnessConnection.requestLaunch(launchKind)
           // A start that was never confirmed still deserves its own sentence: the
           // user must be able to tell "still starting" from "nothing happened".
           if (result.outcome === 'started-unconfirmed') {
@@ -1780,7 +1676,7 @@ const enterInnerWorkspace = () => {
         }
         // 黄灯：就绪过的桥接正在失联但还没判死（`probing`）。此时**不改** availability，
         // 所以滑槽、模型列表、会话都还按"它还在"处理 ✓——只有灯变色 ✓。
-        setHarnessProbing(status.probing === true)
+        patchRuntime({ harnessProbing: status.probing === true })
         const disconnected = harnessAvailabilityPatch(runtimeRef.current.backend, status.availability, runtimeRef.current.errorKind)
         if (disconnected) patchRuntime(disconnected)
       },
@@ -1983,42 +1879,32 @@ const enterInnerWorkspace = () => {
       expandedBottomInset={expandedBottomInset}
       apiPricingConfigured={settings.deepseekApi.priceInputPerMillion !== undefined && settings.deepseekApi.priceOutputPerMillion !== undefined}
       harnessAvailability={runtime.harness}
-      harnessStarting={harnessStarting}
-      harnessFailed={harnessFailed}
-      harnessSuspect={harnessTransitioning || harnessBuffering}
+      harnessStarting={harnessLamp.starting}
+      harnessFailed={harnessLamp.failed}
+      harnessSuspect={harnessLamp.suspect}
       onStartHarness={async () => {
-        if (harnessLaunchPendingRef.current) return
-        // 红灯时点滑槽＝**动手再试一次**：拉起对应 harness 进程（这一步本身就是"握手申请"的前半，
-        // 后半由切到 harness 后适配器连接时发出）。所以先清掉失败标记，灯回到"连接中"。
-        setHarnessFailed(false)
-        setHarnessStarting(true)
-        harnessLaunchPendingRef.current = true
-        harnessLaunchStartedAtRef.current = Date.now()
+        if (harnessConnection.isLaunchPending()) return
+        const subjectId = settings.dshLaunch.subjectId ?? settings.dshLaunch.rootPath
+        if (!subjectId) {
+          await nativeRuntime.openSettingsWindow()
+          return
+        }
+        const launchKind: HarnessLaunchKind = isEmbeddedShellSubject(subjectId)
+          ? 'embedded-shell'
+          : isInstalledCliSubject(subjectId)
+            ? 'installed-cli'
+            : 'checkout'
+        const startedAt = harnessConnection.requestLaunch(launchKind)
         try {
           // §5.3: the route switch does what the automatic start does — start the
           // chosen execution subject — and differs only in switching the backend
           // afterwards, which is the caller's job.
-          const subjectId = settings.dshLaunch.subjectId ?? settings.dshLaunch.rootPath
-          if (!subjectId) {
-            harnessLaunchPendingRef.current = false
-            harnessLaunchStartedAtRef.current = undefined
-            setHarnessStarting(false)
-            await nativeRuntime.openSettingsWindow()
-            return
-          }
-          harnessLaunchedKind = isEmbeddedShellSubject(subjectId)
-            ? 'embedded-shell'
-            : isInstalledCliSubject(subjectId)
-              ? 'installed-cli'
-              : 'checkout'
           await nativeRuntime.launchHarnessTarget({
             targetId: subjectId,
             profile: profileForLaunch(),
           })
         } catch (error) {
-          harnessLaunchPendingRef.current = false
-          harnessLaunchStartedAtRef.current = undefined
-          setHarnessStarting(false)
+          harnessConnection.abortLaunch(startedAt)
           patchRuntime({ error: sentenceOf(error) })
         }
       }}
@@ -2042,7 +1928,7 @@ const enterInnerWorkspace = () => {
       modelLabels={modelLabels}
       modelSwitchDisabledReason={modelSwitchDisabledReason}
       harnessReady={isHarnessReady(runtime.harness)}
-      // 黄灯（`harnessSuspect`）在面板顶部那处统一给：原生的 `harnessProbing` + 刚才那段最短停留。
+      // The hook computes `harnessSuspect` from the connection snapshot and launch lifecycle.
       // 每个后端都接上：它是"拉起当前主体可视化窗口"的快捷键，与岛上当前是哪个后端无关
       // （用户要求的是"每个样式"都有这个按钮）。没有主体可拉时，原生会退到"这个端点上
       // 应答的那台"，所以网页模式下点击也不会落空。
