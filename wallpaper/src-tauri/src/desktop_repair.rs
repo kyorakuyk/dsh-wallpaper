@@ -135,10 +135,13 @@ pub fn wait_for_process_exit(pid: u32) {
 
     let mut attempts = 0;
     loop {
+        // SAFETY: OpenProcess returns an owned process HANDLE on success; the error branch receives no handle to use or close.
         let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) };
         match handle {
             Ok(handle) => {
+                // SAFETY: handle is the live PROCESS_SYNCHRONIZE handle returned by OpenProcess and remains open until the wait completes.
                 let waited = unsafe { WaitForSingleObject(handle, INFINITE) };
+                // SAFETY: handle was acquired by OpenProcess and is closed exactly once after WaitForSingleObject returns.
                 unsafe {
                     let _ = CloseHandle(handle);
                 }
