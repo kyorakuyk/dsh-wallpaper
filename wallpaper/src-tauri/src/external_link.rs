@@ -68,6 +68,7 @@ pub fn open(url: &str) -> Result<String, String> {
     let target = validate(url)?;
     let operation = HSTRING::from("open");
     let wide = HSTRING::from(target.as_str());
+    // SAFETY: validate restricted target to bounded ASCII http/https; both HSTRINGs own NUL-terminated buffers for this synchronous call.
     let result = unsafe {
         ShellExecuteW(
             None,
