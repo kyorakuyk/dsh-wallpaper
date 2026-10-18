@@ -1886,7 +1886,11 @@ const enterInnerWorkspace = () => {
         if (harnessConnection.isLaunchPending()) return
         const subjectId = settings.dshLaunch.subjectId ?? settings.dshLaunch.rootPath
         if (!subjectId) {
-          await nativeRuntime.openSettingsWindow()
+          try {
+            await nativeRuntime.openSettingsWindow()
+          } catch (error) {
+            patchRuntime({ error: sentenceOf(error) })
+          }
           return
         }
         const launchKind: HarnessLaunchKind = isEmbeddedShellSubject(subjectId)
