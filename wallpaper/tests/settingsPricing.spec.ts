@@ -36,7 +36,7 @@ describe('API pricing setting normalization', () => {
  * 价格输入冻结之后（用户要求界面上不再出现"计价"）。
  *
  * 上一批冻的是**读数**（顶栏用量串、每条消息下面那行费用，见 `ConversationBubble.tsx` 的几处
- * FREEZE）；这一批冻的是**喂它的输入**：`SettingsPanel.tsx` 里那两行 `Field`（输入价格 /
+ * FREEZE）；这一批冻的是**喂它的输入**：`ConnectionsTab.tsx` 里那两行 `Field`（输入价格 /
  * 输出价格）连同它们的 `detail` 一起注销。理由正是"那句说明现在是假的"—— 它承诺的
  * "本轮和会话估算费用"已经不在界面上了，而两个改了也看不见任何变化的输入框比它们不在更坏。
  *
@@ -48,8 +48,8 @@ describe('API pricing setting normalization', () => {
  * 数据层不动也是契约的一部分：`store.ts` 的字段与归一化、`PriceInput` 组件、上限常量照旧。
  */
 describe('价格输入冻结之后', () => {
-  async function panelSource(): Promise<string> {
-    return (await readFile(resolve(dirname(fileURLToPath(import.meta.url)), '../src/settings/SettingsPanel.tsx'), 'utf8'))
+  async function connectionsSource(): Promise<string> {
+    return (await readFile(resolve(dirname(fileURLToPath(import.meta.url)), '../src/settings/tabs/ConnectionsTab.tsx'), 'utf8'))
       .replace(/\r\n?/g, '\n')
   }
 
@@ -104,7 +104,7 @@ describe('价格输入冻结之后', () => {
   })
 
   it('keeps both frozen rows in the file, so reviving them needs no git archaeology', async () => {
-    const source = await panelSource()
+    const source = await connectionsSource()
     // 两行都还在（在注释里），**逐字**保留：字段、`onChange`、连那句假话 `detail=` 的原样都在，
     // 恢复时是取消注释而不是重写。
     expect(source).toContain("{/* <Field title={t('settings.connections.api.price-input.title')} detail={t('settings.connections.api.price-input.detail')}><PriceInput")
@@ -117,7 +117,7 @@ describe('价格输入冻结之后', () => {
   })
 
   it('leaves nothing alive that could mount a price input or promise an estimate', async () => {
-    const alive = withoutComments(await panelSource())
+    const alive = withoutComments(await connectionsSource())
     for (const symbol of [
       'settings.connections.api.price-input.title',
       'settings.connections.api.price-input.detail',
