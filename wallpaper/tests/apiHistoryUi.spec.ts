@@ -123,7 +123,10 @@ describe('history page wiring', () => {
 
     const panel = await readSource('src/settings/SettingsPanel.tsx')
     const window = await readSource('src/settings/SettingsWindow.tsx')
-    const nav = panel.slice(panel.indexOf('const pages:'), panel.indexOf(']\n\n/** `18.4 MB`'))
+    const pagesStart = panel.indexOf('const pages:')
+    const pagesEnd = panel.indexOf('\n]', pagesStart)
+    expect(pagesEnd).toBeGreaterThan(pagesStart)
+    const nav = panel.slice(pagesStart, pagesEnd)
     expect(nav).toContain("id: 'history'")
     expect(nav).toContain("labelKey: 'nav.history.label'")
     // 文案搬进了字典（i18n）：面板里只剩键，所以"这页叫什么"要在字典里核对。
@@ -137,29 +140,29 @@ describe('history page wiring', () => {
   })
 
   it('offers per-conversation delete and a clear-all control', async () => {
-    const panel = await readSource('src/settings/SettingsPanel.tsx')
+    const history = await readSource('src/settings/tabs/HistoryTab.tsx')
 
-    expect(panel).toContain('onDeleteApiConversation(conversation.id)')
-    expect(panel).toContain('onClearApiHistory')
+    expect(history).toContain('onDeleteApiConversation(conversation.id)')
+    expect(history).toContain('onClearApiHistory')
     // 文案搬进了字典（i18n）：面板里只剩键，所以每一句话都要在字典里核对。
-    expect(panel).toContain("t('settings.history.clear')")
-    expect(panel).toContain("t('settings.history.row-meta'")
-    expect(panel).toContain("t('settings.history.row-delete'")
-    expect(panel).toContain("t('settings.history.active')")
-    expect(panel).toContain("t('settings.history.empty.title')")
+    expect(history).toContain("t('settings.history.clear')")
+    expect(history).toContain("t('settings.history.row-meta'")
+    expect(history).toContain("t('settings.history.row-delete'")
+    expect(history).toContain("t('settings.history.active')")
+    expect(history).toContain("t('settings.history.empty.title')")
     const dictionary = await dictionarySource('zh')
     expect(dictionary).toContain("'settings.history.clear': '清空全部 API 历史'")
     expect(dictionary).toContain("'settings.history.row-meta': '{messages} 条消息 · {size} · 最后活动 {time}'")
     expect(dictionary).toContain("'settings.history.active': '当前会话'")
     // The page shows metadata only, never a message body.
-    expect(panel).not.toMatch(/conversation\.messages/)
+    expect(history).not.toMatch(/conversation\.messages/)
     // Destructive actions must say what they do not affect.
     expect(dictionary).toContain('不影响 DeepSeek 网页入口或 Harness 会话')
     // An empty archive must render an explanation, not a blank card.
     expect(dictionary).toContain("'settings.history.empty.title': '没有可删除的 API 会话记录'")
     // The currently active transcript is marked so the user does not delete it
     // blind.
-    expect(panel).toContain('history-row__badge')
+    expect(history).toContain('history-row__badge')
   })
 
   it('confirms before deleting and re-reads the archive afterwards', async () => {
