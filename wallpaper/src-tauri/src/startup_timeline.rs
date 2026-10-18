@@ -96,6 +96,7 @@ fn absolute_local_time() -> String {
     #[cfg(windows)]
     {
         use windows::Win32::System::SystemInformation::GetLocalTime;
+        // SAFETY: GetLocalTime takes no pointers and returns the SYSTEMTIME value by value.
         let now = unsafe { GetLocalTime() };
         return format!(
             "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
