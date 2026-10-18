@@ -17,9 +17,9 @@ import { SettingsIcon, type SettingsIconName } from './SettingsIcon.tsx'
 import { SettingsPersonaBadge } from './SettingsPersonaBadge.tsx'
 import { GeneralTab } from './tabs/GeneralTab.tsx'
 import { AppearanceTab } from './tabs/AppearanceTab.tsx'
+import { PersonasTab } from './tabs/PersonasTab.tsx'
 import { ConnectionsTab } from './tabs/ConnectionsTab.tsx'
 
-import { OfficialPersonaCards } from '../persona/OfficialPersonaCards.tsx'
 import { Card, Field, Toggle } from './components/SettingsControls.tsx'
 import './SettingsPanel.css'
 
@@ -384,9 +384,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
         />}
 
       {page === 'personas' && <>
-        <Card title={t('settings.personas.list.title')} description={t('settings.personas.list.description')}>
-          <OfficialPersonaCards assets={props.appearanceAssets} overrides={props.appearanceOverrides} />
-        </Card>
+        <PersonasTab appearanceAssets={props.appearanceAssets} appearanceOverrides={props.appearanceOverrides} />
         {/* 模型与形态映射：前端先冻结（用户要求）。规则的**存储与应用都保留**（settings.modelTierRules
             仍会被人物形态使用），冻结的只是这张编辑卡片 —— 它在形状确定前暴露出来，用户会先学会一个
             将来会变的界面。解冻时把下面这段还原即可。 */}
