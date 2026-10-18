@@ -276,37 +276,37 @@ describe('码翻译成人话', () => {
 describe('两个面都说同一句话', () => {
   it('气泡与设置卡片共用同一组词条', async () => {
     const bubbleSource = await readSource('src/features/update/UpdateBubble.tsx')
-    const panelSource = await readSource('src/settings/SettingsPanel.tsx')
+    const systemSource = await readSource('src/settings/tabs/SystemTab.tsx')
     // 同一句话在两处渲染，但键只有一份：气泡说 `update.outcome.available`，卡片也说它。
     expect(bubbleSource).toContain("msg('update.outcome.available', { version: offer.version })")
-    expect(panelSource).toContain('updateOutcomeMessage(updateReport)')
-    for (const source of [bubbleSource, panelSource]) {
+    expect(systemSource).toContain('updateOutcomeMessage(updateReport)')
+    for (const source of [bubbleSource, systemSource]) {
       expect(source).toContain("t('update.action.download')")
       expect(source).toContain("t('update.action.dismiss')")
     }
   })
 
   it('设置卡片：当前版本、上次检查、检查按钮与那几个动作都在（与气泡同一个状态机）', async () => {
-    const panel = await readSource('src/settings/SettingsPanel.tsx')
+    const system = await readSource('src/settings/tabs/SystemTab.tsx')
     const window = await readSource('src/settings/SettingsWindow.tsx')
 
-    expect(panel).toContain("t('settings.system.update.title')")
-    expect(panel).toContain("t('settings.system.update.current.title')")
+    expect(system).toContain("t('settings.system.update.title')")
+    expect(system).toContain("t('settings.system.update.current.title')")
     // 读不到本机版本时说清楚（§八 9：非打包运行不报错、也不猜版本）。
-    expect(panel).toContain("t('settings.system.update.current.unavailable')")
-    expect(panel).toContain("t('settings.system.update.last-check.title')")
-    expect(panel).toContain("t('settings.system.update.last-check.never')")
-    expect(panel).toContain('onClick={props.onCheckForUpdates}')
+    expect(system).toContain("t('settings.system.update.current.unavailable')")
+    expect(system).toContain("t('settings.system.update.last-check.title')")
+    expect(system).toContain("t('settings.system.update.last-check.never')")
+    expect(system).toContain('onClick={props.onCheckForUpdates}')
     // 有可用更新时，同一张卡片上就是气泡那几个动作（同一状态机、同一份状态）。
-    expect(panel).toContain('{updateOffer && <>')
-    expect(panel).toContain('updatePhase(updateReport, props.updateDownload)')
-    expect(panel).toContain('props.onDownloadUpdate')
-    expect(panel).toContain('props.onInstallUpdate')
-    expect(panel).toContain('props.onOpenUpdatePage')
-    expect(panel).toContain('props.onDismissUpdate(updateOffer.version)')
+    expect(system).toContain('{updateOffer && <>')
+    expect(system).toContain('updatePhase(updateReport, props.updateDownload)')
+    expect(system).toContain('props.onDownloadUpdate')
+    expect(system).toContain('props.onInstallUpdate')
+    expect(system).toContain('props.onOpenUpdatePage')
+    expect(system).toContain('props.onDismissUpdate(updateOffer.version)')
     // 下载中卡片给的是同一句话（进度），失败时把原因显示在卡片上（§四、§八 7）。
-    expect(panel).toContain('downloadProgressMessage(props.updateDownload)')
-    expect(panel).toContain('downloadFailedMessage(props.updateDownload)')
+    expect(system).toContain('downloadProgressMessage(props.updateDownload)')
+    expect(system).toContain('downloadFailedMessage(props.updateDownload)')
   })
 
   it('那枚「检查更新」按钮走的是手动检查（不受 6 小时节流），失败原因也显示在卡片上', async () => {

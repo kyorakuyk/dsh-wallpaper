@@ -151,11 +151,11 @@ describe('the settings pages refuse to guess', () => {
       // was not the problem on the machine where this was diagnosed.
       expect(source).not.toContain('请检查系统启动应用权限')
     }
-    const [panel, connections] = await Promise.all([
-      readFile(resolve(sourceRoot, 'settings/SettingsPanel.tsx'), 'utf8'),
+    const [system, connections] = await Promise.all([
+      readFile(resolve(sourceRoot, 'settings/tabs/SystemTab.tsx'), 'utf8'),
       readFile(resolve(sourceRoot, 'settings/tabs/ConnectionsTab.tsx'), 'utf8'),
     ])
-    expect(panel).toContain('autostartDetail(props.autostart)')
+    expect(system).toContain('autostartDetail(props.autostart)')
     // The connections page's 「未生效」 warning must not fire from the placeholder: the
     // state it reads only arrives when the 系统 page opens.
     expect(connections).toContain('autostartKnown(props.autostart) && !props.autostart.enabled')

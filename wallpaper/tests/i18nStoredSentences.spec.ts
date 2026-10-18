@@ -200,8 +200,9 @@ describe('nothing renders a sentence at write time any more', () => {
     expect(lite, 'Lite 的通知不该在写入时渲染').not.toMatch(/setNotice\(t\(/)
 
     const panel = await source('src/settings/SettingsPanel.tsx')
+    const system = await source('src/settings/tabs/SystemTab.tsx')
     expect(panel).toContain('useState<Message[]>()')
-    expect(panel).toContain('clearDetail.map(formatMessage).join(t(')
+    expect(system).toContain('clearDetail.map(formatMessage).join(t(')
     expect(panel, '清空结果不该在写入时渲染').not.toMatch(/setClearDetail\(t\(/)
 
     const window = await source('src/settings/SettingsWindow.tsx')
