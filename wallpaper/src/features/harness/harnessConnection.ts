@@ -12,6 +12,7 @@
  */
 import type { HarnessAvailability } from '../../domain/types.ts'
 import type { Message } from '../../i18n/index.ts'
+import { isHarnessTransitioning } from './harnessLaunch.ts'
 
 export type HarnessLaunchKind = 'embedded-shell' | 'checkout' | 'installed-cli'
 
@@ -97,6 +98,6 @@ export function deriveHarnessLamp(input: HarnessLampInput): HarnessLamp {
   return {
     starting,
     failed: input.launch.kind === 'failed',
-    suspect: starting || input.probing || input.availability === 'bridge-loading' || buffering,
+    suspect: isHarnessTransitioning({ starting, availability: input.availability, probing: input.probing }) || buffering,
   }
 }
