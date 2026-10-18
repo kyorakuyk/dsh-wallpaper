@@ -35,7 +35,7 @@ describe('the chat-mode switch in the settings centre', () => {
   it('switches the running wallpaper, not just the next launch', async () => {
     const [settings, panel, dictionary] = await Promise.all([
       source('src/settings/SettingsWindow.tsx'),
-      source('src/settings/SettingsPanel.tsx'),
+      source('src/settings/tabs/ConnectionsTab.tsx'),
       dictionarySource('zh'),
     ])
 
@@ -106,7 +106,7 @@ describe('the chat-mode switch in the settings centre', () => {
     const [settings, store, panel] = await Promise.all([
       source('src/settings/SettingsWindow.tsx'),
       source('src/settings/store.ts'),
-      source('src/settings/SettingsPanel.tsx'),
+      source('src/settings/tabs/ConnectionsTab.tsx'),
     ])
 
     // 拉取成功后写进设置（用户实测："api 的刷新结果也没有持久化，下次仍旧需要重新刷新"）。

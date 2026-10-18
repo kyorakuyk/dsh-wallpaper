@@ -188,7 +188,7 @@ describe('DSH autostart wiring', () => {  it('starts DSH from the background hos
     // 正确答案**：官壳用自己独占的 desktop、TUI 用它自己的 dsh-tui（两者都不看这个值），而 CLI 与源码
     // 检出实测**必须**显式给一个档案（不写就是 `--profile <name> is required`），能提供 HTTP 的只有 web
     // （desktop 被壳独占：`profile "desktop" is managed exclusively by the Electron application`）。
-    const panel = await source('src/settings/SettingsPanel.tsx')
+    const panel = await source('src/settings/tabs/ConnectionsTab.tsx')
     expect(panel).not.toContain('数据档案')
     expect(panel).not.toContain('title="数据档案（Profile）"')
 
@@ -228,7 +228,7 @@ describe('DSH autostart wiring', () => {  it('starts DSH from the background hos
   })
 
   it('tells the user that login-time start needs the wallpaper to autostart', async () => {
-    const panel = await source('src/settings/SettingsPanel.tsx')
+    const panel = await source('src/settings/tabs/ConnectionsTab.tsx')
     // The requirement itself, not the old second name for it: the toggle now points at
     // the page that owns the setting instead of introducing 系统自启设置 as well.
     // 文案搬进了字典（i18n）：面板里只剩键，所以那句话本身要在字典里核对。

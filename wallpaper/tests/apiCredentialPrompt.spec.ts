@@ -21,7 +21,7 @@ describe('API key entry in the settings window', () => {
   it('collects the key in our own window and never lets it come back out', async () => {
     const [settings, panel, runtime] = await Promise.all([
       source('src/settings/SettingsWindow.tsx'),
-      source('src/settings/SettingsPanel.tsx'),
+      source('src/settings/tabs/ConnectionsTab.tsx'),
       source('src/native/runtime.ts'),
     ])
 
@@ -44,7 +44,7 @@ describe('API key entry in the settings window', () => {
   it('masks the stored key natively, and never shows the middle of it', async () => {
     const [native, panel] = await Promise.all([
       source('src-tauri/src/lib.rs'),
-      source('src/settings/SettingsPanel.tsx'),
+      source('src/settings/tabs/ConnectionsTab.tsx'),
     ])
 
     // 脱敏在原生侧算（`mask_api_key`），设置窗只负责把它摆出来。
@@ -82,7 +82,7 @@ describe('API key entry in the settings window', () => {
   it('tests the key by pulling the model catalogue, and offers a separate refresh', async () => {
     const [settings, panel] = await Promise.all([
       source('src/settings/SettingsWindow.tsx'),
-      source('src/settings/SettingsPanel.tsx'),
+      source('src/settings/tabs/ConnectionsTab.tsx'),
     ])
 
     // 「测试」= 保存(如有草稿) + 拉模型目录 + 回读脱敏状态：一次请求同时回答"Key 能不能用"和
@@ -131,7 +131,7 @@ describe('API key entry in the settings window', () => {
 
   it('drops the API address field and keeps it as a default the API client still honours', async () => {
     const [panel, store, settings] = await Promise.all([
-      source('src/settings/SettingsPanel.tsx'),
+      source('src/settings/tabs/ConnectionsTab.tsx'),
       source('src/settings/store.ts'),
       source('src/settings/SettingsWindow.tsx'),
     ])
