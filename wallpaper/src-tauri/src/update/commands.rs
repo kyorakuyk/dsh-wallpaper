@@ -647,6 +647,7 @@ fn shell_open(path: &Path) -> Result<(), UpdateCommandError> {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect::<Vec<u16>>();
+    // SAFETY: operation and wide are owned NUL-terminated UTF-16 vectors kept alive through this synchronous call; path is the local installer path.
     let result = unsafe {
         ShellExecuteW(
             None,
