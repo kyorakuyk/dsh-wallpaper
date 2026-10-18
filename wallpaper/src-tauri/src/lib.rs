@@ -3321,7 +3321,10 @@ async fn fetch_harness_status() -> serde_json::Value {
 #[tauri::command]
 #[cfg(not(feature = "lite"))]
 fn verify_island_click(app: tauri::AppHandle, caller: tauri::WebviewWindow) -> Result<String, String> {
-    require_wallpaper_surface(&caller)?;
+    if let Err(error) = require_wallpaper_surface(&caller) {
+        log::warn!("island click report rejected: caller surface: {error}");
+        return Err(error);
+    }
     // Log both outcomes. Logging only the success made a rejected report
     // indistinguishable from a report that was never sent, which is exactly the
     // ambiguity the repair plan forbids swallowing.
