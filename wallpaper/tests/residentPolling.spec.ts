@@ -33,15 +33,16 @@ describe('resident polling budget', () => {
 
   it('only polls the DSH launcher while a launch is actually pending', async () => {
     const app = await readSource('src/App.tsx')
-    const effect = app.slice(app.indexOf('if (!nativeRuntime.isNative || !harnessLaunchPendingRef.current) return'))
-    const body = effect.slice(0, effect.indexOf('}, [harnessStarting, runtime.harness])'))
+    const hook = await readSource('src/features/harness/useHarnessConnection.ts')
+    const effect = hook.slice(hook.indexOf('useEffect(() => {\n    if (!nativeRuntime.isNative'), hook.indexOf('const lamp ='))
 
     // The one remaining 1s poll is gated on a launch in flight and cleared on
     // every exit path (ready, exited, timeout, unmount).
-    expect(body).toContain('window.setInterval(() => { void check() }, 1000)')
-    expect(body).toContain('harnessLaunchPendingRef.current = false')
-    expect(body).toContain('window.clearInterval(timer)')
-    expect(app.match(/window\.setInterval\(/g) ?? []).toHaveLength(3)
+    expect(effect).toContain('if (!nativeRuntime.isNative || startedAt === null) return')
+    expect(effect).toContain('window.setInterval(() => { void check() }, 1000)')
+    expect(effect).toContain('current.kind !== \'starting\' || current.startedAt !== startedAt')
+    expect(effect).toContain('window.clearInterval(timer)')
+    expect(app.match(/window\.setInterval\(/g) ?? []).toHaveLength(2)
   })
 
   it('only polls the settings monitor list while its page owns it', async () => {
