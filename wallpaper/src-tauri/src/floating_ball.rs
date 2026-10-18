@@ -322,6 +322,7 @@ fn primary_display_bounds() -> Option<DesktopRect> {
 /// 缓存中转：值相同，且不需要窗口对象。Tauri 那条路要发消息给事件循环，慢且不必。
 #[cfg(windows)]
 fn ball_scale_factor(hwnd: HWND) -> f64 {
+    // SAFETY: hwnd is the floating-ball HWND supplied by its WebviewWindow; GetDpiForWindow returns 0 for an invalid handle, which this helper handles.
     scale_factor_from_dpi(unsafe { GetDpiForWindow(hwnd) })
 }
 
@@ -346,6 +347,7 @@ fn scale_factor_from_dpi(dpi: u32) -> f64 {
 #[cfg(windows)]
 fn ball_physical_size(hwnd: HWND) -> (i32, i32) {
     let mut rect = RECT::default();
+    // SAFETY: rect is initialized writable stack storage, exclusively borrowed for the call; hwnd is the floating-ball window handle.
     if unsafe { GetClientRect(hwnd, &mut rect) }.is_ok() {
         let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
         if width > 0 && height > 0 {
@@ -395,12 +397,14 @@ fn force_ball_size(hwnd: HWND) {
     let width = (BALL_LOGICAL_WIDTH * scale).round().max(1.0) as i32;
     let height = (BALL_LOGICAL_HEIGHT * scale).round().max(1.0) as i32;
     let mut current = RECT::default();
+    // SAFETY: current is initialized writable stack storage, exclusively borrowed for the call; hwnd is the floating-ball window handle.
     if unsafe { GetWindowRect(hwnd, &mut current) }.is_ok()
         && current.right - current.left == width
         && current.bottom - current.top == height
     {
         return;
     }
+    // SAFETY: hwnd is the floating-ball window handle; SetWindowPos receives coordinates and flags by value and no caller-owned memory pointer.
     if let Err(error) = unsafe {
         SetWindowPos(
             hwnd,
@@ -415,6 +419,7 @@ fn force_ball_size(hwnd: HWND) {
         log::warn!("floating ball: forcing the ball size failed: {error}");
     }
     let mut after = RECT::default();
+    // SAFETY: after is initialized writable stack storage, exclusively borrowed for the call; hwnd is the floating-ball window handle.
     if unsafe { GetWindowRect(hwnd, &mut after) }.is_ok() {
         log::info!(
             "floating ball: size forced to {}x{} (rect={}x{})",
@@ -438,6 +443,7 @@ fn force_ball_size(hwnd: HWND) {
 /// 代价是两次 `GetWindowLongPtr`，只在真的不一致时才写样式，所以重复调用不会产生日志噪音。
 #[cfg(windows)]
 fn apply_ball_ex_style(hwnd: HWND) {
+    // SAFETY: hwnd is supplied by the floating-ball WebviewWindow; these style APIs use it as an opaque handle and pass no caller-owned memory pointers.
     unsafe {
         let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         let desired = (current | WS_EX_TOOLWINDOW.0 as isize | WS_EX_NOACTIVATE.0 as isize)
@@ -510,6 +516,7 @@ fn refresh_ball_region(hwnd: HWND) {
     // 圆角椭圆的直径取整个窗口高度：左右两端于是是完整的半圆（胶囊），
     // 而不是四个小圆角的矩形。前端 `.ball-capsule` 的 border-radius: 999px 与它对应。
     let radius = height.max(1);
+    // SAFETY: hwnd is the floating-ball window; the returned HRGN is checked, transferred on success, and deleted only when SetWindowRgn fails.
     unsafe {
         let region = CreateRoundRectRgn(0, 0, right, bottom, radius, radius);
         if region.is_invalid() {
@@ -545,16 +552,19 @@ fn refresh_ball_region(hwnd: HWND) {
 /// Explorer 的桌面窗口，因此固定用后者。
 #[cfg(windows)]
 fn raise_above_progman(hwnd: HWND) {
+    // SAFETY: GetShellWindow returns the system shell HWND; the code checks it for null before using it in later calls.
     let progman = unsafe { GetShellWindow() };
     if progman.0.is_null() {
         log::warn!("floating ball: GetShellWindow returned no shell window; Z slot unchanged");
         return;
     }
+    // SAFETY: progman came from GetShellWindow and was checked non-null; GetWindow receives only this opaque HWND value.
     let in_front_of_progman = unsafe { GetWindow(progman, GW_HWNDPREV) }
         .ok()
         .filter(|handle| !handle.0.is_null());
     // 没有前驱时 Progman 就是带内最前窗口，「插到最前」与「紧贴 Progman 之上」等价。
     let insert_after = in_front_of_progman.unwrap_or(HWND_TOP);
+    // SAFETY: hwnd is the ball window; insert_after is the checked neighbor from GetWindow or HWND_TOP, and no caller-owned pointer is passed.
     if let Err(error) = unsafe {
         SetWindowPos(
             hwnd,
@@ -582,9 +592,11 @@ fn report_z_slot(hwnd: HWND, progman: HWND) {
     if Z_SLOT_REPORTED.swap(true, Ordering::Relaxed) {
         return;
     }
+    // SAFETY: hwnd is the floating-ball window handle; GetWindow returns an optional neighboring HWND and uses no caller memory.
     let front = unsafe { GetWindow(hwnd, GW_HWNDPREV) }
         .ok()
         .filter(|handle| !handle.0.is_null());
+    // SAFETY: hwnd is the floating-ball window handle; GetWindow returns an optional neighboring HWND and uses no caller memory.
     let back = unsafe { GetWindow(hwnd, GW_HWNDNEXT) }
         .ok()
         .filter(|handle| !handle.0.is_null());
@@ -617,6 +629,7 @@ fn report_z_slot(hwnd: HWND, progman: HWND) {
 #[cfg(windows)]
 fn window_class_name(hwnd: HWND) -> String {
     let mut buffer = [0u16; 64];
+    // SAFETY: buffer is initialized writable 64-unit stack storage; GetClassNameW is given its capacity, and the returned length is checked before slicing.
     let length = unsafe { GetClassNameW(hwnd, &mut buffer) };
     if length <= 0 {
         return "?".to_string();
@@ -628,6 +641,7 @@ fn window_class_name(hwnd: HWND) -> String {
 #[cfg(windows)]
 fn window_rect_text(hwnd: HWND) -> String {
     let mut rect = RECT::default();
+    // SAFETY: rect is initialized writable stack storage, exclusively borrowed for GetWindowRect; hwnd is used only as the window handle.
     unsafe {
         if GetWindowRect(hwnd, &mut rect).is_err() {
             return "rect=?".to_string();
@@ -645,6 +659,7 @@ fn window_rect_text(hwnd: HWND) -> String {
 /// 移动悬浮球窗口：只移动，不抢前台、不改 Z 序（Z 序由 `raise_above_progman` 保证）。
 #[cfg(windows)]
 fn move_ball_position(hwnd: HWND, x: i32, y: i32) -> bool {
+    // SAFETY: hwnd is the floating-ball window; the position and flags are passed by value, with no caller-owned memory pointer.
     unsafe {
         SetWindowPos(
             hwnd,
@@ -674,6 +689,7 @@ fn slide_ball(hwnd: HWND, x: i32, from_y: i32, to_y: i32) -> bool {
 #[cfg(windows)]
 fn cursor_position() -> Option<POINT> {
     let mut point = POINT::default();
+    // SAFETY: point is initialized writable stack storage and is exclusively borrowed while GetCursorPos fills it.
     unsafe {
         if GetCursorPos(&mut point).is_err() {
             return None;
@@ -685,6 +701,7 @@ fn cursor_position() -> Option<POINT> {
 /// 主屏尺寸（物理像素）。进程是 Per-Monitor DPI Aware，所以这里拿到的就是物理像素。
 #[cfg(windows)]
 fn primary_display_size() -> (i32, i32) {
+    // SAFETY: GetSystemMetrics takes scalar metric identifiers and returns scalar dimensions; no caller pointer is dereferenced.
     unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) }
 }
 
@@ -692,6 +709,7 @@ fn primary_display_size() -> (i32, i32) {
 #[cfg(windows)]
 fn point_inside_ball(hwnd: HWND, point: POINT) -> bool {
     let mut rect = RECT::default();
+    // SAFETY: rect is initialized writable stack storage, exclusively borrowed for GetWindowRect; point is passed by value.
     unsafe {
         if GetWindowRect(hwnd, &mut rect).is_err() {
             return false;
@@ -708,6 +726,7 @@ fn point_inside_ball(hwnd: HWND, point: POINT) -> bool {
 /// 球上的点击不会被表/里桌面双击监控误判，不需要为球新增任何规则。
 #[cfg(windows)]
 fn cursor_over_ball(hwnd: HWND, point: POINT) -> bool {
+    // SAFETY: point is passed by value; each HWND comes from WindowFromPoint or GetParent and is checked for null/self before the next lookup.
     unsafe {
         let mut current = WindowFromPoint(point);
         for _ in 0..16 {
@@ -1174,6 +1193,7 @@ fn ball_tick_handle_decide(
 /// 句柄是不是一个活着的窗口。**纯 Win32 判据**，不取任何 Tauri 对象，可测（见测试）。
 #[cfg(windows)]
 fn ball_handle_is_alive(handle: HWND) -> bool {
+    // SAFETY: IsWindow receives only the opaque HWND value and reports whether it is still a window; no caller memory is dereferenced.
     !handle.0.is_null() && unsafe { IsWindow(Some(handle)) }.as_bool()
 }
 
