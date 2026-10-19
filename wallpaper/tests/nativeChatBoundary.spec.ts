@@ -450,14 +450,18 @@ describe('native chat boundary', () => {
   })
 
   it('keeps the frozen lock-screen and system-integration commands out of the live build', async () => {
-    const [lib, liteSettings, build, archivedLockScreen, archivedIntegration] = await Promise.all([
+    // 两份 `generate_handler!` 列表已从 `lib.rs` 纯搬运到 `commands/mod.rs`（阶段 B），
+    // 所以"现役构建的两份列表"要跨这两个文件数；断言意图不变：恰好两份、且冻结命令不在其中。
+    const [lib, commandsModule, liteSettings, build, archivedLockScreen, archivedIntegration] = await Promise.all([
       readNative('src/lib.rs'),
+      readNative('src/commands/mod.rs'),
       readNative('src/commands/lite.rs'),
       readNative('build.rs'),
       readArchive(archivedLockScreenCommandsPath),
       readArchive(archivedIntegrationCommandsPath),
     ])
-    const handlers = [...lib.matchAll(/tauri::generate_handler!\[([\s\S]*?)\]\)/g)].map((match) => match[1])
+    const liveRegistrations = `${lib}\n${commandsModule}`
+    const handlers = [...liveRegistrations.matchAll(/tauri::generate_handler!\[([\s\S]*?)\]\)/g)].map((match) => match[1])
     expect(handlers).toHaveLength(2)
 
     for (const [commands, archived, archiveDirectory] of [
@@ -468,6 +472,7 @@ describe('native chat boundary', () => {
         // Live entry points are closed: no definition or commented copy in lib.rs, no ACL
         // entry in build.rs, no line in either handler, no permission file.
         expect(lib, command).not.toContain(command)
+        expect(commandsModule, command).not.toContain(command)
         expect(liteSettings, command).not.toContain(command)
         expect(build, command).not.toContain(`"${command}"`)
         for (const handler of handlers) expect(handler, command).not.toContain(command)
