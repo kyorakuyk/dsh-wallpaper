@@ -161,9 +161,9 @@ describe('端口从设置一路流到「打开界面」', () => {
     const setter = runtime.slice(runtime.indexOf('async setHarnessEndpointScope'), runtime.indexOf('async leaveInnerDesktop'))
     expect(setter).toContain('args: parseLaunchArgs(scope.args)')
     // 原生那一侧从同一份 argv 里读端口，规则与渲染层一致（两份由各自的测试用同一组例子钉住）。
-    const lib = await source('src-tauri/src/lib.rs')
-    expect(lib).toContain('let declared = args.and_then(harness_launch::port_from_args);')
-    expect(lib).toContain('harness_targets::subject_endpoint_ports(&subject_id, extra_ports, declared)')
+    const harnessStatus = await source('src-tauri/src/commands/harness_status.rs')
+    expect(harnessStatus).toContain('let declared = args.and_then(harness_launch::port_from_args);')
+    expect(harnessStatus).toContain('harness_targets::subject_endpoint_ports(&subject_id, extra_ports, declared)')
     const targets = await source('src-tauri/src/harness_targets.rs')
     expect(targets).toContain('declared_port: Option<u16>')
   })
@@ -265,7 +265,7 @@ describe('实例下拉与「全部停止」的接线', () => {
     const launch = await source('src-tauri/src/harness_launch.rs')
     expect(launch).toContain('pub(crate) fn is_managed_by_us')
     expect(launch).toMatch(/!subject_id\.trim\(\)\.starts_with\(SHELL_ID_PREFIX\)/)
-    const lib = await source('src-tauri/src/lib.rs')
+    const lib = await source('src-tauri/src/commands/harness.rs')
     expect(lib).toContain('这个主体不由本应用管理，因此没有停止它。')
     // 而在这之前它已经被拒绝了：官壳那条记录是给门票用的，它**确实**会出现在落盘记录里，
     // 所以"停不掉官壳"不能靠"记录里没有它"。

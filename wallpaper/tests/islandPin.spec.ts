@@ -42,8 +42,8 @@ describe('the pinned island keeps the floating ball away', () => {
     expect(core).toContain('AppAction::SetIslandPinned(pinned) => state.island_pinned = pinned')
     expect(core).toContain('pub island_pinned: bool')
 
-    const lib = await read('wallpaper/src-tauri/src/lib.rs')
-    expect(lib).toMatch(/"set-island-pinned" => AppAction::SetIslandPinned\(match value\.as_deref\(\)/)
+    const desktop = await read('wallpaper/src-tauri/src/commands/desktop.rs')
+    expect(desktop).toMatch(/"set-island-pinned" => AppAction::SetIslandPinned\(match value\.as_deref\(\)/)
 
     const ball = await read('wallpaper/src-tauri/src/floating_ball.rs')
     // 球从核心状态里读这个标记，并把它并进"岛在前面"的判据（而不是只信热区列表）。

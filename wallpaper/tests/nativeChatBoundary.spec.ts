@@ -166,16 +166,16 @@ describe('native chat boundary', () => {
   })
 
   it('declares an MSIX StartupTask while retaining the native autostart fallback', async () => {
-    const [manifest, lib, windows] = await Promise.all([
+    const [manifest, settingsCommands, windows] = await Promise.all([
       readManifest('AppxManifest.xml'),
-      readNative('src/lib.rs'),
+      readNative('src/commands/settings.rs'),
       readNative('src/windows_integration.rs'),
     ])
     expect(manifest).toContain('windows.startupTask')
     expect(manifest).toContain('DshWallpaperStartup')
     // The operation moved next to the Windows calls it makes, so the assertion
     // follows it: the command wrapper only keeps it off the UI thread.
-    expect(lib).toContain('windows_integration::set_autostart(enabled)')
+    expect(settingsCommands).toContain('windows_integration::set_autostart(enabled)')
     expect(windows).toContain('set_startup_task(enabled)')
     // The per-user Run entry remains the fallback for builds Windows will not
     // start through a StartupTask.
@@ -325,11 +325,12 @@ describe('native chat boundary', () => {
   })
 
   it('keeps autostart changes off the settings renderer thread and migrates old installs', async () => {
-    const [lib, settings] = await Promise.all([
+    const [lib, settingsCommands, settings] = await Promise.all([
       readNative('src/lib.rs'),
+      readNative('src/commands/settings.rs'),
       readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8'),
     ])
-    expect(lib).toMatch(/async\s+fn\s+set_autostart[\s\S]*?spawn_blocking\(move \|\| set_autostart_blocking\(enabled\)\)/)
+    expect(settingsCommands).toMatch(/async\s+fn\s+set_autostart[\s\S]*?spawn_blocking\(move \|\| set_autostart_blocking\(enabled\)\)/)
     expect(lib).toContain('migrate_legacy_autostart')
     expect(settings).toContain("nativeRuntime.autostartStatus()")
     expect(settings).toContain('autostartOperationRef')
@@ -337,8 +338,9 @@ describe('native chat boundary', () => {
   })
 
   it('keeps settings probes off the UI thread and gives migrated DSH paths feedback', async () => {
-    const [lib, settings, runtime, archivedLockScreen, archivedIntegration] = await Promise.all([
+    const [lib, harness, settings, runtime, archivedLockScreen, archivedIntegration] = await Promise.all([
       readNative('src/lib.rs'),
+      readNative('src/commands/harness.rs'),
       readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8'),
       readFile(resolve(wallpaperRoot, 'src/native/runtime.ts'), 'utf8'),
       readArchive(archivedLockScreenCommandsPath),
@@ -349,10 +351,10 @@ describe('native chat boundary', () => {
     expect(lib).not.toMatch(/\b(?:translucent_tb_status|get_lock_screen_diagnostics|hide_child_console)\b/)
     expect(archivedIntegration).toMatch(/async\s+fn\s+translucent_tb_status[\s\S]*?spawn_blocking\(translucent_tb_status_blocking\)/)
     expect(archivedLockScreen).toMatch(/async\s+fn\s+get_lock_screen_diagnostics[\s\S]*?spawn_blocking\(move \|\| windows_integration::lock_screen_diagnostics/)
-    expect(lib).toMatch(/async\s+fn\s+scan_dsh_paths[\s\S]*?spawn_blocking\(move \|\| \{[\s\S]*?scan_dsh_paths_blocking/)
+    expect(harness).toMatch(/async\s+fn\s+scan_dsh_paths[\s\S]*?spawn_blocking\(move \|\| \{[\s\S]*?scan_dsh_paths_blocking/)
     expect(archivedIntegration).toMatch(/fn hide_child_console\(command: &mut std::process::Command\)/)
     expect(archivedIntegration).toContain('hide_child_console(&mut packaged_command)')
-    expect(lib).toContain('本机 3080 端口已被其他进程占用')
+    expect(harness).toContain('本机 3080 端口已被其他进程占用')
     expect(settings).toContain('dshScanBusy')
     // 文案搬进了字典（i18n）：窗口里只剩键，所以那两句话本身要在字典里核对。
     // 这两句进的是通知状态，所以取的是 `msg()`（**没求值**的词条，渲染期才求值）。
@@ -366,52 +368,71 @@ describe('native chat boundary', () => {
   })
 
   it('uses the built DSH CLI for managed launches when it is available', async () => {
-    const lib = await readNative('src/lib.rs')
+    const harness = await readNative('src/commands/harness.rs')
 
-    expect(lib).toContain('.join("apps")')
-    expect(lib).toContain('.join("cli")')
-    expect(lib).toContain('.join("lib")')
-    expect(lib).toContain('.join("bin.js")')
-    expect(lib).toContain('node.exe')
-    expect(lib).toContain('pnpm.cmd')
-    expect(lib).toContain('tsx/esm')
+    expect(harness).toContain('.join("apps")')
+    expect(harness).toContain('.join("cli")')
+    expect(harness).toContain('.join("lib")')
+    expect(harness).toContain('.join("bin.js")')
+    expect(harness).toContain('node.exe')
+    expect(harness).toContain('pnpm.cmd')
+    expect(harness).toContain('tsx/esm')
   })
 
   it('uses Rust as the only settings-to-background event router', async () => {
-    const [settings, lib] = await Promise.all([
+    const [settings, desktop, lib] = await Promise.all([
       readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8'),
+      readNative('src/commands/desktop.rs'),
       readNative('src/lib.rs'),
     ])
 
     expect(settings).not.toContain("from '@tauri-apps/api/event'")
     expect(settings).toContain("invoke('publish_settings', { settings: next })")
     expect(settings).toContain("invoke('notify_appearance_changed')")
-    expect(lib).toMatch(/fn publish_settings\s*\([\s\S]*?require_settings\(&caller\)\?;[\s\S]*?EventTarget::webview_window\(BACKGROUND_WINDOW_LABEL\)/)
+    expect(desktop).toMatch(/fn publish_settings\s*\([\s\S]*?require_settings\(&caller\)\?;[\s\S]*?EventTarget::webview_window\(BACKGROUND_WINDOW_LABEL\)/)
     expect(lib).toMatch(/fn notify_appearance_changed\s*\([\s\S]*?require_settings\(&caller\)\?;[\s\S]*?EventTarget::webview_window\(BACKGROUND_WINDOW_LABEL\)/)
   })
 
   it('defends the sensitive commands against a future ACL mistake', async () => {
-    const lib = await readNative('src/lib.rs')
+    const [lib, commandModule, chatCommands, harnessCommands] = await Promise.all([
+      readNative('src/lib.rs'),
+      readNative('src/commands/mod.rs'),
+      readNative('src/commands/chat.rs'),
+      readNative('src/commands/harness.rs'),
+    ])
 
     expect(lib).toMatch(/const BACKGROUND_WINDOW_LABEL:\s*&str\s*=\s*"background"/)
-    expect(lib).toMatch(/fn require_background\s*\(caller:\s*&tauri::WebviewWindow\)/)
-    for (const command of ['send_chat', 'cancel_chat', 'connect_harness', 'harness_history', 'api_history']) {
+    // 共享 guards 已纯搬运到 `commands/mod.rs`（阶段 B）；断言跟着实现走，意图不变。
+    expect(lib).not.toContain('fn require_background')
+    expect(commandModule).toMatch(/fn require_background\s*\(caller:\s*&tauri::WebviewWindow\)/)
+    for (const command of ['connect_harness', 'harness_history']) {
       const signature = new RegExp(`(?:async\\s+)?fn\\s+${command}\\s*\\([\\s\\S]*?\\)\\s*->[^\\{]*\\{[\\s\\S]*?require_background\\(&caller\\)\\?;`)
-      expect(lib, command).toMatch(signature)
+      expect(harnessCommands, command).toMatch(signature)
+    }
+    for (const command of ['send_chat', 'cancel_chat', 'api_history']) {
+      const signature = new RegExp(`(?:async\\s+)?fn\\s+${command}\\s*\\([\\s\\S]*?\\)\\s*->[^\\{]*\\{[\\s\\S]*?require_background\\(&caller\\)\\?;`)
+      expect(chatCommands, command).toMatch(signature)
     }
   })
 
   it('keeps system-setting and desktop-input commands bound to their owning surface', async () => {
-    const [lib, archivedLockScreen, archivedIntegration] = await Promise.all([
+    const [lib, desktop, settingsCommands, harnessStatus, webCommands, archivedLockScreen, archivedIntegration] = await Promise.all([
       readNative('src/lib.rs'),
+      readNative('src/commands/desktop.rs'),
+      readNative('src/commands/settings.rs'),
+      readNative('src/commands/harness_status.rs'),
+      readNative('src/commands/deepseek_web.rs'),
       readArchive(archivedLockScreenCommandsPath),
       readArchive(archivedIntegrationCommandsPath),
     ])
     const settingsOnly = (command: string) =>
       new RegExp(`(?:async\\s+)?fn\\s+${command}\\s*\\([\\s\\S]*?\\)\\s*->[^\\{]*\\{[\\s\\S]*?require_settings\\(&caller\\)\\?;`)
 
-    for (const command of ['set_autostart', 'autostart_status', 'start_settings_drag', 'hide_settings_window']) {
-      expect(lib, command).toMatch(settingsOnly(command))
+    for (const command of ['set_autostart', 'autostart_status']) {
+      expect(settingsCommands, command).toMatch(settingsOnly(command))
+    }
+    for (const command of ['start_settings_drag', 'hide_settings_window']) {
+      expect(desktop, command).toMatch(settingsOnly(command))
     }
     // Frozen commands (B3): the archived copies keep the same settings-only gate, so a
     // restore brings the guard back with them.
@@ -421,22 +442,29 @@ describe('native chat boundary', () => {
     for (const command of ['translucent_tb_status', 'launch_translucent_tb', 'open_translucent_tb_install']) {
       expect(archivedIntegration, command).toMatch(settingsOnly(command))
     }
-    for (const command of ['begin_interaction_region_session', 'update_interaction_regions', 'probe_harness']) {
+    for (const command of ['begin_interaction_region_session', 'update_interaction_regions']) {
       const signature = new RegExp(`(?:async\\s+)?fn\\s+${command}\\s*\\([\\s\\S]*?\\)\\s*->[^\\{]*\\{[\\s\\S]*?require_background\\(&caller\\)\\?;`)
-      expect(lib, command).toMatch(signature)
+      expect(desktop, command).toMatch(signature)
     }
-    expect(lib).toMatch(/fn show_deepseek_login[\s\S]*?require_wallpaper_surface\(&caller\)\?;/)
-    expect(lib).toMatch(/fn get_app_snapshot[\s\S]*?require_wallpaper_surface\(&caller\)\?;/)
+    const probeSignature = /fn\s+probe_harness\s*\([\s\S]*?\)\s*->[^\{]*\{[\s\S]*?require_background\(&caller\)\?;/
+    expect(harnessStatus, 'probe_harness').toMatch(probeSignature)
+    expect(webCommands).toMatch(/fn show_deepseek_login[\s\S]*?require_wallpaper_surface\(&caller\)\?;/)
+    expect(desktop).toMatch(/fn get_app_snapshot[\s\S]*?require_wallpaper_surface\(&caller\)\?;/)
   })
 
   it('keeps the frozen lock-screen and system-integration commands out of the live build', async () => {
-    const [lib, build, archivedLockScreen, archivedIntegration] = await Promise.all([
+    // 两份 `generate_handler!` 列表已从 `lib.rs` 纯搬运到 `commands/mod.rs`（阶段 B），
+    // 所以"现役构建的两份列表"要跨这两个文件数；断言意图不变：恰好两份、且冻结命令不在其中。
+    const [lib, commandsModule, liteSettings, build, archivedLockScreen, archivedIntegration] = await Promise.all([
       readNative('src/lib.rs'),
+      readNative('src/commands/mod.rs'),
+      readNative('src/commands/lite.rs'),
       readNative('build.rs'),
       readArchive(archivedLockScreenCommandsPath),
       readArchive(archivedIntegrationCommandsPath),
     ])
-    const handlers = [...lib.matchAll(/tauri::generate_handler!\[([\s\S]*?)\]\)/g)].map((match) => match[1])
+    const liveRegistrations = `${lib}\n${commandsModule}`
+    const handlers = [...liveRegistrations.matchAll(/tauri::generate_handler!\[([\s\S]*?)\]\)/g)].map((match) => match[1])
     expect(handlers).toHaveLength(2)
 
     for (const [commands, archived, archiveDirectory] of [
@@ -447,6 +475,8 @@ describe('native chat boundary', () => {
         // Live entry points are closed: no definition or commented copy in lib.rs, no ACL
         // entry in build.rs, no line in either handler, no permission file.
         expect(lib, command).not.toContain(command)
+        expect(commandsModule, command).not.toContain(command)
+        expect(liteSettings, command).not.toContain(command)
         expect(build, command).not.toContain(`"${command}"`)
         for (const handler of handlers) expect(handler, command).not.toContain(command)
         expect(existsSync(resolve(nativeRoot, 'permissions', 'autogenerated', `${command}.toml`)), command).toBe(false)
@@ -456,8 +486,9 @@ describe('native chat boundary', () => {
       }
     }
     // The persisted Lite key stays accepted for compatibility; the frozen one does not.
-    expect(lib).toContain('"desktopWallpaperFallback",')
+    expect(liteSettings).toContain('"desktopWallpaperFallback",')
     expect(lib).not.toContain('lockScreenEnabled')
+    expect(liteSettings).not.toContain('lockScreenEnabled')
     expect(archivedLockScreen).toContain('"lockScreenEnabled",')
   })
 
@@ -575,12 +606,12 @@ describe('native chat boundary', () => {
   })
 
   it('never routes local Harness probes or bearer requests through a system proxy', async () => {
-    const [lib, chat] = await Promise.all([
-      readNative('src/lib.rs'),
+    const [harnessStatus, chat] = await Promise.all([
+      readNative('src/commands/harness_status.rs'),
       readNative('src/chat.rs'),
     ])
 
-    const probe = lib.match(/fn harness_probe_client\(\)[\s\S]*?\n}\n/)
+    const probe = harnessStatus.match(/fn harness_probe_client\(\)[\s\S]*?\n}\n/)
     expect(probe?.[0]).toContain('.no_proxy()')
     expect(chat.match(/fn bridge_request_client\(\)[\s\S]*?\n}\n/)?.[0]).toContain('.no_proxy()')
     expect(chat.match(/fn bridge_stream_client\(\)[\s\S]*?\n}\n/)?.[0]).toContain('.no_proxy()')
