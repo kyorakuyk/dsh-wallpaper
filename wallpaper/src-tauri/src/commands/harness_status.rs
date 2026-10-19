@@ -1,4 +1,5 @@
 use crate::*;
+use super::{require_background, require_wallpaper_surface};
 use std::sync::{Mutex, RwLock};
 
 #[cfg(not(feature = "lite"))]

@@ -37,6 +37,8 @@ mod update;
 mod windows_integration;
 
 #[cfg(not(feature = "lite"))]
+#[cfg(not(feature = "lite"))]
+use commands::{require_settings, require_wallpaper_surface};
 use app_core::BackendMode;
 use app_core::{Activity, AppAction, AppCore, AppSnapshot, HarnessAvailability};
 use std::sync::OnceLock;
@@ -81,60 +83,6 @@ const SETTINGS_CHANGED_EVENT: &str = "settings-changed";
 #[cfg(not(feature = "lite"))]
 const APPEARANCE_CHANGED_EVENT: &str = "appearance-changed";
 
-fn require_background(caller: &tauri::WebviewWindow) -> Result<(), String> {
-    if caller.label() == BACKGROUND_WINDOW_LABEL {
-        Ok(())
-    } else {
-        Err("该命令只允许壁纸宿主调用。".into())
-    }
-}
-
-fn require_settings(caller: &tauri::WebviewWindow) -> Result<(), String> {
-    if caller.label() == SETTINGS_WINDOW_LABEL {
-        Ok(())
-    } else {
-        Err("该命令只允许设置中心调用。".into())
-    }
-}
-
-/// 悬浮球是独立顶层窗口，只允许它请求「进里桌面」。
-///
-/// 命令表面尽量小：球没有别的能力，也不需要别的能力。
-#[cfg(not(feature = "lite"))]
-fn require_ball(caller: &tauri::WebviewWindow) -> Result<(), String> {
-    if caller.label() == floating_ball::BALL_LABEL {
-        Ok(())
-    } else {
-        Err("该命令只允许悬浮球调用。".into())
-    }
-}
-
-/// These commands expose no conversation body or system-setting write:
-/// the settings center needs a current runtime snapshot, and the wallpaper's
-/// DeepSeek entry needs to create/show one fixed, domain-restricted WebView.
-/// Keep the shared surface restricted to the two declared WebViews.
-fn require_wallpaper_surface(caller: &tauri::WebviewWindow) -> Result<(), String> {
-    match caller.label() {
-        BACKGROUND_WINDOW_LABEL | SETTINGS_WINDOW_LABEL => Ok(()),
-        _ => Err("该命令只允许壁纸或设置中心调用。".into()),
-    }
-}
-
-/// Owner of the durable API transcript archive. The wallpaper composer reads
-/// it (`api_history`) and the settings center lists and prunes it, so both
-/// declared WebViews are allowed and nothing else is.
-///
-/// Listing returns only conversation metadata — id, message count, bytes and
-/// last activity — never a message body, and deletion is the only mutation. A
-/// caller that is allowed to destroy the archive is by construction allowed to
-/// see its size.
-#[cfg(not(feature = "lite"))]
-fn require_api_history_owner(caller: &tauri::WebviewWindow) -> Result<(), String> {
-    match caller.label() {
-        BACKGROUND_WINDOW_LABEL | SETTINGS_WINDOW_LABEL => Ok(()),
-        _ => Err("该命令只允许壁纸或设置中心调用。".into()),
-    }
-}
 
 
 

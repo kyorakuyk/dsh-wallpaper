@@ -1,4 +1,5 @@
 use crate::*;
+use super::{require_settings, require_wallpaper_surface};
 
 /// Lite keeps its small, non-sensitive settings in a native file shared by
 /// the background and settings WebViews.  Tauri gives each WebView an

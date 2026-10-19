@@ -1,4 +1,5 @@
 use crate::*;
+use super::{require_api_history_owner, require_background, require_wallpaper_surface};
 
 #[tauri::command]
 #[cfg(not(feature = "lite"))]

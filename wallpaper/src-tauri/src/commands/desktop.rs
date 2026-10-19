@@ -1,4 +1,7 @@
 use crate::*;
+#[cfg(not(feature = "lite"))]
+use super::require_ball;
+use super::{require_background, require_settings, require_wallpaper_surface};
 
 pub(crate) fn emit_app_snapshot(app: &tauri::AppHandle, snapshot: &AppSnapshot) {
     let _ = app.emit_to(
@@ -409,6 +412,7 @@ pub(crate) fn open_client_in_browser(
 /// `external_link::validate` for what counts as openable. This command only adds the
 /// surface check — the link lives on the wallpaper's chat surface, not in settings.
 #[tauri::command]
+#[cfg(not(feature = "lite"))]
 pub(crate) fn open_external_link(caller: tauri::WebviewWindow, url: String) -> Result<(), String> {
     require_wallpaper_surface(&caller)?;
     external_link::open(&url).map(|_| ())

@@ -1,4 +1,5 @@
 use crate::*;
+use super::{require_background, require_settings, require_wallpaper_surface};
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};

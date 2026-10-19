@@ -209,8 +209,10 @@ describe('API history command boundary', () => {
   })
 
   it('gates the management commands behind the shared owner check', async () => {
-    const [lib, chatCommands, build] = await Promise.all([
+    // 共享 guards 已从 `lib.rs` 纯搬运到 `commands/mod.rs`（阶段 B），断言跟着实现走。
+    const [lib, commandModule, chatCommands, build] = await Promise.all([
       readFile(resolve(wallpaperRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8'),
+      readFile(resolve(wallpaperRoot, 'src-tauri', 'src', 'commands', 'mod.rs'), 'utf8'),
       readFile(resolve(wallpaperRoot, 'src-tauri', 'src', 'commands', 'chat.rs'), 'utf8'),
       readFile(resolve(wallpaperRoot, 'src-tauri', 'build.rs'), 'utf8'),
     ])
@@ -222,7 +224,8 @@ describe('API history command boundary', () => {
       const signature = new RegExp(`async fn ${command}\\s*\\([\\s\\S]*?\\)\\s*->[^\\{]*\\{[\\s\\S]*?require_api_history_owner\\(&caller\\)\\?;`)
       expect(chatCommands, command).toMatch(signature)
     }
-    expect(lib).toMatch(/fn require_api_history_owner\(caller: &tauri::WebviewWindow\) -> Result<\(\), String> \{[\s\S]*?BACKGROUND_WINDOW_LABEL \| SETTINGS_WINDOW_LABEL => Ok\(\(\)\)/)
+    expect(commandModule).toMatch(/fn require_api_history_owner\(caller: &tauri::WebviewWindow\) -> Result<\(\), String> \{[\s\S]*?crate::BACKGROUND_WINDOW_LABEL \| crate::SETTINGS_WINDOW_LABEL => Ok\(\(\)\)/)
+    expect(lib).not.toContain('fn require_api_history_owner')
     // Reading the archive for a listing must not be a way to publish bodies:
     // the listing command returns metadata only.
     expect(chatCommands).toContain('chat::list_api_conversations(&state)')

@@ -1,4 +1,5 @@
 use crate::*;
+use super::require_settings;
 
 /// `keyring`'s Windows backend stores string secrets in a Generic Credential
 /// as a UTF-16 little-endian byte blob. CredUI returns UTF-16 code units, so

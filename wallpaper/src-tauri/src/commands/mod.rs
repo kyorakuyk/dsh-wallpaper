@@ -11,6 +11,63 @@ pub(super) mod lite;
 pub(super) mod deepseek_web;
 pub(super) mod desktop;
 
+// 调用方边界（纯搬运自 `lib.rs`）：只回答"这个调用来自哪个表面"，不碰任何状态。
+// 命令模块通过 `super::require_*` 引入；`require_ball` 受 edition 门控。
+pub(crate) fn require_background(caller: &tauri::WebviewWindow) -> Result<(), String> {
+    if caller.label() == crate::BACKGROUND_WINDOW_LABEL {
+        Ok(())
+    } else {
+        Err("该命令只允许壁纸宿主调用。".into())
+    }
+}
+
+pub(crate) fn require_settings(caller: &tauri::WebviewWindow) -> Result<(), String> {
+    if caller.label() == crate::SETTINGS_WINDOW_LABEL {
+        Ok(())
+    } else {
+        Err("该命令只允许设置中心调用。".into())
+    }
+}
+
+/// 悬浮球是独立顶层窗口，只允许它请求「进里桌面」。
+///
+/// 命令表面尽量小：球没有别的能力，也不需要别的能力。
+#[cfg(not(feature = "lite"))]
+pub(crate) fn require_ball(caller: &tauri::WebviewWindow) -> Result<(), String> {
+    if caller.label() == crate::floating_ball::BALL_LABEL {
+        Ok(())
+    } else {
+        Err("该命令只允许悬浮球调用。".into())
+    }
+}
+
+/// These commands expose no conversation body or system-setting write:
+/// the settings center needs a current runtime snapshot, and the wallpaper's
+/// DeepSeek entry needs to create/show one fixed, domain-restricted WebView.
+/// Keep the shared surface restricted to the two declared WebViews.
+pub(crate) fn require_wallpaper_surface(caller: &tauri::WebviewWindow) -> Result<(), String> {
+    match caller.label() {
+        crate::BACKGROUND_WINDOW_LABEL | crate::SETTINGS_WINDOW_LABEL => Ok(()),
+        _ => Err("该命令只允许壁纸或设置中心调用。".into()),
+    }
+}
+
+/// Owner of the durable API transcript archive. The wallpaper composer reads
+/// it (`api_history`) and the settings center lists and prunes it, so both
+/// declared WebViews are allowed and nothing else is.
+///
+/// Listing returns only conversation metadata — id, message count, bytes and
+/// last activity — never a message body, and deletion is the only mutation. A
+/// caller that is allowed to destroy the archive is by construction allowed to
+/// see its size.
+#[cfg(not(feature = "lite"))]
+pub(crate) fn require_api_history_owner(caller: &tauri::WebviewWindow) -> Result<(), String> {
+    match caller.label() {
+        crate::BACKGROUND_WINDOW_LABEL | crate::SETTINGS_WINDOW_LABEL => Ok(()),
+        _ => Err("该命令只允许壁纸或设置中心调用。".into()),
+    }
+}
+
 // 两份 `generate_handler!` 列表（完整版与 Lite）与命令模块住在一起。命令名就是函数名，
 // 前端 `invoke(...)` 不受注册位置影响；Lite 注册 12 项、完整版 83 项，两边都必须与
 // 迁移前完全一致 —— `update/commands.rs` 的 ACL 测试与前端源码断言都读这个文件。

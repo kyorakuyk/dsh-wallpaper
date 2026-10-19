@@ -54,8 +54,9 @@ describe('API key entry in the settings window', () => {
   })
 
   it('restricts the new commands to the settings surface', async () => {
-    const [native, apiChat, settingsCommands, capability, build] = await Promise.all([
+    const [native, commandModule, apiChat, settingsCommands, capability, build] = await Promise.all([
       source('src-tauri/src/lib.rs'),
+      source('src-tauri/src/commands/mod.rs'),
       source('src-tauri/src/commands/chat.rs'),
       source('src-tauri/src/commands/settings.rs'),
       source('src-tauri/capabilities/settings.json'),
@@ -74,7 +75,9 @@ describe('API key entry in the settings window', () => {
     // **光有权限还不够**：命令自己也会认调用者。原来 `api_models` 只认壁纸宿主，用户实测点
     // 「测试」直接报"该命令只允许壁纸宿主调用"。现在它认两个表面（球、网页窗口仍然不行）。
     expect(apiChat).toMatch(/async fn api_models\(caller: tauri::WebviewWindow, base_url: String\) -> Result<serde_json::Value, String> \{[\s\S]{0,600}?require_wallpaper_surface\(&caller\)\?/)
-    expect(native).toContain('BACKGROUND_WINDOW_LABEL | SETTINGS_WINDOW_LABEL => Ok(())')
+    // 共享 guards 已纯搬运到 `commands/mod.rs`（阶段 B）；两条表面判据跟着实现走。
+    expect(native).not.toContain('fn require_wallpaper_surface')
+    expect(commandModule).toContain('crate::BACKGROUND_WINDOW_LABEL | crate::SETTINGS_WINDOW_LABEL => Ok(())')
     // 命令要进 ACL 白名单，否则调用会被 tauri 直接拒掉。
     expect(build).toContain('"save_api_key"')
     expect(build).toContain('"api_key_status"')
