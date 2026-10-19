@@ -2801,6 +2801,7 @@ pub fn start_foreground_monitor(app: tauri::AppHandle) {
         // SAFETY: no arguments and no Rust memory; the returned handle is only compared and class-probed afterwards.
         let foreground = unsafe { GetForegroundWindow() };
         let foreground_class = window_class(foreground);
+        // SAFETY: GetDesktopWindow takes no arguments and returns a borrowed system handle that is only compared with the foreground handle.
         let shell = foreground == unsafe { GetDesktopWindow() }
             || is_desktop_foreground_class(foreground_class.as_deref());
         let desktop_foreground = shell;
@@ -2872,20 +2873,26 @@ fn restore_desktop_keyboard_focus(app: &tauri::AppHandle) {
             .read()
             .map(|status| status.mode)
             .unwrap_or(WallpaperHostMode::Unavailable);
+        // SAFETY: `host` is the live background window resolved on the main thread, and set_focus_checked only calls SetFocus and GetLastError on it.
         let focus_result = unsafe { set_focus_checked(host) };
         // SetFocus's return is only one diagnostic. Always read back the actual
         // foreground and keyboard focus, even when SetFocus reports a real error.
+        // SAFETY: `host` is the same live handle; GetAncestor only resolves the root handle and returns null on failure, which the class probe then tolerates.
         let desktop_root = unsafe { GetAncestor(host, GA_ROOT) };
         let root_class = window_class(desktop_root).unwrap_or_else(|| "<none>".to_string());
+        // SAFETY: GetForegroundWindow takes no arguments and its handle is only read.
         let foreground = unsafe { GetForegroundWindow() };
         let foreground_class = window_class(foreground).unwrap_or_else(|| "<none>".to_string());
         let foreground_matches_root = foreground.0 == desktop_root.0;
         let mut foreground_pid = 0u32;
+        // SAFETY: `foreground` is a handle just obtained and `foreground_pid` is a local u32; the call writes only that out-parameter.
         unsafe { GetWindowThreadProcessId(foreground, Some(&mut foreground_pid)) };
         let mut info = GUITHREADINFO::default();
         info.cbSize = core::mem::size_of::<GUITHREADINFO>() as u32;
+        // SAFETY: `info` is a local GUITHREADINFO whose cbSize is set to its own size immediately above, which is the contract the API requires before writing.
         let focus_pid = if unsafe { GetGUIThreadInfo(0, &mut info) }.is_ok() {
             let mut pid = 0u32;
+            // SAFETY: `info.hwndFocus` was read from the GUITHREADINFO that the successful call above filled, and the pid target is a local u32.
             unsafe { GetWindowThreadProcessId(info.hwndFocus, Some(&mut pid)) };
             Some(pid)
         } else {
@@ -2942,6 +2949,7 @@ fn desktop_icon_list_accessible() -> Option<IAccessible> {
   let layer = desktop_icon_layer()?;
   let list = desktop_icon_list_view_in_layer(layer)?;
   let mut raw: *mut core::ffi::c_void = std::ptr::null_mut();
+  // SAFETY: the interface pointer is written into a local null-initialized slot; a null result is rejected and a non-null COM pointer is adopted exactly once by IAccessible::from_raw, which owns and releases it.
   unsafe {
     AccessibleObjectFromWindow(
       list,
@@ -2963,6 +2971,7 @@ fn desktop_icon_list_accessible() -> Option<IAccessible> {
 #[cfg(windows)]
 pub(crate) fn desktop_point_verdict() -> DesktopPointVerdict {
   let mut point = POINT::default();
+  // SAFETY: `point` is a local POINT that outlives this synchronous call, and a failure takes the Unknown branch instead of reading it.
   if unsafe { GetCursorPos(&mut point) }.is_err() {
     return DesktopPointVerdict::Unknown;
   }
@@ -2970,6 +2979,7 @@ pub(crate) fn desktop_point_verdict() -> DesktopPointVerdict {
     log::info!("桌面空白判定：取不到图标列表的辅助对象，判为无法确认");
     return DesktopPointVerdict::Unknown;
   };
+  // SAFETY: `accessible` is an owned COM interface obtained above and still alive; the method is called through its vtable and only returns a count.
   let child_count = match unsafe { accessible.accChildCount() } {
     Ok(count) => count,
     Err(error) => {
@@ -2981,6 +2991,7 @@ pub(crate) fn desktop_point_verdict() -> DesktopPointVerdict {
     log::info!("桌面空白判定：图标列表报告 0 个子项，判为无法确认");
     return DesktopPointVerdict::Unknown;
   }
+  // SAFETY: the same owned interface is still alive, the coordinates are plain integers, and the returned VARIANT is owned by Rust and only read below.
   let hit = match unsafe { accessible.accHitTest(point.x, point.y) } {
     Ok(value) => value,
     Err(error) => {
@@ -2989,8 +3000,10 @@ pub(crate) fn desktop_point_verdict() -> DesktopPointVerdict {
     }
   };
   // accHitTest 的返回值是 VARIANT：本对象内的子项编号是整数，别的元素是对象。
+  // SAFETY: the tag field of the returned VARIANT is read first, and the payload field is accessed only in the arm that matches this tag.
   let verdict = match unsafe { hit.Anonymous.Anonymous.vt } {
     windows::Win32::System::Variant::VT_I4 => {
+      // SAFETY: this arm runs only when the tag is VT_I4, where the union holds lVal, and the VARIANT still lives on this stack.
       let child = unsafe { hit.Anonymous.Anonymous.Anonymous.lVal };
       if child > 0 {
         DesktopPointVerdict::Icon
@@ -3027,6 +3040,7 @@ pub(crate) fn desktop_point_verdict() -> DesktopPointVerdict {
 #[cfg(windows)]
 pub(crate) fn cursor_is_on_desktop_surface(background: HWND) -> bool {
     let mut point = POINT::default();
+    // SAFETY: `background` is a handle the caller proved usable, the POINT and handle locals outlive the calls, and every Win32 call here takes handles only.
     unsafe {
         if GetCursorPos(&mut point).is_err() {
             return false;
@@ -3070,6 +3084,7 @@ pub(crate) fn desktop_surface_allows_pop_now() -> bool {
         return false;
     }
     let background = HWND(handle as *mut core::ffi::c_void);
+    // SAFETY: the integer came from the atomic handle slot; IsWindow only inspects it and answers false for a destroyed window, which is the state this guard exists for.
     if !unsafe { IsWindow(Some(background)) }.as_bool() {
         return false;
     }
@@ -3080,6 +3095,7 @@ pub(crate) fn desktop_surface_allows_pop_now() -> bool {
 fn cursor_hits_interaction_region(root_hwnd: HWND) -> bool {
     let mut cursor = POINT::default();
     let mut origin = POINT::default();
+    // SAFETY: `root_hwnd` is the caller's live host handle, both out-parameters are local POINTs alive across the calls, and a failure returns false before any coordinate is used.
     unsafe {
         if GetCursorPos(&mut cursor).is_err() || !ClientToScreen(root_hwnd, &mut origin).as_bool() {
             return false;
@@ -3204,6 +3220,7 @@ fn should_toggle_desktop_workspace(
 #[cfg(windows)]
 fn log_workspace_toggle_decision(hits_interaction: bool, automation_blank: bool) {
     let mut cursor = POINT::default();
+    // SAFETY: `cursor` is a local POINT written by this call; a failure maps to the sentinel instead of reading it.
     let (cursor_x, cursor_y) = unsafe {
         if GetCursorPos(&mut cursor).is_err() {
             (i32::MIN, i32::MIN)
@@ -3258,6 +3275,7 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
         assert_not_acting_as_main_thread();
         // UIA requires COM initialization on the monitor thread. A prior COM
         // mode is harmless: UIA can still be created on that thread.
+        // SAFETY: a null reserved pointer selects the default COM library; the call initializes the calling monitor thread's apartment, and the HRESULT is discarded because an apartment that is already initialized needs no further action.
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         // 判据改走 MSAA（旧接口）：UI Automation 从 Explorer 的 FolderView 读不到任何子节点，
         // 因此不必再初始化它。MSAA 按需取用，不注入 Explorer。
@@ -3290,12 +3308,14 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                 continue;
             }
             let background = HWND(background_raw as *mut core::ffi::c_void);
+            // SAFETY: GetAsyncKeyState takes a virtual-key constant and reads global input state; no out-parameter and no Rust memory.
             let down = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0;
             // 松开时成形：拖动（按下-移动-松开）天然被排除，不需要额外判断。
 if !down && was_down {
                 // 松开时成形：拖动（按下-移动-松开）天然被排除，不需要额外判断。
                 if let Some((pressed_at, pressed_point, eligible, keys_idle)) = press.take() {
                     let mut released = POINT::default();
+                    // SAFETY: `released` is a local POINT written by this call; a failure keeps the pressed point instead of reading it.
                     let released_point = if unsafe { GetCursorPos(&mut released) }.is_err() {
                         pressed_point
                     } else {
@@ -3350,6 +3370,7 @@ if !down && was_down {
             }
             if down && !was_down {
                 // 按下的现场：三条判据 + 组合键状态，全部**在这一刻**取，因为点击的目标由按下决定。
+                // SAFETY: the five calls take virtual-key constants and read global input state; no out-parameters and no Rust memory.
                 let keys = unsafe {
                     [
                         GetAsyncKeyState(VK_CONTROL.0 as i32) < 0,
@@ -3360,6 +3381,7 @@ if !down && was_down {
                     ]
                 };
                 let mut pressed = POINT::default();
+                // SAFETY: `pressed` is a local POINT written by this call; a failure maps to the sentinel instead of reading it.
                 let pressed_point = if unsafe { GetCursorPos(&mut pressed) }.is_err() {
                     (i32::MIN, i32::MIN)
                 } else {
