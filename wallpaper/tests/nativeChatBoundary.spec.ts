@@ -403,8 +403,9 @@ describe('native chat boundary', () => {
   })
 
   it('keeps system-setting and desktop-input commands bound to their owning surface', async () => {
-    const [lib, archivedLockScreen, archivedIntegration] = await Promise.all([
+    const [lib, harnessStatus, archivedLockScreen, archivedIntegration] = await Promise.all([
       readNative('src/lib.rs'),
+      readNative('src/commands/harness_status.rs'),
       readArchive(archivedLockScreenCommandsPath),
       readArchive(archivedIntegrationCommandsPath),
     ])
@@ -422,10 +423,12 @@ describe('native chat boundary', () => {
     for (const command of ['translucent_tb_status', 'launch_translucent_tb', 'open_translucent_tb_install']) {
       expect(archivedIntegration, command).toMatch(settingsOnly(command))
     }
-    for (const command of ['begin_interaction_region_session', 'update_interaction_regions', 'probe_harness']) {
+    for (const command of ['begin_interaction_region_session', 'update_interaction_regions']) {
       const signature = new RegExp(`(?:async\\s+)?fn\\s+${command}\\s*\\([\\s\\S]*?\\)\\s*->[^\\{]*\\{[\\s\\S]*?require_background\\(&caller\\)\\?;`)
       expect(lib, command).toMatch(signature)
     }
+    const probeSignature = /fn\s+probe_harness\s*\([\s\S]*?\)\s*->[^\{]*\{[\s\S]*?require_background\(&caller\)\?;/
+    expect(harnessStatus, 'probe_harness').toMatch(probeSignature)
     expect(lib).toMatch(/fn show_deepseek_login[\s\S]*?require_wallpaper_surface\(&caller\)\?;/)
     expect(lib).toMatch(/fn get_app_snapshot[\s\S]*?require_wallpaper_surface\(&caller\)\?;/)
   })
@@ -576,12 +579,12 @@ describe('native chat boundary', () => {
   })
 
   it('never routes local Harness probes or bearer requests through a system proxy', async () => {
-    const [lib, chat] = await Promise.all([
-      readNative('src/lib.rs'),
+    const [harnessStatus, chat] = await Promise.all([
+      readNative('src/commands/harness_status.rs'),
       readNative('src/chat.rs'),
     ])
 
-    const probe = lib.match(/fn harness_probe_client\(\)[\s\S]*?\n}\n/)
+    const probe = harnessStatus.match(/fn harness_probe_client\(\)[\s\S]*?\n}\n/)
     expect(probe?.[0]).toContain('.no_proxy()')
     expect(chat.match(/fn bridge_request_client\(\)[\s\S]*?\n}\n/)?.[0]).toContain('.no_proxy()')
     expect(chat.match(/fn bridge_stream_client\(\)[\s\S]*?\n}\n/)?.[0]).toContain('.no_proxy()')

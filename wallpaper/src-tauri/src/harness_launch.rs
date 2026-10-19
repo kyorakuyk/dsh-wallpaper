@@ -2431,10 +2431,10 @@ fn ui_port(subject_id: &str, declared: u16) -> u16 {
     if declared != 0 {
         return declared;
     }
-    if crate::harness_endpoint_configured() {
+    if crate::commands::harness_status::harness_endpoint_configured() {
         // The settings' subject decides, and through `harness_endpoint_port` it
         // already accounts for a checkout the user moved to another port.
-        return crate::harness_endpoint_port();
+        return crate::commands::harness_status::harness_endpoint_port();
     }
     // Nothing has been published yet — the settings window can reach a subject
     // before it has pushed the scope — so the subject the caller names is the only
@@ -2445,7 +2445,7 @@ fn ui_port(subject_id: &str, declared: u16) -> u16 {
             return port;
         }
     }
-    crate::harness_endpoint_port()
+    crate::commands::harness_status::harness_endpoint_port()
 }
 
 /// Make the chosen subject's interface available and foreground.

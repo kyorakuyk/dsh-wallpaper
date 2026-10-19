@@ -57,9 +57,10 @@ describe('resident polling budget', () => {
 
 describe('native exit lifecycle', () => {
   it('restores desktop state on exit and never conflates it with hiding to the tray', async () => {
-    const [lib, harness] = await Promise.all([
+    const [lib, harness, harnessStatus] = await Promise.all([
       readNative('src/lib.rs'),
       readNative('src/commands/harness.rs'),
+      readNative('src/commands/harness_status.rs'),
     ])
 
     // The run loop handles both exit events through one idempotent function.
@@ -87,7 +88,7 @@ describe('native exit lifecycle', () => {
     expect(stopHelper).not.toContain('.output()')
     // 换了主体，"连接"这个词说的就是另一个对象：探测器必须把上一条连接的历史作废，否则界面会
     // 一直写着"已连接"（实测症状：呼吸灯 + bridge 已连接，而一发消息就说会话尚未建立）。
-    const monitorLoop = lib.slice(lib.indexOf('fn start_harness_monitor'))
+    const monitorLoop = harnessStatus.slice(harnessStatus.indexOf('fn start_harness_monitor'))
     expect(monitorLoop).toContain('harness_scope_key()')
     expect(monitorLoop).toContain('monitor = HarnessMonitorState::default()')
     // Every step is inside a `Once`, because ExitRequested can precede Exit.

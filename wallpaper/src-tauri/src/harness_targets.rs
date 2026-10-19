@@ -422,7 +422,7 @@ pub(crate) fn subject_endpoint_ports(
             ports.push(declared);
         }
     }
-    let default = crate::HARNESS_DEFAULT_PORT;
+    let default = crate::commands::harness_status::HARNESS_DEFAULT_PORT;
     if !ports.contains(&default) {
         ports.push(default);
     }
@@ -502,7 +502,7 @@ fn checkout_target(root_path: &str, source: &str) -> HarnessTarget {
         identity: TargetIdentity {
             aumid: None,
             root_path: Some(root_path.to_string()),
-            default_ports: vec![crate::HARNESS_DEFAULT_PORT],
+            default_ports: vec![crate::commands::harness_status::HARNESS_DEFAULT_PORT],
         },
         launch: LaunchRecipe {
             kind: LaunchRecipeKind::ManagedCommand,
@@ -580,7 +580,7 @@ fn installed_cli_target(launcher: &Path) -> HarnessTarget {
         identity: TargetIdentity {
             aumid: None,
             root_path: None,
-            default_ports: vec![crate::HARNESS_DEFAULT_PORT],
+            default_ports: vec![crate::commands::harness_status::HARNESS_DEFAULT_PORT],
         },
         launch: LaunchRecipe {
             kind: LaunchRecipeKind::ManagedCommand,
@@ -1267,7 +1267,7 @@ mod tests {
         assert_eq!(target.version, None);
         assert_eq!(
             target.identity.default_ports,
-            vec![crate::HARNESS_DEFAULT_PORT]
+            vec![crate::commands::harness_status::HARNESS_DEFAULT_PORT]
         );
         // 它会像检出那样 boot 一个 profile。
         assert!(target.capabilities.needs_profile);

@@ -161,9 +161,9 @@ describe('端口从设置一路流到「打开界面」', () => {
     const setter = runtime.slice(runtime.indexOf('async setHarnessEndpointScope'), runtime.indexOf('async leaveInnerDesktop'))
     expect(setter).toContain('args: parseLaunchArgs(scope.args)')
     // 原生那一侧从同一份 argv 里读端口，规则与渲染层一致（两份由各自的测试用同一组例子钉住）。
-    const lib = await source('src-tauri/src/lib.rs')
-    expect(lib).toContain('let declared = args.and_then(harness_launch::port_from_args);')
-    expect(lib).toContain('harness_targets::subject_endpoint_ports(&subject_id, extra_ports, declared)')
+    const harnessStatus = await source('src-tauri/src/commands/harness_status.rs')
+    expect(harnessStatus).toContain('let declared = args.and_then(harness_launch::port_from_args);')
+    expect(harnessStatus).toContain('harness_targets::subject_endpoint_ports(&subject_id, extra_ports, declared)')
     const targets = await source('src-tauri/src/harness_targets.rs')
     expect(targets).toContain('declared_port: Option<u16>')
   })
