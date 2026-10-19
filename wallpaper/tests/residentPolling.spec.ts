@@ -94,7 +94,7 @@ describe('native exit lifecycle', () => {
     // Every step is inside a `Once`, because ExitRequested can precede Exit.
     expect(shutdown).toContain('SHUTDOWN.call_once')
     // The tray "hide" item is an action dispatch, not an exit.
-    expect(lib).toMatch(/"hide" => \{\s*\n\s*dispatch_ui_action\(app, AppAction::SetInteractionEnabled\(false\), false\)/)
+    expect(lib).toMatch(/"hide" => \{\s*\n\s*commands::desktop::dispatch_ui_action\(app, AppAction::SetInteractionEnabled\(false\), false\)/)
   })
 
   it('releases the session notification registration it installed', async () => {

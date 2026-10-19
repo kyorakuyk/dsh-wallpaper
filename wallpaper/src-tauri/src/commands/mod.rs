@@ -9,3 +9,4 @@ pub(super) mod settings;
 pub(super) mod lite;
 #[cfg(not(feature = "lite"))]
 pub(super) mod deepseek_web;
+pub(super) mod desktop;

@@ -1551,7 +1551,7 @@ pub(crate) fn start_harness_monitor(app: tauri::AppHandle) {
                             reason_code: Some(HARNESS_CONNECTING_REASON.to_string()),
                             probing: true,
                         });
-                        emit_app_snapshot(&app, &snapshot);
+                        crate::commands::desktop::emit_app_snapshot(&app, &snapshot);
                     }
                 }
             } else if publish || force_publish || reason_for_state != last_reason {
@@ -1571,7 +1571,7 @@ pub(crate) fn start_harness_monitor(app: tauri::AppHandle) {
                         reason_code: reason_for_state,
                         probing: monitor.probing,
                     });
-                    emit_app_snapshot(&app, &snapshot);
+                    crate::commands::desktop::emit_app_snapshot(&app, &snapshot);
                 }
             }
             // A resident wallpaper must not hammer a dead loopback port — except in the

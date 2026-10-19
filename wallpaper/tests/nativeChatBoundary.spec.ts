@@ -380,15 +380,16 @@ describe('native chat boundary', () => {
   })
 
   it('uses Rust as the only settings-to-background event router', async () => {
-    const [settings, lib] = await Promise.all([
+    const [settings, desktop, lib] = await Promise.all([
       readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8'),
+      readNative('src/commands/desktop.rs'),
       readNative('src/lib.rs'),
     ])
 
     expect(settings).not.toContain("from '@tauri-apps/api/event'")
     expect(settings).toContain("invoke('publish_settings', { settings: next })")
     expect(settings).toContain("invoke('notify_appearance_changed')")
-    expect(lib).toMatch(/fn publish_settings\s*\([\s\S]*?require_settings\(&caller\)\?;[\s\S]*?EventTarget::webview_window\(BACKGROUND_WINDOW_LABEL\)/)
+    expect(desktop).toMatch(/fn publish_settings\s*\([\s\S]*?require_settings\(&caller\)\?;[\s\S]*?EventTarget::webview_window\(BACKGROUND_WINDOW_LABEL\)/)
     expect(lib).toMatch(/fn notify_appearance_changed\s*\([\s\S]*?require_settings\(&caller\)\?;[\s\S]*?EventTarget::webview_window\(BACKGROUND_WINDOW_LABEL\)/)
   })
 
@@ -412,8 +413,9 @@ describe('native chat boundary', () => {
   })
 
   it('keeps system-setting and desktop-input commands bound to their owning surface', async () => {
-    const [lib, settingsCommands, harnessStatus, webCommands, archivedLockScreen, archivedIntegration] = await Promise.all([
+    const [lib, desktop, settingsCommands, harnessStatus, webCommands, archivedLockScreen, archivedIntegration] = await Promise.all([
       readNative('src/lib.rs'),
+      readNative('src/commands/desktop.rs'),
       readNative('src/commands/settings.rs'),
       readNative('src/commands/harness_status.rs'),
       readNative('src/commands/deepseek_web.rs'),
@@ -427,7 +429,7 @@ describe('native chat boundary', () => {
       expect(settingsCommands, command).toMatch(settingsOnly(command))
     }
     for (const command of ['start_settings_drag', 'hide_settings_window']) {
-      expect(lib, command).toMatch(settingsOnly(command))
+      expect(desktop, command).toMatch(settingsOnly(command))
     }
     // Frozen commands (B3): the archived copies keep the same settings-only gate, so a
     // restore brings the guard back with them.
@@ -439,12 +441,12 @@ describe('native chat boundary', () => {
     }
     for (const command of ['begin_interaction_region_session', 'update_interaction_regions']) {
       const signature = new RegExp(`(?:async\\s+)?fn\\s+${command}\\s*\\([\\s\\S]*?\\)\\s*->[^\\{]*\\{[\\s\\S]*?require_background\\(&caller\\)\\?;`)
-      expect(lib, command).toMatch(signature)
+      expect(desktop, command).toMatch(signature)
     }
     const probeSignature = /fn\s+probe_harness\s*\([\s\S]*?\)\s*->[^\{]*\{[\s\S]*?require_background\(&caller\)\?;/
     expect(harnessStatus, 'probe_harness').toMatch(probeSignature)
     expect(webCommands).toMatch(/fn show_deepseek_login[\s\S]*?require_wallpaper_surface\(&caller\)\?;/)
-    expect(lib).toMatch(/fn get_app_snapshot[\s\S]*?require_wallpaper_surface\(&caller\)\?;/)
+    expect(desktop).toMatch(/fn get_app_snapshot[\s\S]*?require_wallpaper_surface\(&caller\)\?;/)
   })
 
   it('keeps the frozen lock-screen and system-integration commands out of the live build', async () => {
