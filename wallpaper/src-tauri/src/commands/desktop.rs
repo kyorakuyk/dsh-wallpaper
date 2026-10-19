@@ -413,4 +413,3 @@ pub(crate) fn open_external_link(caller: tauri::WebviewWindow, url: String) -> R
     require_wallpaper_surface(&caller)?;
     external_link::open(&url).map(|_| ())
 }
-
