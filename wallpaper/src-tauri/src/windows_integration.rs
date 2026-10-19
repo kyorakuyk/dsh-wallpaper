@@ -244,6 +244,7 @@ static WALLPAPER_HOST_MUTEX: OnceLock<isize> = OnceLock::new();
 
 #[cfg(windows)]
 pub fn acquire_shared_wallpaper_host() -> bool {
+    // SAFETY: CreateMutexW takes a static `w!` name and no out-parameters; the returned handle is checked for errors before use.
     let handle = match unsafe { CreateMutexW(None, true, WALLPAPER_HOST_MUTEX_NAME) } {
         Ok(handle) => handle,
         Err(error) => {
@@ -251,7 +252,9 @@ pub fn acquire_shared_wallpaper_host() -> bool {
             return false;
         }
     };
+    // SAFETY: GetLastError reads thread-local state only and runs immediately after CreateMutexW, before another Win32 call can overwrite it.
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        // SAFETY: this closes the handle created above, which was not shared; a duplicate-name result does not transfer ownership. The result is ignored on purpose.
         unsafe {
             let _ = windows::Win32::Foundation::CloseHandle(handle);
         }
@@ -433,6 +436,7 @@ unsafe extern "system" fn enumerate_desktop_display(
 #[cfg(windows)]
 pub fn desktop_displays() -> Result<Vec<DesktopDisplayInfo>, String> {
     let mut displays = Vec::<DesktopDisplayInfo>::new();
+    // SAFETY: the callback receives `&mut displays` through LPARAM; the vector is alive and unaliased for this synchronous call and the callback only pushes into it.
     let result = unsafe {
         EnumDisplayMonitors(
             None,
@@ -529,9 +533,13 @@ pub fn desktop_layout_metrics_for_hwnd(
     };
     let mut background_rect = RECT::default();
     let mut taskbar_rect = RECT::default();
+    // SAFETY: FindWindowW receives a static class name and a null window name; the handle is used only for the reads below and never freed here.
     let taskbar = unsafe { FindWindowW(windows::core::w!("Shell_TrayWnd"), PCWSTR::null()) }.ok();
+    // SAFETY: `taskbar` is the handle produced above and only probed; Win32 returns false for a window that has gone away instead of faulting.
     let visible = taskbar.is_some_and(|taskbar| unsafe { IsWindowVisible(taskbar).as_bool() })
+        // SAFETY: `background` is a live HWND owned by the caller for this call, and `background_rect` is local stack storage that outlives it.
         && unsafe { GetWindowRect(background, &mut background_rect).is_ok() }
+        // SAFETY: `taskbar` comes from the FindWindowW above and `taskbar_rect` is local stack storage that outlives this call.
         && taskbar.is_some_and(|taskbar| unsafe { GetWindowRect(taskbar, &mut taskbar_rect).is_ok() });
     if visible {
         let physical_height = (taskbar_rect.bottom - taskbar_rect.top).max(0);
@@ -710,6 +718,7 @@ fn background_handle_is_usable(handle: isize) -> bool {
     }
     keep_watching_after_tick(
         true,
+        // SAFETY: the integer was published by the main thread as a window handle; IsWindow only inspects it and reports false for a stale one.
         unsafe { IsWindow(Some(HWND(handle as *mut core::ffi::c_void))).as_bool() },
     )
 }
