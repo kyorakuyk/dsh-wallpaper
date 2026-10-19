@@ -964,6 +964,7 @@ pub(crate) fn island_visible_from_regions() -> bool {
 #[cfg(windows)]
 pub fn configure_settings_window(window: &WebviewWindow) -> Result<(), String> {
     let hwnd = HWND(window.hwnd().map_err(|error| error.to_string())?.0);
+    // SAFETY: `hwnd` is the settings window handle just resolved from the live Tauri window; SetWindowSubclass also takes a static proc, a constant subclass id and no reference data, so nothing Rust-owned crosses the boundary.
     unsafe {
         if !SetWindowSubclass(hwnd, Some(settings_window_subclass), 0x4453_4853, 0).as_bool() {
             return Err("无法监听设置窗口边框状态".into());
@@ -975,6 +976,7 @@ pub fn configure_settings_window(window: &WebviewWindow) -> Result<(), String> {
     // 只在 `WM_NCCALCSIZE` 时重算；而 tao 创建窗口时（我们的子类还不存在）已经算过一遍，
     // 于是子类里的 `WM_NCCALCSIZE → 0`（去掉非客户区）永远等不到消息，
     // 客户区一直是 `(11,2)` 的旧值。`SWP_FRAMECHANGED` 会逼出这次重算。
+    // SAFETY: the same live settings window handle; None is passed as the insert-after window and every size is zero, so no pointer is borrowed and a failure is only logged.
     unsafe {
         if let Err(error) = SetWindowPos(
             hwnd,
@@ -996,6 +998,7 @@ pub fn configure_settings_window(window: &WebviewWindow) -> Result<(), String> {
 
 #[cfg(windows)]
 fn log_settings_window_metrics(hwnd: HWND, stage: &str) {
+    // SAFETY: `hwnd` is the settings window the caller just configured; the RECT and POINT out-parameters are local stack values alive across these synchronous calls, and each is read only after its call succeeded.
     unsafe {
         let mut outer = RECT::default();
         let mut client = RECT::default();
@@ -1028,6 +1031,7 @@ const SETTINGS_RESIZE_BAND_PX: i32 = 8;
 
 #[cfg(windows)]
 fn apply_settings_window_frame_policy(hwnd: HWND) -> Result<(), String> {
+    // SAFETY: `hwnd` is the live settings window; each Dwm* call receives a pointer to a local value whose type matches the attribute, together with that value's exact size, and every local outlives the synchronous call.
     unsafe {
         // The rounded outline is rendered by the settings web UI. Windows 11
         // otherwise adds its own one-pixel DWM border around the transparent
@@ -1341,6 +1345,7 @@ unsafe extern "system" fn collect_desktop_windows(window: HWND, lparam: LPARAM) 
 #[cfg(windows)]
 fn enumerate_desktop_windows() -> Result<Vec<EnumeratedWindow>, String> {
     let mut windows = Vec::new();
+    // SAFETY: LPARAM carries `&mut windows`, which stays alive and unaliased for this synchronous enumeration, and the callback only pushes into that vector.
     unsafe {
         EnumWindows(
             Some(collect_desktop_windows),
@@ -1362,6 +1367,7 @@ fn locate_wallpaper_worker() -> Result<HWND, String> {
 
 #[cfg(windows)]
 pub(crate) fn visible_wallpaper_worker() -> Option<HWND> {
+    // SAFETY: `worker` was produced by the enumeration in this call; IsWindow only inspects the handle and reports false for one that disappeared in between.
     locate_wallpaper_worker().ok().filter(|worker| unsafe {
         IsWindow(Some(*worker)).as_bool() && IsWindowVisible(*worker).as_bool()
     })
@@ -1400,6 +1406,7 @@ pub(crate) fn desktop_icon_layer() -> Option<HWND> {
             if !item.candidate.hosts_desktop_icons {
                 return None;
             }
+            // SAFETY: `item.hwnd` came from the enumeration just above and the class and child names are static `w!` strings; a missing child is dropped by the null check.
             unsafe {
                 FindWindowExW(
                     Some(item.hwnd),
@@ -1415,6 +1422,7 @@ pub(crate) fn desktop_icon_layer() -> Option<HWND> {
 
 #[cfg(windows)]
 fn desktop_icon_list_view_in_layer(icon_layer: HWND) -> Option<HWND> {
+    // SAFETY: `icon_layer` is the caller's live DefView handle and the child class name is a static `w!` string; windows-rs hands the string over as a NUL-terminated PCWSTR for the duration of the call.
     unsafe {
         FindWindowExW(
             Some(icon_layer),
@@ -1430,6 +1438,7 @@ fn desktop_icon_list_view_in_layer(icon_layer: HWND) -> Option<HWND> {
 #[cfg(windows)]
 fn set_desktop_icons_visible(visible: bool) -> Result<(), String> {
     let icon_layer = desktop_icon_layer().ok_or("未找到 Explorer 桌面图标层")?;
+    // SAFETY: `icon_layer` is a non-null handle returned by the lookup above and `icon_list` is the child found under it; ShowWindow only requests a visibility state and shares no Rust memory.
     unsafe {
         if visible {
             // Older development builds hid SysListView32 directly.  Restore it
@@ -1524,6 +1533,7 @@ pub fn repair_desktop_after_abnormal_exit() -> Vec<String> {
     use windows::Win32::Graphics::Gdi::{
         RedrawWindow, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW,
     };
+    // SAFETY: both window handles are resolved here and only passed to RedrawWindow, whose other arguments are None and integer flags; a missing desktop handle is detected by is_invalid and never used.
     unsafe {
         let desktop = GetDesktopWindow();
         if !desktop.is_invalid() {
@@ -1558,9 +1568,11 @@ pub fn repair_desktop_after_abnormal_exit() -> Vec<String> {
 
 #[cfg(windows)]
 pub(crate) fn request_wallpaper_worker() -> Result<HWND, String> {
+    // SAFETY: FindWindowW receives a static class name and a null window name; the returned handle is only passed to SendMessageTimeoutW below and is never freed here.
     let progman = unsafe { FindWindowW(windows::core::w!("Progman"), PCWSTR::null()) }
         .map_err(|error| format!("无法找到 Explorer Progman 窗口：{error}"))?;
 
+    // SAFETY: `progman` is the handle resolved above, the message payloads are plain integers, and `message_result` is local storage alive across this synchronous call; the reply is discarded on purpose.
     unsafe {
         let mut message_result = 0usize;
         let _ = SendMessageTimeoutW(
@@ -1575,12 +1587,14 @@ pub(crate) fn request_wallpaper_worker() -> Result<HWND, String> {
     }
 
     if let Ok(worker) = locate_wallpaper_worker() {
+        // SAFETY: `worker` was just located by enumeration; IsWindowVisible only inspects it and answers FALSE for a window that is already gone.
         if unsafe { IsWindowVisible(worker).as_bool() } {
             return Ok(worker);
         }
     }
 
     // Windows 11 的新版 Explorer 使用 0xD 参数的两步协议。
+    // SAFETY: `progman` is still the handle resolved above, WPARAM and LPARAM carry only integers, and `message_result` is a fresh local per iteration, so the synchronous send touches no borrowed data.
     unsafe {
         for lparam in [0isize, 1] {
             let mut message_result = 0usize;
@@ -1615,6 +1629,7 @@ pub(crate) fn request_wallpaper_worker() -> Result<HWND, String> {
 #[cfg(windows)]
 fn window_class(hwnd: HWND) -> Option<String> {
     let mut class = [0u16; 64];
+    // SAFETY: the destination is a local 64-element buffer, and windows-rs passes its length to GetClassNameW so the write is bounded; the returned count is used only to slice that same buffer.
     let class_len = unsafe { GetClassNameW(hwnd, &mut class) };
     (class_len > 0).then(|| String::from_utf16_lossy(&class[..class_len as usize]))
 }
@@ -1624,6 +1639,7 @@ fn window_neighbor_class(
     hwnd: HWND,
     command: windows::Win32::UI::WindowsAndMessaging::GET_WINDOW_CMD,
 ) -> String {
+    // SAFETY: `hwnd` is the caller's handle and `command` is a GET_WINDOW_CMD constant; GetWindow only resolves a neighbouring handle and reports failure instead of faulting.
     unsafe { GetWindow(hwnd, command).ok() }
         .filter(|neighbor| !neighbor.0.is_null())
         .and_then(window_class)
@@ -1632,10 +1648,12 @@ fn window_neighbor_class(
 
 #[cfg(windows)]
 fn record_wallpaper_window_state(name: &str, hwnd: HWND) {
+    // SAFETY: `hwnd` is the live handle passed by the caller; GetParent only resolves the parent handle and a null result falls back to the `none` label.
     let parent = unsafe { GetParent(hwnd).ok() }
         .and_then(window_class)
         .unwrap_or_else(|| "none".into());
     let mut client = RECT::default();
+    // SAFETY: `client` is a local RECT that outlives the call and `hwnd` is the caller's handle; a failed read takes the unavailable branch instead of exposing uninitialized data.
     let size = if unsafe { GetClientRect(hwnd, &mut client).is_ok() } {
         format!(
             "{}x{}",
@@ -1647,6 +1665,7 @@ fn record_wallpaper_window_state(name: &str, hwnd: HWND) {
     };
     let previous = window_neighbor_class(hwnd, GW_HWNDPREV);
     let next = window_neighbor_class(hwnd, GW_HWNDNEXT);
+    // SAFETY: `hwnd` is the same caller-owned handle used by the reads above; IsWindowVisible only inspects it.
     let visible = unsafe { IsWindowVisible(hwnd).as_bool() };
     crate::native_bootstrap::record_startup_diagnostic(&format!(
         "event=window-state layer={} parent={} size={} visible={} prev={} next={}",
@@ -1657,6 +1676,7 @@ fn record_wallpaper_window_state(name: &str, hwnd: HWND) {
 #[cfg(windows)]
 fn resize_wallpaper_to_parent(background: HWND, worker: HWND) -> Result<(), String> {
     let mut bounds = RECT::default();
+    // SAFETY: `worker` is the live desktop host handle passed in and `bounds` is local storage that outlives the call; a failure is propagated rather than reading the rectangle.
     unsafe { GetClientRect(worker, &mut bounds) }
         .map_err(|error| format!("无法读取 WorkerW 尺寸：{error}"))?;
     let width = bounds.right - bounds.left;
@@ -1664,6 +1684,7 @@ fn resize_wallpaper_to_parent(background: HWND, worker: HWND) -> Result<(), Stri
     if width <= 0 || height <= 0 {
         return Err(format!("WorkerW 客户区尺寸无效：{width}x{height}"));
     }
+    // SAFETY: both handles are desktop host windows owned by the caller, every out-parameter is a local RECT or POINT alive across the calls, and a failed ClientToScreen returns before the coordinates are used.
     unsafe {
         SetWindowPos(
             background,
@@ -1716,10 +1737,12 @@ fn resize_wallpaper_to_parent(background: HWND, worker: HWND) -> Result<(), Stri
 #[cfg(windows)]
 fn place_wallpaper_layers(background: HWND, parent: HWND) -> Result<(), String> {
     let cover = crate::native_bootstrap::window_handle()
+        // SAFETY: `hwnd` comes from the native cover handle slot and is only probed for its parent; a window destroyed in between yields None, which the filter drops.
         .filter(|hwnd| unsafe { GetParent(*hwnd).ok() } == Some(parent));
     let flags = SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE;
 
     if window_class(parent).as_deref() == Some("Progman") {
+        // SAFETY: `parent` is the Progman handle whose class was just checked, and the child class name is a static `w!` string; a missing child becomes the error returned below.
         let icon_view = unsafe {
             FindWindowExW(
                 Some(parent),
