@@ -340,7 +340,7 @@ describe('native chat boundary', () => {
   it('keeps settings probes off the UI thread and gives migrated DSH paths feedback', async () => {
     const [lib, harness, settings, runtime, archivedLockScreen, archivedIntegration] = await Promise.all([
       readNative('src/lib.rs'),
-      readNative('src/commands/harness.rs'),
+      readNative('src/commands/harness/mod.rs'),
       readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8'),
       readFile(resolve(wallpaperRoot, 'src/native/runtime.ts'), 'utf8'),
       readArchive(archivedLockScreenCommandsPath),
@@ -368,7 +368,7 @@ describe('native chat boundary', () => {
   })
 
   it('uses the built DSH CLI for managed launches when it is available', async () => {
-    const harness = await readNative('src/commands/harness.rs')
+    const harness = await readNative('src/commands/harness/mod.rs')
 
     expect(harness).toContain('.join("apps")')
     expect(harness).toContain('.join("cli")')
@@ -394,11 +394,12 @@ describe('native chat boundary', () => {
   })
 
   it('defends the sensitive commands against a future ACL mistake', async () => {
-    const [lib, commandModule, chatCommands, harnessCommands] = await Promise.all([
+    const [lib, commandModule, chatCommands, harnessSession] = await Promise.all([
       readNative('src/lib.rs'),
       readNative('src/commands/mod.rs'),
       readNative('src/commands/chat.rs'),
-      readNative('src/commands/harness.rs'),
+      // 会话命令已纯搬运到 `commands/harness/session.rs`（阶段 I），断言跟着实现走。
+      readNative('src/commands/harness/session.rs'),
     ])
 
     expect(lib).toMatch(/const BACKGROUND_WINDOW_LABEL:\s*&str\s*=\s*"background"/)
@@ -407,7 +408,7 @@ describe('native chat boundary', () => {
     expect(commandModule).toMatch(/fn require_background\s*\(caller:\s*&tauri::WebviewWindow\)/)
     for (const command of ['connect_harness', 'harness_history']) {
       const signature = new RegExp(`(?:async\\s+)?fn\\s+${command}\\s*\\([\\s\\S]*?\\)\\s*->[^\\{]*\\{[\\s\\S]*?require_background\\(&caller\\)\\?;`)
-      expect(harnessCommands, command).toMatch(signature)
+      expect(harnessSession, command).toMatch(signature)
     }
     for (const command of ['send_chat', 'cancel_chat', 'api_history']) {
       const signature = new RegExp(`(?:async\\s+)?fn\\s+${command}\\s*\\([\\s\\S]*?\\)\\s*->[^\\{]*\\{[\\s\\S]*?require_background\\(&caller\\)\\?;`)

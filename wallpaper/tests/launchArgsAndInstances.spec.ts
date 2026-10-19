@@ -265,7 +265,7 @@ describe('实例下拉与「全部停止」的接线', () => {
     const launch = await source('src-tauri/src/harness_launch.rs')
     expect(launch).toContain('pub(crate) fn is_managed_by_us')
     expect(launch).toMatch(/!subject_id\.trim\(\)\.starts_with\(SHELL_ID_PREFIX\)/)
-    const lib = await source('src-tauri/src/commands/harness.rs')
+    const lib = await source('src-tauri/src/commands/harness/mod.rs')
     expect(lib).toContain('这个主体不由本应用管理，因此没有停止它。')
     // 而在这之前它已经被拒绝了：官壳那条记录是给门票用的，它**确实**会出现在落盘记录里，
     // 所以"停不掉官壳"不能靠"记录里没有它"。

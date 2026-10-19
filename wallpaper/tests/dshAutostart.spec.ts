@@ -205,7 +205,7 @@ describe('DSH autostart wiring', () => {  it('starts DSH from the background hos
   })
 
   it('never runs a program the user typed: only args are appended, and never through a shell', async () => {
-    const lib = await source('src-tauri/src/commands/harness.rs')
+    const lib = await source('src-tauri/src/commands/harness/mod.rs')
     const autostart = lib.slice(lib.indexOf('fn autostart_managed_dsh'), lib.indexOf('fn managed_dsh_autostart_status'))
     // The trust boundary moved: it is no longer "is this launcher allowlisted", because there is no
     // user-supplied launcher at all. What must hold now is that nothing on this path *chooses* a
@@ -246,7 +246,7 @@ describe('DSH autostart wiring', () => {  it('starts DSH from the background hos
   })
 
   it('does not take over or stop an external DSH', async () => {
-    const lib = await source('src-tauri/src/commands/harness.rs')
+    const lib = await source('src-tauri/src/commands/harness/mod.rs')
     // The external check runs before any spawn, and the outcome is remembered
     // instead of retried. 现在读的是**这一次要用的那个端口**：并行实例的第二、三个各在自己的
     // 端口上，写死 3080 会让它们被自己的第一个实例挡住。
@@ -263,7 +263,7 @@ describe('DSH autostart wiring', () => {  it('starts DSH from the background hos
   })
 
   it('records the attempt on every exit path, so a failure cannot become a retry loop', async () => {
-    const lib = await source('src-tauri/src/commands/harness.rs')
+    const lib = await source('src-tauri/src/commands/harness/mod.rs')
     const autostart = lib.slice(lib.indexOf('fn autostart_managed_dsh'), lib.indexOf('fn managed_dsh_autostart_status'))
     // One guard at the top...
     expect(autostart).toMatch(/if let Some\(previous\) = record\.as_ref\(\)/)
@@ -275,7 +275,7 @@ describe('DSH autostart wiring', () => {  it('starts DSH from the background hos
   })
 
   it('shares one validated launch path between the manual button and autostart', async () => {
-    const lib = await source('src-tauri/src/commands/harness.rs')
+    const lib = await source('src-tauri/src/commands/harness/mod.rs')
     // An autostart that re-implemented validation could drift from the button.
     const manual = lib.slice(lib.indexOf('fn launch_dsh('), lib.indexOf('fn autostart_managed_dsh'))
     expect(manual).toContain('spawn_managed_dsh(state.inner()')
