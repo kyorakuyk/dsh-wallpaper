@@ -342,7 +342,7 @@ describe('native chat boundary', () => {
       readNative('src/lib.rs'),
       readNative('src/commands/harness/discovery.rs'),
       readNative('src/commands/harness/managed.rs'),
-      readNative('src/commands/harness/mod.rs'),
+      readNative('src/commands/harness/tests.rs'),
       readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8'),
       readFile(resolve(wallpaperRoot, 'src/native/runtime.ts'), 'utf8'),
       readArchive(archivedLockScreenCommandsPath),
