@@ -337,8 +337,9 @@ describe('native chat boundary', () => {
   })
 
   it('keeps settings probes off the UI thread and gives migrated DSH paths feedback', async () => {
-    const [lib, settings, runtime, archivedLockScreen, archivedIntegration] = await Promise.all([
+    const [lib, harness, settings, runtime, archivedLockScreen, archivedIntegration] = await Promise.all([
       readNative('src/lib.rs'),
+      readNative('src/commands/harness.rs'),
       readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8'),
       readFile(resolve(wallpaperRoot, 'src/native/runtime.ts'), 'utf8'),
       readArchive(archivedLockScreenCommandsPath),
@@ -349,10 +350,10 @@ describe('native chat boundary', () => {
     expect(lib).not.toMatch(/\b(?:translucent_tb_status|get_lock_screen_diagnostics|hide_child_console)\b/)
     expect(archivedIntegration).toMatch(/async\s+fn\s+translucent_tb_status[\s\S]*?spawn_blocking\(translucent_tb_status_blocking\)/)
     expect(archivedLockScreen).toMatch(/async\s+fn\s+get_lock_screen_diagnostics[\s\S]*?spawn_blocking\(move \|\| windows_integration::lock_screen_diagnostics/)
-    expect(lib).toMatch(/async\s+fn\s+scan_dsh_paths[\s\S]*?spawn_blocking\(move \|\| \{[\s\S]*?scan_dsh_paths_blocking/)
+    expect(harness).toMatch(/async\s+fn\s+scan_dsh_paths[\s\S]*?spawn_blocking\(move \|\| \{[\s\S]*?scan_dsh_paths_blocking/)
     expect(archivedIntegration).toMatch(/fn hide_child_console\(command: &mut std::process::Command\)/)
     expect(archivedIntegration).toContain('hide_child_console(&mut packaged_command)')
-    expect(lib).toContain('本机 3080 端口已被其他进程占用')
+    expect(harness).toContain('本机 3080 端口已被其他进程占用')
     expect(settings).toContain('dshScanBusy')
     // 文案搬进了字典（i18n）：窗口里只剩键，所以那两句话本身要在字典里核对。
     // 这两句进的是通知状态，所以取的是 `msg()`（**没求值**的词条，渲染期才求值）。
@@ -366,15 +367,15 @@ describe('native chat boundary', () => {
   })
 
   it('uses the built DSH CLI for managed launches when it is available', async () => {
-    const lib = await readNative('src/lib.rs')
+    const harness = await readNative('src/commands/harness.rs')
 
-    expect(lib).toContain('.join("apps")')
-    expect(lib).toContain('.join("cli")')
-    expect(lib).toContain('.join("lib")')
-    expect(lib).toContain('.join("bin.js")')
-    expect(lib).toContain('node.exe')
-    expect(lib).toContain('pnpm.cmd')
-    expect(lib).toContain('tsx/esm')
+    expect(harness).toContain('.join("apps")')
+    expect(harness).toContain('.join("cli")')
+    expect(harness).toContain('.join("lib")')
+    expect(harness).toContain('.join("bin.js")')
+    expect(harness).toContain('node.exe')
+    expect(harness).toContain('pnpm.cmd')
+    expect(harness).toContain('tsx/esm')
   })
 
   it('uses Rust as the only settings-to-background event router', async () => {

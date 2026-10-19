@@ -57,7 +57,10 @@ describe('resident polling budget', () => {
 
 describe('native exit lifecycle', () => {
   it('restores desktop state on exit and never conflates it with hiding to the tray', async () => {
-    const lib = await readNative('src/lib.rs')
+    const [lib, harness] = await Promise.all([
+      readNative('src/lib.rs'),
+      readNative('src/commands/harness.rs'),
+    ])
 
     // The run loop handles both exit events through one idempotent function.
     expect(lib).toMatch(/\.run\(\|app, event\| \{[\s\S]*?RunEvent::ExitRequested[\s\S]*?RunEvent::Exit[\s\S]*?shutdown_native_state\(app\)/)
@@ -68,9 +71,10 @@ describe('native exit lifecycle', () => {
     // Only the DSH instances this process launched are stopped — and now that means
     // **every one of them**: parallel instances put more than one child in the map, and
     // leaving one behind would leave a host nobody owns after the wallpaper exits.
-    expect(shutdown).toContain('stop_process_tree(')
-    expect(shutdown).toContain('std::mem::take(&mut *managed)')
-    expect(shutdown).toMatch(/for \(_, mut process\) in std::mem::take\(&mut \*managed\)/)
+    const stopManaged = harness.slice(harness.indexOf('fn shutdown_managed_dsh'))
+    expect(stopManaged).toContain('stop_process_tree(')
+    expect(stopManaged).toContain('std::mem::take(&mut *managed)')
+    expect(stopManaged).toMatch(/for \(_, mut process\) in std::mem::take\(&mut \*managed\)/)
     // 而且要**安静地**停：taskkill 是控制台程序，从 GUI 进程起它时若不带 CREATE_NO_WINDOW，
     // 退出时会闪一个黑框；用 `.output()` 还会为它建管道并一直等到它结束。
     const clientWindow = await readNative('src/client_window.rs')
