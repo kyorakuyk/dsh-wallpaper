@@ -166,16 +166,16 @@ describe('native chat boundary', () => {
   })
 
   it('declares an MSIX StartupTask while retaining the native autostart fallback', async () => {
-    const [manifest, lib, windows] = await Promise.all([
+    const [manifest, settingsCommands, windows] = await Promise.all([
       readManifest('AppxManifest.xml'),
-      readNative('src/lib.rs'),
+      readNative('src/commands/settings.rs'),
       readNative('src/windows_integration.rs'),
     ])
     expect(manifest).toContain('windows.startupTask')
     expect(manifest).toContain('DshWallpaperStartup')
     // The operation moved next to the Windows calls it makes, so the assertion
     // follows it: the command wrapper only keeps it off the UI thread.
-    expect(lib).toContain('windows_integration::set_autostart(enabled)')
+    expect(settingsCommands).toContain('windows_integration::set_autostart(enabled)')
     expect(windows).toContain('set_startup_task(enabled)')
     // The per-user Run entry remains the fallback for builds Windows will not
     // start through a StartupTask.
@@ -325,11 +325,12 @@ describe('native chat boundary', () => {
   })
 
   it('keeps autostart changes off the settings renderer thread and migrates old installs', async () => {
-    const [lib, settings] = await Promise.all([
+    const [lib, settingsCommands, settings] = await Promise.all([
       readNative('src/lib.rs'),
+      readNative('src/commands/settings.rs'),
       readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8'),
     ])
-    expect(lib).toMatch(/async\s+fn\s+set_autostart[\s\S]*?spawn_blocking\(move \|\| set_autostart_blocking\(enabled\)\)/)
+    expect(settingsCommands).toMatch(/async\s+fn\s+set_autostart[\s\S]*?spawn_blocking\(move \|\| set_autostart_blocking\(enabled\)\)/)
     expect(lib).toContain('migrate_legacy_autostart')
     expect(settings).toContain("nativeRuntime.autostartStatus()")
     expect(settings).toContain('autostartOperationRef')
@@ -411,8 +412,9 @@ describe('native chat boundary', () => {
   })
 
   it('keeps system-setting and desktop-input commands bound to their owning surface', async () => {
-    const [lib, harnessStatus, archivedLockScreen, archivedIntegration] = await Promise.all([
+    const [lib, settingsCommands, harnessStatus, archivedLockScreen, archivedIntegration] = await Promise.all([
       readNative('src/lib.rs'),
+      readNative('src/commands/settings.rs'),
       readNative('src/commands/harness_status.rs'),
       readArchive(archivedLockScreenCommandsPath),
       readArchive(archivedIntegrationCommandsPath),
@@ -420,7 +422,10 @@ describe('native chat boundary', () => {
     const settingsOnly = (command: string) =>
       new RegExp(`(?:async\\s+)?fn\\s+${command}\\s*\\([\\s\\S]*?\\)\\s*->[^\\{]*\\{[\\s\\S]*?require_settings\\(&caller\\)\\?;`)
 
-    for (const command of ['set_autostart', 'autostart_status', 'start_settings_drag', 'hide_settings_window']) {
+    for (const command of ['set_autostart', 'autostart_status']) {
+      expect(settingsCommands, command).toMatch(settingsOnly(command))
+    }
+    for (const command of ['start_settings_drag', 'hide_settings_window']) {
       expect(lib, command).toMatch(settingsOnly(command))
     }
     // Frozen commands (B3): the archived copies keep the same settings-only gate, so a

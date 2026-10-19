@@ -43,7 +43,7 @@ describe('API key entry in the settings window', () => {
 
   it('masks the stored key natively, and never shows the middle of it', async () => {
     const [native, panel] = await Promise.all([
-      source('src-tauri/src/lib.rs'),
+      source('src-tauri/src/commands/settings.rs'),
       source('src/settings/tabs/ConnectionsTab.tsx'),
     ])
 
@@ -54,16 +54,17 @@ describe('API key entry in the settings window', () => {
   })
 
   it('restricts the new commands to the settings surface', async () => {
-    const [native, apiChat, capability, build] = await Promise.all([
+    const [native, apiChat, settingsCommands, capability, build] = await Promise.all([
       source('src-tauri/src/lib.rs'),
       source('src-tauri/src/commands/chat.rs'),
+      source('src-tauri/src/commands/settings.rs'),
       source('src-tauri/capabilities/settings.json'),
       source('src-tauri/build.rs'),
     ])
 
-    expect(native).toContain('fn save_api_key(caller: tauri::WebviewWindow, key: String)')
-    expect(native).toContain('fn api_key_status(caller: tauri::WebviewWindow)')
-    expect(native).toContain('caller.label() != SETTINGS_WINDOW_LABEL')
+    expect(settingsCommands).toContain('fn save_api_key(caller: tauri::WebviewWindow, key: String)')
+    expect(settingsCommands).toContain('fn api_key_status(caller: tauri::WebviewWindow)')
+    expect(settingsCommands).toContain('caller.label() != SETTINGS_WINDOW_LABEL')
     // 权限只给设置窗：读状态的命令同样不开放给壁纸/球/网页那些窗口。
     expect(capability).toContain('"allow-save-api-key"')
     expect(capability).toContain('"allow-api-key-status"')

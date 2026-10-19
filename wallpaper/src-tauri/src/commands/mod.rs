@@ -4,3 +4,4 @@ pub(super) mod harness;
 pub(super) mod harness_status;
 #[cfg(not(feature = "lite"))]
 pub(super) mod chat;
+pub(super) mod settings;
