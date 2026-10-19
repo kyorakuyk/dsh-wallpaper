@@ -1444,7 +1444,7 @@ pub(crate) fn plan_launch(
 /// Start the planned subject and report what happened.
 pub(crate) fn run_launch(
     plan: &LaunchPlan,
-    managed: &crate::ManagedDshState,
+    managed: &crate::commands::harness::ManagedDshState,
     trigger: LaunchTrigger,
 ) -> HarnessLaunchOutcome {
     match plan {
@@ -1499,7 +1499,7 @@ pub(crate) fn run_launch(
             root_path,
             profile,
             args,
-        } => match crate::spawn_managed_dsh(managed, root_path, root_path, profile, args) {
+        } => match crate::commands::harness::spawn_managed_dsh(managed, root_path, root_path, profile, args) {
             // `spawn_managed_dsh` returns the existing pid when this process
             // already owns a running child for this instance, so "started" also
             // covers "already managed"; ownership is the same either way.
@@ -1511,7 +1511,7 @@ pub(crate) fn run_launch(
             },
             Err(error) => {
                 log::warn!("harness target launch failed: {error}");
-                let code = crate::classify_dsh_launch_failure(&error);
+                let code = crate::commands::harness::classify_dsh_launch_failure(&error);
                 HarnessLaunchOutcome::new(&code, HarnessTargetKind::Checkout)
             }
         },
@@ -2431,10 +2431,10 @@ fn ui_port(subject_id: &str, declared: u16) -> u16 {
     if declared != 0 {
         return declared;
     }
-    if crate::harness_endpoint_configured() {
+    if crate::commands::harness_status::harness_endpoint_configured() {
         // The settings' subject decides, and through `harness_endpoint_port` it
         // already accounts for a checkout the user moved to another port.
-        return crate::harness_endpoint_port();
+        return crate::commands::harness_status::harness_endpoint_port();
     }
     // Nothing has been published yet — the settings window can reach a subject
     // before it has pushed the scope — so the subject the caller names is the only
@@ -2445,7 +2445,7 @@ fn ui_port(subject_id: &str, declared: u16) -> u16 {
             return port;
         }
     }
-    crate::harness_endpoint_port()
+    crate::commands::harness_status::harness_endpoint_port()
 }
 
 /// Make the chosen subject's interface available and foreground.
@@ -2466,7 +2466,7 @@ pub(crate) fn ensure_ui(
     port: u16,
     profile: &str,
     args: &[String],
-    managed: &crate::ManagedDshState,
+    managed: &crate::commands::harness::ManagedDshState,
 ) -> HarnessUiOutcome {
     let kind = subject_kind(subject_id);
     let port = ui_port(subject_id, port);
@@ -4156,7 +4156,7 @@ let root = std::env::temp_dir().join(format!("dsh-bridge-test-{}-{}", std::proce
         // Then the whole action the button performs, on the shell that is already
         // running: it starts nothing, and the alias request only asks the shell to
         // focus the window it owns.
-        let state = crate::ManagedDshState::default();
+        let state = crate::commands::harness::ManagedDshState::default();
         let ui = ensure_ui(
             "shell:com.deepseek.dsh",
             port,

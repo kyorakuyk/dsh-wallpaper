@@ -163,7 +163,7 @@ use windows::{
     ApplicationModel::{StartupTask, StartupTaskState},
     Win32::{
         Foundation::{
-            GetLastError, APPMODEL_ERROR_NO_PACKAGE, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND,
+            GetLastError, SetLastError, APPMODEL_ERROR_NO_PACKAGE, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND,
             ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, ERROR_SUCCESS, HWND, LPARAM, LRESULT,
             POINT, RECT, WPARAM,
         },
@@ -2336,13 +2336,45 @@ pub fn hand_over_keyboard_for_app(app: &tauri::AppHandle) {
 #[cfg(not(windows))]
 pub fn hand_over_keyboard_for_app(_app: &tauri::AppHandle) {}
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FocusSetOutcome {
+    Success,
+    Failure(u32),
+}
+
+fn classify_focus_set_result(returned_null: bool, last_error: u32) -> FocusSetOutcome {
+    if !returned_null || last_error == ERROR_SUCCESS.0 {
+        FocusSetOutcome::Success
+    } else {
+        FocusSetOutcome::Failure(last_error)
+    }
+}
+
+#[cfg(windows)]
+unsafe fn set_focus_checked(hwnd: HWND) -> FocusSetOutcome {
+    SetLastError(ERROR_SUCCESS);
+    let result = SetFocus(Some(hwnd));
+    classify_focus_set_result(result.is_err(), GetLastError().0)
+}
+
 #[cfg(windows)]
 pub fn hand_over_keyboard_after_verified_click(host: HWND) -> String {
     unsafe {
         let top = GetAncestor(host, GA_ROOT);
         if top.0.is_null() {
-            return "未找到顶层祖先窗口；未执行交接".to_string();
+            let host_mode = wallpaper_host_status_state()
+                .read()
+                .map(|status| status.mode)
+                .unwrap_or(WallpaperHostMode::Unavailable);
+            return format!(
+                "未找到顶层祖先窗口；未执行交接 host_mode={host_mode:?} host_hwnd=0x{:X}",
+                host.0 as usize,
+            );
         }
+        let host_mode = wallpaper_host_status_state()
+            .read()
+            .map(|status| status.mode)
+            .unwrap_or(WallpaperHostMode::Unavailable);
         let foreground_before = GetForegroundWindow();
         let mut foreground_thread = 0u32;
         GetWindowThreadProcessId(foreground_before, Some(&mut foreground_thread));
@@ -2351,7 +2383,7 @@ pub fn hand_over_keyboard_after_verified_click(host: HWND) -> String {
             && foreground_thread != current_thread
             && AttachThreadInput(current_thread, foreground_thread, true).as_bool();
         let foreground_ok = SetForegroundWindow(top).as_bool();
-        let focus_ok = SetFocus(Some(host)).is_ok();
+        let focus_result = set_focus_checked(host);
         if attached {
             let _ = AttachThreadInput(current_thread, foreground_thread, false);
         }
@@ -2377,8 +2409,12 @@ pub fn hand_over_keyboard_after_verified_click(host: HWND) -> String {
         // foreground and the keyboard focus has followed into the WebView. Anything else is
         // reported as a failure with the whole picture, never as a success.
         let webview_has_focus = focus_pid.is_some_and(|pid| pid != 0 && pid != std::process::id());
+        let root_class = window_class(top).unwrap_or_else(|| "<none>".to_string());
         format!(
-            "交接结果：附接={attached} SetForegroundWindow={foreground_ok} SetFocus={focus_ok} | 读回 前台={foreground_class}(pid={foreground_now_pid}) 焦点={focus_class}(pid={focus_pid:?}) 壁纸pid={}",
+            "交接结果：host_mode={host_mode:?} host_hwnd=0x{:X} root_hwnd=0x{:X} root_class={root_class} foreground_class={foreground_class} foreground_matches_root={} AttachThreadInput={attached} SetForegroundWindow={foreground_ok} SetFocus={focus_result:?} webview_has_focus={webview_has_focus} | 读回 前台={foreground_class}(pid={foreground_now_pid}) 焦点={focus_class}(pid={focus_pid:?}) 壁纸pid={}",
+            host.0 as usize,
+            top.0 as usize,
+            foreground_now.0 == top.0,
             std::process::id(),
         )
     }
@@ -2394,11 +2430,11 @@ pub fn hand_over_keyboard_after_verified_click(_host: usize) -> String {
 pub fn verify_island_click() -> Result<String, String> {
     unsafe {
         if GetAsyncKeyState(VK_LBUTTON.0 as i32) >= 0 {
-            return Err("未检测到物理左键按下；拒绝把 IPC 调用当作输入岛点击".into());
+            return Err("拒绝原因=physical-left-button-up：未检测到物理左键按下；拒绝把 IPC 调用当作输入岛点击".into());
         }
         let mut cursor = POINT::default();
-        if GetCursorPos(&mut cursor).is_err() {
-            return Err("无法读取光标位置".into());
+        if let Err(error) = GetCursorPos(&mut cursor) {
+            return Err(format!("拒绝原因=cursor-position-unavailable：无法读取光标位置 ({error})"));
         }
         let under = WindowFromPoint(cursor);
         let mut under_pid = 0u32;
@@ -2412,7 +2448,7 @@ pub fn verify_island_click() -> Result<String, String> {
         // belong to the wallpaper, and this is that check.
         if !window_chain_reaches_this_process(under) {
             return Err(format!(
-                "光标下的窗口父链不属于壁纸（class={under_class} pid={under_pid}）；拒绝激活"
+                "拒绝原因=foreign-window-chain：光标下的窗口父链不属于壁纸（class={under_class} pid={under_pid}）；拒绝激活"
             ));
         }
         // Deliberately no geometry check here. The declared regions are in wallpaper-local
@@ -2533,6 +2569,10 @@ fn hand_over_keyboard_after_island_click(root: HWND) {
         *last = Some(std::time::Instant::now());
     }
     unsafe {
+        let host_mode = wallpaper_host_status_state()
+            .read()
+            .map(|status| status.mode)
+            .unwrap_or(WallpaperHostMode::Unavailable);
         let foreground = GetForegroundWindow();
         let mut foreground_pid = 0u32;
         let foreground_thread = GetWindowThreadProcessId(foreground, Some(&mut foreground_pid));
@@ -2540,7 +2580,7 @@ fn hand_over_keyboard_after_island_click(root: HWND) {
         let attached = foreground_thread != 0
             && foreground_thread != current_thread
             && AttachThreadInput(current_thread, foreground_thread, true).as_bool();
-        let focus_result = SetFocus(Some(root));
+        let focus_result = set_focus_checked(root);
         if attached {
             let _ = AttachThreadInput(current_thread, foreground_thread, false);
         }
@@ -2559,12 +2599,21 @@ fn hand_over_keyboard_after_island_click(root: HWND) {
         };
         let ours = foreground_now_pid == std::process::id();
         let webview_has_focus = focus_pid.is_some_and(|pid| pid != 0 && pid != std::process::id());
+        let desktop_root = GetAncestor(root, GA_ROOT);
+        let root_class = window_class(desktop_root).unwrap_or_else(|| "<none>".to_string());
+        let foreground_class = window_class(foreground_now).unwrap_or_else(|| "<none>".to_string());
+        let foreground_matches_root = foreground_now.0 == desktop_root.0;
         if ours && webview_has_focus {
-            log::info!("island click: keyboard channel handed over to the WebView");
+            log::info!(
+                "island click: keyboard channel handed over to the WebView host_mode={host_mode:?} host_hwnd=0x{:X} root_hwnd=0x{:X} root_class={root_class} foreground_class={foreground_class} foreground_matches_root={foreground_matches_root} AttachThreadInput={attached} SetFocus={focus_result:?} webview_has_focus={webview_has_focus}",
+                root.0 as usize,
+                desktop_root.0 as usize,
+            );
         } else {
             log::warn!(
-                "island click: handover did not take - attached={attached} set_focus_ok={} foreground_is_wallpaper={ours} focus_on_webview={webview_has_focus} foreground_pid={foreground_now_pid}",
-                focus_result.is_ok(),
+                "island click: handover did not take - host_mode={host_mode:?} host_hwnd=0x{:X} root_hwnd=0x{:X} root_class={root_class} foreground_class={foreground_class} foreground_matches_root={foreground_matches_root} AttachThreadInput={attached} SetFocus={focus_result:?} foreground_is_wallpaper={ours} webview_has_focus={webview_has_focus} foreground_pid={foreground_now_pid}",
+                root.0 as usize,
+                desktop_root.0 as usize,
             );
         }
     }
@@ -2763,42 +2812,43 @@ fn restore_desktop_keyboard_focus(app: &tauri::AppHandle) {
             log::warn!("desktop focus restore: background window has no handle");
             return;
         };
-        match unsafe { SetFocus(Some(HWND(hwnd.0))) } {
-            Ok(_) => {
-                // Tiered on purpose (repair plan 3.C). `SetFocus` returning success only
-                // proves this thread could set focus; it does not prove Windows handed the
-                // keyboard channel over. Reporting "restored" on that alone is what made a
-                // failing fix look like a working one, so the claim is graded by readback:
-                // the window must actually be foreground and its keyboard focus must sit on
-                // a WebView2 process, which is the state a working input was measured in.
-                let foreground = unsafe { GetForegroundWindow() };
-                let mut foreground_pid = 0u32;
-                unsafe { GetWindowThreadProcessId(foreground, Some(&mut foreground_pid)) };
-                let mut info = GUITHREADINFO::default();
-                info.cbSize = core::mem::size_of::<GUITHREADINFO>() as u32;
-                let focus_pid = if unsafe { GetGUIThreadInfo(0, &mut info) }.is_ok() {
-                    let mut pid = 0u32;
-                    unsafe { GetWindowThreadProcessId(info.hwndFocus, Some(&mut pid)) };
-                    Some(pid)
-                } else {
-                    None
-                };
-                let ours = foreground_pid == std::process::id();
-                // A WebView2 input window belongs to a browser helper process, never to us,
-                // so a different-but-present PID is the expected success shape here.
-                let webview2_has_focus = focus_pid.is_some_and(|pid| pid != 0 && pid != std::process::id());
-                if ours && webview2_has_focus {
-                    log::info!("keyboard channel restored: foreground is the wallpaper and focus is on the WebView");
-                } else {
-                    log::warn!(
-                        "thread focus set, but the keyboard channel is not restored: \
-                         foreground_is_wallpaper={ours} focus_on_webview={webview2_has_focus}"
-                    );
-                }
-            }
-            // Not fatal - the desktop may not be foreground yet - but reported rather
-            // than swallowed, since a silent failure here is what made this hard to find.
-            Err(error) => log::warn!("desktop focus restore: SetFocus failed: {error}"),
+        let host = HWND(hwnd.0);
+        let host_mode = wallpaper_host_status_state()
+            .read()
+            .map(|status| status.mode)
+            .unwrap_or(WallpaperHostMode::Unavailable);
+        let focus_result = unsafe { set_focus_checked(host) };
+        // SetFocus's return is only one diagnostic. Always read back the actual
+        // foreground and keyboard focus, even when SetFocus reports a real error.
+        let desktop_root = unsafe { GetAncestor(host, GA_ROOT) };
+        let root_class = window_class(desktop_root).unwrap_or_else(|| "<none>".to_string());
+        let foreground = unsafe { GetForegroundWindow() };
+        let foreground_class = window_class(foreground).unwrap_or_else(|| "<none>".to_string());
+        let foreground_matches_root = foreground.0 == desktop_root.0;
+        let mut foreground_pid = 0u32;
+        unsafe { GetWindowThreadProcessId(foreground, Some(&mut foreground_pid)) };
+        let mut info = GUITHREADINFO::default();
+        info.cbSize = core::mem::size_of::<GUITHREADINFO>() as u32;
+        let focus_pid = if unsafe { GetGUIThreadInfo(0, &mut info) }.is_ok() {
+            let mut pid = 0u32;
+            unsafe { GetWindowThreadProcessId(info.hwndFocus, Some(&mut pid)) };
+            Some(pid)
+        } else {
+            None
+        };
+        let webview_has_focus = focus_pid.is_some_and(|pid| pid != 0 && pid != std::process::id());
+        let foreground_is_wallpaper = foreground_pid == std::process::id();
+        let diagnostic = format!(
+            "host_mode={host_mode:?} host_hwnd=0x{:X} root_hwnd=0x{:X} root_class={root_class} foreground_class={foreground_class} foreground_matches_root={foreground_matches_root} AttachThreadInput=false SetFocus={focus_result:?} foreground_is_wallpaper={foreground_is_wallpaper} webview_has_focus={webview_has_focus} focus_pid={focus_pid:?}",
+            host.0 as usize,
+            desktop_root.0 as usize,
+        );
+        if let FocusSetOutcome::Failure(error) = focus_result {
+            log::warn!("desktop focus restore: SetFocus failed: 0x{error:08X}; {diagnostic}");
+        } else if foreground_is_wallpaper && webview_has_focus {
+            log::info!("desktop focus restore: keyboard channel restored; {diagnostic}");
+        } else {
+            log::warn!("desktop focus restore: keyboard channel not restored; {diagnostic}");
         }
       });
     });
@@ -4259,6 +4309,30 @@ pub fn start_foreground_monitor(_: tauri::AppHandle) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_null_set_focus_return_with_no_last_error_is_success() {
+        assert_eq!(
+            classify_focus_set_result(true, ERROR_SUCCESS.0),
+            FocusSetOutcome::Success
+        );
+    }
+
+    #[test]
+    fn a_null_set_focus_return_with_an_error_preserves_the_error_code() {
+        assert_eq!(
+            classify_focus_set_result(true, 87),
+            FocusSetOutcome::Failure(87)
+        );
+    }
+
+    #[test]
+    fn a_non_null_set_focus_return_is_success_even_with_a_residual_error() {
+        assert_eq!(
+            classify_focus_set_result(false, 87),
+            FocusSetOutcome::Success
+        );
+    }
 
     /// 这一组盯的是「后台线程不许碰 Tauri 运行期窗口状态」这条规矩的可测部分。
     ///

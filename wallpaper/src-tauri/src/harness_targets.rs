@@ -23,7 +23,7 @@
 //!   and the launch alias are location-independent; a checkout's path *is* its
 //!   identity, which is why it is the one target kind that carries a path.
 //! * **One fingerprint, one place.** The checkout fingerprint is
-//!   [`crate::scan_dsh_paths_blocking`] — not a second copy that could drift
+//!   [`crate::commands::harness::scan_dsh_paths_blocking`] — not a second copy that could drift
 //!   away from the one the settings picker already shows.
 //! * **Facts here, wording there.** This module returns labels only where a
 //!   label is an identity (the two known shells reuse the strings
@@ -422,7 +422,7 @@ pub(crate) fn subject_endpoint_ports(
             ports.push(declared);
         }
     }
-    let default = crate::HARNESS_DEFAULT_PORT;
+    let default = crate::commands::harness_status::HARNESS_DEFAULT_PORT;
     if !ports.contains(&default) {
         ports.push(default);
     }
@@ -502,7 +502,7 @@ fn checkout_target(root_path: &str, source: &str) -> HarnessTarget {
         identity: TargetIdentity {
             aumid: None,
             root_path: Some(root_path.to_string()),
-            default_ports: vec![crate::HARNESS_DEFAULT_PORT],
+            default_ports: vec![crate::commands::harness_status::HARNESS_DEFAULT_PORT],
         },
         launch: LaunchRecipe {
             kind: LaunchRecipeKind::ManagedCommand,
@@ -580,7 +580,7 @@ fn installed_cli_target(launcher: &Path) -> HarnessTarget {
         identity: TargetIdentity {
             aumid: None,
             root_path: None,
-            default_ports: vec![crate::HARNESS_DEFAULT_PORT],
+            default_ports: vec![crate::commands::harness_status::HARNESS_DEFAULT_PORT],
         },
         launch: LaunchRecipe {
             kind: LaunchRecipeKind::ManagedCommand,
@@ -781,7 +781,7 @@ pub(crate) fn build_scan_for_tests(shortcuts: &[ScannedShortcut]) -> HarnessTarg
 
 fn build_scan(
     shortcuts: &[ScannedShortcut],
-    checkouts: &[crate::DshPathCandidate],
+    checkouts: &[crate::commands::harness::DshPathCandidate],
     installed_clis: &[PathBuf],
 ) -> HarnessTargetScan {
     let mut targets = shell_targets_from(shortcuts);
@@ -822,7 +822,7 @@ fn build_scan(
 /// the command wrapper runs it on a blocking thread.
 pub fn scan_harness_targets_blocking(hint_path: Option<String>, deep_scan: bool) -> HarnessTargetScan {
     let shortcuts = scan_shell_shortcuts();
-    let checkouts = crate::scan_dsh_paths_blocking(hint_path, deep_scan);
+    let checkouts = crate::commands::harness::scan_dsh_paths_blocking(hint_path, deep_scan);
     // npm's global prefix on Windows is `%APPDATA%\npm`, and it also puts that
     // directory on `PATH`; both are given to the pure matcher, so this is the only
     // place the environment is read.
@@ -1085,7 +1085,7 @@ mod tests {
     /// 仍然是"快捷方式 + 检出"两件事，而需要覆盖第三类的测试直接调 `super::build_scan`。
     fn build_scan(
         shortcuts: &[ScannedShortcut],
-        checkouts: &[crate::DshPathCandidate],
+        checkouts: &[crate::commands::harness::DshPathCandidate],
     ) -> HarnessTargetScan {
         super::build_scan(shortcuts, checkouts, &[])
     }
@@ -1138,8 +1138,8 @@ mod tests {
         }
     }
 
-    fn checkout(root: &str, source: &str) -> crate::DshPathCandidate {
-        crate::DshPathCandidate {
+    fn checkout(root: &str, source: &str) -> crate::commands::harness::DshPathCandidate {
+        crate::commands::harness::DshPathCandidate {
             root_path: root.into(),
             source: source.into(),
         }
@@ -1278,7 +1278,7 @@ mod tests {
         assert_eq!(target.version, None);
         assert_eq!(
             target.identity.default_ports,
-            vec![crate::HARNESS_DEFAULT_PORT]
+            vec![crate::commands::harness_status::HARNESS_DEFAULT_PORT]
         );
         // 它会像检出那样 boot 一个 profile。
         assert!(target.capabilities.needs_profile);

@@ -57,7 +57,11 @@ describe('resident polling budget', () => {
 
 describe('native exit lifecycle', () => {
   it('restores desktop state on exit and never conflates it with hiding to the tray', async () => {
-    const lib = await readNative('src/lib.rs')
+    const [lib, harness, harnessStatus] = await Promise.all([
+      readNative('src/lib.rs'),
+      readNative('src/commands/harness.rs'),
+      readNative('src/commands/harness_status.rs'),
+    ])
 
     // The run loop handles both exit events through one idempotent function.
     expect(lib).toMatch(/\.run\(\|app, event\| \{[\s\S]*?RunEvent::ExitRequested[\s\S]*?RunEvent::Exit[\s\S]*?shutdown_native_state\(app\)/)
@@ -68,9 +72,10 @@ describe('native exit lifecycle', () => {
     // Only the DSH instances this process launched are stopped — and now that means
     // **every one of them**: parallel instances put more than one child in the map, and
     // leaving one behind would leave a host nobody owns after the wallpaper exits.
-    expect(shutdown).toContain('stop_process_tree(')
-    expect(shutdown).toContain('std::mem::take(&mut *managed)')
-    expect(shutdown).toMatch(/for \(_, mut process\) in std::mem::take\(&mut \*managed\)/)
+    const stopManaged = harness.slice(harness.indexOf('fn shutdown_managed_dsh'))
+    expect(stopManaged).toContain('stop_process_tree(')
+    expect(stopManaged).toContain('std::mem::take(&mut *managed)')
+    expect(stopManaged).toMatch(/for \(_, mut process\) in std::mem::take\(&mut \*managed\)/)
     // 而且要**安静地**停：taskkill 是控制台程序，从 GUI 进程起它时若不带 CREATE_NO_WINDOW，
     // 退出时会闪一个黑框；用 `.output()` 还会为它建管道并一直等到它结束。
     const clientWindow = await readNative('src/client_window.rs')
@@ -83,13 +88,13 @@ describe('native exit lifecycle', () => {
     expect(stopHelper).not.toContain('.output()')
     // 换了主体，"连接"这个词说的就是另一个对象：探测器必须把上一条连接的历史作废，否则界面会
     // 一直写着"已连接"（实测症状：呼吸灯 + bridge 已连接，而一发消息就说会话尚未建立）。
-    const monitorLoop = lib.slice(lib.indexOf('fn start_harness_monitor'))
+    const monitorLoop = harnessStatus.slice(harnessStatus.indexOf('fn start_harness_monitor'))
     expect(monitorLoop).toContain('harness_scope_key()')
     expect(monitorLoop).toContain('monitor = HarnessMonitorState::default()')
     // Every step is inside a `Once`, because ExitRequested can precede Exit.
     expect(shutdown).toContain('SHUTDOWN.call_once')
     // The tray "hide" item is an action dispatch, not an exit.
-    expect(lib).toMatch(/"hide" => \{\s*\n\s*dispatch_ui_action\(app, AppAction::SetInteractionEnabled\(false\), false\)/)
+    expect(lib).toMatch(/"hide" => \{\s*\n\s*commands::desktop::dispatch_ui_action\(app, AppAction::SetInteractionEnabled\(false\), false\)/)
   })
 
   it('releases the session notification registration it installed', async () => {

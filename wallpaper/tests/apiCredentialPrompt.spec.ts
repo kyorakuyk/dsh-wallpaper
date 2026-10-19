@@ -43,7 +43,7 @@ describe('API key entry in the settings window', () => {
 
   it('masks the stored key natively, and never shows the middle of it', async () => {
     const [native, panel] = await Promise.all([
-      source('src-tauri/src/lib.rs'),
+      source('src-tauri/src/commands/settings.rs'),
       source('src/settings/tabs/ConnectionsTab.tsx'),
     ])
 
@@ -54,15 +54,18 @@ describe('API key entry in the settings window', () => {
   })
 
   it('restricts the new commands to the settings surface', async () => {
-    const [native, capability, build] = await Promise.all([
+    const [native, commandModule, apiChat, settingsCommands, capability, build] = await Promise.all([
       source('src-tauri/src/lib.rs'),
+      source('src-tauri/src/commands/mod.rs'),
+      source('src-tauri/src/commands/chat.rs'),
+      source('src-tauri/src/commands/settings.rs'),
       source('src-tauri/capabilities/settings.json'),
       source('src-tauri/build.rs'),
     ])
 
-    expect(native).toContain('fn save_api_key(caller: tauri::WebviewWindow, key: String)')
-    expect(native).toContain('fn api_key_status(caller: tauri::WebviewWindow)')
-    expect(native).toContain('caller.label() != SETTINGS_WINDOW_LABEL')
+    expect(settingsCommands).toContain('fn save_api_key(caller: tauri::WebviewWindow, key: String)')
+    expect(settingsCommands).toContain('fn api_key_status(caller: tauri::WebviewWindow)')
+    expect(settingsCommands).toContain('caller.label() != SETTINGS_WINDOW_LABEL')
     // 权限只给设置窗：读状态的命令同样不开放给壁纸/球/网页那些窗口。
     expect(capability).toContain('"allow-save-api-key"')
     expect(capability).toContain('"allow-api-key-status"')
@@ -71,8 +74,10 @@ describe('API key entry in the settings window', () => {
     expect(capability).toContain('"allow-api-models"')
     // **光有权限还不够**：命令自己也会认调用者。原来 `api_models` 只认壁纸宿主，用户实测点
     // 「测试」直接报"该命令只允许壁纸宿主调用"。现在它认两个表面（球、网页窗口仍然不行）。
-    expect(native).toMatch(/async fn api_models\(caller: tauri::WebviewWindow, base_url: String\) -> Result<serde_json::Value, String> \{[\s\S]{0,600}?require_wallpaper_surface\(&caller\)\?/)
-    expect(native).toContain('BACKGROUND_WINDOW_LABEL | SETTINGS_WINDOW_LABEL => Ok(())')
+    expect(apiChat).toMatch(/async fn api_models\(caller: tauri::WebviewWindow, base_url: String\) -> Result<serde_json::Value, String> \{[\s\S]{0,600}?require_wallpaper_surface\(&caller\)\?/)
+    // 共享 guards 已纯搬运到 `commands/mod.rs`（阶段 B）；两条表面判据跟着实现走。
+    expect(native).not.toContain('fn require_wallpaper_surface')
+    expect(commandModule).toContain('crate::BACKGROUND_WINDOW_LABEL | crate::SETTINGS_WINDOW_LABEL => Ok(())')
     // 命令要进 ACL 白名单，否则调用会被 tauri 直接拒掉。
     expect(build).toContain('"save_api_key"')
     expect(build).toContain('"api_key_status"')

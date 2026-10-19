@@ -3261,7 +3261,7 @@ fn harness_query_port(state: &ChatState) -> u16 {
     }
     #[cfg(not(feature = "lite"))]
     {
-        crate::harness_endpoint_port()
+        crate::commands::harness_status::harness_endpoint_port()
     }
     #[cfg(feature = "lite")]
     {

@@ -68,7 +68,7 @@ describe('the chat-mode switch in the settings centre', () => {
 
   it('is allowed for the settings surface in the native gate and the capability', async () => {
     const [native, capability] = await Promise.all([
-      source('src-tauri/src/lib.rs'),
+      source('src-tauri/src/commands/desktop.rs'),
       source('src-tauri/capabilities/settings.json'),
     ])
 
