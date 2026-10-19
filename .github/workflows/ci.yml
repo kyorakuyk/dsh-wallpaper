@@ -129,6 +129,9 @@ jobs:
 
       - name: Run Rust tests
         run: cargo test --manifest-path wallpaper/src-tauri/Cargo.toml --locked --all-targets
+      - name: Report undocumented unsafe blocks
+        continue-on-error: true
+        run: cargo clippy --manifest-path wallpaper/src-tauri/Cargo.toml --locked --all-targets -- -A clippy::all -W clippy::undocumented_unsafe_blocks
 
   # Lite：前端产物、原生目标与产物边界三件事互相依赖，所以留在同一个作业里。
   lite:
