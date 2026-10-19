@@ -1309,114 +1309,8 @@ fn desktop_layout_metrics(
 }
 
 
-#[tauri::command]
-#[cfg(not(feature = "lite"))]
-async fn connect_harness(
-    caller: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, chat::ChatState>,
-    resume_session_id: Option<String>,
-    connection_id: String,
-    model: Option<String>,
-    preset: Option<String>,
-) -> Result<String, String> {
-    require_background(&caller)?;
-    // The session follows the endpoint selected in settings, resolved here rather
-    // than trusted from the caller: the renderer cannot name an arbitrary port,
-    // and the monitor reads the same value, so status and sessions cannot
-    // disagree about which client is in use.
-    let endpoint_port = Some(commands::harness_status::harness_endpoint_port());
-    chat::harness_connect(app, state, resume_session_id, connection_id, model, endpoint_port, preset).await
-}
 
-#[tauri::command]
-#[cfg(not(feature = "lite"))]
-async fn harness_history(
-    caller: tauri::WebviewWindow,
-    state: tauri::State<'_, chat::ChatState>,
-) -> Result<serde_json::Value, String> {
-    require_background(&caller)?;
-    chat::harness_history(state).await
-}
 
-#[tauri::command]
-#[cfg(not(feature = "lite"))]
-async fn harness_presets(
-    caller: tauri::WebviewWindow,
-    state: tauri::State<'_, chat::ChatState>,
-) -> Result<serde_json::Value, String> {
-    require_background(&caller)?;
-    chat::harness_presets(state).await
-}
-
-#[tauri::command]
-#[cfg(not(feature = "lite"))]
-async fn harness_set_preset(
-    caller: tauri::WebviewWindow,
-    state: tauri::State<'_, chat::ChatState>,
-    preset: String,
-) -> Result<serde_json::Value, String> {
-    require_background(&caller)?;
-    chat::harness_set_preset(state, preset).await
-}
-
-#[tauri::command]
-#[cfg(not(feature = "lite"))]
-async fn harness_controls(
-    caller: tauri::WebviewWindow,
-    state: tauri::State<'_, chat::ChatState>,
-) -> Result<serde_json::Value, String> {
-    require_background(&caller)?;
-    chat::harness_controls(state).await
-}
-
-/// 枚举当前 Harness 主体（检出 / 桌面 / 官壳）可用的模型。
-///
-/// 名单由宿主提供、经桥接转发；宿主没有该能力时桥接报 `supported: false`，
-/// 前端据此退化成"只显示当前模型"，而不是摆一串会被拒绝的 id。
-#[tauri::command]
-#[cfg(not(feature = "lite"))]
-async fn harness_models(
-    caller: tauri::WebviewWindow,
-    state: tauri::State<'_, chat::ChatState>,
-) -> Result<serde_json::Value, String> {
-    require_background(&caller)?;
-    chat::harness_models(state).await
-}
-
-/// 把壁纸选定的模型推给 Harness 宿主，使宿主默认模型与壁纸一致。
-#[tauri::command]
-#[cfg(not(feature = "lite"))]
-async fn harness_set_model(
-    caller: tauri::WebviewWindow,
-    state: tauri::State<'_, chat::ChatState>,
-    model: String,
-) -> Result<serde_json::Value, String> {
-    require_background(&caller)?;
-    chat::harness_set_model(state, model).await
-}
-
-/// 枚举 DeepSeek API 端点自己列出的模型（兼容接口的 `/models`）。
-#[tauri::command]
-#[cfg(not(feature = "lite"))]
-async fn api_models(caller: tauri::WebviewWindow, base_url: String) -> Result<serde_json::Value, String> {
-    // 两个界面都要用这一份目录：壁纸端的模型选择器（Harness 兼容端点）与设置中心的
-    // 「测试／刷新」（用户要在那里看到"现在有哪些模型"）。**不是**放宽给球或网页窗口——
-    // 它仍然只认这两个表面，`require_wallpaper_surface` 就是这条边界。
-    require_wallpaper_surface(&caller)?;
-    chat::api_models(base_url).await
-}
-
-#[tauri::command]
-#[cfg(not(feature = "lite"))]
-async fn harness_set_permission(
-    caller: tauri::WebviewWindow,
-    state: tauri::State<'_, chat::ChatState>,
-    permission: String,
-) -> Result<serde_json::Value, String> {
-    require_background(&caller)?;
-    chat::harness_set_permission(state, permission).await
-}
 
 
 /// Verify that the renderer's island `pointerdown` really is a user click.
@@ -1604,15 +1498,15 @@ macro_rules! register_edition_commands {
             leave_inner_workspace,
             commands::chat::send_chat,
             commands::chat::cancel_chat,
-            connect_harness,
-            harness_history,
-            harness_presets,
-            harness_set_preset,
-            harness_controls,
-            harness_models,
-            harness_set_model,
-            api_models,
-            harness_set_permission,
+            commands::harness::connect_harness,
+            commands::harness::harness_history,
+            commands::harness::harness_presets,
+            commands::harness::harness_set_preset,
+            commands::harness::harness_controls,
+            commands::harness::harness_models,
+            commands::harness::harness_set_model,
+            commands::chat::api_models,
+            commands::harness::harness_set_permission,
             commands::chat::api_history,
             commands::chat::list_api_conversations,
             commands::chat::delete_api_conversation,

@@ -392,16 +392,17 @@ describe('native chat boundary', () => {
   })
 
   it('defends the sensitive commands against a future ACL mistake', async () => {
-    const [lib, chatCommands] = await Promise.all([
+    const [lib, chatCommands, harnessCommands] = await Promise.all([
       readNative('src/lib.rs'),
       readNative('src/commands/chat.rs'),
+      readNative('src/commands/harness.rs'),
     ])
 
     expect(lib).toMatch(/const BACKGROUND_WINDOW_LABEL:\s*&str\s*=\s*"background"/)
     expect(lib).toMatch(/fn require_background\s*\(caller:\s*&tauri::WebviewWindow\)/)
     for (const command of ['connect_harness', 'harness_history']) {
       const signature = new RegExp(`(?:async\\s+)?fn\\s+${command}\\s*\\([\\s\\S]*?\\)\\s*->[^\\{]*\\{[\\s\\S]*?require_background\\(&caller\\)\\?;`)
-      expect(lib, command).toMatch(signature)
+      expect(harnessCommands, command).toMatch(signature)
     }
     for (const command of ['send_chat', 'cancel_chat', 'api_history']) {
       const signature = new RegExp(`(?:async\\s+)?fn\\s+${command}\\s*\\([\\s\\S]*?\\)\\s*->[^\\{]*\\{[\\s\\S]*?require_background\\(&caller\\)\\?;`)
