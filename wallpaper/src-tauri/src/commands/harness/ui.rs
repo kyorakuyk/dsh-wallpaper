@@ -1,6 +1,6 @@
 use crate::*;
 use crate::commands::{require_background, require_wallpaper_surface};
-use super::{autostart_attempt, record_autostart_attempt, ManagedDshAutostart, ManagedDshState};
+use super::managed::{autostart_attempt, record_autostart_attempt, ManagedDshAutostart, ManagedDshState};
 
 /// 确保某个主体的档案里有我们钉住的那一版桥。
 ///

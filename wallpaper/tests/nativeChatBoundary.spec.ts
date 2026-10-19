@@ -338,17 +338,18 @@ describe('native chat boundary', () => {
   })
 
   it('keeps settings probes off the UI thread and gives migrated DSH paths feedback', async () => {
-    const [lib, harnessDiscovery, harness, settings, runtime, archivedLockScreen, archivedIntegration] = await Promise.all([
+    const [lib, harnessDiscovery, harnessManaged, harnessTests, settings, runtime, archivedLockScreen, archivedIntegration] = await Promise.all([
       readNative('src/lib.rs'),
       readNative('src/commands/harness/discovery.rs'),
+      readNative('src/commands/harness/managed.rs'),
       readNative('src/commands/harness/mod.rs'),
       readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8'),
       readFile(resolve(wallpaperRoot, 'src/native/runtime.ts'), 'utf8'),
       readArchive(archivedLockScreenCommandsPath),
       readArchive(archivedIntegrationCommandsPath),
     ])
-    // 扫描在 discovery 组、启动文案在托管链上，所以这条断言读两个文件后拼接。
-    const harnessAll = [harnessDiscovery, harness].join('\n')
+    // 扫描在 discovery 组、启动文案在托管链上，端口号那句只出现在测试数据里；三处拼接后再断言。
+    const harnessAll = [harnessDiscovery, harnessManaged, harnessTests].join('\n')
     // The frozen TranslucentTB and lock-screen diagnostics probes are no longer in lib.rs, not
     // even as comments; their archived copies still keep the work off the UI thread.
     expect(lib).not.toMatch(/\b(?:translucent_tb_status|get_lock_screen_diagnostics|hide_child_console)\b/)
@@ -371,7 +372,7 @@ describe('native chat boundary', () => {
   })
 
   it('uses the built DSH CLI for managed launches when it is available', async () => {
-    const harness = await readNative('src/commands/harness/mod.rs')
+    const harness = await readNative('src/commands/harness/managed.rs')
 
     expect(harness).toContain('.join("apps")')
     expect(harness).toContain('.join("cli")')
