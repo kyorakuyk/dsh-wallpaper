@@ -3419,6 +3419,7 @@ if !down && was_down {
 #[cfg(windows)]
 fn has_package_identity() -> Result<bool, String> {
     let mut length = 0u32;
+    // SAFETY: this is a length-only probe: the name buffer is None, so the API writes just the required length into the local u32.
     let status = unsafe { GetCurrentPackageFullName(&mut length, None) };
     if status == APPMODEL_ERROR_NO_PACKAGE {
         return Ok(false);
@@ -3483,6 +3484,7 @@ pub(crate) fn current_package_version() -> PackageVersionProbe {
 #[cfg(all(windows, not(feature = "lite")))]
 fn current_package_full_name() -> Option<String> {
     let mut length = 0u32;
+    // SAFETY: a length-only probe with a None name buffer; the API writes only the required length into the local u32.
     let probe = unsafe { GetCurrentPackageFullName(&mut length, None) };
     if probe != ERROR_INSUFFICIENT_BUFFER || length == 0 {
         return None;
@@ -3490,6 +3492,7 @@ fn current_package_full_name() -> Option<String> {
     // 长度含结尾的 0；多留一个元素，并把容量显式传回去。
     let mut buffer = vec![0u16; length as usize + 1];
     let mut capacity = buffer.len() as u32;
+    // SAFETY: `buffer` is a heap Vec of length plus one elements and `capacity` is exactly its length, so the write is bounded; the Vec is not moved during the call, and the written count is re-read from `capacity`.
     let read = unsafe { GetCurrentPackageFullName(&mut capacity, Some(PWSTR(buffer.as_mut_ptr()))) };
     if !read.is_ok() || capacity == 0 {
         return None;
@@ -3576,6 +3579,7 @@ pub(crate) fn current_run_entry_command() -> Result<String, String> {
         return Ok(exe.to_string_lossy().into_owned());
     }
     let mut length = 0u32;
+    // SAFETY: a length-only probe with a None name buffer; the API writes only the required length into the local u32.
     let probe = unsafe { GetCurrentPackageFamilyName(&mut length, None) };
     if probe != ERROR_INSUFFICIENT_BUFFER || length == 0 {
         return Err(format!(
@@ -3588,6 +3592,7 @@ pub(crate) fn current_run_entry_command() -> Result<String, String> {
     let mut buffer = vec![0u16; length as usize + 1];
     let mut capacity = buffer.len() as u32;
     let read =
+        // SAFETY: `buffer` is a heap Vec of length plus one elements and `capacity` is exactly its length, so the write is bounded; the Vec stays put for the duration of the call.
         unsafe { GetCurrentPackageFamilyName(&mut capacity, Some(PWSTR(buffer.as_mut_ptr()))) };
     if !read.is_ok() || capacity == 0 {
         return Err(format!(
@@ -3617,6 +3622,7 @@ fn run_entry_command() -> Result<Option<String>, String> {
         .chain(std::iter::once(0))
         .collect::<Vec<u16>>();
     let mut key = windows::Win32::System::Registry::HKEY::default();
+    // SAFETY: `subkey` is a local NUL-terminated UTF-16 Vec and `key` is a local HKEY out-parameter; a failed open leaves the handle unused and a successful one is closed exactly once below.
     let open_status = unsafe {
         RegOpenKeyExW(
             HKEY_CURRENT_USER,
@@ -3637,6 +3643,7 @@ fn run_entry_command() -> Result<Option<String>, String> {
     }
 
     let mut value_size = 0u32;
+    // SAFETY: no data buffer is passed (None), only the local `value_size` receives the required size, and `key` is valid because the open status was checked above.
     let query_status = unsafe {
         RegQueryValueExW(
             key,
@@ -3648,10 +3655,12 @@ fn run_entry_command() -> Result<Option<String>, String> {
         )
     };
     if query_status == ERROR_FILE_NOT_FOUND {
+        // SAFETY: `key` was opened successfully above and this is its single close on the early return.
         let _ = unsafe { RegCloseKey(key) };
         return Ok(None);
     }
     if query_status != ERROR_SUCCESS && query_status != ERROR_MORE_DATA {
+        // SAFETY: the same handle from the single successful open is closed here, exactly once on this error path.
         let _ = unsafe { RegCloseKey(key) };
         return Err(format!(
             "无法读取 DSH Wallpaper 开机启动项（错误码 {}）。",
@@ -3659,6 +3668,7 @@ fn run_entry_command() -> Result<Option<String>, String> {
         ));
     }
     if value_size == 0 {
+        // SAFETY: `key` is still the handle from the successful open and is closed once before the early return.
         let _ = unsafe { RegCloseKey(key) };
         return Ok(Some(String::new()));
     }
@@ -3667,6 +3677,7 @@ fn run_entry_command() -> Result<Option<String>, String> {
     // not count the terminator must not make the second read fail.
     let mut buffer = vec![0u8; value_size as usize + 2];
     let mut read_size = buffer.len() as u32;
+    // SAFETY: `buffer` is a local Vec with one spare byte beyond the reported size, its length is passed as `read_size`, and `key` stays open across the call and is closed right after.
     let read_status = unsafe {
         RegQueryValueExW(
             key,
@@ -3677,6 +3688,7 @@ fn run_entry_command() -> Result<Option<String>, String> {
             Some(&mut read_size),
         )
     };
+    // SAFETY: this closes the handle from the single successful open exactly once, before the buffer is decoded.
     let _ = unsafe { RegCloseKey(key) };
     if read_status != ERROR_SUCCESS {
         return Err(format!(
@@ -3737,6 +3749,7 @@ fn read_hkcu_string(subkey: &str, value_name: &str) -> Result<Option<String>, u3
     let subkey = wide(subkey);
     let value_name = wide(value_name);
     let mut key = windows::Win32::System::Registry::HKEY::default();
+    // SAFETY: both name pointers come from local NUL-terminated UTF-16 Vecs and `key` is a local HKEY out-parameter; failure leaves the handle unused and success is closed exactly once below.
     let open_status = unsafe {
         RegOpenKeyExW(
             HKEY_CURRENT_USER,
@@ -3754,6 +3767,7 @@ fn read_hkcu_string(subkey: &str, value_name: &str) -> Result<Option<String>, u3
     }
 
     let mut value_size = 0u32;
+    // SAFETY: no data buffer is passed, only the local `value_size` receives the required size, and `key` is valid because the open succeeded above.
     let query_status = unsafe {
         RegQueryValueExW(
             key,
@@ -3765,14 +3779,17 @@ fn read_hkcu_string(subkey: &str, value_name: &str) -> Result<Option<String>, u3
         )
     };
     if query_status == ERROR_FILE_NOT_FOUND {
+        // SAFETY: `key` was opened successfully above and this is its single close on the early return.
         let _ = unsafe { RegCloseKey(key) };
         return Ok(None);
     }
     if query_status != ERROR_SUCCESS && query_status != ERROR_MORE_DATA {
+        // SAFETY: the same handle is closed here, exactly once on this error path.
         let _ = unsafe { RegCloseKey(key) };
         return Err(query_status.0);
     }
     if value_size == 0 {
+        // SAFETY: `key` is still the handle from the successful open and is closed once before the early return.
         let _ = unsafe { RegCloseKey(key) };
         return Ok(Some(String::new()));
     }
@@ -3780,6 +3797,7 @@ fn read_hkcu_string(subkey: &str, value_name: &str) -> Result<Option<String>, u3
     // 值是 UTF-16 的 `REG_SZ`：多要两个字节，免得"长度不计结尾 0"让第二次读失败。
     let mut buffer = vec![0u8; value_size as usize + 2];
     let mut read_size = buffer.len() as u32;
+    // SAFETY: `buffer` has one spare byte beyond the reported size, its length is passed as `read_size`, and `key` is closed immediately after the call.
     let read_status = unsafe {
         RegQueryValueExW(
             key,
@@ -3790,6 +3808,7 @@ fn read_hkcu_string(subkey: &str, value_name: &str) -> Result<Option<String>, u3
             Some(&mut read_size),
         )
     };
+    // SAFETY: closes the handle from the single successful open exactly once, before the value is decoded.
     let _ = unsafe { RegCloseKey(key) };
     if read_status != ERROR_SUCCESS {
         return Err(read_status.0);
@@ -4087,6 +4106,7 @@ pub(crate) struct AutostartStatus {
 #[cfg(windows)]
 pub(crate) fn remove_legacy_run_entry() -> Result<(), String> {
     let mut key = windows::Win32::System::Registry::HKEY::default();
+    // SAFETY: the subkey is a static `w!` string, `key` is a local HKEY out-parameter, and a failed open leaves it unused; the handle is closed exactly once below.
     let open_status = unsafe {
         RegOpenKeyExW(
             HKEY_CURRENT_USER,
@@ -4105,7 +4125,9 @@ pub(crate) fn remove_legacy_run_entry() -> Result<(), String> {
             open_status.0
         ));
     }
+    // SAFETY: `key` comes from the successful open above and is still open here; the value name is a static `w!` string.
     let delete_status = unsafe { RegDeleteValueW(key, w!("dsh-wallpaper")) };
+    // SAFETY: closes the handle from the single successful open exactly once, after the delete result has been captured.
     let _ = unsafe { RegCloseKey(key) };
     if delete_status == ERROR_SUCCESS || delete_status == ERROR_FILE_NOT_FOUND {
         Ok(())
