@@ -284,10 +284,13 @@ impl CrossProcessStoreTransaction {
             System::Threading::{CreateMutexW, WaitForSingleObject},
         };
 
+        // SAFETY: API_TRANSCRIPT_STORE_MUTEX_NAME is a static NUL-terminated PCWSTR; the returned HANDLE is owned by this transaction.
         let handle = unsafe { CreateMutexW(None, false, API_TRANSCRIPT_STORE_MUTEX_NAME) }
             .map_err(|_| PersistenceError::Io)?;
+        // SAFETY: handle is the live mutex HANDLE returned by CreateMutexW and remains owned until this wait result is handled.
         let wait = unsafe { WaitForSingleObject(handle, 30_000) };
         if wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED {
+            // SAFETY: handle was created by CreateMutexW and this failure path closes it exactly once before returning.
             unsafe {
                 let _ = CloseHandle(handle);
             }
@@ -304,6 +307,7 @@ impl CrossProcessStoreTransaction {
 impl Drop for CrossProcessStoreTransaction {
     fn drop(&mut self) {
         use windows::Win32::{Foundation::CloseHandle, System::Threading::ReleaseMutex};
+        // SAFETY: this guard is created only after this thread acquires the mutex and keeps the HANDLE open through release and close.
         unsafe {
             let _ = ReleaseMutex(self.handle);
             let _ = CloseHandle(self.handle);
@@ -324,6 +328,7 @@ fn atomic_replace_existing(temporary: &Path, destination: &Path) -> Result<(), P
     }
     let temporary = wide(temporary);
     let destination = wide(destination);
+    // SAFETY: temporary and destination are NUL-terminated UTF-16 vectors that remain alive for the whole ReplaceFileW call.
     unsafe {
         // ReplaceFileW is the Win32 replacement primitive for an existing
         // file. It never asks us to delete the prior ciphertext first. Its
@@ -361,6 +366,7 @@ fn atomic_install_new(temporary: &Path, destination: &Path) -> Result<(), Persis
     }
     let temporary = wide(temporary);
     let destination = wide(destination);
+    // SAFETY: temporary and destination are NUL-terminated UTF-16 vectors that remain alive for the whole MoveFileExW call.
     unsafe {
         // No REPLACE_EXISTING: if another process creates the destination in
         // the race, fail rather than overwrite a ciphertext we did not read.
@@ -405,6 +411,7 @@ fn dpapi_protect(plaintext: &[u8]) -> Result<Vec<u8>, PersistenceError> {
             } else {
                 debug_assert!(!self.0.pbData.is_null());
                 // DPAPI owns this allocation until `LocalBlob::drop`.
+                // SAFETY: a successful DPAPI call returns pbData as a LocalAlloc allocation of cbData bytes, owned until LocalBlob::drop.
                 unsafe { std::slice::from_raw_parts(self.0.pbData, self.0.cbData as usize) }
             }
         }
@@ -413,6 +420,7 @@ fn dpapi_protect(plaintext: &[u8]) -> Result<Vec<u8>, PersistenceError> {
         fn drop(&mut self) {
             if !self.0.pbData.is_null() {
                 // DPAPI allocates returned blobs with LocalAlloc.
+                // SAFETY: non-null pbData is the LocalAlloc buffer returned by DPAPI; LocalBlob frees it once and clears the fields afterward.
                 unsafe {
                     let _ = LocalFree(Some(HLOCAL(self.0.pbData.cast())));
                 }
@@ -435,6 +443,7 @@ fn dpapi_protect(plaintext: &[u8]) -> Result<Vec<u8>, PersistenceError> {
     let input = input_blob(plaintext)?;
     let entropy = input_blob(ENTROPY)?;
     let mut output = LocalBlob::default();
+    // SAFETY: input and entropy blobs point to live borrowed bytes for this synchronous call, and output.0 is writable LocalBlob storage.
     unsafe {
         // No CRYPTPROTECT_LOCAL_MACHINE: this ciphertext is bound to the
         // currently signed-in Windows user. UI is forbidden for wallpaper use.
@@ -475,6 +484,7 @@ fn dpapi_unprotect(ciphertext: &[u8]) -> Result<Vec<u8>, PersistenceError> {
                 &[]
             } else {
                 debug_assert!(!self.0.pbData.is_null());
+                // SAFETY: a successful DPAPI call returns pbData as a LocalAlloc allocation of cbData bytes, owned until LocalBlob::drop.
                 unsafe { std::slice::from_raw_parts(self.0.pbData, self.0.cbData as usize) }
             }
         }
@@ -482,6 +492,7 @@ fn dpapi_unprotect(ciphertext: &[u8]) -> Result<Vec<u8>, PersistenceError> {
     impl Drop for LocalBlob {
         fn drop(&mut self) {
             if !self.0.pbData.is_null() {
+                // SAFETY: non-null pbData is the LocalAlloc buffer returned by DPAPI; LocalBlob frees it once and clears the fields afterward.
                 unsafe {
                     let _ = LocalFree(Some(HLOCAL(self.0.pbData.cast())));
                 }
@@ -504,6 +515,7 @@ fn dpapi_unprotect(ciphertext: &[u8]) -> Result<Vec<u8>, PersistenceError> {
     let input = input_blob(ciphertext)?;
     let entropy = input_blob(ENTROPY)?;
     let mut output = LocalBlob::default();
+    // SAFETY: input and entropy blobs point to live borrowed bytes for this synchronous call, and output.0 is writable LocalBlob storage.
     unsafe {
         // `None` avoids a second DPAPI-allocated description buffer.
         CryptUnprotectData(

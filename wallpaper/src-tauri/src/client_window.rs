@@ -101,6 +101,7 @@ pub(crate) fn process_started_at(pid: u32) -> Option<u64> {
     use windows::Win32::System::Threading::{
         GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
+    // SAFETY: OpenProcess returns the owned process HANDLE; FILETIME outputs are initialized locals and the handle is closed before return.
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut creation = FILETIME::default();
@@ -188,6 +189,7 @@ pub fn process_is_alive(pid: u32) -> bool {
     use windows::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
+    // SAFETY: OpenProcess returns the owned process HANDLE; the exit-code output is a live local and the handle is closed before return.
     unsafe {
         let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
             return false;
@@ -225,6 +227,7 @@ pub fn wait_for_process_exit(pid: u32) -> bool {
     use windows::Win32::System::Threading::{
         OpenProcess, WaitForSingleObject, INFINITE, PROCESS_SYNCHRONIZE,
     };
+    // SAFETY: OpenProcess returns the process HANDLE used by this wait; it remains open until WaitForSingleObject completes and is then closed.
     unsafe {
         let Ok(handle) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) else {
             return true;
@@ -257,6 +260,7 @@ fn listener_pid_v4(port: u16) -> Option<u32> {
     let mut size = 0u32;
     // First call sizes the buffer; the expected ERROR_INSUFFICIENT_BUFFER is not
     // an error worth reporting.
+    // SAFETY: This is the documented size-query form: no output buffer is supplied and size is a writable local; the table is not parsed on this call.
     unsafe {
         let _ = GetExtendedTcpTable(
             None,
@@ -271,6 +275,7 @@ fn listener_pid_v4(port: u16) -> Option<u32> {
         return None;
     }
     let mut buffer = vec![0u8; size as usize];
+    // SAFETY: buffer is allocated to the size-query result and passed as writable storage; a nonzero status is rejected before parsing.
     let status = unsafe {
         GetExtendedTcpTable(
             Some(buffer.as_mut_ptr().cast()),
@@ -284,6 +289,7 @@ fn listener_pid_v4(port: u16) -> Option<u32> {
     if status != 0 {
         return None;
     }
+    // SAFETY: TODO(review): Vec<u8> only promises byte alignment, while this cast requires MIB_TCPTABLE_OWNER_PID alignment and trusts dwNumEntries for the row slice.
     unsafe {
         let table = &*(buffer.as_ptr() as *const MIB_TCPTABLE_OWNER_PID);
         let rows = std::slice::from_raw_parts(
@@ -304,6 +310,7 @@ fn listener_pid_v4(port: u16) -> Option<u32> {
 #[cfg(windows)]
 fn listener_pid_v6(port: u16) -> Option<u32> {
     let mut size = 0u32;
+    // SAFETY: This is the documented IPv6 size-query form: no output buffer is supplied and size is a writable local.
     unsafe {
         let _ = GetExtendedTcpTable(
             None,
@@ -318,6 +325,7 @@ fn listener_pid_v6(port: u16) -> Option<u32> {
         return None;
     }
     let mut buffer = vec![0u8; size as usize];
+    // SAFETY: buffer is allocated to the size-query result and passed as writable storage; a nonzero status is rejected before parsing.
     let status = unsafe {
         GetExtendedTcpTable(
             Some(buffer.as_mut_ptr().cast()),
@@ -331,6 +339,7 @@ fn listener_pid_v6(port: u16) -> Option<u32> {
     if status != 0 {
         return None;
     }
+    // SAFETY: TODO(review): Vec<u8> only promises byte alignment, while this cast requires MIB_TCP6TABLE_OWNER_PID alignment and trusts dwNumEntries for the row slice.
     unsafe {
         let table = &*(buffer.as_ptr() as *const MIB_TCP6TABLE_OWNER_PID);
         let rows = std::slice::from_raw_parts(
@@ -360,13 +369,17 @@ struct TopLevelSearch {
 }
 
 #[cfg(windows)]
+// SAFETY: EnumWindows invokes this callback synchronously; param points to the live TopLevelSearch passed by first_window until enumeration returns.
 unsafe extern "system" fn find_top_level(hwnd: HWND, param: LPARAM) -> BOOL {
+    // SAFETY: param was set to the live stack TopLevelSearch in first_window; EnumWindows invokes this callback synchronously before that stack value leaves scope.
     let search = unsafe { &mut *(param.0 as *mut TopLevelSearch) };
     let mut owner = 0u32;
+    // SAFETY: hwnd is supplied by EnumWindows and owner is initialized writable stack storage for GetWindowThreadProcessId.
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
     if owner != search.pid {
         return BOOL(1);
     }
+    // SAFETY: hwnd is supplied by EnumWindows; IsWindowVisible treats it as an opaque window handle and receives no caller-owned pointer.
     let is_interface = unsafe { IsWindowVisible(hwnd) }.as_bool()
         || (!search.require_visible && window_is_a_client_window(hwnd));
     if is_interface {
@@ -388,10 +401,12 @@ unsafe extern "system" fn find_top_level(hwnd: HWND, param: LPARAM) -> BOOL {
 /// would make hiding a client that has no window look successful.
 #[cfg(windows)]
 fn window_is_a_client_window(hwnd: HWND) -> bool {
+    // SAFETY: hwnd is supplied by EnumWindows; GetWindowTextLengthW reads only the window handle and returns a scalar length.
     if unsafe { GetWindowTextLengthW(hwnd) } <= 0 {
         return false;
     }
     let mut rect = RECT::default();
+    // SAFETY: rect is initialized writable stack storage and is exclusively borrowed for the synchronous GetWindowRect call.
     if unsafe { GetWindowRect(hwnd, &mut rect) }.is_err() {
         return false;
     }
@@ -418,6 +433,7 @@ pub fn raise_client_window(port: u16) -> RaiseOutcome {
                 RaiseOutcome::not_running()
             };
         };
+        // SAFETY: search is a live stack value for this synchronous EnumWindows call; the callback only accesses it through the LPARAM passed here.
         unsafe {
             // Order matters, and both calls are idempotent:
             // * `SW_SHOW` first, because a window the wallpaper hid during a silent
@@ -496,6 +512,7 @@ pub fn hide_client_window(port: u16) -> HideOutcome {
         // this returns: the caller asked whether the window is now hidden, and a
         // window that was already hidden is not reachable here at all, because
         // `window_for_endpoint` only ever returns visible windows.
+        // SAFETY: window was selected by window_for_endpoint from the current client search; ShowWindow receives it as an opaque HWND value.
         unsafe { let _ = ShowWindow(window, SW_HIDE); }
         HideOutcome::hidden_ok()
     }
@@ -547,6 +564,7 @@ pub fn show_executable_windows(executable: &str) -> RaiseOutcome {
         }
         let mut foreground = false;
         for window in targets {
+            // SAFETY: each HWND comes from the current family_windows result; ShowWindow and SetForegroundWindow receive opaque handle values only.
             unsafe {
                 // The same order as `raise_client_window`, for the same two reasons:
                 // `SW_SHOW` first because the visible-and-hidden pair is ours to
@@ -734,6 +752,7 @@ fn process_image_path(pid: u32) -> Option<String> {
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
+    // SAFETY: handle is owned from OpenProcess; each path buffer is writable for its stated capacity, size is initialized, and the handle is closed before return.
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         // `QueryFullProcessImageNameW` reports a buffer that is too small instead of
@@ -775,6 +794,7 @@ fn first_window(pid: u32, require_visible: bool) -> Option<HWND> {
         require_visible,
         found: None,
     };
+    // SAFETY: search is a live stack value for this synchronous EnumWindows call; find_top_level uses only this LPARAM until enumeration returns.
     unsafe {
         let _ = EnumWindows(Some(find_top_level), LPARAM(&mut search as *mut _ as isize));
     }
@@ -931,6 +951,7 @@ fn is_browser_window_class(class: &str) -> bool {
 #[cfg(windows)]
 fn class_name(hwnd: HWND) -> String {
     let mut buffer = [0u16; 256];
+    // SAFETY: buffer is initialized writable 256-unit stack storage; GetClassNameW is given its capacity and the returned length is checked before slicing.
     let length = unsafe { GetClassNameW(hwnd, &mut buffer) };
     if length <= 0 {
         return String::new();
@@ -944,6 +965,7 @@ fn class_name(hwnd: HWND) -> String {
 /// 这是安全方向 —— 有属主的窗口我们一律不动，而没有属主的窗口还要过类名那道闸。
 #[cfg(windows)]
 fn window_is_owned(hwnd: HWND) -> bool {
+    // SAFETY: hwnd is an opaque window handle from the current window search; GetWindow returns an OS-owned owner handle value.
     unsafe { GetWindow(hwnd, GW_OWNER) }
         .map(|owner| !owner.0.is_null())
         .unwrap_or(false)
@@ -962,19 +984,25 @@ struct FamilyWindowSearch {
 }
 
 #[cfg(windows)]
+// SAFETY: EnumWindows invokes this callback synchronously; param points to the live FamilyWindowSearch passed by family_windows until enumeration returns.
 unsafe extern "system" fn collect_family_windows(hwnd: HWND, param: LPARAM) -> BOOL {
+    // SAFETY: param was set to the live stack FamilyWindowSearch in family_windows; EnumWindows calls this callback synchronously before the value leaves scope.
     let search = unsafe { &mut *(param.0 as *mut FamilyWindowSearch) };
     let mut owner = 0u32;
+    // SAFETY: hwnd is supplied by EnumWindows and owner is initialized writable stack storage for GetWindowThreadProcessId.
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
     if owner == 0 || !search.pids.contains(&owner) {
         return BOOL(1);
     }
     // 便宜的事实：可见性、属主、类名、标题、矩形。没有一个是 `OpenProcess`。
+    // SAFETY: hwnd is supplied by EnumWindows; IsWindowVisible reads the opaque handle and returns a scalar flag.
     let visible = unsafe { IsWindowVisible(hwnd) }.as_bool();
     let owned = window_is_owned(hwnd);
     let class = class_name(hwnd);
+    // SAFETY: hwnd is supplied by EnumWindows; GetWindowTextLengthW reads the opaque handle and returns a scalar length.
     let has_title = unsafe { GetWindowTextLengthW(hwnd) } > 0;
     let mut rect = RECT::default();
+    // SAFETY: rect is initialized writable stack storage and is exclusively borrowed for the synchronous GetWindowRect call.
     let has_size = unsafe { GetWindowRect(hwnd, &mut rect) }.is_ok()
         && rect.right > rect.left
         && rect.bottom > rect.top;
@@ -1001,6 +1029,7 @@ pub(crate) fn family_windows(executable: &str) -> Vec<WindowFacts> {
         return Vec::new();
     }
     let mut search = FamilyWindowSearch { pids, found: Vec::new() };
+    // SAFETY: search is a live stack value for this synchronous EnumWindows call; the callback uses it only until enumeration returns.
     unsafe {
         let _ = EnumWindows(
             Some(collect_family_windows),
@@ -1034,16 +1063,19 @@ pub(crate) fn hide_window(handle: WindowHandle) -> bool {
     {
         let hwnd = handle.hwnd();
         let mut owner = 0u32;
+        // SAFETY: hwnd came from the candidate WindowHandle and owner is initialized writable stack storage; the pid check follows before any action.
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
         if owner == 0 || owner != handle.pid {
             return false;
         }
+        // SAFETY: hwnd is the candidate window handle and is queried only after its owner pid has been revalidated.
         if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
             return false;
         }
         if window_is_owned(hwnd) || is_popup_or_helper_class(&class_name(hwnd)) {
             return false;
         }
+        // SAFETY: hwnd is a currently visible, ownerless, non-helper candidate returned by the validated window search.
         unsafe {
             let _ = ShowWindow(hwnd, SW_HIDE);
         }
@@ -1064,7 +1096,9 @@ pub(crate) fn window_is_visible(handle: WindowHandle) -> bool {
     {
         let hwnd = handle.hwnd();
         let mut owner = 0u32;
+        // SAFETY: hwnd came from the saved WindowHandle and owner is initialized writable stack storage for this synchronous query.
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
+        // SAFETY: the visibility query uses the same HWND only after GetWindowThreadProcessId confirms the saved pid still owns it.
         owner != 0 && owner == handle.pid && unsafe { IsWindowVisible(hwnd) }.as_bool()
     }
     #[cfg(not(windows))]
@@ -1100,6 +1134,7 @@ pub(crate) fn watch_window_state(handle: WindowHandle) -> WatchWindowState {
     {
         let hwnd = handle.hwnd();
         let mut owner = 0u32;
+        // SAFETY: hwnd came from the watched WindowHandle and owner is initialized writable stack storage for this query.
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
         // 句柄回收：同一个数值可能已经属于别人刚建出来的窗口。这条判定必须先过。
         if owner == 0 || owner != handle.pid {
@@ -1109,6 +1144,7 @@ pub(crate) fn watch_window_state(handle: WindowHandle) -> WatchWindowState {
         if window_is_owned(hwnd) || is_popup_or_helper_class(&class_name(hwnd)) {
             return WatchWindowState::Lost;
         }
+        // SAFETY: hwnd is queried for visibility only after its owner pid, owner window, and helper class have been checked.
         if unsafe { IsWindowVisible(hwnd) }.as_bool() {
             WatchWindowState::Visible
         } else {
@@ -1129,6 +1165,7 @@ pub(crate) fn watch_window_state(handle: WindowHandle) -> WatchWindowState {
 pub(crate) fn endpoint_window_on_screen(port: u16) -> bool {
     #[cfg(windows)]
     {
+        // SAFETY: hwnd is returned by window_for_endpoint from the current endpoint search and is passed only as an opaque handle.
         window_for_endpoint(port).is_some_and(|hwnd| unsafe { IsWindowVisible(hwnd) }.as_bool())
     }
     #[cfg(not(windows))]
@@ -1161,6 +1198,7 @@ impl TimerResolution {
         #[cfg(windows)]
         {
             // 返回 0 表示成功；失败也只是让 Sleep 的粒度粗一点，没有别的后果。
+            // SAFETY: timeBeginPeriod receives a scalar period; raised records whether this call succeeded so Drop balances it once.
             Self { raised: unsafe { timeBeginPeriod(1) } == 0 }
         }
         #[cfg(not(windows))]
@@ -1175,6 +1213,7 @@ impl Drop for TimerResolution {
         #[cfg(windows)]
         {
             if self.raised {
+                // SAFETY: timeEndPeriod is called only when this guard recorded a successful timeBeginPeriod call.
                 unsafe { timeEndPeriod(1) };
             }
         }
@@ -1233,6 +1272,7 @@ fn process_snapshot() -> Vec<(u32, u32, String)> {
     };
 
     let mut entries = Vec::new();
+    // SAFETY: Toolhelp returns an owned snapshot handle; PROCESSENTRY32W is initialized with dwSize, and the snapshot is closed before leaving this block.
     unsafe {
         let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
             return entries;
@@ -1322,6 +1362,7 @@ pub fn open_loopback_url(port: u16, path: &str) -> Result<(), String> {
 
         let operation = HSTRING::from("open");
         let target = HSTRING::from(url.as_str());
+        // SAFETY: operation and target are live HSTRING buffers for this synchronous call; the target was restricted to the validated loopback URL above.
         let result = unsafe {
             ShellExecuteW(
                 None,
@@ -1383,6 +1424,7 @@ struct CoverState {
 const COVER_CLASS: PCWSTR = w!("DSHWallpaperLaunchCover");
 
 #[cfg(windows)]
+// SAFETY: Windows supplies live window/message values; WM_NCCREATE lpCreateParams is consumed during creation and CoverState remains owned until DestroyWindow returns.
 unsafe extern "system" fn cover_proc(
     hwnd: HWND,
     message: u32,
@@ -1394,29 +1436,37 @@ unsafe extern "system" fn cover_proc(
             let create = lparam.0 as *const CREATESTRUCTW;
             if !create.is_null() {
                 let state = (*create).lpCreateParams as *mut CoverState;
+                // SAFETY: state comes from Box::into_raw and is passed by CreateWindowExW as lpCreateParams; the window procedure stores it during WM_NCCREATE.
                 unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize) };
             }
             LRESULT(1)
         }
         WM_PAINT => {
+            // SAFETY: this value was installed as GWLP_USERDATA during WM_NCCREATE; the window remains alive during the callback and the pointer is null-checked before use.
             let state = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut CoverState;
             let mut paint = PAINTSTRUCT::default();
+            // SAFETY: paint is initialized writable stack storage and BeginPaint returns the HDC paired with EndPaint for this WM_PAINT callback.
             let hdc = unsafe { BeginPaint(hwnd, &mut paint) };
             if !state.is_null() && !hdc.0.is_null() {
+                // SAFETY: state was retrieved from this window and checked non-null; LaunchCover keeps its Box alive until after DestroyWindow returns.
                 let state = unsafe { &*state };
                 // 逐像素搬回来：这层要的效果就是"和刚才一模一样"。
+                // SAFETY: hdc is active between BeginPaint and EndPaint; state.memory and dimensions belong to the live CoverState owned by LaunchCover.
                 let _ = unsafe {
                     BitBlt(hdc, 0, 0, state.width, state.height, Some(state.memory), 0, 0, SRCCOPY)
                 };
             }
+            // SAFETY: paint is the same initialized structure passed to BeginPaint earlier in this WM_PAINT callback.
             let _ = unsafe { EndPaint(hwnd, &paint) };
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
         WM_NCDESTROY => {
+            // SAFETY: WM_NCDESTROY is the final callback for this window; clearing its user data prevents any later message from reusing the Box pointer.
             unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
             LRESULT(0)
         }
+        // SAFETY: hwnd, message, wparam, and lparam are the values supplied by the Windows window-procedure dispatcher.
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
     }
 }
@@ -1433,21 +1483,26 @@ unsafe extern "system" fn cover_proc(
 /// 矩形整个盖住 —— 那基本就是独占全屏的样子，那种画面上我们的面不会出现，铺了也只是骗自己。
 #[cfg(windows)]
 fn cover_can_show_above(covered: RECT, x: i32, y: i32) -> bool {
+    // SAFETY: point is passed by value and WindowFromPoint returns an opaque HWND value that is checked before further use.
     let under = unsafe { WindowFromPoint(POINT { x, y }) };
     if under.is_invalid() {
         return true;
     }
     let mut pid = 0u32;
+    // SAFETY: under came from WindowFromPoint and pid is initialized writable stack storage for GetWindowThreadProcessId.
     unsafe { GetWindowThreadProcessId(under, Some(&mut pid)) };
+    // SAFETY: GetCurrentProcessId takes no pointers and returns the current process identifier as a scalar.
     if pid == unsafe { windows::Win32::System::Threading::GetCurrentProcessId() } {
         return true;
     }
     // 普通窗口：我们的面是置顶的，一定盖得住它。
+    // SAFETY: under came from WindowFromPoint and is checked for invalidity before this opaque-handle style query.
     let topmost = unsafe { GetWindowLongW(under, GWL_EXSTYLE) } & WS_EX_TOPMOST.0 as i32 != 0;
     if !topmost {
         return true;
     }
     let mut rect = RECT::default();
+    // SAFETY: rect is initialized writable stack storage and is exclusively borrowed for GetWindowRect.
     if unsafe { GetWindowRect(under, &mut rect) }.is_err() {
         return true;
     }
@@ -1462,6 +1517,7 @@ fn cover_can_show_above(covered: RECT, x: i32, y: i32) -> bool {
 #[cfg(windows)]
 pub(crate) fn raise_launch_cover(target: WindowHandle) -> Option<LaunchCover> {
     let mut rect = RECT::default();
+    // SAFETY: target.hwnd() is the selected target HWND and rect is initialized writable stack storage for this query.
     if unsafe { GetWindowRect(target.hwnd(), &mut rect) }.is_err() {
         return None;
     }
@@ -1480,35 +1536,48 @@ pub(crate) fn raise_launch_cover(target: WindowHandle) -> Option<LaunchCover> {
     }
 
     // 截屏：把这块屏幕原样抄进一块内存位图。
+    // SAFETY: GetDC(None) requests the screen DC; each non-null result on this path is released with ReleaseDC.
     let screen = unsafe { GetDC(None) };
     if screen.0.is_null() {
         return None;
     }
+    // SAFETY: screen is the live DC returned by GetDC and remains owned until the matching ReleaseDC below.
     let memory = unsafe { CreateCompatibleDC(Some(screen)) };
     let bitmap = if memory.0.is_null() {
+        // SAFETY: screen is the DC returned by GetDC and is released on this early failure path exactly once.
         unsafe { ReleaseDC(None, screen) };
         return None;
     } else {
+        // SAFETY: screen remains a live compatible DC source and width/height were validated as positive from the target rectangle.
         unsafe { CreateCompatibleBitmap(screen, width, height) }
     };
     if bitmap.0.is_null() {
+        // SAFETY: memory is the owned DC returned by CreateCompatibleDC and is deleted on this bitmap-allocation failure path.
         unsafe { DeleteDC(memory) };
+        // SAFETY: screen is the DC returned by GetDC and is released on this early failure path exactly once.
         unsafe { ReleaseDC(None, screen) };
         return None;
     }
+    // SAFETY: memory and bitmap are owned live GDI handles; SelectObject returns the prior object needed to restore the DC afterward.
     let previous = unsafe { SelectObject(memory, HGDIOBJ(bitmap.0)) };
+    // SAFETY: memory and screen DCs are live, dimensions are positive, and the source rectangle was read from the target window.
     let captured = unsafe {
         BitBlt(memory, 0, 0, width, height, Some(screen), rect.left, rect.top, SRCCOPY)
     };
+    // SAFETY: previous is the object returned by the preceding SelectObject and is restored before bitmap/DC cleanup.
     let _ = unsafe { SelectObject(memory, previous) };
+    // SAFETY: screen is the DC returned by GetDC and has not yet been released on this path.
     unsafe { ReleaseDC(None, screen) };
     if captured.is_err() {
+        // SAFETY: BitBlt failed after the previous object was restored, so bitmap is no longer selected into memory and remains owned here.
         unsafe { DeleteObject(HGDIOBJ(bitmap.0)) };
+        // SAFETY: memory is the DC created for this capture and remains owned by this function on the failure path.
         unsafe { DeleteDC(memory) };
         return None;
     }
 
     let state = Box::into_raw(Box::new(CoverState { memory, bitmap, width, height }));
+    // SAFETY: COVER_CLASS/title and the window-procedure pointer are static; state is the unique Box::into_raw pointer and dimensions are positive.
     let hwnd = match unsafe {
         CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
@@ -1528,19 +1597,24 @@ pub(crate) fn raise_launch_cover(target: WindowHandle) -> Option<LaunchCover> {
         Ok(hwnd) => hwnd,
         Err(error) => {
             log::warn!("launch cover: 无法创建遮盖窗口（{error}）");
+            // SAFETY: state is the unique pointer returned by Box::into_raw; CreateWindowExW has completed its failed-window teardown before returning an error.
             unsafe { drop(Box::from_raw(state)) };
             return None;
         }
     };
     // `SW_SHOWNA` 不激活；随后立刻同步重绘一次，确保它**在壳显示之前**就已经画好 —— 否则就白铺了。
+    // SAFETY: hwnd is the newly created cover window and remains owned by the returned LaunchCover.
     let _ = unsafe { ShowWindow(hwnd, SW_SHOWNA) };
+    // SAFETY: hwnd is the newly created cover window; None intentionally requests the full client area without a rect pointer.
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    // SAFETY: hwnd is the newly created cover window and remains live until LaunchCover drops it.
     let _ = unsafe { UpdateWindow(hwnd) };
     Some(LaunchCover { hwnd, state, raised_at: std::time::Instant::now() })
 }
 
 #[cfg(windows)]
 fn cover_instance() -> HINSTANCE {
+    // SAFETY: GetModuleHandleW(None) requests this process module and accepts no caller-owned pointer.
     match unsafe { GetModuleHandleW(None) } {
         Ok(module) => HINSTANCE(module.0),
         Err(_) => HINSTANCE::default(),
@@ -1559,6 +1633,7 @@ fn register_cover_class() -> bool {
             lpszClassName: COVER_CLASS,
             ..Default::default()
         };
+        // SAFETY: class is initialized stack storage; its class-name pointer and procedure are static and hInstance is the process module.
         let atom = unsafe { RegisterClassExW(&class) };
         if atom == 0 {
             log::warn!("launch cover: 窗口类注册失败");
@@ -1575,10 +1650,14 @@ impl Drop for LaunchCover {
         );
         #[cfg(windows)]
         {
+            // SAFETY: self.hwnd is owned by this LaunchCover and DestroyWindow is called before its associated state is freed.
             let _ = unsafe { DestroyWindow(self.hwnd) };
             if !self.state.is_null() {
+                // SAFETY: self.state is the unique Box::into_raw pointer stored by this LaunchCover, and DestroyWindow has completed first.
                 let state = unsafe { Box::from_raw(self.state) };
+                // SAFETY: state.bitmap is an owned HBITMAP that was restored out of the memory DC before it was transferred into CoverState.
                 unsafe { DeleteObject(HGDIOBJ(state.bitmap.0)) };
+                // SAFETY: state.memory is the owned memory DC from capture and the window using it has already been destroyed.
                 unsafe { DeleteDC(state.memory) };
             }
         }
@@ -1616,6 +1695,7 @@ static SHOW_WATCH: std::sync::OnceLock<std::sync::Mutex<ShowWatchState>> =
     std::sync::OnceLock::new();
 
 #[cfg(windows)]
+// SAFETY: SetWinEventHook uses WINEVENT_OUTOFCONTEXT; callback values are consumed on the installing thread and no raw callback pointer is retained.
 unsafe extern "system" fn show_event_proc(
     _hook: HWINEVENTHOOK,
     event: u32,
@@ -1661,6 +1741,7 @@ pub(crate) fn watch_show_events(target: WindowHandle) -> Option<ShowEventWatch> 
         guard.seen_at = None;
         guard.hidden = None;
     }
+    // SAFETY: show_event_proc is a static callback; WINEVENT_OUTOFCONTEXT delivers events on this thread and the returned hook is owned by ShowEventWatch.
     let hook = unsafe {
         SetWinEventHook(
             EVENT_OBJECT_SHOW,
@@ -1687,8 +1768,11 @@ pub(crate) fn watch_show_events(target: WindowHandle) -> Option<ShowEventWatch> 
 #[cfg(windows)]
 pub(crate) fn pump_show_events() {
     let mut message = MSG::default();
+    // SAFETY: message is initialized writable stack storage and this loop pumps the current thread queue.
     while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+        // SAFETY: message was populated by PeekMessageW and remains live for this synchronous translation call.
         let _ = unsafe { TranslateMessage(&message) };
+        // SAFETY: message was populated by PeekMessageW and remains live for this synchronous dispatch call.
         unsafe { DispatchMessageW(&message) };
     }
 }
@@ -1712,6 +1796,7 @@ impl Drop for ShowEventWatch {
     fn drop(&mut self) {
         #[cfg(windows)]
         {
+            // SAFETY: self.hook is the live hook returned by SetWinEventHook and is unhooked once when ShowEventWatch is dropped.
             unsafe { UnhookWinEvent(self.hook) };
         }
     }
@@ -1734,8 +1819,11 @@ static MOVED_OFFSCREEN: std::sync::OnceLock<
 /// 用"虚拟屏幕右边界之外"这种普通坐标。
 #[cfg(windows)]
 fn offscreen_spot() -> (i32, i32) {
+    // SAFETY: GetSystemMetrics takes a scalar metric index and returns a scalar virtual-screen coordinate.
     let left = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
+    // SAFETY: GetSystemMetrics takes a scalar metric index and returns a scalar span; max(1) handles a zero result.
     let span = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) }.max(1);
+    // SAFETY: GetSystemMetrics takes a scalar metric index and returns a scalar virtual-screen coordinate.
     let top = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
     (left + span + 64, top.max(0))
 }
@@ -1755,6 +1843,7 @@ pub(crate) fn move_family_offscreen(executable: &str) -> usize {
     let mut moved: Vec<(isize, WINDOWPLACEMENT)> = Vec::new();
     for window in family_windows(executable) {
         let hwnd = window.handle.hwnd();
+        // SAFETY: hwnd comes from the current family_windows enumeration; this visibility check only reads its opaque handle value.
         if unsafe { IsWindowVisible(hwnd) }.as_bool() || window_is_owned(hwnd) {
             continue;
         }
@@ -1765,6 +1854,7 @@ pub(crate) fn move_family_offscreen(executable: &str) -> usize {
             length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
             ..Default::default()
         };
+        // SAFETY: placement is initialized with the required length and is exclusively writable output for GetWindowPlacement.
         if unsafe { GetWindowPlacement(hwnd, &mut placement) }.is_err() {
             continue;
         }
@@ -1772,6 +1862,7 @@ pub(crate) fn move_family_offscreen(executable: &str) -> usize {
         if placement.showCmd == SW_SHOWMAXIMIZED.0 as u32 || placement.showCmd == SW_SHOWMINIMIZED.0 as u32 {
             continue;
         }
+        // SAFETY: hwnd is the enumerated candidate and placement eligibility was checked; coordinates/flags are values with no caller pointers.
         let placed = unsafe {
             SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSIZE)
         };
@@ -1807,6 +1898,7 @@ pub(crate) fn restore_from_offscreen(executable: &str) -> bool {
     let mut restored = false;
     for (raw, placement) in &entries {
         let hwnd = HWND(*raw as *mut core::ffi::c_void);
+        // SAFETY: hwnd is reconstructed from the stored HWND value and IsWindow validates it before any placement call.
         if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
             restored |= place_and_keep_hidden(hwnd, placement);
         }
@@ -1831,10 +1923,13 @@ pub(crate) fn restore_from_offscreen(executable: &str) -> bool {
 /// 要么刚把它藏好、要么正准备显示，可见性不该是"写个位置"的副作用。
 #[cfg(windows)]
 fn place_and_keep_hidden(hwnd: HWND, placement: &WINDOWPLACEMENT) -> bool {
+    // SAFETY: hwnd passed the preceding IsWindow check and placement is a live saved value borrowed from the retained entry.
     if unsafe { SetWindowPlacement(hwnd, placement) }.is_err() {
         return false;
     }
+    // SAFETY: hwnd is the validated window handle passed to place_and_keep_hidden; the visibility query reads it as an opaque value.
     if placement.showCmd != SW_SHOWMAXIMIZED.0 as u32 && unsafe { IsWindowVisible(hwnd) }.as_bool() {
+        // SAFETY: hwnd was validated and is still the same placement target; ShowWindow receives it as an opaque handle.
         let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
     }
     true
@@ -1845,6 +1940,7 @@ fn place_and_keep_hidden(hwnd: HWND, placement: &WINDOWPLACEMENT) -> bool {
 #[cfg(windows)]
 pub(crate) fn window_rect(handle: WindowHandle) -> Option<(i32, i32, i32, i32)> {
     let mut rect = RECT::default();
+    // SAFETY: handle.hwnd() is the caller-owned target handle and rect is initialized writable stack storage for this synchronous query.
     if unsafe { GetWindowRect(handle.hwnd(), &mut rect) }.is_err() {
         return None;
     }
@@ -1940,8 +2036,10 @@ mod tests {
         #[cfg(windows)]
         {
             use windows::Win32::UI::WindowsAndMessaging::{GetDesktopWindow, GetWindowThreadProcessId};
+            // SAFETY: GetDesktopWindow returns the system desktop HWND as an opaque handle value.
             let desktop = unsafe { GetDesktopWindow() };
             let mut owner = 0u32;
+            // SAFETY: desktop is the system HWND returned above and owner is initialized writable stack storage for this call.
             unsafe { GetWindowThreadProcessId(desktop, Some(&mut owner)) };
             assert_ne!(owner, 0);
             #[cfg(windows)]

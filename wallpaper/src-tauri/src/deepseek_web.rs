@@ -1328,6 +1328,7 @@ fn reveal_window(window: &WebviewWindow) {
     let _ = window.unminimize();
     if let Ok(raw) = window.hwnd() {
         let hwnd = HWND(raw.0);
+        // SAFETY: hwnd is obtained from the live Tauri WebviewWindow immediately before this synchronous restore/show/focus sequence.
         unsafe {
             let _ = ShowWindow(hwnd, SW_RESTORE);
             let _ = ShowWindow(hwnd, SW_SHOW);

@@ -26,6 +26,7 @@ fn main() {
     // 否则 Windows 做 DPI 虚拟化，屏幕被当作 1707x1067，物理全屏无法正确建立；
     // V2 还会让混合缩放显示器收到正确的 DPI 变更通知。
     #[cfg(windows)]
+    // SAFETY: These DPI contexts are Windows-defined opaque values; the setter takes no caller pointers and runs before Tauri creates windows.
     unsafe {
         use windows::Win32::UI::HiDpi::{
             SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,

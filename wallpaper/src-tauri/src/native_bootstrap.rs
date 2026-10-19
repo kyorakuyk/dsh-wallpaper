@@ -289,6 +289,7 @@ fn remember_outcome(outcome: u8, event: &str) {
 #[cfg(windows)]
 fn window_class(hwnd: HWND) -> Option<String> {
     let mut class = [0u16; 64];
+    // SAFETY: hwnd is the bootstrap window handle and class is initialized writable stack storage; GetClassNameW returns a length bounded by its capacity.
     let class_len = unsafe { GetClassNameW(hwnd, &mut class) };
     (class_len > 0).then(|| String::from_utf16_lossy(&class[..class_len as usize]))
 }
@@ -386,6 +387,7 @@ fn display_regions_for_worker(width: i32, height: i32) -> Vec<RECT> {
 }
 
 #[cfg(windows)]
+// SAFETY: target comes from BeginPaint and memory is a live compatible DC; dimensions and source bounds are checked before StretchBlt.
 unsafe fn paint_bitmap_cover(
     target: HDC,
     memory: HDC,
@@ -439,6 +441,7 @@ pub fn boost_startup_priority() {
         return;
     }
     if let Err(error) =
+        // SAFETY: GetCurrentProcess returns a valid pseudo-handle and the priority class is passed by value; no caller memory pointer is used.
         unsafe { SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS) }
     {
         STARTUP_PRIORITY_BOOSTED.store(false, Ordering::Release);
@@ -451,6 +454,7 @@ pub fn restore_startup_priority() {
     if !STARTUP_PRIORITY_BOOSTED.swap(false, Ordering::AcqRel) {
         return;
     }
+    // SAFETY: GetCurrentProcess returns a valid pseudo-handle and the priority class is passed by value; no caller memory pointer is used.
     if let Err(error) = unsafe { SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS) } {
         log::debug!("startup priority restore failed: {error}");
     }
@@ -496,6 +500,7 @@ fn to_wide(path: &Path) -> Vec<u16> {
 #[cfg(windows)]
 fn load_bitmap(path: &Path) -> Result<(HBITMAP, i32, i32), String> {
     let wide = to_wide(path);
+    // SAFETY: wide is NUL-terminated and live; token, input, image, and dimension pointers refer to initialized local storage, with returned GDI+ resources cleaned here.
     unsafe {
         let mut token = 0usize;
         let input = GdiplusStartupInput {
@@ -538,6 +543,7 @@ fn load_bitmap(path: &Path) -> Result<(HBITMAP, i32, i32), String> {
 }
 
 #[cfg(windows)]
+// SAFETY: Windows supplies live HWND/message values; WM_NCCREATE CREATESTRUCTW is valid during callback and the Box state lives until window destruction.
 unsafe extern "system" fn bootstrap_window_proc(
     hwnd: HWND,
     message: u32,
@@ -579,6 +585,7 @@ unsafe extern "system" fn bootstrap_window_proc(
                                 state.display_regions.clone()
                             };
                             for region in regions {
+                                // SAFETY: hdc is active within BeginPaint/EndPaint; memory has the bitmap selected and dimensions/regions are bounded to the client and source bitmap.
                                 paint_bitmap_cover(
                                     hdc,
                                     memory,
@@ -682,6 +689,7 @@ unsafe extern "system" fn bootstrap_window_proc(
 
 #[cfg(windows)]
 fn register_class() -> Result<(), String> {
+    // SAFETY: GetModuleHandleW(None) takes no caller pointers and returns this process module handle.
     let instance = unsafe {
         GetModuleHandleW(None)
             .map(|module| HINSTANCE(module.0))
@@ -694,10 +702,12 @@ fn register_class() -> Result<(), String> {
         lpszClassName: BOOTSTRAP_CLASS,
         ..Default::default()
     };
+    // SAFETY: class is initialized stack storage; its class-name pointer and callback are static and remain valid through RegisterClassExW.
     let result = unsafe { RegisterClassExW(&class) };
     if result == 0 {
         // A second call in the same process is harmless; the class is global
         // to the module and may already have been registered by a retry.
+        // SAFETY: GetLastError takes no pointers and returns the last error for the preceding class registration on this thread.
         let error = unsafe { windows::Win32::Foundation::GetLastError() };
         if error.0 != 1410 {
             return Err(format!("无法注册首帧窗口类（错误码 {}）", error.0));
@@ -760,6 +770,7 @@ pub fn prepare() {
         }
     });
     if let Err(error) = register_class() {
+        // SAFETY: bitmap and any wake_bitmap are owned HBITMAPs returned by load_bitmap and have not been transferred to a window.
         unsafe {
             let _ = DeleteObject(HGDIOBJ(bitmap.0));
             if let Some((wake_bitmap, _, _)) = wake_bitmap.as_ref() {
@@ -786,6 +797,7 @@ pub fn prepare() {
     }));
     let exstyle = WINDOW_EX_STYLE(WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0 | WS_EX_TRANSPARENT.0);
     let style = WINDOW_STYLE(WS_CHILD.0);
+    // SAFETY: worker is the selected desktop host, state is the unique Box::into_raw allocation, and the registered callback consumes lpCreateParams during window creation.
     let hwnd = unsafe {
         CreateWindowExW(
             exstyle,
@@ -805,6 +817,7 @@ pub fn prepare() {
     let hwnd = match hwnd {
         Ok(hwnd) => hwnd,
         Err(error) => {
+            // SAFETY: CreateWindowExW returned an error, so no live window owns state; it is the unique Box::into_raw pointer and its bitmaps remain owned by it.
             unsafe {
                 let state = Box::from_raw(state);
                 let _ = DeleteObject(HGDIOBJ(state.sleep_bitmap.0));
@@ -819,10 +832,12 @@ pub fn prepare() {
         }
     };
     let mut bounds = RECT::default();
+    // SAFETY: worker is the selected wallpaper host and bounds is initialized writable stack storage for GetClientRect.
     let sized = unsafe { GetClientRect(worker, &mut bounds).is_ok() };
     let width = (bounds.right - bounds.left).max(1);
     let height = (bounds.bottom - bounds.top).max(1);
     let display_regions = display_regions_for_worker(width, height);
+    // SAFETY: hwnd was just created and its user data was installed during WM_NCCREATE; state_ptr is null-checked and the Box remains owned until window destruction.
     unsafe {
         let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut BootstrapWindowState;
         if !state_ptr.is_null() {
@@ -830,6 +845,7 @@ pub fn prepare() {
         }
     }
     BOOTSTRAP_DISPLAY_COUNT.store(display_regions.len() as u32, Ordering::Release);
+    // SAFETY: hwnd is the newly created bootstrap window, worker dimensions are clamped positive, and position/size flags are scalar values.
     let positioned = unsafe {
         SetWindowPos(
             hwnd,
@@ -846,6 +862,7 @@ pub fn prepare() {
         record_startup_diagnostic("event=initial-position-failed");
         log::warn!("native bootstrap created but could not size to WorkerW");
     }
+    // SAFETY: hwnd is the newly created bootstrap window and remains owned by this startup path while ShowWindow runs.
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOWNA);
     }
@@ -891,6 +908,7 @@ pub fn reattach_to_workerw() -> Result<bool, String> {
         return Ok(false);
     }
     let bootstrap = HWND(raw as *mut _);
+    // SAFETY: bootstrap is reconstructed from the published HWND and IsWindow validates it before further window operations.
     if !unsafe { IsWindow(Some(bootstrap)).as_bool() } {
         return Ok(false);
     }
@@ -898,6 +916,7 @@ pub fn reattach_to_workerw() -> Result<bool, String> {
         return Ok(false);
     };
     let mut parent_rect = RECT::default();
+    // SAFETY: worker came from visible_wallpaper_worker and parent_rect is initialized writable stack storage.
     unsafe { GetClientRect(worker, &mut parent_rect) }
         .map_err(|error| format!("无法读取 WorkerW 尺寸：{error}"))?;
     let width = parent_rect.right - parent_rect.left;
@@ -906,6 +925,7 @@ pub fn reattach_to_workerw() -> Result<bool, String> {
         return Ok(false);
     }
     let display_regions = display_regions_for_worker(width, height);
+    // SAFETY: bootstrap passed IsWindow; its user-data pointer was set at creation and is null-checked before updating the live boxed state.
     unsafe {
         let state_ptr = GetWindowLongPtrW(bootstrap, GWLP_USERDATA) as *mut BootstrapWindowState;
         if !state_ptr.is_null() {
@@ -914,20 +934,25 @@ pub fn reattach_to_workerw() -> Result<bool, String> {
     }
     BOOTSTRAP_DISPLAY_COUNT.store(display_regions.len() as u32, Ordering::Release);
 
+    // SAFETY: bootstrap passed IsWindow and GetParent returns only an opaque parent HWND value.
     let current_parent = unsafe { GetParent(bootstrap) }.ok();
     let mut child_rect = RECT::default();
+    // SAFETY: child_rect is initialized writable stack output and bootstrap was validated before the query.
     let size_matches = unsafe { GetClientRect(bootstrap, &mut child_rect).is_ok() }
         && child_rect.right - child_rect.left == width
         && child_rect.bottom - child_rect.top == height;
     let parent_changed = current_parent != Some(worker);
     if !parent_changed && size_matches {
+        // SAFETY: bootstrap is a validated live HWND and None intentionally asks InvalidateRect to invalidate the whole client area.
         unsafe {
             let _ = InvalidateRect(Some(bootstrap), None, false);
         }
         return Ok(false);
     }
 
+    // SAFETY: bootstrap is the HWND validated at the start of reattach_to_workerw and IsWindowVisible reads it as an opaque value.
     let was_visible = unsafe { IsWindowVisible(bootstrap).as_bool() };
+    // SAFETY: bootstrap was validated and worker is the visible host; local output/state pointers are checked, and SetWindowPos uses bounded positive dimensions.
     unsafe {
         if parent_changed {
             // SetParent may report the previous parent through windows-rs as
@@ -1053,14 +1078,23 @@ pub fn release(generation: u64, background_raw: isize) -> Result<bool, String> {
     let background = HWND(background_raw as *mut _);
     let mut cover_client = RECT::default();
     let mut background_client = RECT::default();
+    // SAFETY: cover comes from the published bootstrap HWND; GetParent accepts it as an opaque value and the optional result is checked below.
     let cover_parent = unsafe { GetParent(cover) }.ok();
+    // SAFETY: background is the renderer HWND supplied by the caller; GetParent treats it as an opaque value and the optional result is checked below.
     let background_parent = unsafe { GetParent(background) }.ok();
+    // SAFETY: cover is an opaque published HWND; IsWindow validates it before the later visibility and client-rect queries are evaluated.
     let cover_valid = unsafe { IsWindow(Some(cover)).as_bool() }
+        // SAFETY: cover passed the preceding IsWindow check; this query reads visibility from the same HWND before GetClientRect.
         && unsafe { IsWindowVisible(cover).as_bool() }
+        // SAFETY: cover passed IsWindow and IsWindowVisible; cover_client is initialized writable stack storage for GetClientRect.
         && unsafe { GetClientRect(cover, &mut cover_client).is_ok() };
+    // SAFETY: background is the caller-provided HWND; IsWindow validates it before the following visibility and client-rect queries.
     let background_valid = unsafe { IsWindow(Some(background)).as_bool() }
+        // SAFETY: background passed the preceding IsWindow check; this query reads visibility from the same HWND before GetClientRect.
         && unsafe { IsWindowVisible(background).as_bool() }
+        // SAFETY: background passed IsWindow and IsWindowVisible; background_client is initialized writable stack storage for GetClientRect.
         && unsafe { GetClientRect(background, &mut background_client).is_ok() };
+    // SAFETY: background is the renderer HWND already checked above; GetWindow returns an optional sibling HWND value that is null-filtered.
     let preceding_sibling = unsafe { GetWindow(background, GW_HWNDPREV) }
         .ok()
         .filter(|hwnd| !hwnd.0.is_null());
@@ -1110,6 +1144,7 @@ pub fn release(generation: u64, background_raw: isize) -> Result<bool, String> {
         cover_client.right - cover_client.left,
         cover_client.bottom - cover_client.top
     ));
+    // SAFETY: cover passed the ready-state HWND checks, and PostMessageW receives only the handle and scalar generation/message values.
     if let Err(error) = unsafe {
         PostMessageW(
             Some(cover),
@@ -1199,6 +1234,7 @@ fn arm_watchdog(generation: u64) {
                         BOOTSTRAP_WATCHDOG_TIMEOUT.as_secs()
                     );
                     if let Some(hwnd) = window_handle() {
+                        // SAFETY: hwnd came from window_handle and is posted to asynchronously; PostMessageW receives scalar values and reports a stale/destroyed HWND as an error.
                         let _ = unsafe {
                             PostMessageW(
                                 Some(hwnd),
@@ -1262,6 +1298,7 @@ pub fn destroy() -> Result<(), String> {
         restore_startup_priority();
         return Ok(());
     }
+    // SAFETY: BOOTSTRAP_HWND was checked nonzero; PostMessageW accepts the opaque HWND and scalar destroy message without borrowing memory.
     unsafe {
         PostMessageW(
             Some(HWND(raw as *mut _)),
@@ -1285,6 +1322,7 @@ pub fn start_wake() -> Result<(), String> {
         return Ok(());
     }
     arm_watchdog(generation);
+    // SAFETY: BOOTSTRAP_HWND was checked nonzero; PostMessageW accepts the opaque HWND and scalar generation/message values.
     unsafe {
         PostMessageW(
             Some(HWND(raw as *mut _)),
@@ -1304,6 +1342,7 @@ pub fn show_sleep() -> Result<(), String> {
     if raw == 0 {
         return Ok(());
     }
+    // SAFETY: BOOTSTRAP_HWND was checked nonzero; PostMessageW accepts the opaque HWND and scalar generation/message values.
     unsafe {
         PostMessageW(
             Some(HWND(raw as *mut _)),

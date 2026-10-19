@@ -8,6 +8,7 @@ fn main() {
     // awareness Windows can virtualize the WorkerW size and leave a border;
     // V2 is also needed when the user mixes display scaling factors.
     #[cfg(windows)]
+    // SAFETY: These DPI context constants are system-provided opaque values; the setter takes no caller pointers and runs before any window is created.
     unsafe {
         use windows::Win32::UI::HiDpi::{
             SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,

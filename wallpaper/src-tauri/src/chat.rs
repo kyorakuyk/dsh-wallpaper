@@ -2525,6 +2525,7 @@ fn read_bridge_token() -> Result<String, String> {
     struct HandleGuard(HANDLE);
     impl Drop for HandleGuard {
         fn drop(&mut self) {
+            // SAFETY: this guard owns the HANDLE returned by OpenProcessToken and closes it exactly once when dropped.
             unsafe {
                 let _ = CloseHandle(self.0);
             }
@@ -2534,6 +2535,7 @@ fn read_bridge_token() -> Result<String, String> {
     impl Drop for SecurityDescriptorGuard {
         fn drop(&mut self) {
             if !self.0 .0.is_null() {
+                // SAFETY: GetSecurityInfo allocated this non-null descriptor with LocalAlloc; this guard frees it once when dropped.
                 unsafe {
                     let _ = windows::Win32::Foundation::LocalFree(Some(HLOCAL(self.0 .0)));
                 }
@@ -2547,6 +2549,7 @@ fn read_bridge_token() -> Result<String, String> {
         "DSH bridge token 文件不安全；请重启或重新安装 dsh-wallpaper-bridge".into()
     }
 
+    // SAFETY: the token handle is owned here; GetTokenInformation fills size-checked word-aligned storage, and the returned SID stays paired with that Vec.
     unsafe fn current_user_sid() -> Result<(HandleGuard, Vec<usize>, PSID), String> {
         let mut raw = HANDLE::default();
         OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw)
@@ -2597,6 +2600,7 @@ fn read_bridge_token() -> Result<String, String> {
         .collect();
     // Do not follow a final reparse point, do not share this handle with a
     // writer/deleter, and use it for both ACL inspection and token bytes.
+    // SAFETY: wide is a live NUL-terminated UTF-16 path for this call; the returned file HANDLE is transferred to HandleGuard.
     let handle = unsafe {
         CreateFileW(
             PCWSTR(wide.as_ptr()),
@@ -2611,6 +2615,7 @@ fn read_bridge_token() -> Result<String, String> {
     .map(HandleGuard)
     .map_err(|_| "未找到 DSH 壁纸 bridge token；请先安装并启动 dsh-wallpaper-bridge".to_string())?;
 
+    // SAFETY: handle is an owned, non-shared file opened with OPEN_REPARSE_POINT; output structs are local, and ACL/ACE pointers are validated before dereference.
     unsafe {
         if GetFileType(handle.0) != FILE_TYPE_DISK {
             return Err(insecure_token_file());
@@ -2624,6 +2629,7 @@ fn read_bridge_token() -> Result<String, String> {
             return Err(insecure_token_file());
         }
 
+        // SAFETY: token_user_storage is kept in scope through every SID check, so current_sid remains backed by its aligned allocation.
         let (_process_token, token_user_storage, current_sid) = current_user_sid()?;
         // Keep the token-information backing bytes alive through SID checks.
         let _keep_current_sid_alive = token_user_storage;

@@ -3920,12 +3920,14 @@ let root = std::env::temp_dir().join(format!("dsh-bridge-test-{}-{}", std::proce
                 Quit,
             }
 
+            // SAFETY: The system supplies this callback with the live window and message values; this callback does not retain borrowed data.
             unsafe extern "system" fn wnd_proc(
                 hwnd: HWND,
                 message: u32,
                 wparam: WPARAM,
                 lparam: LPARAM,
             ) -> LRESULT {
+                // SAFETY: The callback values came from the Windows message dispatcher and are forwarded without retention.
                 unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
             }
 
@@ -3947,6 +3949,7 @@ let root = std::env::temp_dir().join(format!("dsh-bridge-test-{}-{}", std::proce
             let title_for_thread = title.clone();
             let class_for_thread = class_name.clone();
             std::thread::spawn(move || {
+                // SAFETY: A null module name requests this process module, whose handle remains valid for the process lifetime.
                 let instance = HINSTANCE(unsafe { GetModuleHandleW(None) }.expect("module").0);
                 let class = WNDCLASSW {
                     lpfnWndProc: Some(wnd_proc),
@@ -3954,7 +3957,9 @@ let root = std::env::temp_dir().join(format!("dsh-bridge-test-{}-{}", std::proce
                     lpszClassName: windows::core::PCWSTR(class_for_thread.as_ptr()),
                     ..Default::default()
                 };
+                // SAFETY: The class structure and its UTF-16 class-name buffer remain live for the duration of registration.
                 assert_ne!(unsafe { RegisterClassW(&class) }, 0, "注册窗口类");
+                // SAFETY: The registered class and NUL-terminated title buffers remain live for this call on the owning thread.
                 let hwnd = unsafe {
                     CreateWindowExW(
                         WS_EX_TOOLWINDOW,
@@ -3978,7 +3983,9 @@ let root = std::env::temp_dir().join(format!("dsh-bridge-test-{}-{}", std::proce
                     // 泵消息：一个不泵消息的窗口线程会让跨线程的显示/隐藏变成异步排队，那正是
                     // 这次测量要避开的。
                     let mut message = MSG::default();
+                    // SAFETY: message is writable stack storage, and this thread owns the queue being pumped.
                     while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+                        // SAFETY: message was populated by PeekMessageW and remains live while both message APIs use it.
                         unsafe {
                             let _ = TranslateMessage(&message);
                             DispatchMessageW(&message);
@@ -3987,11 +3994,13 @@ let root = std::env::temp_dir().join(format!("dsh-bridge-test-{}-{}", std::proce
                     match command_rx.recv_timeout(Duration::from_millis(2)) {
                         Ok(Command::Show(ack)) => {
                             let at = Instant::now();
+                            // SAFETY: hwnd is the live window created on this thread and is destroyed only after the message loop.
                             unsafe {
                                 let _ = ShowWindow(hwnd, SW_SHOW);
                             }
                             let _ = ack.send(at);
                         }
+                        // SAFETY: hwnd is still live on its creating thread; destruction occurs only after the message loop exits.
                         Ok(Command::Hide) => unsafe {
                             let _ = ShowWindow(hwnd, SW_HIDE);
                         },
@@ -3999,6 +4008,7 @@ let root = std::env::temp_dir().join(format!("dsh-bridge-test-{}-{}", std::proce
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                     }
                 }
+                // SAFETY: the loop has stopped using hwnd, and the window is destroyed on the thread that created it.
                 unsafe {
                     let _ = DestroyWindow(hwnd);
                 }
@@ -4017,6 +4027,7 @@ let root = std::env::temp_dir().join(format!("dsh-bridge-test-{}-{}", std::proce
                 use windows::Win32::UI::WindowsAndMessaging::EnumWindows;
                 use windows::core::BOOL;
                 static COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                // SAFETY: EnumWindows calls this synchronously with system-provided handles; the callback only updates an atomic and ignores LPARAM.
                 unsafe extern "system" fn count(_: HWND, _: WindowLparam) -> BOOL {
                     COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     BOOL(1)
@@ -4025,6 +4036,7 @@ let root = std::env::temp_dir().join(format!("dsh-bridge-test-{}-{}", std::proce
                 for _ in 0..10 {
                     COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
                     let at = Instant::now();
+                    // SAFETY: EnumWindows owns the synchronous callback lifetime; count only updates atomic storage and ignores LPARAM.
                     unsafe {
                         let _ = EnumWindows(Some(count), LPARAM(0));
                     }

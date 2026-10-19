@@ -21,6 +21,7 @@ fn credential_blob_from_prompt_password(password: &[u16]) -> Vec<u8> {
 #[cfg(all(windows, not(feature = "lite")))]
 fn secure_zero_u16(secret: &mut [u16]) {
     for value in secret {
+        // SAFETY: value points to the current element of the exclusively borrowed mutable slice and is valid and aligned for one u16 write.
         unsafe { std::ptr::write_volatile(value, 0) };
     }
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
@@ -29,6 +30,7 @@ fn secure_zero_u16(secret: &mut [u16]) {
 #[cfg(all(windows, not(feature = "lite")))]
 fn secure_zero_bytes(secret: &mut [u8]) {
     for value in secret {
+        // SAFETY: value points to the current element of the exclusively borrowed mutable slice and is valid for one byte write.
         unsafe { std::ptr::write_volatile(value, 0) };
     }
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
@@ -215,6 +217,7 @@ fn remove_api_key_credential() -> Result<bool, String> {
     use windows::Win32::Security::Credentials::{CredDeleteW, CRED_TYPE_GENERIC};
 
     let target = HSTRING::from("deepseek-api.dsh-wallpaper");
+    // SAFETY: target is an owned NUL-terminated HSTRING that remains alive for the synchronous Credential Manager call.
     match unsafe { CredDeleteW(&target, CRED_TYPE_GENERIC, None) } {
         Ok(()) => Ok(true),
         Err(_) => Ok(false),
@@ -322,6 +325,7 @@ fn write_api_key_credential(key: &str) -> Result<(), String> {
         TargetAlias: PWSTR::null(),
         UserName: PWSTR(username.as_mut_ptr()),
     };
+    // SAFETY: credential is live stack storage; target and username are NUL-terminated Vecs, and blob pointer/size describe the live blob Vec for this synchronous call.
     let result = unsafe { CredWriteW(&mut credential, 0) }
         .map_err(|error| format!("无法保存 API Key 到 Windows 凭据管理器：{error}"));
     secure_zero_bytes(&mut blob);

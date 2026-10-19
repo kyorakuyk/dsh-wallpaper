@@ -669,11 +669,13 @@ pub(crate) fn file_version(path: &Path) -> Option<String> {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
+    // SAFETY: file is a live NUL-terminated UTF-16 Vec for this call; the API only returns the required version-resource size.
     let size = unsafe { GetFileVersionInfoSizeW(PCWSTR(file.as_ptr()), None) };
     if size == 0 {
         return None;
     }
     let mut block = vec![0u8; size as usize];
+    // SAFETY: file remains NUL-terminated and block is writable storage sized by the successful size query; the result is checked before parsing.
     unsafe { GetFileVersionInfoW(PCWSTR(file.as_ptr()), None, size, block.as_mut_ptr().cast()) }
         .ok()?;
 
@@ -687,6 +689,7 @@ pub(crate) fn file_version(path: &Path) -> Option<String> {
     let mut pointer: *mut core::ffi::c_void = std::ptr::null_mut();
     let mut length = 0u32;
     let translation = wide(r"\VarFileInfo\Translation");
+    // SAFETY: block and the query Vec remain live for the call; pointer/length are accepted only when the API succeeds and the translation length is at least 4 bytes.
     if unsafe {
         VerQueryValueW(
             block.as_ptr().cast(),
@@ -700,6 +703,7 @@ pub(crate) fn file_version(path: &Path) -> Option<String> {
     {
         // Several translations may be present; the first one is the resource's own
         // primary language, which is the table the installer wrote.
+        // SAFETY: successful VerQueryValueW returned a pointer into live block storage with at least two UTF-16 translation words.
         let words = unsafe { std::slice::from_raw_parts(pointer.cast::<u16>(), 2) };
         language = words[0];
         codepage = words[1];
@@ -711,6 +715,7 @@ pub(crate) fn file_version(path: &Path) -> Option<String> {
         ));
         let mut pointer: *mut core::ffi::c_void = std::ptr::null_mut();
         let mut length = 0u32;
+        // SAFETY: block and NUL-terminated query Vec remain live for the call; the returned pointer/character length are used only after success.
         let found = unsafe {
             VerQueryValueW(
                 block.as_ptr().cast(),
@@ -724,6 +729,7 @@ pub(crate) fn file_version(path: &Path) -> Option<String> {
             continue;
         }
         // `length` counts characters and includes the terminating null.
+        // SAFETY: successful VerQueryValueW returns this NUL-terminated string inside live block storage with the reported character length.
         let value = unsafe { std::slice::from_raw_parts(pointer.cast::<u16>(), length as usize) };
         let version = String::from_utf16_lossy(value)
             .trim_matches(char::from(0))
@@ -964,6 +970,7 @@ fn shortcut_registration(path: &Path) -> Option<(String, Option<String>)> {
     use windows::Win32::Storage::EnhancedStorage::{PKEY_AppUserModel_ID, PKEY_Link_TargetParsingPath};
     use windows::Win32::UI::Shell::{IShellItem2, SHCreateItemFromParsingName};
 
+    // SAFETY: the temporary HSTRING owns a NUL-terminated path through the synchronous COM call; the returned interface owns its COM reference.
     let item: IShellItem2 = unsafe { SHCreateItemFromParsingName(&HSTRING::from(path), None).ok()? };
     let aumid = shell_item_string(&item, &PKEY_AppUserModel_ID)?;
     // A shortcut whose target is not a filesystem object answers nothing here, and
@@ -980,11 +987,14 @@ fn shell_item_string(
 ) -> Option<String> {
     use windows::Win32::System::Com::CoTaskMemFree;
 
+    // SAFETY: item is a live COM interface and GetString returns a CoTaskMem-owned string pointer, checked for null before conversion.
     let raw = unsafe { item.GetString(key).ok()? };
     if raw.is_null() {
         return None;
     }
+    // SAFETY: raw is the non-null, NUL-terminated CoTaskMem string returned by GetString and remains allocated until the following free.
     let value = unsafe { raw.to_string() }.ok();
+    // SAFETY: raw is the allocation returned by IShellItem2::GetString and is freed once after its contents have been copied.
     unsafe { CoTaskMemFree(Some(raw.0 as *const core::ffi::c_void)) };
     let value = value?.trim().to_string();
     (!value.is_empty()).then_some(value)
@@ -1052,6 +1062,7 @@ fn scan_shell_shortcuts() -> Vec<ScannedShortcut> {
     // Property reads on a pooled blocking thread: mirror the app's own apartment
     // (MTA). A thread that already has an apartment keeps it — the call is then a
     // no-op — and for the same reason this deliberately does not uninitialize.
+    // SAFETY: CoInitializeEx receives no pointers and sets the COM apartment for this pooled blocking thread.
     let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
     let mut budget = SHORTCUT_SCAN_MAX_FILES;
     let mut found = Vec::new();
