@@ -422,91 +422,6 @@ fn notify_appearance_changed(
 }
 
 
-#[tauri::command]
-#[cfg(not(feature = "lite"))]
-async fn show_deepseek_login(
-    caller: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    require_wallpaper_surface(&caller)?;
-    tauri::async_runtime::spawn_blocking(move || deepseek_web::show_login(&app))
-        .await
-        .map_err(|error| format!("DeepSeek 应用内页面启动未完成：{error}"))?
-}
-
-#[tauri::command]
-#[cfg(not(feature = "lite"))]
-async fn deepseek_web_ensure(
-    caller: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-    conversation_id: Option<String>,
-    new_conversation: Option<bool>,
-) -> Result<(), String> {
-    require_background(&caller)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        deepseek_web::ensure(&app, conversation_id, new_conversation.unwrap_or(false))
-    })
-    .await
-    .map_err(|error| format!("DeepSeek 网页预热未完成：{error}"))?
-}
-
-#[tauri::command]
-#[cfg(not(feature = "lite"))]
-async fn deepseek_web_status(
-    caller: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-) -> Result<deepseek_web::WebStatus, String> {
-    require_background(&caller)?;
-    deepseek_web::status(&app).await
-}
-
-#[tauri::command]
-#[cfg(not(feature = "lite"))]
-async fn deepseek_web_history(
-    caller: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-    conversation_id: Option<String>,
-    new_conversation: Option<bool>,
-) -> Result<deepseek_web::WebHistory, String> {
-    require_background(&caller)?;
-    deepseek_web::history(&app, conversation_id, new_conversation.unwrap_or(false)).await
-}
-
-#[tauri::command]
-#[cfg(not(feature = "lite"))]
-async fn deepseek_web_adapter_config_status(
-    caller: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-) -> Result<deepseek_web_config::AdapterConfigStatus, String> {
-    require_settings(&caller)?;
-    tauri::async_runtime::spawn_blocking(move || deepseek_web_config::status(&app))
-        .await
-        .map_err(|error| format!("读取 DeepSeek 网页配置未完成：{error}"))?
-}
-
-#[tauri::command]
-#[cfg(not(feature = "lite"))]
-async fn open_deepseek_web_adapter_config(
-    caller: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-) -> Result<deepseek_web_config::AdapterConfigStatus, String> {
-    require_settings(&caller)?;
-    tauri::async_runtime::spawn_blocking(move || deepseek_web_config::open(&app))
-        .await
-        .map_err(|error| format!("打开 DeepSeek 网页配置未完成：{error}"))?
-}
-
-#[tauri::command]
-#[cfg(not(feature = "lite"))]
-async fn reset_deepseek_web_adapter_config(
-    caller: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-) -> Result<deepseek_web_config::AdapterConfigStatus, String> {
-    require_settings(&caller)?;
-    tauri::async_runtime::spawn_blocking(move || deepseek_web_config::reset(&app))
-        .await
-        .map_err(|error| format!("恢复 DeepSeek 网页配置未完成：{error}"))?
-}
 
 #[tauri::command]
 fn start_settings_drag(caller: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
@@ -772,15 +687,15 @@ macro_rules! register_edition_commands {
             commands::settings::open_project_memory,
             commands::settings::open_subject_tui,
             commands::settings::clear_user_data,
-            show_deepseek_login,
+            commands::deepseek_web::show_deepseek_login,
             native_bootstrap_generation,
             release_native_bootstrap,
-            deepseek_web_ensure,
-            deepseek_web_status,
-            deepseek_web_history,
-            deepseek_web_adapter_config_status,
-            open_deepseek_web_adapter_config,
-            reset_deepseek_web_adapter_config,
+            commands::deepseek_web::deepseek_web_ensure,
+            commands::deepseek_web::deepseek_web_status,
+            commands::deepseek_web::deepseek_web_history,
+            commands::deepseek_web::deepseek_web_adapter_config_status,
+            commands::deepseek_web::open_deepseek_web_adapter_config,
+            commands::deepseek_web::reset_deepseek_web_adapter_config,
             open_settings_window,
             start_settings_drag,
             hide_settings_window,

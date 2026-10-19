@@ -412,10 +412,11 @@ describe('native chat boundary', () => {
   })
 
   it('keeps system-setting and desktop-input commands bound to their owning surface', async () => {
-    const [lib, settingsCommands, harnessStatus, archivedLockScreen, archivedIntegration] = await Promise.all([
+    const [lib, settingsCommands, harnessStatus, webCommands, archivedLockScreen, archivedIntegration] = await Promise.all([
       readNative('src/lib.rs'),
       readNative('src/commands/settings.rs'),
       readNative('src/commands/harness_status.rs'),
+      readNative('src/commands/deepseek_web.rs'),
       readArchive(archivedLockScreenCommandsPath),
       readArchive(archivedIntegrationCommandsPath),
     ])
@@ -442,7 +443,7 @@ describe('native chat boundary', () => {
     }
     const probeSignature = /fn\s+probe_harness\s*\([\s\S]*?\)\s*->[^\{]*\{[\s\S]*?require_background\(&caller\)\?;/
     expect(harnessStatus, 'probe_harness').toMatch(probeSignature)
-    expect(lib).toMatch(/fn show_deepseek_login[\s\S]*?require_wallpaper_surface\(&caller\)\?;/)
+    expect(webCommands).toMatch(/fn show_deepseek_login[\s\S]*?require_wallpaper_surface\(&caller\)\?;/)
     expect(lib).toMatch(/fn get_app_snapshot[\s\S]*?require_wallpaper_surface\(&caller\)\?;/)
   })
 

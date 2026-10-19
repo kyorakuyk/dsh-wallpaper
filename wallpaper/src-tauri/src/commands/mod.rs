@@ -7,3 +7,5 @@ pub(super) mod chat;
 pub(super) mod settings;
 #[cfg(feature = "lite")]
 pub(super) mod lite;
+#[cfg(not(feature = "lite"))]
+pub(super) mod deepseek_web;
