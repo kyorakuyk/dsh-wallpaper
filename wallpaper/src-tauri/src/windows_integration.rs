@@ -1754,6 +1754,7 @@ fn place_wallpaper_layers(background: HWND, parent: HWND) -> Result<(), String> 
         .ok()
         .filter(|hwnd| !hwnd.0.is_null())
         .ok_or("Progman 中缺少 SHELLDLL_DefView")?;
+        // SAFETY: every handle used here was resolved and null-checked above, and these calls pass only handles and integer flags, so no Rust-owned buffer is shared with the window manager.
         unsafe {
             if let Some(cover) = cover {
                 // Child Z order is front-to-back. Keep Explorer's icon view
@@ -1773,6 +1774,7 @@ fn place_wallpaper_layers(background: HWND, parent: HWND) -> Result<(), String> 
     }
 
     if let Some(cover) = cover {
+        // SAFETY: `background` and the cover are live wallpaper child windows on this path, and the insert-after argument is another window handle or HWND_TOP, never a Rust pointer.
         unsafe {
             // A WorkerW is already behind the icon host. Put the cover at the
             // front of this wallpaper child stack, then the live WebView
@@ -1802,6 +1804,7 @@ fn attach_hwnd_to_workerw(background: HWND) -> Result<HWND, String> {
             format!("原生首帧层无法先挂载到新的桌面宿主，暂缓移动 WebView：{error}")
         })?;
     }
+    // SAFETY: `background` is the WebView's own live HWND supplied by the caller and `worker` is the located desktop host; the DWM call gets a pointer to a local u32 with its exact size, and the GetParent readback after SetParent decides success.
     unsafe {
         let exstyle = GetWindowLongPtrW(background, GWL_EXSTYLE);
         SetWindowLongPtrW(
@@ -1866,6 +1869,7 @@ fn attach_hwnd_to_workerw(background: HWND) -> Result<HWND, String> {
     }
     resize_wallpaper_to_parent(background, worker)?;
     place_wallpaper_layers(background, worker)?;
+    // SAFETY: `background` was attached and restyled just above and is still alive; ShowWindow only requests a show state and its result is deliberately ignored.
     unsafe {
         let _ = ShowWindow(background, SW_SHOWNA);
     }
@@ -1906,20 +1910,25 @@ fn inspect_wallpaper_host(window: Option<&WebviewWindow>) -> (WallpaperHostActio
         return (WallpaperHostAction::Recreate, None);
     };
     let background = HWND(raw.0);
+    // SAFETY: `background` was just resolved from the Tauri window handle; IsWindow only inspects it and a destroyed window answers false, which is the Recreate branch this guard handles.
     if !unsafe { IsWindow(Some(background)).as_bool() } {
         return (WallpaperHostAction::Recreate, Some(background));
     }
+    // SAFETY: `background` passed the IsWindow check on this path, so it names a live window; GetParent only resolves the parent handle.
     let parent = unsafe { GetParent(background) }.ok();
     let parent_exists = parent
+        // SAFETY: `hwnd` is the parent handle just returned by GetParent and is only inspected; a stale handle answers false and folds into the unwrap_or default.
         .map(|hwnd| unsafe { IsWindow(Some(hwnd)).as_bool() })
         .unwrap_or(false);
     let parent_class = parent.and_then(window_class);
     let parent_is_worker = is_valid_wallpaper_parent_class(parent_class.as_deref())
         && parent
+            // SAFETY: `hwnd` is the same parent handle probed above and IsWindowVisible only queries its state; false is the ordinary answer for a hidden window.
             .map(|hwnd| unsafe { IsWindowVisible(hwnd).as_bool() })
             .unwrap_or(false);
     let worker_available = parent_class.as_deref() == Some("Progman")
         && locate_wallpaper_worker()
+            // SAFETY: `worker` comes from the enumeration performed in this expression and is only queried for visibility.
             .map(|worker| unsafe { IsWindowVisible(worker).as_bool() })
             .unwrap_or(false);
 
@@ -1928,6 +1937,7 @@ fn inspect_wallpaper_host(window: Option<&WebviewWindow>) -> (WallpaperHostActio
         .and_then(|worker| {
             let mut parent_rect = RECT::default();
             let mut child_rect = RECT::default();
+            // SAFETY: `worker` is the parent that passed the existence and class checks above and `background` is the live host; both RECTs are locals that outlive the two synchronous calls.
             unsafe {
                 GetClientRect(worker, &mut parent_rect).ok()?;
                 GetClientRect(background, &mut child_rect).ok()?;
@@ -2023,6 +2033,7 @@ fn recover_wallpaper_host(app: &tauri::AppHandle) -> Result<(), String> {
                 let mode = window
                     .hwnd()
                     .ok()
+                    // SAFETY: the handle was just obtained from the recovered window and GetParent only resolves its parent; a missing parent is tolerated by the class lookup below.
                     .and_then(|raw| unsafe { GetParent(HWND(raw.0)) }.ok())
                     .and_then(window_class)
                     .map(|class| {
@@ -2121,6 +2132,7 @@ pub fn register_session_events(app: &tauri::AppHandle) -> Result<(), String> {
         .ok_or("background window missing")?;
     let hwnd = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
     let app_ptr = Box::into_raw(Box::new(app.clone())) as usize;
+    // SAFETY: `hwnd` is the live background window and the subclass proc is a static function; `app_ptr` is the only pointer to a heap AppHandle that either the failure branch inside this block or WM_NCDESTROY later reclaims exactly once.
     unsafe {
         WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION).map_err(|e| e.to_string())?;
         if !SetWindowSubclass(hwnd, Some(session_subclass_proc), 1, app_ptr).as_bool() {
@@ -2146,6 +2158,7 @@ pub fn unregister_session_events(app: &tauri::AppHandle) {
         return;
     };
     let hwnd = HWND(raw.0);
+    // SAFETY: `hwnd` was just resolved from the live background window; both calls tolerate a window that was never registered and neither dereferences Rust memory.
     unsafe {
         let _ = WTSUnRegisterSessionNotification(hwnd);
         let _ = RemoveWindowSubclass(hwnd, Some(session_subclass_proc), 1);
@@ -2300,6 +2313,7 @@ fn window_chain_reaches_this_process(hwnd: HWND) -> bool {
             return false;
         }
         let mut pid = 0u32;
+        // SAFETY: `current` is a handle from the caller or from GetParent above, and the pid target is a local u32; the call writes only that out-parameter.
         unsafe { GetWindowThreadProcessId(current, Some(&mut pid)) };
         if pid == std::process::id() {
             return true;
@@ -2309,6 +2323,7 @@ fn window_chain_reaches_this_process(hwnd: HWND) -> bool {
         }
         // `GetParent` is a `Result` in windows 0.61, and a window with no parent is
         // the normal termination of this walk rather than an error.
+        // SAFETY: `current` came from the same chain walk, and a window that vanished returns an error, which ends the walk instead of being dereferenced.
         let parent = match unsafe { GetParent(current) } {
             Ok(parent) => parent,
             Err(_) => return false,
@@ -2391,6 +2406,7 @@ unsafe fn set_focus_checked(hwnd: HWND) -> FocusSetOutcome {
 
 #[cfg(windows)]
 pub fn hand_over_keyboard_after_verified_click(host: HWND) -> String {
+    // SAFETY: `host` is the wallpaper's own background HWND, checked by the caller; every call here takes handles or local out-parameters (u32, GUITHREADINFO with cbSize set) and no ownership is transferred.
     unsafe {
         let top = GetAncestor(host, GA_ROOT);
         if top.0.is_null() {
@@ -2460,6 +2476,7 @@ pub fn hand_over_keyboard_after_verified_click(_host: usize) -> String {
 #[cfg(windows)]
 #[cfg(windows)]
 pub fn verify_island_click() -> Result<String, String> {
+    // SAFETY: every call in this block is a read-only Win32 query; the cursor, pid and thread-info storage are locals and window handles are only walked and inspected.
     unsafe {
         if GetAsyncKeyState(VK_LBUTTON.0 as i32) >= 0 {
             return Err("拒绝原因=physical-left-button-up：未检测到物理左键按下；拒绝把 IPC 调用当作输入岛点击".into());
@@ -2525,6 +2542,7 @@ fn client_point(lparam: LPARAM) -> (i32, i32) {
 /// per-mouse-move `WM_NCHITTEST` path stays untouched.
 #[cfg(all(windows, debug_assertions))]
 fn trace_focus_handoff(stage: &str, client: Option<(i32, i32)>) {
+    // SAFETY: debug-only diagnostics; POINT and GUITHREADINFO are locals with cbSize set before use, and the handles involved are only inspected.
     unsafe {
         // Resolve the click point to the window actually under it, which tells a missed
         // hot zone apart from a click that arrived without the keyboard following.
@@ -2559,6 +2577,7 @@ fn trace_focus_handoff(stage: &str, client: Option<(i32, i32)>) {
 
 #[cfg(all(windows, debug_assertions))]
 fn hwnd_of_foreground() -> HWND {
+    // SAFETY: GetForegroundWindow takes no arguments and returns a borrowed system handle that the caller only reads.
     unsafe { GetForegroundWindow() }
 }
 
@@ -2600,6 +2619,7 @@ fn hand_over_keyboard_after_island_click(root: HWND) {
         }
         *last = Some(std::time::Instant::now());
     }
+    // SAFETY: `root` is the host handle this subclass was installed on; all state is local (pids, GUITHREADINFO with cbSize) and AttachThreadInput and GetAncestor take plain handles.
     unsafe {
         let host_mode = wallpaper_host_status_state()
             .read()
@@ -2706,6 +2726,7 @@ unsafe extern "system" fn interaction_subclass_proc(
                 // point is in a declared region and the physical left button is down.
                 // Outside the island nothing here runs, so the wallpaper still never
                 // takes the keyboard without the user asking for it (plan 3.C).
+                // SAFETY: GetAsyncKeyState takes only a virtual-key constant and reads global input state; it has no out-parameter and touches no Rust memory.
                 if hit_is_island && unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0 {
                     // Phase A still has one open question: whether this branch is reached at all on
                     // a real click. The WebView2 child belongs to another process, so hit-testing may
@@ -2738,6 +2759,7 @@ unsafe extern "system" fn interaction_subclass_proc(
 
 #[cfg(windows)]
 fn install_desktop_hit_testing(root_hwnd: HWND) -> Result<(), String> {
+    // SAFETY: `root_hwnd` is the live background host the caller just attached, the proc is a static function, and the reference data is that same handle encoded as usize, so nothing is owned or freed here.
     unsafe {
         if !SetWindowSubclass(
             root_hwnd,
@@ -2776,6 +2798,7 @@ pub fn start_foreground_monitor(app: tauri::AppHandle) {
         let background_raw = background_window_handle_now();
         let window_present = background_handle_is_usable(background_raw);
         if window_present {
+        // SAFETY: no arguments and no Rust memory; the returned handle is only compared and class-probed afterwards.
         let foreground = unsafe { GetForegroundWindow() };
         let foreground_class = window_class(foreground);
         let shell = foreground == unsafe { GetDesktopWindow() }
