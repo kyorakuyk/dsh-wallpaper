@@ -210,16 +210,6 @@ fn verify_island_click(app: tauri::AppHandle, caller: tauri::WebviewWindow) -> R
 /// with its own single-flight and trust decisions; raising must not become a back
 /// door that spawns processes.
 
-/// Open a link from the transcript in the user's default browser.
-///
-/// The address is model output, so it never reaches the shell unvalidated: see
-/// `external_link::validate` for what counts as openable. This command only adds the
-/// surface check — the link lives on the wallpaper's chat surface, not in settings.
-#[tauri::command]
-fn open_external_link(caller: tauri::WebviewWindow, url: String) -> Result<(), String> {
-    require_wallpaper_surface(&caller)?;
-    external_link::open(&url).map(|_| ())
-}
 
 
 

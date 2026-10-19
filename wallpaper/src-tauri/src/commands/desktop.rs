@@ -401,3 +401,16 @@ pub(crate) fn open_client_in_browser(
     };
     client_window::open_loopback_url(port, &target)
 }
+
+// 从 `lib.rs` 纯搬运（阶段 B）：只在壁纸/设置表面可用，地址先过 `external_link::validate`。
+/// Open a link from the transcript in the user's default browser.
+///
+/// The address is model output, so it never reaches the shell unvalidated: see
+/// `external_link::validate` for what counts as openable. This command only adds the
+/// surface check — the link lives on the wallpaper's chat surface, not in settings.
+#[tauri::command]
+pub(crate) fn open_external_link(caller: tauri::WebviewWindow, url: String) -> Result<(), String> {
+    require_wallpaper_surface(&caller)?;
+    external_link::open(&url).map(|_| ())
+}
+

@@ -104,7 +104,7 @@ macro_rules! register_edition_commands {
             verify_island_click,
             commands::desktop::raise_client_window,
             commands::desktop::open_client_in_browser,
-            open_external_link,
+            commands::desktop::open_external_link,
             commands::harness_status::harness_endpoint_listening,
             commands::harness_status::harness_endpoint_window,
             appearance::commands::appearance_get_state,
