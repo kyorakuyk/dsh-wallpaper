@@ -98,7 +98,7 @@ describe('native exit lifecycle', () => {
   })
 
   it('releases the session notification registration it installed', async () => {
-    const integration = await readNative('src/windows_integration.rs')
+    const integration = await readNative('src/desktop_host/mod.rs')
 
     expect(integration).toContain('pub fn unregister_session_events(app: &tauri::AppHandle)')
     expect(integration).toMatch(/pub fn unregister_session_events\(app: &tauri::AppHandle\) \{[\s\S]*?WTSUnRegisterSessionNotification\(hwnd\)[\s\S]*?RemoveWindowSubclass\(hwnd, Some\(session_subclass_proc\), 1\)/)

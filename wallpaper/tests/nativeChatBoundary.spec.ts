@@ -169,7 +169,7 @@ describe('native chat boundary', () => {
     const [manifest, settingsCommands, windows] = await Promise.all([
       readManifest('AppxManifest.xml'),
       readNative('src/commands/settings.rs'),
-      readNative('src/windows_integration.rs'),
+      readNative('src/desktop_host/mod.rs'),
     ])
     expect(manifest).toContain('windows.startupTask')
     expect(manifest).toContain('DshWallpaperStartup')
@@ -249,7 +249,7 @@ describe('native chat boundary', () => {
   it('keeps the native first-frame handoff bounded and recoverable', async () => {
     const [bootstrap, integration, readme] = await Promise.all([
       readNative('src/native_bootstrap.rs'),
-      readNative('src/windows_integration.rs'),
+      readNative('src/desktop_host/mod.rs'),
       readFile(resolve(wallpaperRoot, '..', 'README.md'), 'utf8'),
     ])
 
@@ -272,7 +272,7 @@ describe('native chat boundary', () => {
       readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8'),
       readFile(resolve(wallpaperRoot, 'src/lite/LiteSettingsWindow.tsx'), 'utf8'),
       readNative('src/lib.rs'),
-      readNative('src/windows_integration.rs'),
+      readNative('src/desktop_host/mod.rs'),
       // B2 moved the native lock-screen implementation out of the build; its confirmation
       // copy is kept in the archive, and the live module must no longer define it.
       readFile(resolve(wallpaperRoot, '../archive/lockscreen-20260930/wallpaper/src-tauri/src/windows_integration/lock_screen.rs'), 'utf8'),
@@ -556,7 +556,7 @@ describe('native chat boundary', () => {
   it('keeps system, workspace, and tray backend events out of the settings WebView', async () => {
     const [lib, windows] = await Promise.all([
       readNative('src/lib.rs'),
-      readNative('src/windows_integration.rs'),
+      readNative('src/desktop_host/mod.rs'),
     ])
 
     expect(lib).toMatch(/EventTarget::webview_window\(BACKGROUND_WINDOW_LABEL\)[\s\S]*?"tray-backend"/)

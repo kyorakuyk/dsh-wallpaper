@@ -4628,12 +4628,12 @@ mod tests {
         // launches nothing at logon.
         let (manifest, id) = if cfg!(feature = "lite") {
             (
-                include_str!("../../../packaging/msix/AppxManifest-Lite.xml"),
+                include_str!("../../../../packaging/msix/AppxManifest-Lite.xml"),
                 "WallpaperLite",
             )
         } else {
             (
-                include_str!("../../../packaging/msix/AppxManifest.xml"),
+                include_str!("../../../../packaging/msix/AppxManifest.xml"),
                 "Wallpaper",
             )
         };
@@ -4696,9 +4696,9 @@ mod tests {
 
     fn edition_manifest() -> &'static str {
         if cfg!(feature = "lite") {
-            include_str!("../../../packaging/msix/AppxManifest-Lite.xml")
+            include_str!("../../../../packaging/msix/AppxManifest-Lite.xml")
         } else {
-            include_str!("../../../packaging/msix/AppxManifest.xml")
+            include_str!("../../../../packaging/msix/AppxManifest.xml")
         }
     }
 

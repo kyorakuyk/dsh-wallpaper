@@ -34,7 +34,8 @@ mod startup_timeline;
 // 取数用的是 `reqwest`，那是 `full` 特性后面的依赖，Lite 只给提示（计划书 §七）。
 #[cfg(not(feature = "lite"))]
 mod update;
-mod windows_integration;
+mod desktop_host;
+pub(crate) use desktop_host as windows_integration;
 
 #[cfg(not(feature = "lite"))]
 #[cfg(not(feature = "lite"))]
