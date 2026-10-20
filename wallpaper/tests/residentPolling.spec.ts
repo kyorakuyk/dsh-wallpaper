@@ -59,7 +59,7 @@ describe('native exit lifecycle', () => {
   it('restores desktop state on exit and never conflates it with hiding to the tray', async () => {
     const [lib, harness, harnessStatus] = await Promise.all([
       readNative('src/lib.rs'),
-      readNative('src/commands/harness.rs'),
+      readNative('src/commands/harness/managed.rs'),
       readNative('src/commands/harness_status.rs'),
     ])
 
