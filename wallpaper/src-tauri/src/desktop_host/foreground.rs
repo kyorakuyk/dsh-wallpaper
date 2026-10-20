@@ -2,9 +2,14 @@ use windows::Win32::Foundation::{ERROR_SUCCESS, HWND, LPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{GetParent, GetWindowThreadProcessId};
 
 #[cfg(windows)]
-use super::{guard, wallpaper_host_status_state, window_class};
+use super::{
+    assert_not_acting_as_main_thread, background_handle_is_usable, background_window_handle_now,
+    emit_to_background, guard, wallpaper_host_status_state, window_class,
+};
 #[cfg(windows)]
-use crate::app_core::WallpaperHostMode;
+use crate::app_core::{AppAction, AppCore, WallpaperHostMode};
+#[cfg(windows)]
+use std::sync::{OnceLock, RwLock};
 #[cfg(windows)]
 use tauri::Manager;
 #[cfg(windows)]
@@ -14,12 +19,29 @@ use windows::Win32::{
     UI::{
         Input::KeyboardAndMouse::{GetAsyncKeyState, SetFocus, VK_LBUTTON},
         WindowsAndMessaging::{
-            GetAncestor, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo, SetForegroundWindow,
-            WindowFromPoint, GA_ROOT,
+            GetAncestor, GetCursorPos, GetDesktopWindow, GetForegroundWindow, GetGUIThreadInfo,
+            IsWindow, SetForegroundWindow, WindowFromPoint, GA_ROOT,
             GUITHREADINFO,
         },
     },
 };
+
+#[cfg(windows)]
+static DESKTOP_FOREGROUND_STATE: OnceLock<RwLock<Option<bool>>> = OnceLock::new();
+
+
+
+#[cfg(windows)]
+fn desktop_foreground_state() -> &'static RwLock<Option<bool>> {
+    DESKTOP_FOREGROUND_STATE.get_or_init(|| RwLock::new(None))
+}
+
+fn is_desktop_foreground_class(class: Option<&str>) -> bool {
+    // Explorer can own several WorkerW windows. Win+D is free to activate any
+    // of them, so comparing against FindWindowW("WorkerW") (the first match)
+    // incorrectly hides the overlay on otherwise valid desktop surfaces.
+    matches!(class, Some("WorkerW") | Some("Progman"))
+}
 
 #[cfg(windows)]
 /// Phase A diagnostic for the input-island focus handoff.
@@ -520,9 +542,143 @@ pub(super) fn restore_desktop_keyboard_focus(app: &tauri::AppHandle) {
     }
 }
 
+#[cfg(windows)]
+pub fn start_foreground_monitor(app: tauri::AppHandle) {
+    // 与前两族监视同形：轮询里**只出现纯值**，不回 Tauri 取运行期窗口状态
+    // （`get_webview_window` 会 `Webview::clone`，见本文件顶部那段说明）。
+    // 与旧写法的唯一区别是句柄不再在启动时冻结：每拍从句柄槽位读一次，`background`
+    // 被销毁并重建之后自动跟上新句柄（见 `BACKGROUND_WINDOW_HANDLE`）。
+    // `HWND` 内部是裸指针、不是 `Send`，所以跨线程搬的是它的**整数**形式。
+    std::thread::Builder::new()
+        .name("foreground-monitor".into())
+        .spawn(move || {
+        assert_not_acting_as_main_thread();
+        loop {
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        // 窗口重建期间（槽位是 0，或槽位里的句柄刚被销毁）不做事，但继续等：这条线程的
+        // 主要职责本来是"桌面成为前台"，退场才是重建之后永久失效的原因。
+        let background_raw = background_window_handle_now();
+        let window_present = background_handle_is_usable(background_raw);
+        if window_present {
+        // SAFETY: no arguments and no Rust memory; the returned handle is only compared and class-probed afterwards.
+        let foreground = unsafe { GetForegroundWindow() };
+        let foreground_class = window_class(foreground);
+        // SAFETY: GetDesktopWindow takes no arguments and returns a borrowed system handle that is only compared with the foreground handle.
+        let shell = foreground == unsafe { GetDesktopWindow() }
+            || is_desktop_foreground_class(foreground_class.as_deref());
+        let desktop_foreground = shell;
+        if let Some(core) = app.try_state::<AppCore>() {
+            let changed = desktop_foreground_state()
+                .write()
+                .map(|mut previous| {
+                    if *previous == Some(desktop_foreground) {
+                        false
+                    } else {
+                        *previous = Some(desktop_foreground);
+                        true
+                    }
+                })
+                .unwrap_or(true);
+            if changed {
+                // Returning to the desktop leaves the WebView without a keyboard channel, and
+                // nothing else can give it back: the window is non-activating, so a click cannot,
+                // and a DOM focus request is refused. Do it on the one transition that matters.
+                if desktop_foreground {
+                    restore_desktop_keyboard_focus(&app);
+                }
+                let snapshot =
+                    core.dispatch(AppAction::DesktopForegroundChanged(desktop_foreground));
+                // Foreground changes are informative only.  Re-showing or
+                // hiding the WebView here makes the composition flicker and,
+                // more importantly, turns an ordinary focus change into an
+                // implicit visibility command.  Explicit tray/settings
+                // commands and privacy transitions own that responsibility.
+                emit_to_background(&app, "app-snapshot", &snapshot);
+            }
+        }
+        }
+        }
+        })
+        .expect("无法启动前台监控线程");
+}
+
+#[cfg(not(windows))]
+pub fn start_foreground_monitor(_: tauri::AppHandle) {}
+
+/// 「光标是否落在桌面表面」：只有光标下的窗口属于桌面（父链能走到桌面宿主本身、
+/// 桌面窗口，或类名属于桌面/WorkerW）时才为真。
+///
+/// 这里刻意**不**重算一遍桌面宿主规则：表/里桌面双击判定用的就是这一条，两处各写
+/// 一份迟早会漂移。
+///
+/// 这条判据**只依赖一个纯值 `HWND`**，不碰任何 Tauri 运行期窗口状态，所以可以安全地
+/// 从后台线程调用：悬浮球的靠近检测（`floating_ball::start_ball_monitor`）在主线程把
+/// 桌面宿主的句柄解析成整数带进线程，线程里只还原成 `HWND` 再交给这里。
+/// **不要**再为它套一层 `app.get_webview_window(...)` 的封装（曾有一个
+/// `cursor_on_desktop_surface_via_label`，已删除）：那会把唯一的调用方拽回"后台线程
+/// 逐拍 clone wry `Context` 引用计数"的老路上（0.4.7 转储那一族）。
+///
+/// 句柄已经不在（窗口销毁）时，调用方必须先判否 —— 见
+/// `floating_ball::desktop_surface_allows_pop`：下面 `current == background` 不成立时，
+/// 判据仍可能命中 `GetDesktopWindow` 与窗口类名两条分支而返回真。
+#[cfg(windows)]
+pub(crate) fn cursor_is_on_desktop_surface(background: HWND) -> bool {
+    let mut point = POINT::default();
+    // SAFETY: `background` is a handle the caller proved usable, the POINT and handle locals outlive the calls, and every Win32 call here takes handles only.
+    unsafe {
+        if GetCursorPos(&mut point).is_err() {
+            return false;
+        }
+        let mut current = WindowFromPoint(point);
+        for _ in 0..16 {
+            if current.0.is_null() {
+                return false;
+            }
+            if current == background
+                || current == GetDesktopWindow()
+                || is_desktop_foreground_class(window_class(current).as_deref())
+            {
+                return true;
+            }
+            let Ok(parent) = GetParent(current) else {
+                return false;
+            };
+            if parent.0.is_null() || parent == current {
+                return false;
+            }
+            current = parent;
+        }
+    }
+    false
+}
+
+/// 「此刻光标是否落在桌面表面」，句柄取自**槽位**而不是启动时冻结的那一个。
+///
+/// 悬浮球的靠近检测每拍调它一次。读槽位是纯原子操作，所以这条函数与
+/// `cursor_is_on_desktop_surface` 一样可以从后台线程调用；区别只在句柄是不是最新的：
+/// `background` 被重建之后（`recover_wallpaper_host` 的 `Recreate`），旧句柄永远不再有效，
+/// 球的"只在桌面上弹"这条判据就会一直判否，看起来就是球再也不弹了。槽位让它自动跟上新句柄。
+///
+/// 判据本身的边界见 `cursor_is_on_desktop_surface`：句柄不在时必须先判否，因为那条函数在
+/// `current == background` 不成立时仍可能命中 `GetDesktopWindow` 与窗口类名两条分支。
+#[cfg(windows)]
+pub(crate) fn desktop_surface_allows_pop_now() -> bool {
+    let handle = background_window_handle_now();
+    if handle == 0 {
+        return false;
+    }
+    let background = HWND(handle as *mut core::ffi::c_void);
+    // SAFETY: the integer came from the atomic handle slot; IsWindow only inspects it and answers false for a destroyed window, which is the state this guard exists for.
+    if !unsafe { IsWindow(Some(background)) }.as_bool() {
+        return false;
+    }
+    cursor_is_on_desktop_surface(background)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::publish_background_window_handle;
 
     #[test]
     fn a_null_set_focus_return_with_no_last_error_is_success() {
@@ -546,5 +702,32 @@ mod tests {
             classify_focus_set_result(false, 87),
             FocusSetOutcome::Success
         );
+    }
+
+    #[test]
+    fn recognizes_every_explorer_desktop_host_as_foreground() {
+        assert!(is_desktop_foreground_class(Some("WorkerW")));
+        assert!(is_desktop_foreground_class(Some("Progman")));
+        assert!(!is_desktop_foreground_class(Some("Shell_TrayWnd")));
+        assert!(!is_desktop_foreground_class(Some("Chrome_WidgetWin_1")));
+        assert!(!is_desktop_foreground_class(None));
+    }
+
+    /// 「此刻光标是否落在桌面表面」在句柄槽位为空（或指向已销毁窗口）时必须判否。
+    ///
+    /// 判否的理由见 `desktop_surface_allows_pop_now`：那条判据在 `current == background`
+    /// 不成立时仍可能命中 `GetDesktopWindow` 与窗口类名两条分支而返回真，所以句柄不可用
+    /// 必须先挡在门外。槽位默认是 0（除非别处刚写过），这里显式按 0 断言。
+    #[cfg(windows)]
+    #[test]
+    fn a_missing_desktop_handle_never_allows_a_pop_now() {
+        let previous = background_window_handle_now();
+        publish_background_window_handle(None);
+        assert!(!desktop_surface_allows_pop_now());
+        publish_background_window_handle(if previous == 0 {
+            None
+        } else {
+            Some(HWND(previous as *mut core::ffi::c_void))
+        });
     }
 }
