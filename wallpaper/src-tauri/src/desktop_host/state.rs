@@ -1,4 +1,4 @@
-use super::InteractionRegionState;
+use super::hit_region::InteractionRegionState;
 use std::sync::{OnceLock, RwLock};
 
 #[cfg(windows)]
