@@ -186,25 +186,25 @@ describe('native chat boundary', () => {
   })
 
   it('declares an MSIX StartupTask while retaining the native autostart fallback', async () => {
-    const [manifest, settingsCommands, windows] = await Promise.all([
+    const [manifest, settingsCommands, autostart] = await Promise.all([
       readManifest('AppxManifest.xml'),
       readNative('src/commands/settings.rs'),
-      readNative('src/desktop_host/mod.rs'),
+      readNative('src/desktop_host/autostart.rs'),
     ])
     expect(manifest).toContain('windows.startupTask')
     expect(manifest).toContain('DshWallpaperStartup')
     // The operation moved next to the Windows calls it makes, so the assertion
     // follows it: the command wrapper only keeps it off the UI thread.
     expect(settingsCommands).toContain('windows_integration::set_autostart(enabled)')
-    expect(windows).toContain('set_startup_task(enabled)')
+    expect(autostart).toContain('set_startup_task(enabled)')
     // The per-user Run entry remains the fallback for builds Windows will not
     // start through a StartupTask.
-    expect(windows).toContain('Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run')
+    expect(autostart).toContain('Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run')
     // It must record the version-stable shell alias: the versioned
     // `WindowsApps` path an earlier release wrote is deleted by the next
     // package update, which silently broke autostart across 0.2.0.71 → 0.2.0.74.
-    expect(windows).toContain('shell:AppsFolder')
-    expect(windows).toContain('GetCurrentPackageFamilyName')
+    expect(autostart).toContain('shell:AppsFolder')
+    expect(autostart).toContain('GetCurrentPackageFamilyName')
   })
 
   it('nests the startup task where the schema puts it', async () => {
