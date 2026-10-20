@@ -1,5 +1,5 @@
 use super::state::{INNER_WORKSPACE_ACTIVE, INTERACTION_REGIONS};
-use super::{
+use super::foreground::{
     client_point, hand_over_keyboard_after_island_click, trace_focus_handoff,
     trace_island_click_reached,
 };
