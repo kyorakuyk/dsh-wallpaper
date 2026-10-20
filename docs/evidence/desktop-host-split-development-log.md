@@ -11,6 +11,17 @@
 - Push CI run `39490998347` completed successfully (Rust full, Lite, Frontend/bridge) on `6de0496a58949e4e963627c841df4eb756b8eba1`; remote branch read-back matched. The checkpoint tag remains local.
 - Not verified: Windows GUI acceptance and user-only checks in the task book. A Linux cargo check attempt stopped in `libdbus-sys` setup before compiling the project crate, so it provides no cross-platform result. Existing untracked `docs/blog/` files were excluded and untouched.
 
+## B7 — foreground monitor extraction
+
+- Moved `DESKTOP_FOREGROUND_STATE`, its getter, desktop foreground-class predicate, foreground monitor (including the non-Windows stub), surface predicates, and the two associated existing tests into the existing `foreground.rs`. `mod.rs` retains shared watcher helpers and the workspace monitor, with explicit facade re-exports for existing callers.
+- Frozen base: `bb5724f88b1a366e50bbce241b115f4f15f833a6`. Reviewed index tree: `9a67a014e7d995c5575c31833a07b26916b2ae17`; diff SHA-256 `aafa018efc60ba87c69f1db045b59656663dc0614740273dddb9b195244d8ff1`, 22,841 bytes. Two independent exact-snapshot reviews passed with no security or logic findings. The first review caught separator whitespace drift; the three baseline blank lines were restored and both reviews were rerun against the corrected fingerprint. A suggestion to cfg-gate one test-only import is non-blocking because non-Windows test builds are not an established target.
+- Commit `e5338583183f35a5ffd6d82c2a635b9ad2bd06b1` has the reviewed tree; local tag `checkpoint/desktop-host-b7-foreground` points to it. Push read-back matched the local commit.
+- Structural checks: moved implementations/comments/cfgs/tests match the baseline; shared helpers stay in the parent; `SAFETY` comments 99, unsafe blocks 99, test attributes 45, non-Windows cfgs 18 direct + 2 combined, all unchanged. Resulting module sizes: `mod.rs` 1,997 lines, `foreground.rs` 733 lines.
+- Local Rust gates passed: focused parent tests 15/15 and foreground tests 5/5; Windows all-target suite 407 passed/14 ignored plus 48 integration tests; Lite suite 124 passed/2 ignored; Full/Lite debug and release checks; undocumented-unsafe clippy. Frontend: 604 passed; bridge: 96 passed/1 skipped; typechecks, both builds, Lite bundle boundary (4 web files, 5 required resources), and diff checks passed.
+- Warning summaries matched B6: Full library 44, Full lib tests 40; integration targets 5/80/28/50/53; Lite library 146, Lite lib tests 70; `tauri-plugin-single-instance` 1. No increase was observed.
+- GitHub CI `39500317959` completed successfully at `2026-10-20T21:30:59Z` on `e5338583183f35a5ffd6d82c2a635b9ad2bd06b1` (Rust full, Lite, Frontend/bridge). Workflow annotations report Node.js 20 actions being forced to Node.js 24; all jobs passed.
+- Not verified: Windows GUI acceptance and user-only checks in the task book. Existing untracked `docs/blog/` remains excluded and untouched.
+
 ## Next
 
-B7 moves `DESKTOP_FOREGROUND_STATE`, `start_foreground_monitor`, and foreground-surface classification helpers into the existing `foreground.rs`, preserving the J.4 boundary. `workspace` and `workerw` remain deferred to later batches.
+B8 extracts the workspace owner described in report-r3 J.1/J.4 into the new `workspace.rs`; keep `workerw` deferred to its later batch. The five cross-group state statics remain in `state.rs` as already completed in B5a.
