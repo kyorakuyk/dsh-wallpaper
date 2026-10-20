@@ -244,6 +244,7 @@ static WALLPAPER_HOST_MUTEX: OnceLock<isize> = OnceLock::new();
 
 #[cfg(windows)]
 pub fn acquire_shared_wallpaper_host() -> bool {
+    // SAFETY: CreateMutexW takes a static `w!` name and no out-parameters; the returned handle is checked for errors before use.
     let handle = match unsafe { CreateMutexW(None, true, WALLPAPER_HOST_MUTEX_NAME) } {
         Ok(handle) => handle,
         Err(error) => {
@@ -251,7 +252,9 @@ pub fn acquire_shared_wallpaper_host() -> bool {
             return false;
         }
     };
+    // SAFETY: GetLastError reads thread-local state only and runs immediately after CreateMutexW, before another Win32 call can overwrite it.
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        // SAFETY: this closes the handle created above, which was not shared; a duplicate-name result does not transfer ownership. The result is ignored on purpose.
         unsafe {
             let _ = windows::Win32::Foundation::CloseHandle(handle);
         }
@@ -433,6 +436,7 @@ unsafe extern "system" fn enumerate_desktop_display(
 #[cfg(windows)]
 pub fn desktop_displays() -> Result<Vec<DesktopDisplayInfo>, String> {
     let mut displays = Vec::<DesktopDisplayInfo>::new();
+    // SAFETY: the callback receives `&mut displays` through LPARAM; the vector is alive and unaliased for this synchronous call and the callback only pushes into it.
     let result = unsafe {
         EnumDisplayMonitors(
             None,
@@ -529,9 +533,13 @@ pub fn desktop_layout_metrics_for_hwnd(
     };
     let mut background_rect = RECT::default();
     let mut taskbar_rect = RECT::default();
+    // SAFETY: FindWindowW receives a static class name and a null window name; the handle is used only for the reads below and never freed here.
     let taskbar = unsafe { FindWindowW(windows::core::w!("Shell_TrayWnd"), PCWSTR::null()) }.ok();
+    // SAFETY: `taskbar` is the handle produced above and only probed; Win32 returns false for a window that has gone away instead of faulting.
     let visible = taskbar.is_some_and(|taskbar| unsafe { IsWindowVisible(taskbar).as_bool() })
+        // SAFETY: `background` is a live HWND owned by the caller for this call, and `background_rect` is local stack storage that outlives it.
         && unsafe { GetWindowRect(background, &mut background_rect).is_ok() }
+        // SAFETY: `taskbar` comes from the FindWindowW above and `taskbar_rect` is local stack storage that outlives this call.
         && taskbar.is_some_and(|taskbar| unsafe { GetWindowRect(taskbar, &mut taskbar_rect).is_ok() });
     if visible {
         let physical_height = (taskbar_rect.bottom - taskbar_rect.top).max(0);
@@ -710,6 +718,7 @@ fn background_handle_is_usable(handle: isize) -> bool {
     }
     keep_watching_after_tick(
         true,
+        // SAFETY: the integer was published by the main thread as a window handle; IsWindow only inspects it and reports false for a stale one.
         unsafe { IsWindow(Some(HWND(handle as *mut core::ffi::c_void))).as_bool() },
     )
 }
@@ -955,6 +964,7 @@ pub(crate) fn island_visible_from_regions() -> bool {
 #[cfg(windows)]
 pub fn configure_settings_window(window: &WebviewWindow) -> Result<(), String> {
     let hwnd = HWND(window.hwnd().map_err(|error| error.to_string())?.0);
+    // SAFETY: `hwnd` is the settings window handle just resolved from the live Tauri window; SetWindowSubclass also takes a static proc, a constant subclass id and no reference data, so nothing Rust-owned crosses the boundary.
     unsafe {
         if !SetWindowSubclass(hwnd, Some(settings_window_subclass), 0x4453_4853, 0).as_bool() {
             return Err("无法监听设置窗口边框状态".into());
@@ -966,6 +976,7 @@ pub fn configure_settings_window(window: &WebviewWindow) -> Result<(), String> {
     // 只在 `WM_NCCALCSIZE` 时重算；而 tao 创建窗口时（我们的子类还不存在）已经算过一遍，
     // 于是子类里的 `WM_NCCALCSIZE → 0`（去掉非客户区）永远等不到消息，
     // 客户区一直是 `(11,2)` 的旧值。`SWP_FRAMECHANGED` 会逼出这次重算。
+    // SAFETY: the same live settings window handle; None is passed as the insert-after window and every size is zero, so no pointer is borrowed and a failure is only logged.
     unsafe {
         if let Err(error) = SetWindowPos(
             hwnd,
@@ -987,6 +998,7 @@ pub fn configure_settings_window(window: &WebviewWindow) -> Result<(), String> {
 
 #[cfg(windows)]
 fn log_settings_window_metrics(hwnd: HWND, stage: &str) {
+    // SAFETY: `hwnd` is the settings window the caller just configured; the RECT and POINT out-parameters are local stack values alive across these synchronous calls, and each is read only after its call succeeded.
     unsafe {
         let mut outer = RECT::default();
         let mut client = RECT::default();
@@ -1019,6 +1031,7 @@ const SETTINGS_RESIZE_BAND_PX: i32 = 8;
 
 #[cfg(windows)]
 fn apply_settings_window_frame_policy(hwnd: HWND) -> Result<(), String> {
+    // SAFETY: `hwnd` is the live settings window; each Dwm* call receives a pointer to a local value whose type matches the attribute, together with that value's exact size, and every local outlives the synchronous call.
     unsafe {
         // The rounded outline is rendered by the settings web UI. Windows 11
         // otherwise adds its own one-pixel DWM border around the transparent
@@ -1332,6 +1345,7 @@ unsafe extern "system" fn collect_desktop_windows(window: HWND, lparam: LPARAM) 
 #[cfg(windows)]
 fn enumerate_desktop_windows() -> Result<Vec<EnumeratedWindow>, String> {
     let mut windows = Vec::new();
+    // SAFETY: LPARAM carries `&mut windows`, which stays alive and unaliased for this synchronous enumeration, and the callback only pushes into that vector.
     unsafe {
         EnumWindows(
             Some(collect_desktop_windows),
@@ -1353,6 +1367,7 @@ fn locate_wallpaper_worker() -> Result<HWND, String> {
 
 #[cfg(windows)]
 pub(crate) fn visible_wallpaper_worker() -> Option<HWND> {
+    // SAFETY: `worker` was produced by the enumeration in this call; IsWindow only inspects the handle and reports false for one that disappeared in between.
     locate_wallpaper_worker().ok().filter(|worker| unsafe {
         IsWindow(Some(*worker)).as_bool() && IsWindowVisible(*worker).as_bool()
     })
@@ -1391,6 +1406,7 @@ pub(crate) fn desktop_icon_layer() -> Option<HWND> {
             if !item.candidate.hosts_desktop_icons {
                 return None;
             }
+            // SAFETY: `item.hwnd` came from the enumeration just above and the class and child names are static `w!` strings; a missing child is dropped by the null check.
             unsafe {
                 FindWindowExW(
                     Some(item.hwnd),
@@ -1406,6 +1422,7 @@ pub(crate) fn desktop_icon_layer() -> Option<HWND> {
 
 #[cfg(windows)]
 fn desktop_icon_list_view_in_layer(icon_layer: HWND) -> Option<HWND> {
+    // SAFETY: `icon_layer` is the caller's live DefView handle and the child class name is a static `w!` string; windows-rs hands the string over as a NUL-terminated PCWSTR for the duration of the call.
     unsafe {
         FindWindowExW(
             Some(icon_layer),
@@ -1421,6 +1438,7 @@ fn desktop_icon_list_view_in_layer(icon_layer: HWND) -> Option<HWND> {
 #[cfg(windows)]
 fn set_desktop_icons_visible(visible: bool) -> Result<(), String> {
     let icon_layer = desktop_icon_layer().ok_or("未找到 Explorer 桌面图标层")?;
+    // SAFETY: `icon_layer` is a non-null handle returned by the lookup above and `icon_list` is the child found under it; ShowWindow only requests a visibility state and shares no Rust memory.
     unsafe {
         if visible {
             // Older development builds hid SysListView32 directly.  Restore it
@@ -1515,6 +1533,7 @@ pub fn repair_desktop_after_abnormal_exit() -> Vec<String> {
     use windows::Win32::Graphics::Gdi::{
         RedrawWindow, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW,
     };
+    // SAFETY: both window handles are resolved here and only passed to RedrawWindow, whose other arguments are None and integer flags; a missing desktop handle is detected by is_invalid and never used.
     unsafe {
         let desktop = GetDesktopWindow();
         if !desktop.is_invalid() {
@@ -1549,9 +1568,11 @@ pub fn repair_desktop_after_abnormal_exit() -> Vec<String> {
 
 #[cfg(windows)]
 pub(crate) fn request_wallpaper_worker() -> Result<HWND, String> {
+    // SAFETY: FindWindowW receives a static class name and a null window name; the returned handle is only passed to SendMessageTimeoutW below and is never freed here.
     let progman = unsafe { FindWindowW(windows::core::w!("Progman"), PCWSTR::null()) }
         .map_err(|error| format!("无法找到 Explorer Progman 窗口：{error}"))?;
 
+    // SAFETY: `progman` is the handle resolved above, the message payloads are plain integers, and `message_result` is local storage alive across this synchronous call; the reply is discarded on purpose.
     unsafe {
         let mut message_result = 0usize;
         let _ = SendMessageTimeoutW(
@@ -1566,12 +1587,14 @@ pub(crate) fn request_wallpaper_worker() -> Result<HWND, String> {
     }
 
     if let Ok(worker) = locate_wallpaper_worker() {
+        // SAFETY: `worker` was just located by enumeration; IsWindowVisible only inspects it and answers FALSE for a window that is already gone.
         if unsafe { IsWindowVisible(worker).as_bool() } {
             return Ok(worker);
         }
     }
 
     // Windows 11 的新版 Explorer 使用 0xD 参数的两步协议。
+    // SAFETY: `progman` is still the handle resolved above, WPARAM and LPARAM carry only integers, and `message_result` is a fresh local per iteration, so the synchronous send touches no borrowed data.
     unsafe {
         for lparam in [0isize, 1] {
             let mut message_result = 0usize;
@@ -1606,6 +1629,7 @@ pub(crate) fn request_wallpaper_worker() -> Result<HWND, String> {
 #[cfg(windows)]
 fn window_class(hwnd: HWND) -> Option<String> {
     let mut class = [0u16; 64];
+    // SAFETY: the destination is a local 64-element buffer, and windows-rs passes its length to GetClassNameW so the write is bounded; the returned count is used only to slice that same buffer.
     let class_len = unsafe { GetClassNameW(hwnd, &mut class) };
     (class_len > 0).then(|| String::from_utf16_lossy(&class[..class_len as usize]))
 }
@@ -1615,6 +1639,7 @@ fn window_neighbor_class(
     hwnd: HWND,
     command: windows::Win32::UI::WindowsAndMessaging::GET_WINDOW_CMD,
 ) -> String {
+    // SAFETY: `hwnd` is the caller's handle and `command` is a GET_WINDOW_CMD constant; GetWindow only resolves a neighbouring handle and reports failure instead of faulting.
     unsafe { GetWindow(hwnd, command).ok() }
         .filter(|neighbor| !neighbor.0.is_null())
         .and_then(window_class)
@@ -1623,10 +1648,12 @@ fn window_neighbor_class(
 
 #[cfg(windows)]
 fn record_wallpaper_window_state(name: &str, hwnd: HWND) {
+    // SAFETY: `hwnd` is the live handle passed by the caller; GetParent only resolves the parent handle and a null result falls back to the `none` label.
     let parent = unsafe { GetParent(hwnd).ok() }
         .and_then(window_class)
         .unwrap_or_else(|| "none".into());
     let mut client = RECT::default();
+    // SAFETY: `client` is a local RECT that outlives the call and `hwnd` is the caller's handle; a failed read takes the unavailable branch instead of exposing uninitialized data.
     let size = if unsafe { GetClientRect(hwnd, &mut client).is_ok() } {
         format!(
             "{}x{}",
@@ -1638,6 +1665,7 @@ fn record_wallpaper_window_state(name: &str, hwnd: HWND) {
     };
     let previous = window_neighbor_class(hwnd, GW_HWNDPREV);
     let next = window_neighbor_class(hwnd, GW_HWNDNEXT);
+    // SAFETY: `hwnd` is the same caller-owned handle used by the reads above; IsWindowVisible only inspects it.
     let visible = unsafe { IsWindowVisible(hwnd).as_bool() };
     crate::native_bootstrap::record_startup_diagnostic(&format!(
         "event=window-state layer={} parent={} size={} visible={} prev={} next={}",
@@ -1648,6 +1676,7 @@ fn record_wallpaper_window_state(name: &str, hwnd: HWND) {
 #[cfg(windows)]
 fn resize_wallpaper_to_parent(background: HWND, worker: HWND) -> Result<(), String> {
     let mut bounds = RECT::default();
+    // SAFETY: `worker` is the live desktop host handle passed in and `bounds` is local storage that outlives the call; a failure is propagated rather than reading the rectangle.
     unsafe { GetClientRect(worker, &mut bounds) }
         .map_err(|error| format!("无法读取 WorkerW 尺寸：{error}"))?;
     let width = bounds.right - bounds.left;
@@ -1655,6 +1684,7 @@ fn resize_wallpaper_to_parent(background: HWND, worker: HWND) -> Result<(), Stri
     if width <= 0 || height <= 0 {
         return Err(format!("WorkerW 客户区尺寸无效：{width}x{height}"));
     }
+    // SAFETY: both handles are desktop host windows owned by the caller, every out-parameter is a local RECT or POINT alive across the calls, and a failed ClientToScreen returns before the coordinates are used.
     unsafe {
         SetWindowPos(
             background,
@@ -1707,10 +1737,12 @@ fn resize_wallpaper_to_parent(background: HWND, worker: HWND) -> Result<(), Stri
 #[cfg(windows)]
 fn place_wallpaper_layers(background: HWND, parent: HWND) -> Result<(), String> {
     let cover = crate::native_bootstrap::window_handle()
+        // SAFETY: `hwnd` comes from the native cover handle slot and is only probed for its parent; a window destroyed in between yields None, which the filter drops.
         .filter(|hwnd| unsafe { GetParent(*hwnd).ok() } == Some(parent));
     let flags = SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE;
 
     if window_class(parent).as_deref() == Some("Progman") {
+        // SAFETY: `parent` is the Progman handle whose class was just checked, and the child class name is a static `w!` string; a missing child becomes the error returned below.
         let icon_view = unsafe {
             FindWindowExW(
                 Some(parent),
@@ -1722,6 +1754,7 @@ fn place_wallpaper_layers(background: HWND, parent: HWND) -> Result<(), String> 
         .ok()
         .filter(|hwnd| !hwnd.0.is_null())
         .ok_or("Progman 中缺少 SHELLDLL_DefView")?;
+        // SAFETY: every handle used here was resolved and null-checked above, and these calls pass only handles and integer flags, so no Rust-owned buffer is shared with the window manager.
         unsafe {
             if let Some(cover) = cover {
                 // Child Z order is front-to-back. Keep Explorer's icon view
@@ -1741,6 +1774,7 @@ fn place_wallpaper_layers(background: HWND, parent: HWND) -> Result<(), String> 
     }
 
     if let Some(cover) = cover {
+        // SAFETY: `background` and the cover are live wallpaper child windows on this path, and the insert-after argument is another window handle or HWND_TOP, never a Rust pointer.
         unsafe {
             // A WorkerW is already behind the icon host. Put the cover at the
             // front of this wallpaper child stack, then the live WebView
@@ -1770,6 +1804,7 @@ fn attach_hwnd_to_workerw(background: HWND) -> Result<HWND, String> {
             format!("原生首帧层无法先挂载到新的桌面宿主，暂缓移动 WebView：{error}")
         })?;
     }
+    // SAFETY: `background` is the WebView's own live HWND supplied by the caller and `worker` is the located desktop host; the DWM call gets a pointer to a local u32 with its exact size, and the GetParent readback after SetParent decides success.
     unsafe {
         let exstyle = GetWindowLongPtrW(background, GWL_EXSTYLE);
         SetWindowLongPtrW(
@@ -1834,6 +1869,7 @@ fn attach_hwnd_to_workerw(background: HWND) -> Result<HWND, String> {
     }
     resize_wallpaper_to_parent(background, worker)?;
     place_wallpaper_layers(background, worker)?;
+    // SAFETY: `background` was attached and restyled just above and is still alive; ShowWindow only requests a show state and its result is deliberately ignored.
     unsafe {
         let _ = ShowWindow(background, SW_SHOWNA);
     }
@@ -1874,20 +1910,25 @@ fn inspect_wallpaper_host(window: Option<&WebviewWindow>) -> (WallpaperHostActio
         return (WallpaperHostAction::Recreate, None);
     };
     let background = HWND(raw.0);
+    // SAFETY: `background` was just resolved from the Tauri window handle; IsWindow only inspects it and a destroyed window answers false, which is the Recreate branch this guard handles.
     if !unsafe { IsWindow(Some(background)).as_bool() } {
         return (WallpaperHostAction::Recreate, Some(background));
     }
+    // SAFETY: `background` passed the IsWindow check on this path, so it names a live window; GetParent only resolves the parent handle.
     let parent = unsafe { GetParent(background) }.ok();
     let parent_exists = parent
+        // SAFETY: `hwnd` is the parent handle just returned by GetParent and is only inspected; a stale handle answers false and folds into the unwrap_or default.
         .map(|hwnd| unsafe { IsWindow(Some(hwnd)).as_bool() })
         .unwrap_or(false);
     let parent_class = parent.and_then(window_class);
     let parent_is_worker = is_valid_wallpaper_parent_class(parent_class.as_deref())
         && parent
+            // SAFETY: `hwnd` is the same parent handle probed above and IsWindowVisible only queries its state; false is the ordinary answer for a hidden window.
             .map(|hwnd| unsafe { IsWindowVisible(hwnd).as_bool() })
             .unwrap_or(false);
     let worker_available = parent_class.as_deref() == Some("Progman")
         && locate_wallpaper_worker()
+            // SAFETY: `worker` comes from the enumeration performed in this expression and is only queried for visibility.
             .map(|worker| unsafe { IsWindowVisible(worker).as_bool() })
             .unwrap_or(false);
 
@@ -1896,6 +1937,7 @@ fn inspect_wallpaper_host(window: Option<&WebviewWindow>) -> (WallpaperHostActio
         .and_then(|worker| {
             let mut parent_rect = RECT::default();
             let mut child_rect = RECT::default();
+            // SAFETY: `worker` is the parent that passed the existence and class checks above and `background` is the live host; both RECTs are locals that outlive the two synchronous calls.
             unsafe {
                 GetClientRect(worker, &mut parent_rect).ok()?;
                 GetClientRect(background, &mut child_rect).ok()?;
@@ -1991,6 +2033,7 @@ fn recover_wallpaper_host(app: &tauri::AppHandle) -> Result<(), String> {
                 let mode = window
                     .hwnd()
                     .ok()
+                    // SAFETY: the handle was just obtained from the recovered window and GetParent only resolves its parent; a missing parent is tolerated by the class lookup below.
                     .and_then(|raw| unsafe { GetParent(HWND(raw.0)) }.ok())
                     .and_then(window_class)
                     .map(|class| {
@@ -2089,6 +2132,7 @@ pub fn register_session_events(app: &tauri::AppHandle) -> Result<(), String> {
         .ok_or("background window missing")?;
     let hwnd = HWND(window.hwnd().map_err(|e| e.to_string())?.0);
     let app_ptr = Box::into_raw(Box::new(app.clone())) as usize;
+    // SAFETY: `hwnd` is the live background window and the subclass proc is a static function; `app_ptr` is the only pointer to a heap AppHandle that either the failure branch inside this block or WM_NCDESTROY later reclaims exactly once.
     unsafe {
         WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION).map_err(|e| e.to_string())?;
         if !SetWindowSubclass(hwnd, Some(session_subclass_proc), 1, app_ptr).as_bool() {
@@ -2114,6 +2158,7 @@ pub fn unregister_session_events(app: &tauri::AppHandle) {
         return;
     };
     let hwnd = HWND(raw.0);
+    // SAFETY: `hwnd` was just resolved from the live background window; both calls tolerate a window that was never registered and neither dereferences Rust memory.
     unsafe {
         let _ = WTSUnRegisterSessionNotification(hwnd);
         let _ = RemoveWindowSubclass(hwnd, Some(session_subclass_proc), 1);
@@ -2268,6 +2313,7 @@ fn window_chain_reaches_this_process(hwnd: HWND) -> bool {
             return false;
         }
         let mut pid = 0u32;
+        // SAFETY: `current` is a handle from the caller or from GetParent above, and the pid target is a local u32; the call writes only that out-parameter.
         unsafe { GetWindowThreadProcessId(current, Some(&mut pid)) };
         if pid == std::process::id() {
             return true;
@@ -2277,6 +2323,7 @@ fn window_chain_reaches_this_process(hwnd: HWND) -> bool {
         }
         // `GetParent` is a `Result` in windows 0.61, and a window with no parent is
         // the normal termination of this walk rather than an error.
+        // SAFETY: `current` came from the same chain walk, and a window that vanished returns an error, which ends the walk instead of being dereferenced.
         let parent = match unsafe { GetParent(current) } {
             Ok(parent) => parent,
             Err(_) => return false,
@@ -2359,6 +2406,7 @@ unsafe fn set_focus_checked(hwnd: HWND) -> FocusSetOutcome {
 
 #[cfg(windows)]
 pub fn hand_over_keyboard_after_verified_click(host: HWND) -> String {
+    // SAFETY: `host` is the wallpaper's own background HWND, checked by the caller; every call here takes handles or local out-parameters (u32, GUITHREADINFO with cbSize set) and no ownership is transferred.
     unsafe {
         let top = GetAncestor(host, GA_ROOT);
         if top.0.is_null() {
@@ -2428,6 +2476,7 @@ pub fn hand_over_keyboard_after_verified_click(_host: usize) -> String {
 #[cfg(windows)]
 #[cfg(windows)]
 pub fn verify_island_click() -> Result<String, String> {
+    // SAFETY: every call in this block is a read-only Win32 query; the cursor, pid and thread-info storage are locals and window handles are only walked and inspected.
     unsafe {
         if GetAsyncKeyState(VK_LBUTTON.0 as i32) >= 0 {
             return Err("拒绝原因=physical-left-button-up：未检测到物理左键按下；拒绝把 IPC 调用当作输入岛点击".into());
@@ -2493,6 +2542,7 @@ fn client_point(lparam: LPARAM) -> (i32, i32) {
 /// per-mouse-move `WM_NCHITTEST` path stays untouched.
 #[cfg(all(windows, debug_assertions))]
 fn trace_focus_handoff(stage: &str, client: Option<(i32, i32)>) {
+    // SAFETY: debug-only diagnostics; POINT and GUITHREADINFO are locals with cbSize set before use, and the handles involved are only inspected.
     unsafe {
         // Resolve the click point to the window actually under it, which tells a missed
         // hot zone apart from a click that arrived without the keyboard following.
@@ -2527,6 +2577,7 @@ fn trace_focus_handoff(stage: &str, client: Option<(i32, i32)>) {
 
 #[cfg(all(windows, debug_assertions))]
 fn hwnd_of_foreground() -> HWND {
+    // SAFETY: GetForegroundWindow takes no arguments and returns a borrowed system handle that the caller only reads.
     unsafe { GetForegroundWindow() }
 }
 
@@ -2568,6 +2619,7 @@ fn hand_over_keyboard_after_island_click(root: HWND) {
         }
         *last = Some(std::time::Instant::now());
     }
+    // SAFETY: `root` is the host handle this subclass was installed on; all state is local (pids, GUITHREADINFO with cbSize) and AttachThreadInput and GetAncestor take plain handles.
     unsafe {
         let host_mode = wallpaper_host_status_state()
             .read()
@@ -2674,6 +2726,7 @@ unsafe extern "system" fn interaction_subclass_proc(
                 // point is in a declared region and the physical left button is down.
                 // Outside the island nothing here runs, so the wallpaper still never
                 // takes the keyboard without the user asking for it (plan 3.C).
+                // SAFETY: GetAsyncKeyState takes only a virtual-key constant and reads global input state; it has no out-parameter and touches no Rust memory.
                 if hit_is_island && unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0 {
                     // Phase A still has one open question: whether this branch is reached at all on
                     // a real click. The WebView2 child belongs to another process, so hit-testing may
@@ -2706,6 +2759,7 @@ unsafe extern "system" fn interaction_subclass_proc(
 
 #[cfg(windows)]
 fn install_desktop_hit_testing(root_hwnd: HWND) -> Result<(), String> {
+    // SAFETY: `root_hwnd` is the live background host the caller just attached, the proc is a static function, and the reference data is that same handle encoded as usize, so nothing is owned or freed here.
     unsafe {
         if !SetWindowSubclass(
             root_hwnd,
@@ -2744,8 +2798,10 @@ pub fn start_foreground_monitor(app: tauri::AppHandle) {
         let background_raw = background_window_handle_now();
         let window_present = background_handle_is_usable(background_raw);
         if window_present {
+        // SAFETY: no arguments and no Rust memory; the returned handle is only compared and class-probed afterwards.
         let foreground = unsafe { GetForegroundWindow() };
         let foreground_class = window_class(foreground);
+        // SAFETY: GetDesktopWindow takes no arguments and returns a borrowed system handle that is only compared with the foreground handle.
         let shell = foreground == unsafe { GetDesktopWindow() }
             || is_desktop_foreground_class(foreground_class.as_deref());
         let desktop_foreground = shell;
@@ -2817,20 +2873,26 @@ fn restore_desktop_keyboard_focus(app: &tauri::AppHandle) {
             .read()
             .map(|status| status.mode)
             .unwrap_or(WallpaperHostMode::Unavailable);
+        // SAFETY: `host` is the live background window resolved on the main thread, and set_focus_checked only calls SetFocus and GetLastError on it.
         let focus_result = unsafe { set_focus_checked(host) };
         // SetFocus's return is only one diagnostic. Always read back the actual
         // foreground and keyboard focus, even when SetFocus reports a real error.
+        // SAFETY: `host` is the same live handle; GetAncestor only resolves the root handle and returns null on failure, which the class probe then tolerates.
         let desktop_root = unsafe { GetAncestor(host, GA_ROOT) };
         let root_class = window_class(desktop_root).unwrap_or_else(|| "<none>".to_string());
+        // SAFETY: GetForegroundWindow takes no arguments and its handle is only read.
         let foreground = unsafe { GetForegroundWindow() };
         let foreground_class = window_class(foreground).unwrap_or_else(|| "<none>".to_string());
         let foreground_matches_root = foreground.0 == desktop_root.0;
         let mut foreground_pid = 0u32;
+        // SAFETY: `foreground` is a handle just obtained and `foreground_pid` is a local u32; the call writes only that out-parameter.
         unsafe { GetWindowThreadProcessId(foreground, Some(&mut foreground_pid)) };
         let mut info = GUITHREADINFO::default();
         info.cbSize = core::mem::size_of::<GUITHREADINFO>() as u32;
+        // SAFETY: `info` is a local GUITHREADINFO whose cbSize is set to its own size immediately above, which is the contract the API requires before writing.
         let focus_pid = if unsafe { GetGUIThreadInfo(0, &mut info) }.is_ok() {
             let mut pid = 0u32;
+            // SAFETY: `info.hwndFocus` was read from the GUITHREADINFO that the successful call above filled, and the pid target is a local u32.
             unsafe { GetWindowThreadProcessId(info.hwndFocus, Some(&mut pid)) };
             Some(pid)
         } else {
@@ -2887,6 +2949,7 @@ fn desktop_icon_list_accessible() -> Option<IAccessible> {
   let layer = desktop_icon_layer()?;
   let list = desktop_icon_list_view_in_layer(layer)?;
   let mut raw: *mut core::ffi::c_void = std::ptr::null_mut();
+  // SAFETY: the interface pointer is written into a local null-initialized slot; a null result is rejected and a non-null COM pointer is adopted exactly once by IAccessible::from_raw, which owns and releases it.
   unsafe {
     AccessibleObjectFromWindow(
       list,
@@ -2908,6 +2971,7 @@ fn desktop_icon_list_accessible() -> Option<IAccessible> {
 #[cfg(windows)]
 pub(crate) fn desktop_point_verdict() -> DesktopPointVerdict {
   let mut point = POINT::default();
+  // SAFETY: `point` is a local POINT that outlives this synchronous call, and a failure takes the Unknown branch instead of reading it.
   if unsafe { GetCursorPos(&mut point) }.is_err() {
     return DesktopPointVerdict::Unknown;
   }
@@ -2915,6 +2979,7 @@ pub(crate) fn desktop_point_verdict() -> DesktopPointVerdict {
     log::info!("桌面空白判定：取不到图标列表的辅助对象，判为无法确认");
     return DesktopPointVerdict::Unknown;
   };
+  // SAFETY: `accessible` is an owned COM interface obtained above and still alive; the method is called through its vtable and only returns a count.
   let child_count = match unsafe { accessible.accChildCount() } {
     Ok(count) => count,
     Err(error) => {
@@ -2926,6 +2991,7 @@ pub(crate) fn desktop_point_verdict() -> DesktopPointVerdict {
     log::info!("桌面空白判定：图标列表报告 0 个子项，判为无法确认");
     return DesktopPointVerdict::Unknown;
   }
+  // SAFETY: the same owned interface is still alive, the coordinates are plain integers, and the returned VARIANT is owned by Rust and only read below.
   let hit = match unsafe { accessible.accHitTest(point.x, point.y) } {
     Ok(value) => value,
     Err(error) => {
@@ -2934,8 +3000,10 @@ pub(crate) fn desktop_point_verdict() -> DesktopPointVerdict {
     }
   };
   // accHitTest 的返回值是 VARIANT：本对象内的子项编号是整数，别的元素是对象。
+  // SAFETY: the tag field of the returned VARIANT is read first, and the payload field is accessed only in the arm that matches this tag.
   let verdict = match unsafe { hit.Anonymous.Anonymous.vt } {
     windows::Win32::System::Variant::VT_I4 => {
+      // SAFETY: this arm runs only when the tag is VT_I4, where the union holds lVal, and the VARIANT still lives on this stack.
       let child = unsafe { hit.Anonymous.Anonymous.Anonymous.lVal };
       if child > 0 {
         DesktopPointVerdict::Icon
@@ -2972,6 +3040,7 @@ pub(crate) fn desktop_point_verdict() -> DesktopPointVerdict {
 #[cfg(windows)]
 pub(crate) fn cursor_is_on_desktop_surface(background: HWND) -> bool {
     let mut point = POINT::default();
+    // SAFETY: `background` is a handle the caller proved usable, the POINT and handle locals outlive the calls, and every Win32 call here takes handles only.
     unsafe {
         if GetCursorPos(&mut point).is_err() {
             return false;
@@ -3015,6 +3084,7 @@ pub(crate) fn desktop_surface_allows_pop_now() -> bool {
         return false;
     }
     let background = HWND(handle as *mut core::ffi::c_void);
+    // SAFETY: the integer came from the atomic handle slot; IsWindow only inspects it and answers false for a destroyed window, which is the state this guard exists for.
     if !unsafe { IsWindow(Some(background)) }.as_bool() {
         return false;
     }
@@ -3025,6 +3095,7 @@ pub(crate) fn desktop_surface_allows_pop_now() -> bool {
 fn cursor_hits_interaction_region(root_hwnd: HWND) -> bool {
     let mut cursor = POINT::default();
     let mut origin = POINT::default();
+    // SAFETY: `root_hwnd` is the caller's live host handle, both out-parameters are local POINTs alive across the calls, and a failure returns false before any coordinate is used.
     unsafe {
         if GetCursorPos(&mut cursor).is_err() || !ClientToScreen(root_hwnd, &mut origin).as_bool() {
             return false;
@@ -3149,6 +3220,7 @@ fn should_toggle_desktop_workspace(
 #[cfg(windows)]
 fn log_workspace_toggle_decision(hits_interaction: bool, automation_blank: bool) {
     let mut cursor = POINT::default();
+    // SAFETY: `cursor` is a local POINT written by this call; a failure maps to the sentinel instead of reading it.
     let (cursor_x, cursor_y) = unsafe {
         if GetCursorPos(&mut cursor).is_err() {
             (i32::MIN, i32::MIN)
@@ -3203,6 +3275,7 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
         assert_not_acting_as_main_thread();
         // UIA requires COM initialization on the monitor thread. A prior COM
         // mode is harmless: UIA can still be created on that thread.
+        // SAFETY: a null reserved pointer selects the default COM library; the call initializes the calling monitor thread's apartment, and the HRESULT is discarded because an apartment that is already initialized needs no further action.
         let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         // 判据改走 MSAA（旧接口）：UI Automation 从 Explorer 的 FolderView 读不到任何子节点，
         // 因此不必再初始化它。MSAA 按需取用，不注入 Explorer。
@@ -3235,12 +3308,14 @@ pub fn start_desktop_workspace_monitor(app: tauri::AppHandle) {
                 continue;
             }
             let background = HWND(background_raw as *mut core::ffi::c_void);
+            // SAFETY: GetAsyncKeyState takes a virtual-key constant and reads global input state; no out-parameter and no Rust memory.
             let down = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0;
             // 松开时成形：拖动（按下-移动-松开）天然被排除，不需要额外判断。
 if !down && was_down {
                 // 松开时成形：拖动（按下-移动-松开）天然被排除，不需要额外判断。
                 if let Some((pressed_at, pressed_point, eligible, keys_idle)) = press.take() {
                     let mut released = POINT::default();
+                    // SAFETY: `released` is a local POINT written by this call; a failure keeps the pressed point instead of reading it.
                     let released_point = if unsafe { GetCursorPos(&mut released) }.is_err() {
                         pressed_point
                     } else {
@@ -3295,6 +3370,7 @@ if !down && was_down {
             }
             if down && !was_down {
                 // 按下的现场：三条判据 + 组合键状态，全部**在这一刻**取，因为点击的目标由按下决定。
+                // SAFETY: the five calls take virtual-key constants and read global input state; no out-parameters and no Rust memory.
                 let keys = unsafe {
                     [
                         GetAsyncKeyState(VK_CONTROL.0 as i32) < 0,
@@ -3305,6 +3381,7 @@ if !down && was_down {
                     ]
                 };
                 let mut pressed = POINT::default();
+                // SAFETY: `pressed` is a local POINT written by this call; a failure maps to the sentinel instead of reading it.
                 let pressed_point = if unsafe { GetCursorPos(&mut pressed) }.is_err() {
                     (i32::MIN, i32::MIN)
                 } else {
@@ -3342,6 +3419,7 @@ if !down && was_down {
 #[cfg(windows)]
 fn has_package_identity() -> Result<bool, String> {
     let mut length = 0u32;
+    // SAFETY: this is a length-only probe: the name buffer is None, so the API writes just the required length into the local u32.
     let status = unsafe { GetCurrentPackageFullName(&mut length, None) };
     if status == APPMODEL_ERROR_NO_PACKAGE {
         return Ok(false);
@@ -3406,6 +3484,7 @@ pub(crate) fn current_package_version() -> PackageVersionProbe {
 #[cfg(all(windows, not(feature = "lite")))]
 fn current_package_full_name() -> Option<String> {
     let mut length = 0u32;
+    // SAFETY: a length-only probe with a None name buffer; the API writes only the required length into the local u32.
     let probe = unsafe { GetCurrentPackageFullName(&mut length, None) };
     if probe != ERROR_INSUFFICIENT_BUFFER || length == 0 {
         return None;
@@ -3413,6 +3492,7 @@ fn current_package_full_name() -> Option<String> {
     // 长度含结尾的 0；多留一个元素，并把容量显式传回去。
     let mut buffer = vec![0u16; length as usize + 1];
     let mut capacity = buffer.len() as u32;
+    // SAFETY: `buffer` is a heap Vec of length plus one elements and `capacity` is exactly its length, so the write is bounded; the Vec is not moved during the call, and the written count is re-read from `capacity`.
     let read = unsafe { GetCurrentPackageFullName(&mut capacity, Some(PWSTR(buffer.as_mut_ptr()))) };
     if !read.is_ok() || capacity == 0 {
         return None;
@@ -3499,6 +3579,7 @@ pub(crate) fn current_run_entry_command() -> Result<String, String> {
         return Ok(exe.to_string_lossy().into_owned());
     }
     let mut length = 0u32;
+    // SAFETY: a length-only probe with a None name buffer; the API writes only the required length into the local u32.
     let probe = unsafe { GetCurrentPackageFamilyName(&mut length, None) };
     if probe != ERROR_INSUFFICIENT_BUFFER || length == 0 {
         return Err(format!(
@@ -3511,6 +3592,7 @@ pub(crate) fn current_run_entry_command() -> Result<String, String> {
     let mut buffer = vec![0u16; length as usize + 1];
     let mut capacity = buffer.len() as u32;
     let read =
+        // SAFETY: `buffer` is a heap Vec of length plus one elements and `capacity` is exactly its length, so the write is bounded; the Vec stays put for the duration of the call.
         unsafe { GetCurrentPackageFamilyName(&mut capacity, Some(PWSTR(buffer.as_mut_ptr()))) };
     if !read.is_ok() || capacity == 0 {
         return Err(format!(
@@ -3540,6 +3622,7 @@ fn run_entry_command() -> Result<Option<String>, String> {
         .chain(std::iter::once(0))
         .collect::<Vec<u16>>();
     let mut key = windows::Win32::System::Registry::HKEY::default();
+    // SAFETY: `subkey` is a local NUL-terminated UTF-16 Vec and `key` is a local HKEY out-parameter; a failed open leaves the handle unused and a successful one is closed exactly once below.
     let open_status = unsafe {
         RegOpenKeyExW(
             HKEY_CURRENT_USER,
@@ -3560,6 +3643,7 @@ fn run_entry_command() -> Result<Option<String>, String> {
     }
 
     let mut value_size = 0u32;
+    // SAFETY: no data buffer is passed (None), only the local `value_size` receives the required size, and `key` is valid because the open status was checked above.
     let query_status = unsafe {
         RegQueryValueExW(
             key,
@@ -3571,10 +3655,12 @@ fn run_entry_command() -> Result<Option<String>, String> {
         )
     };
     if query_status == ERROR_FILE_NOT_FOUND {
+        // SAFETY: `key` was opened successfully above and this is its single close on the early return.
         let _ = unsafe { RegCloseKey(key) };
         return Ok(None);
     }
     if query_status != ERROR_SUCCESS && query_status != ERROR_MORE_DATA {
+        // SAFETY: the same handle from the single successful open is closed here, exactly once on this error path.
         let _ = unsafe { RegCloseKey(key) };
         return Err(format!(
             "无法读取 DSH Wallpaper 开机启动项（错误码 {}）。",
@@ -3582,6 +3668,7 @@ fn run_entry_command() -> Result<Option<String>, String> {
         ));
     }
     if value_size == 0 {
+        // SAFETY: `key` is still the handle from the successful open and is closed once before the early return.
         let _ = unsafe { RegCloseKey(key) };
         return Ok(Some(String::new()));
     }
@@ -3590,6 +3677,7 @@ fn run_entry_command() -> Result<Option<String>, String> {
     // not count the terminator must not make the second read fail.
     let mut buffer = vec![0u8; value_size as usize + 2];
     let mut read_size = buffer.len() as u32;
+    // SAFETY: `buffer` is a local Vec with one spare byte beyond the reported size, its length is passed as `read_size`, and `key` stays open across the call and is closed right after.
     let read_status = unsafe {
         RegQueryValueExW(
             key,
@@ -3600,6 +3688,7 @@ fn run_entry_command() -> Result<Option<String>, String> {
             Some(&mut read_size),
         )
     };
+    // SAFETY: this closes the handle from the single successful open exactly once, before the buffer is decoded.
     let _ = unsafe { RegCloseKey(key) };
     if read_status != ERROR_SUCCESS {
         return Err(format!(
@@ -3660,6 +3749,7 @@ fn read_hkcu_string(subkey: &str, value_name: &str) -> Result<Option<String>, u3
     let subkey = wide(subkey);
     let value_name = wide(value_name);
     let mut key = windows::Win32::System::Registry::HKEY::default();
+    // SAFETY: both name pointers come from local NUL-terminated UTF-16 Vecs and `key` is a local HKEY out-parameter; failure leaves the handle unused and success is closed exactly once below.
     let open_status = unsafe {
         RegOpenKeyExW(
             HKEY_CURRENT_USER,
@@ -3677,6 +3767,7 @@ fn read_hkcu_string(subkey: &str, value_name: &str) -> Result<Option<String>, u3
     }
 
     let mut value_size = 0u32;
+    // SAFETY: no data buffer is passed, only the local `value_size` receives the required size, and `key` is valid because the open succeeded above.
     let query_status = unsafe {
         RegQueryValueExW(
             key,
@@ -3688,14 +3779,17 @@ fn read_hkcu_string(subkey: &str, value_name: &str) -> Result<Option<String>, u3
         )
     };
     if query_status == ERROR_FILE_NOT_FOUND {
+        // SAFETY: `key` was opened successfully above and this is its single close on the early return.
         let _ = unsafe { RegCloseKey(key) };
         return Ok(None);
     }
     if query_status != ERROR_SUCCESS && query_status != ERROR_MORE_DATA {
+        // SAFETY: the same handle is closed here, exactly once on this error path.
         let _ = unsafe { RegCloseKey(key) };
         return Err(query_status.0);
     }
     if value_size == 0 {
+        // SAFETY: `key` is still the handle from the successful open and is closed once before the early return.
         let _ = unsafe { RegCloseKey(key) };
         return Ok(Some(String::new()));
     }
@@ -3703,6 +3797,7 @@ fn read_hkcu_string(subkey: &str, value_name: &str) -> Result<Option<String>, u3
     // 值是 UTF-16 的 `REG_SZ`：多要两个字节，免得"长度不计结尾 0"让第二次读失败。
     let mut buffer = vec![0u8; value_size as usize + 2];
     let mut read_size = buffer.len() as u32;
+    // SAFETY: `buffer` has one spare byte beyond the reported size, its length is passed as `read_size`, and `key` is closed immediately after the call.
     let read_status = unsafe {
         RegQueryValueExW(
             key,
@@ -3713,6 +3808,7 @@ fn read_hkcu_string(subkey: &str, value_name: &str) -> Result<Option<String>, u3
             Some(&mut read_size),
         )
     };
+    // SAFETY: closes the handle from the single successful open exactly once, before the value is decoded.
     let _ = unsafe { RegCloseKey(key) };
     if read_status != ERROR_SUCCESS {
         return Err(read_status.0);
@@ -4010,6 +4106,7 @@ pub(crate) struct AutostartStatus {
 #[cfg(windows)]
 pub(crate) fn remove_legacy_run_entry() -> Result<(), String> {
     let mut key = windows::Win32::System::Registry::HKEY::default();
+    // SAFETY: the subkey is a static `w!` string, `key` is a local HKEY out-parameter, and a failed open leaves it unused; the handle is closed exactly once below.
     let open_status = unsafe {
         RegOpenKeyExW(
             HKEY_CURRENT_USER,
@@ -4028,7 +4125,9 @@ pub(crate) fn remove_legacy_run_entry() -> Result<(), String> {
             open_status.0
         ));
     }
+    // SAFETY: `key` comes from the successful open above and is still open here; the value name is a static `w!` string.
     let delete_status = unsafe { RegDeleteValueW(key, w!("dsh-wallpaper")) };
+    // SAFETY: closes the handle from the single successful open exactly once, after the delete result has been captured.
     let _ = unsafe { RegCloseKey(key) };
     if delete_status == ERROR_SUCCESS || delete_status == ERROR_FILE_NOT_FOUND {
         Ok(())
