@@ -76,6 +76,15 @@
 - Commit `342bd30b52ddebd4f8eb01a7e7df5f0534fbfc74` matches the reviewed tree; annotated tag `checkpoint/dead-code-cleanup` points to it and explicitly remains unverified pending GUI acceptance. Push read-back matched. CI run `39531363142` passed on that exact head (Rust full, Lite, Frontend/bridge).
 - Not verified: real Windows GUI checklist remains user-owned; the separate B9 session-event `AppHandle` lifecycle concern is unchanged; `docs/blog/` remains excluded and untouched.
 
-## Next
+## B10.4 — final structure acceptance and PR #13
 
-Close the final structure acceptance in taskbook §§J.1/2.5: audit every remaining import in `desktop_host/mod.rs` against its child-owner use, and make the facade contain only module declarations, explicit re-exports, and necessary module-level comments. Keep this separate from the completed dead-code commit and do not infer the unnamed J.4 “four residues” from the count alone.
+- Final `desktop_host/mod.rs` is 86 lines with 10 module declarations and 27 explicit crate-private re-export statements; it contains no private `use` items, implementation logic, or glob re-exports. `WallpaperHostStatus` is imported by `state.rs` from `app_core`; display scale limits are imported directly by `display.rs` from `hit_region`. All 11 files in `desktop_host/` are below 1,500 lines; largest is `autostart.rs` at 1,270.
+- Final table (lines / SAFETY comments): `autostart.rs` 1,270/22; `display.rs` 266/5; `events.rs` 49/0; `foreground.rs` 734/17; `guard.rs` 155/0; `hit_region.rs` 556/3; `mod.rs` 86/0; `settings_frame.rs` 304/4; `state.rs` 49/0; `workerw.rs` 1,258/32; `workspace.rs` 609/14. `desktop_host/` total 5,336 lines and 97 SAFETY comments. Existing adjacent `desktop_repair.rs` is 295 lines/4 SAFETY comments (one moved from the original owner and three pre-existing).
+- Provenance reconciliation: the original `windows_integration.rs` had 99 `// SAFETY:` comments; one was moved with `repair_desktop_after_abnormal_exit` to `desktop_repair.rs`, one was removed with the approved dead logger, and 97 remain in `desktop_host/` (net attribution 98 = 99 − 1 deletion).
+- Final facade-cleanup candidate base `36c286298d86946804aad764e3369e33a4218930`; reviewed tree `115d8bbb074af4b135acd8a4a17ca3435376aa3d`; diff SHA-256 `409cf9480a371bb2503bd60ca67e090c137d7e51809b50092d740650dd5204fa`, 2,407 bytes. Two independent exact reviews passed; code commit `125d5086465cbca42d1f90e7b053a9bcc99d88b9` matches the reviewed tree, with local unverified tag `checkpoint/desktop-host-facade`.
+- PR #13 is open: `https://github.com/kyorakuyk/dsh-wallpaper/pull/13`, title `refactor(native): split windows_integration into desktop_host modules`. The PR description ends with the user-owned Windows GUI checklist. PR-triggered CI run `39534220736` passed (Frontend and bridge, Lite, Rust full); push CI run `39533305971` also passed on the same code head.
+- Verification status: all local Full/Lite Rust and frontend gates passed at the final code tree; real Windows GUI acceptance remains pending from the user. The B9 session-event `AppHandle` lifecycle concern remains a separate baseline follow-up. `docs/blog/` remains excluded and untouched.
+
+## Remaining user-owned acceptance
+
+Complete the real-machine checklist in PR #13 before merge. No code or UI changes are pending from this split; do not merge until the GUI results are recorded.
