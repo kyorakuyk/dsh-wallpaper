@@ -58,6 +58,15 @@
 - Commit `2bf85a63025979861576876c43a40c90f867dfdb` has the reviewed tree; local tag `checkpoint/desktop-repair` points to it. Push read-back matched. GitHub CI run `39527587467` completed successfully on that exact SHA (Rust full, Lite, Frontend/bridge).
 - Not verified: Windows GUI abnormal-exit repair and the broader user-owned GUI checklist. `docs/blog/` remains excluded and untouched.
 
+## B10.2 — deduplicate `BACKGROUND_WINDOW_LABEL`
+
+- Kept the single, unconditional definition in `lib.rs` (the root label is also read by non-Windows-gated command code); `events.rs` now imports that value. `desktop_host/mod.rs` explicitly re-exports the root constant under `cfg(windows)`, preserving `windows_integration::BACKGROUND_WINDOW_LABEL`. No caller path or frontend assertion changed.
+- Frozen base `91d00e3ad5dbab8a107d0c5faf8fb7fdf4d3ae4d`; reviewed index tree `f64ffbe54c03af2a136785ee86ded246afcfac72`; diff SHA-256 `5b4cf893d31fe08bda70a784806d5b5734adfb97e120f0910122d038bd446b16`, 2,594 bytes. Two independent exact-snapshot reviews passed with no security or logic findings. One reviewer could not open the ignored taskbook file but approved against the supplied scope; the parent separately verified taskbook §§1.7/2.4.2.
+- Structural totals are unchanged: BACKGROUND_WINDOW_LABEL definitions `2→1`; source-tree SAFETY364, unsafe327, unsafe functions32, test attrs402. Full/Lite feature profiles retain their previous warning totals.
+- Local gates passed: Windows full 407 passed/14 ignored plus integration binaries 10/8/3/14/13; Lite124 passed/2 ignored; Full/Lite debug/release checks and undocumented-unsafe clippy; frontend604, bridge96/1 skipped, typechecks/builds, Lite boundary 4 web files/5 resources, diff checks. Warnings matched baseline: Full44/lib-test40, integration5/28/53/50/80, Lite146/lib-test70.
+- Commit `1c8d030cb51e62e2f104e9e103aa35e6798631a3` has the reviewed tree; local tag `checkpoint/background-window-label` points to it; push read-back matched. GitHub CI run `39529441215` completed successfully on that head (Rust full, Lite, Frontend/bridge).
+- Not verified: real Windows GUI acceptance remains user-owned; `docs/blog/` remains excluded and untouched.
+
 ## Next
 
-Per taskbook §2.4, deduplicate `BACKGROUND_WINDOW_LABEL` in its own commit, then delete the two dead helpers in a separate commit. Keep both independent of the completed repair move. The B9 session-event `AppHandle` lifecycle concern recorded above is still a separate, unmodified follow-up.
+Per taskbook §2.4.3, remove `log_workspace_toggle_decision` and `run_entry_matches_current_build` together in their own dead-code deletion commit, after rechecking all call sites. Keep the B9 session-event `AppHandle` lifecycle concern as a separate, unmodified follow-up.
