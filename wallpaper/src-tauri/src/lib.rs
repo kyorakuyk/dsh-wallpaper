@@ -30,6 +30,7 @@ mod native_bootstrap;
 mod native_handoff;
 // 启动时间线的锚点与统一写法（只测量，不改启动顺序）：见模块头部说明。
 mod startup_timeline;
+mod wallpaper_restart;
 // 更新检测（第一片：原生侧）：版本读取、GitHub 检查、状态文件与 6 小时节流。完整版专属 ——
 // 取数用的是 `reqwest`，那是 `full` 特性后面的依赖，Lite 只给提示（计划书 §七）。
 #[cfg(not(feature = "lite"))]
@@ -413,13 +414,10 @@ fn run_with_edition(lite: bool) {
         })
         .build(tauri::generate_context!())
         .expect("failed to build dsh-wallpaper")
-        .run(|app, event| {
-            if matches!(
-                event,
-                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
-            ) {
-                shutdown_native_state(app);
-            }
+        .run(|app, event| match event {
+            tauri::RunEvent::ExitRequested { code, .. } => shutdown_native_state(app, code),
+            tauri::RunEvent::Exit => shutdown_native_state(app, None),
+            _ => {}
         });
 }
 
@@ -430,7 +428,10 @@ fn run_with_edition(lite: bool) {
 /// reach `RunEvent::ExitRequested`, while tray "hide" only dispatches an
 /// action. Every step is idempotent, because `ExitRequested` can be followed by
 /// `Exit`.
-fn shutdown_native_state(app: &tauri::AppHandle) {
+fn shutdown_native_state(app: &tauri::AppHandle, exit_code: Option<i32>) {
+    #[cfg(feature = "lite")]
+    let _ = exit_code;
+
     static SHUTDOWN: std::sync::Once = std::sync::Once::new();
     SHUTDOWN.call_once(|| {
         // 1. The desktop icon layer is deliberately hidden while the wallpaper
@@ -451,7 +452,11 @@ fn shutdown_native_state(app: &tauri::AppHandle) {
         //    never touched. 现在是**每一个**我们自己启动的实例：并行实例意味着出口这里也可能
         //    不止一个，漏掉一个就会在壁纸退出后留下一台没人认领的宿主。
         #[cfg(not(feature = "lite"))]
-        commands::harness::shutdown_managed_dsh(app);
+        if wallpaper_restart::should_shutdown_managed_dsh(exit_code) {
+            commands::harness::shutdown_managed_dsh(app);
+        } else {
+            log::info!("controlled wallpaper restart: preserving managed DSH children");
+        }
 
         // 4. Release native session/notification resources owned by this
         //    process so a restart does not inherit a stale registration.
@@ -466,4 +471,12 @@ fn shutdown_native_state(app: &tauri::AppHandle) {
 
         log::info!("dsh-wallpaper native state restored on exit");
     });
+}
+
+#[cfg(windows)]
+pub(crate) fn request_controlled_restart(app: &tauri::AppHandle) {
+    // Tauri's request_restart fallback directly replaces the process when it
+    // cannot queue an exit event, so perform native cleanup before requesting it.
+    shutdown_native_state(app, Some(tauri::RESTART_EXIT_CODE));
+    app.request_restart();
 }

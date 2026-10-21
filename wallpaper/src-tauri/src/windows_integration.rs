@@ -269,6 +269,10 @@ pub fn acquire_shared_wallpaper_host() -> bool {
 static WALLPAPER_RECOVERY_QUEUED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(windows)]
+static WALLPAPER_RESTART_GATE: std::sync::Mutex<crate::wallpaper_restart::RestartGate> =
+    std::sync::Mutex::new(crate::wallpaper_restart::RestartGate::new());
+
+#[cfg(windows)]
 static INNER_WORKSPACE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 const MAX_INTERACTION_REGIONS: usize = 128;
@@ -1244,6 +1248,42 @@ struct DesktopWindowCandidate {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProgmanChildCandidate {
+    is_icon_view: bool,
+    is_worker: bool,
+    is_visible: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WallpaperWorkerSource {
+    TopLevel(usize),
+    ProgmanChild(usize),
+}
+
+fn select_wallpaper_worker_source(
+    top_level: &[DesktopWindowCandidate],
+    progman_children: &[ProgmanChildCandidate],
+) -> Option<WallpaperWorkerSource> {
+    let progman_child_worker = progman_children
+        .iter()
+        .position(|candidate| candidate.is_icon_view)
+        .and_then(|icon_view| {
+            progman_children
+                .iter()
+                .enumerate()
+                .skip(icon_view + 1)
+                .find_map(|(index, candidate)| {
+                    (candidate.is_worker && candidate.is_visible)
+                        .then_some(WallpaperWorkerSource::ProgmanChild(index))
+                })
+        });
+
+    progman_child_worker.or_else(|| {
+        select_wallpaper_worker(top_level).map(WallpaperWorkerSource::TopLevel)
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WallpaperHostAction {
     None,
     Resize,
@@ -1314,6 +1354,13 @@ struct EnumeratedWindow {
 }
 
 #[cfg(windows)]
+#[derive(Clone, Copy)]
+struct EnumeratedProgmanChild {
+    hwnd: HWND,
+    candidate: ProgmanChildCandidate,
+}
+
+#[cfg(windows)]
 unsafe extern "system" fn collect_desktop_windows(window: HWND, lparam: LPARAM) -> BOOL {
     let windows = &mut *(lparam.0 as *mut Vec<EnumeratedWindow>);
     let mut class = [0u16; 64];
@@ -1357,12 +1404,65 @@ fn enumerate_desktop_windows() -> Result<Vec<EnumeratedWindow>, String> {
 }
 
 #[cfg(windows)]
+fn enumerate_progman_child_windows() -> Vec<EnumeratedProgmanChild> {
+    // SAFETY: the class name is static and the null title pointer is not retained by FindWindowW.
+    let progman = match unsafe { FindWindowW(w!("Progman"), PCWSTR::null()) } {
+        Ok(progman) if !progman.0.is_null() => progman,
+        Ok(_) => return Vec::new(),
+        Err(error) => {
+            log::debug!("无法找到 Progman 以枚举其 WorkerW 子窗口：{error}");
+            return Vec::new();
+        }
+    };
+
+    let mut children = Vec::new();
+    let mut after = None;
+    loop {
+        // SAFETY: `progman` was returned by FindWindowW and `after` is either null or a direct child returned by the prior call; null class/title enumerate direct children only.
+        let child = match unsafe {
+            FindWindowExW(Some(progman), after, PCWSTR::null(), PCWSTR::null())
+        } {
+            Ok(child) => child,
+            Err(error) => {
+                log::debug!("无法继续枚举 Progman 子窗口：{error}");
+                break;
+            }
+        };
+        if child.0.is_null() {
+            break;
+        }
+
+        let class = window_class(child);
+        // SAFETY: `child` was returned by FindWindowExW as a Progman child; a window destroyed between enumeration and inspection is treated as not visible.
+        let is_visible = unsafe { IsWindow(Some(child)).as_bool() && IsWindowVisible(child).as_bool() };
+        children.push(EnumeratedProgmanChild {
+            hwnd: child,
+            candidate: ProgmanChildCandidate {
+                is_icon_view: class.as_deref() == Some("SHELLDLL_DefView"),
+                is_worker: class.as_deref() == Some("WorkerW"),
+                is_visible,
+            },
+        });
+        after = Some(child);
+    }
+    children
+}
+
+#[cfg(windows)]
 fn locate_wallpaper_worker() -> Result<HWND, String> {
     let windows = enumerate_desktop_windows()?;
-    let candidates: Vec<_> = windows.iter().map(|item| item.candidate).collect();
-    select_wallpaper_worker(&candidates)
-        .map(|index| windows[index].hwnd)
-        .ok_or_else(|| "Explorer 未枚举独立 WorkerW 壁纸宿主".to_string())
+    let top_level: Vec<_> = windows.iter().map(|item| item.candidate).collect();
+    let progman_children = enumerate_progman_child_windows();
+    let child_candidates: Vec<_> = progman_children
+        .iter()
+        .map(|item| item.candidate)
+        .collect();
+
+    match select_wallpaper_worker_source(&top_level, &child_candidates) {
+        Some(WallpaperWorkerSource::TopLevel(index)) => Ok(windows[index].hwnd),
+        Some(WallpaperWorkerSource::ProgmanChild(index)) => Ok(progman_children[index].hwnd),
+        None => Err("Explorer 未枚举独立 WorkerW 壁纸宿主".to_string()),
+    }
 }
 
 #[cfg(windows)]
@@ -1371,6 +1471,19 @@ pub(crate) fn visible_wallpaper_worker() -> Option<HWND> {
     locate_wallpaper_worker().ok().filter(|worker| unsafe {
         IsWindow(Some(*worker)).as_bool() && IsWindowVisible(*worker).as_bool()
     })
+}
+
+#[cfg(windows)]
+fn visible_program_manager() -> Option<HWND> {
+    // SAFETY: the class name is static and the null title pointer is not retained by FindWindowW.
+    let progman = unsafe { FindWindowW(w!("Progman"), PCWSTR::null()) }.ok()?;
+    if progman.0.is_null() {
+        return None;
+    }
+    // SAFETY: `progman` was returned by the lookup above; these calls only inspect its current validity and visibility.
+    let is_visible =
+        unsafe { IsWindow(Some(progman)).as_bool() && IsWindowVisible(progman).as_bool() };
+    is_visible.then_some(progman)
 }
 
 #[cfg(windows)]
@@ -1960,7 +2073,9 @@ fn inspect_wallpaper_host(window: Option<&WebviewWindow>) -> (WallpaperHostActio
 }
 
 #[cfg(windows)]
-fn create_background_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
+fn create_background_window(
+    app: &tauri::AppHandle,
+) -> Result<WebviewWindow, crate::wallpaper_restart::WallpaperHostRecoveryError> {
     let window = WebviewWindowBuilder::new(
         app,
         "background",
@@ -1974,7 +2089,7 @@ fn create_background_window(app: &tauri::AppHandle) -> Result<WebviewWindow, Str
     .skip_taskbar(true)
     .visible(false)
     .build()
-    .map_err(|error| format!("无法重建背景 WebView：{error}"))?;
+    .map_err(crate::wallpaper_restart::WallpaperHostRecoveryError::from_tauri)?;
     crate::native_bootstrap::record_startup_diagnostic(
         "event=background-webview-created visible=false",
     );
@@ -1989,27 +2104,48 @@ fn create_background_window(app: &tauri::AppHandle) -> Result<WebviewWindow, Str
 }
 
 #[cfg(windows)]
-fn recover_wallpaper_host(app: &tauri::AppHandle) -> Result<(), String> {
+fn recover_wallpaper_host(
+    app: &tauri::AppHandle,
+) -> Result<(), crate::wallpaper_restart::WallpaperHostRecoveryError> {
     let previous_handoff_generation = native_bootstrap::generation();
     let existing = app.get_webview_window("background");
     let (action, parent) = inspect_wallpaper_host(existing.as_ref());
     if action != WallpaperHostAction::None {
         publish_wallpaper_host_status(app, WallpaperHostMode::Recovering, false, None);
     }
-    let result = match action {
+    let result: Result<(), crate::wallpaper_restart::WallpaperHostRecoveryError> = match action {
         WallpaperHostAction::None => Ok(()),
         WallpaperHostAction::Resize => {
-            let window = existing.ok_or("background window missing")?;
+            let window = existing.ok_or_else(|| {
+                crate::wallpaper_restart::WallpaperHostRecoveryError::Other(
+                    "background window missing".into(),
+                )
+            })?;
             let background = HWND(window.hwnd().map_err(|error| error.to_string())?.0);
-            resize_wallpaper_to_parent(background, parent.ok_or("WorkerW parent missing")?)
+            resize_wallpaper_to_parent(
+                background,
+                parent.ok_or_else(|| {
+                    crate::wallpaper_restart::WallpaperHostRecoveryError::Other(
+                        "WorkerW parent missing".into(),
+                    )
+                })?,
+            )?;
+            Ok(())
         }
         WallpaperHostAction::Reattach => {
-            let window = existing.ok_or("background window missing")?;
-            attach_to_workerw(&window)
+            let window = existing.ok_or_else(|| {
+                crate::wallpaper_restart::WallpaperHostRecoveryError::Other(
+                    "background window missing".into(),
+                )
+            })?;
+            attach_to_workerw(&window)?;
+            Ok(())
         }
         WallpaperHostAction::Recreate => {
             if let Some(window) = existing {
-                let _ = window.destroy();
+                if let Err(error) = window.destroy() {
+                    log::warn!("wallpaper host destroy before recreation failed: {error}");
+                }
             }
             let window = create_background_window(app)?;
             attach_to_workerw(&window)?;
@@ -2051,7 +2187,7 @@ fn recover_wallpaper_host(app: &tauri::AppHandle) -> Result<(), String> {
             app,
             WallpaperHostMode::Unavailable,
             false,
-            Some(error.clone()),
+            Some(error.to_string()),
         ),
     }
     result
@@ -2066,14 +2202,13 @@ pub fn start_wallpaper_host(app: tauri::AppHandle) -> Result<(), String> {
     // A force-quit during the inner workspace must never leave Explorer's
     // desktop layer hidden on the next startup.
     restore_desktop_icons();
-    // Arm the crash net for *this* run: drop any marker an earlier clean exit
-    // left, then spawn the helper that outlives this process and repairs the
-    // desktop if it dies badly. Order matters — clearing after spawning could let
-    // the helper observe a stale marker and wrongly conclude this run exited
-    // cleanly.
+    // Arm the crash net for *this* run: clear only this PID/generation's marker,
+    // then spawn the helper with that same run ID. Older helpers keep their own
+    // markers, so a controlled process restart cannot make them miss the clean
+    // exit record they are waiting to read.
     crate::desktop_repair::clear_clean_exit_marker();
     crate::desktop_repair::spawn_repair_helper();
-    recover_wallpaper_host(&app)?;
+    recover_wallpaper_host(&app).map_err(|error| error.to_string())?;
     crate::native_bootstrap::record_startup_diagnostic("event=wallpaper-host-attached");
     if let Err(error) = native_bootstrap::reattach_to_workerw() {
         log::warn!("native bootstrap initial reattach failed: {error}");
@@ -2089,11 +2224,77 @@ pub fn start_wallpaper_host(app: tauri::AppHandle) -> Result<(), String> {
         if let Err(error) = app.run_on_main_thread(move || {
           run_main_thread_window_state_task(|| {
             let previous_handoff_generation = native_bootstrap::generation();
-            let (action, _) =
-                inspect_wallpaper_host(recovery_app.get_webview_window("background").as_ref());
+            let mut restart_pending = match WALLPAPER_RESTART_GATE.lock() {
+                Ok(gate) => gate.is_pending(),
+                Err(error) => {
+                    log::error!("wallpaper restart gate is unavailable: {error}");
+                    false
+                }
+            };
+            let action = if restart_pending {
+                WallpaperHostAction::None
+            } else {
+                inspect_wallpaper_host(recovery_app.get_webview_window("background").as_ref()).0
+            };
             if action != WallpaperHostAction::None {
                 if let Err(error) = recover_wallpaper_host(&recovery_app) {
-                    log::error!("wallpaper host recovery failed: {error}");
+                    match error {
+                        crate::wallpaper_restart::WallpaperHostRecoveryError::RegistrationConflict(
+                            message,
+                        ) => {
+                            log::error!("wallpaper host recovery failed: {message}");
+                            match WALLPAPER_RESTART_GATE.lock() {
+                                Ok(mut gate) => {
+                                    gate.registration_conflict();
+                                    restart_pending = true;
+                                }
+                                Err(error) => log::error!(
+                                    "wallpaper restart gate is unavailable after label conflict: {error}"
+                                ),
+                            }
+                        }
+                        error => log::error!("wallpaper host recovery failed: {error}"),
+                    }
+                }
+            }
+            if restart_pending {
+                let worker = visible_wallpaper_worker().map(|hwnd| hwnd.0 as usize);
+                let progman = visible_program_manager().map(|hwnd| hwnd.0 as usize);
+                let stable_host = crate::wallpaper_restart::stable_restart_host(worker, progman);
+                let stable_host_kind = stable_host.map(|candidate| match candidate.kind {
+                    crate::wallpaper_restart::RestartHostKind::WorkerW => "WorkerW",
+                    crate::wallpaper_restart::RestartHostKind::Progman => "Progman",
+                });
+                let decision = match WALLPAPER_RESTART_GATE.lock() {
+                    Ok(mut gate) => gate.observe_host(stable_host),
+                    Err(error) => {
+                        log::error!("wallpaper restart gate is unavailable: {error}");
+                        crate::wallpaper_restart::RestartGateDecision::Idle
+                    }
+                };
+                match decision {
+                    crate::wallpaper_restart::RestartGateDecision::Idle => {}
+                    crate::wallpaper_restart::RestartGateDecision::Waiting { stable_samples } => {
+                        log::info!(
+                            "wallpaper restart gate waiting: stable_host={} samples={}/{}",
+                            stable_host_kind.unwrap_or("none"),
+                            stable_samples,
+                            crate::wallpaper_restart::REQUIRED_STABLE_HOST_SAMPLES
+                        );
+                    }
+                    crate::wallpaper_restart::RestartGateDecision::RequestRestart => {
+                        crate::native_bootstrap::record_startup_diagnostic(&format!(
+                            "event=wallpaper-restart-requested reason=tauri-label-conflict stable_host={} stable_host_samples={}",
+                            stable_host_kind.unwrap_or("none"),
+                            crate::wallpaper_restart::REQUIRED_STABLE_HOST_SAMPLES
+                        ));
+                        log::warn!(
+                            "requesting controlled wallpaper restart after stable desktop host gate: host={}",
+                            stable_host_kind.unwrap_or("none")
+                        );
+                        crate::request_controlled_restart(&recovery_app);
+                        return;
+                    }
                 }
             }
             match native_bootstrap::reattach_to_workerw() {
@@ -4839,6 +5040,58 @@ mod tests {
             is_worker,
             hosts_desktop_icons,
         }
+    }
+
+    fn progman_child(
+        is_icon_view: bool,
+        is_worker: bool,
+        is_visible: bool,
+    ) -> ProgmanChildCandidate {
+        ProgmanChildCandidate {
+            is_icon_view,
+            is_worker,
+            is_visible,
+        }
+    }
+
+    #[test]
+    fn prefers_visible_progman_child_worker_after_icon_view_to_top_level_worker() {
+        let top_level = [candidate(true, false)];
+        let progman_children = [
+            progman_child(false, true, true),
+            progman_child(true, false, true),
+            progman_child(false, false, true),
+            progman_child(false, true, true),
+        ];
+
+        assert_eq!(
+            select_wallpaper_worker_source(&top_level, &progman_children),
+            Some(WallpaperWorkerSource::ProgmanChild(3))
+        );
+    }
+
+    #[test]
+    fn falls_back_to_top_level_worker_when_progman_child_worker_is_hidden() {
+        let top_level = [candidate(true, true), candidate(true, false)];
+        let progman_children = [
+            progman_child(true, false, true),
+            progman_child(false, true, false),
+        ];
+
+        assert_eq!(
+            select_wallpaper_worker_source(&top_level, &progman_children),
+            Some(WallpaperWorkerSource::TopLevel(1))
+        );
+    }
+
+    #[test]
+    fn does_not_select_progman_child_worker_without_icon_view_anchor() {
+        let progman_children = [progman_child(false, true, true)];
+
+        assert_eq!(
+            select_wallpaper_worker_source(&[], &progman_children),
+            None
+        );
     }
 
     #[test]
