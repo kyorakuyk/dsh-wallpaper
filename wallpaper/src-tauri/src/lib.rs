@@ -34,7 +34,8 @@ mod startup_timeline;
 // 取数用的是 `reqwest`，那是 `full` 特性后面的依赖，Lite 只给提示（计划书 §七）。
 #[cfg(not(feature = "lite"))]
 mod update;
-mod windows_integration;
+mod desktop_host;
+pub(crate) use desktop_host as windows_integration;
 
 #[cfg(not(feature = "lite"))]
 #[cfg(not(feature = "lite"))]
@@ -65,7 +66,7 @@ const SETTINGS_WINDOW_LABEL: &str = "settings";
 /// cancel, or read chat conversations. Capabilities provide the primary ACL;
 /// this guard makes that boundary survive an accidental future capability
 /// change or a newly added WebView.
-const BACKGROUND_WINDOW_LABEL: &str = "background";
+pub(crate) const BACKGROUND_WINDOW_LABEL: &str = "background";
 
 /// The binary entry point fixes the product edition before Tauri starts. Keep
 /// it in a process-local cell so native commands can fail closed if an old or

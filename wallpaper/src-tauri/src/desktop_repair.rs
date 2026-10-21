@@ -29,6 +29,8 @@
 //!   run's, because startup removes it.
 
 use std::path::PathBuf;
+#[cfg(windows)]
+use crate::desktop_host::set_desktop_icons_visible;
 
 /// Set on the command line to run as the repair helper instead of as the wallpaper.
 pub const REPAIR_ARGUMENT: &str = "--desktop-repair";
@@ -102,6 +104,69 @@ pub fn is_repair_invocation() -> bool {
     std::env::args().any(|argument| argument == REPAIR_ARGUMENT)
 }
 
+/// Undo every desktop mutation this process may have left behind, from a process
+/// that did not make them.
+///
+/// `restore_desktop_icons` is enough when the caller is the wallpaper itself: it
+/// also clears this process's own inner-workspace flag, and its own WebView would
+/// hide the icons again immediately anyway. A separate repair helper has neither
+/// concern, so it must additionally repaint the desktop host — killing a process
+/// that had taken over the desktop's own input can leave the host showing a stale
+/// frame with no icons and an unresponsive hit test until something invalidates
+/// it. Redrawing is what makes the desktop usable again without a sign-out.
+///
+/// Idempotent by construction: showing an already-visible window and invalidating
+/// an already-valid one are both no-ops that cannot fail into a loop. That is the
+/// property this whole repair path depends on.
+#[cfg(windows)]
+pub(crate) fn repair_desktop_after_abnormal_exit() -> Vec<String> {
+    let mut notes = Vec::new();
+
+    // 1. The icon layer the wallpaper hides while the inner workspace is active.
+    match set_desktop_icons_visible(true) {
+        Ok(()) => notes.push("icons-restored".into()),
+        Err(error) => notes.push(format!("icons-failed:{error}")),
+    }
+
+    // 2. Force the desktop host to repaint, so a stale composited frame cannot
+    //    keep hiding the icons or an outdated hit test cannot keep eating input.
+    use windows::core::w;
+    use windows::Win32::Graphics::Gdi::{
+        RedrawWindow, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetDesktopWindow};
+    // SAFETY: both window handles are resolved here and only passed to RedrawWindow, whose other arguments are None and integer flags; a missing desktop handle is detected by is_invalid and never used.
+    unsafe {
+        let desktop = GetDesktopWindow();
+        if !desktop.is_invalid() {
+            let _ = RedrawWindow(
+                Some(desktop),
+                None,
+                None,
+                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASE,
+            );
+            notes.push("desktop-repainted".into());
+        } else {
+            notes.push("desktop-handle-missing".into());
+        }
+
+        // Progman owns the desktop background and the icon view in the degraded
+        // host mode this machine uses, so it needs the invalidation explicitly.
+        if let Ok(program_manager) = FindWindowW(w!("Progman"), None) {
+            if !program_manager.is_invalid() {
+                let _ = RedrawWindow(
+                    Some(program_manager),
+                    None,
+                    None,
+                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASE,
+                );
+                notes.push("progman-repainted".into());
+            }
+        }
+    }
+
+    notes
+}
 /// Run the helper's whole job and return a line for the log.
 ///
 /// `parent_pid` is the wallpaper that spawned this helper. Waiting on it is what

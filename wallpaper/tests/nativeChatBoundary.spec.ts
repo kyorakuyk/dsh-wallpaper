@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
@@ -12,7 +12,27 @@ async function readNative(relativePath: string): Promise<string> {
   // Git for Windows may check the same source out as CRLF. Normalize before
   // applying source-boundary assertions so CI verifies the contract rather
   // than the runner's checkout line-ending policy.
-  return (await readFile(resolve(nativeRoot, relativePath), 'utf8')).replace(/\r\n?/g, '\n')
+  const source = await readFile(resolve(nativeRoot, relativePath), 'utf8')
+  const cr = String.fromCharCode(13)
+  const lf = String.fromCharCode(10)
+  return source.replaceAll(cr + lf, lf).replaceAll(cr, lf)
+}
+
+async function readNativeRustTree(relativeDirectory: string): Promise<string> {
+  const sources: string[] = []
+  async function visit(directory: string): Promise<void> {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = resolve(directory, entry.name)
+      if (entry.isDirectory()) await visit(path)
+      else if (entry.isFile() && entry.name.endsWith('.rs')) {
+        sources.push(await readFile(path, 'utf8'))
+      }
+    }
+  }
+  await visit(resolve(nativeRoot, relativeDirectory))
+  const cr = String.fromCharCode(13)
+  const lf = String.fromCharCode(10)
+  return sources.join(lf).replaceAll(cr + lf, lf).replaceAll(cr, lf)
 }
 
 // B3 of the freeze isolation moved the commented-out frozen commands out of lib.rs and
@@ -166,25 +186,25 @@ describe('native chat boundary', () => {
   })
 
   it('declares an MSIX StartupTask while retaining the native autostart fallback', async () => {
-    const [manifest, settingsCommands, windows] = await Promise.all([
+    const [manifest, settingsCommands, autostart] = await Promise.all([
       readManifest('AppxManifest.xml'),
       readNative('src/commands/settings.rs'),
-      readNative('src/windows_integration.rs'),
+      readNative('src/desktop_host/autostart.rs'),
     ])
     expect(manifest).toContain('windows.startupTask')
     expect(manifest).toContain('DshWallpaperStartup')
     // The operation moved next to the Windows calls it makes, so the assertion
     // follows it: the command wrapper only keeps it off the UI thread.
     expect(settingsCommands).toContain('windows_integration::set_autostart(enabled)')
-    expect(windows).toContain('set_startup_task(enabled)')
+    expect(autostart).toContain('set_startup_task(enabled)')
     // The per-user Run entry remains the fallback for builds Windows will not
     // start through a StartupTask.
-    expect(windows).toContain('Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run')
+    expect(autostart).toContain('Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run')
     // It must record the version-stable shell alias: the versioned
     // `WindowsApps` path an earlier release wrote is deleted by the next
     // package update, which silently broke autostart across 0.2.0.71 → 0.2.0.74.
-    expect(windows).toContain('shell:AppsFolder')
-    expect(windows).toContain('GetCurrentPackageFamilyName')
+    expect(autostart).toContain('shell:AppsFolder')
+    expect(autostart).toContain('GetCurrentPackageFamilyName')
   })
 
   it('nests the startup task where the schema puts it', async () => {
@@ -249,7 +269,7 @@ describe('native chat boundary', () => {
   it('keeps the native first-frame handoff bounded and recoverable', async () => {
     const [bootstrap, integration, readme] = await Promise.all([
       readNative('src/native_bootstrap.rs'),
-      readNative('src/windows_integration.rs'),
+      readNative('src/desktop_host/workerw.rs'),
       readFile(resolve(wallpaperRoot, '..', 'README.md'), 'utf8'),
     ])
 
@@ -264,7 +284,7 @@ describe('native chat boundary', () => {
 
   it('requires explicit confirmation before deleting a saved lock-screen original', async () => {
     const [
-      runtime, liteNative, settings, liteSettings, lib, integration, archivedLockScreen, archivedCommands,
+      runtime, liteNative, settings, liteSettings, lib, desktopHostSources, archivedLockScreen, archivedCommands,
       archivedRuntime, archivedLiteNative, archivedSettings, archivedLiteSettings,
     ] = await Promise.all([
       readFile(resolve(wallpaperRoot, 'src/native/runtime.ts'), 'utf8'),
@@ -272,7 +292,7 @@ describe('native chat boundary', () => {
       readFile(resolve(wallpaperRoot, 'src/settings/SettingsWindow.tsx'), 'utf8'),
       readFile(resolve(wallpaperRoot, 'src/lite/LiteSettingsWindow.tsx'), 'utf8'),
       readNative('src/lib.rs'),
-      readNative('src/windows_integration.rs'),
+      readNativeRustTree('src/desktop_host'),
       // B2 moved the native lock-screen implementation out of the build; its confirmation
       // copy is kept in the archive, and the live module must no longer define it.
       readFile(resolve(wallpaperRoot, '../archive/lockscreen-20260930/wallpaper/src-tauri/src/windows_integration/lock_screen.rs'), 'utf8'),
@@ -299,7 +319,7 @@ describe('native chat boundary', () => {
     expect(archivedLiteSettings).toMatch(confirmsBeforeDeleting)
     expect(lib).not.toContain('clear_stale_lock_screen_backup')
     expect(archivedCommands).toMatch(/async fn clear_stale_lock_screen_backup\([\s\S]*?confirmed: bool,[\s\S]*?windows_integration::clear_stale_lock_screen_backup\(&app, confirmed\)/)
-    expect(integration).not.toContain('fn clear_stale_lock_screen_backup')
+    expect(desktopHostSources).not.toContain('fn clear_stale_lock_screen_backup')
     expect(archivedLockScreen).toContain('fn clear_stale_lock_screen_backup')
     expect(archivedLockScreen).toContain('永久删除已保存的原锁屏图片副本')
   })
@@ -554,15 +574,15 @@ describe('native chat boundary', () => {
   })
 
   it('keeps system, workspace, and tray backend events out of the settings WebView', async () => {
-    const [lib, windows] = await Promise.all([
+    const [lib, desktopHostSources] = await Promise.all([
       readNative('src/lib.rs'),
-      readNative('src/windows_integration.rs'),
+      readNativeRustTree('src/desktop_host'),
     ])
 
     expect(lib).toMatch(/EventTarget::webview_window\(BACKGROUND_WINDOW_LABEL\)[\s\S]*?"tray-backend"/)
-    expect(windows).toContain('fn emit_to_background')
+    expect(desktopHostSources).toContain('fn emit_to_background')
     for (const event of ['system-session', 'desktop-workspace-toggle', 'app-snapshot']) {
-      expect(windows).not.toMatch(new RegExp(`app\\.emit\\(\\s*"${event}"`))
+      expect(desktopHostSources).not.toMatch(new RegExp(`app\\.emit\\(\\s*"${event}"`))
     }
   })
 
