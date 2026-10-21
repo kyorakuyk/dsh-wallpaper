@@ -1,6 +1,8 @@
 #[cfg(windows)]
 use crate::app_core::{AppAction, AppCore};
 #[cfg(windows)]
+use crate::BACKGROUND_WINDOW_LABEL;
+#[cfg(windows)]
 use tauri::{Emitter, EventTarget, Manager};
 
 /// The wallpaper host is the sole consumer of system, tray, and desktop
@@ -9,10 +11,7 @@ use tauri::{Emitter, EventTarget, Manager};
 /// carrying privacy-sensitive desktop metadata.
 ///
 /// 悬浮球监控线程也要用这个标签：它在**主线程**解析桌面宿主的句柄并带成整数进线程
-/// （见 `floating_ball::start_ball_monitor`），标签单点定义在这里，免得那边写死一份字符串。
-#[cfg(windows)]
-pub(crate) const BACKGROUND_WINDOW_LABEL: &str = "background";
-
+/// （见 `floating_ball::start_ball_monitor`），标签由 crate root 的 `lib.rs` 单点定义，这里直接导入，免得那边写死一份字符串。
 #[cfg(windows)]
 pub(crate) fn emit_to_background<S: serde::Serialize + Clone>(
     app: &tauri::AppHandle,

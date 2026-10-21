@@ -4,9 +4,9 @@ use crate::app_core::WallpaperHostStatus;
 #[cfg(windows)]
 mod events;
 #[cfg(windows)]
-pub(crate) use events::{
-    dispatch_system_action, emit_system_session, emit_to_background, BACKGROUND_WINDOW_LABEL,
-};
+pub(crate) use events::{dispatch_system_action, emit_system_session, emit_to_background};
+#[cfg(windows)]
+pub(crate) use crate::BACKGROUND_WINDOW_LABEL;
 
 #[cfg(windows)]
 mod guard;

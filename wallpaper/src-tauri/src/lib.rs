@@ -66,7 +66,7 @@ const SETTINGS_WINDOW_LABEL: &str = "settings";
 /// cancel, or read chat conversations. Capabilities provide the primary ACL;
 /// this guard makes that boundary survive an accidental future capability
 /// change or a newly added WebView.
-const BACKGROUND_WINDOW_LABEL: &str = "background";
+pub(crate) const BACKGROUND_WINDOW_LABEL: &str = "background";
 
 /// The binary entry point fixes the product edition before Tauri starts. Keep
 /// it in a process-local cell so native commands can fail closed if an old or
