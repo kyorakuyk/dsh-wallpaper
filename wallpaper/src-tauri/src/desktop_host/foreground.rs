@@ -3,9 +3,10 @@ use windows::Win32::UI::WindowsAndMessaging::{GetParent, GetWindowThreadProcessI
 
 #[cfg(windows)]
 use super::{
-    assert_not_acting_as_main_thread, background_handle_is_usable, background_window_handle_now,
-    emit_to_background, guard, wallpaper_host_status_state, window_class,
+    assert_not_acting_as_main_thread, background_window_handle_now, emit_to_background, guard,
 };
+#[cfg(windows)]
+use super::workerw::{background_handle_is_usable, wallpaper_host_status_state, window_class};
 #[cfg(windows)]
 use crate::app_core::{AppAction, AppCore, WallpaperHostMode};
 #[cfg(windows)]

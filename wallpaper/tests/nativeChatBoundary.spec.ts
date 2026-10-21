@@ -269,7 +269,7 @@ describe('native chat boundary', () => {
   it('keeps the native first-frame handoff bounded and recoverable', async () => {
     const [bootstrap, integration, readme] = await Promise.all([
       readNative('src/native_bootstrap.rs'),
-      readNative('src/desktop_host/mod.rs'),
+      readNative('src/desktop_host/workerw.rs'),
       readFile(resolve(wallpaperRoot, '..', 'README.md'), 'utf8'),
     ])
 

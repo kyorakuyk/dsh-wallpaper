@@ -1,8 +1,7 @@
 #[cfg(windows)]
-use super::{
-    assert_not_acting_as_main_thread, background_handle_is_usable, background_window_handle_now,
-    emit_to_background, enumerate_desktop_windows,
-};
+use super::{assert_not_acting_as_main_thread, background_window_handle_now, emit_to_background};
+#[cfg(windows)]
+use super::workerw::{background_handle_is_usable, enumerate_desktop_windows};
 #[cfg(windows)]
 use super::cursor_is_on_desktop_surface;
 #[cfg(windows)]
