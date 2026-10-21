@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use tauri::WebviewWindow;
 
 #[cfg(windows)]
-use super::{MAX_SCALE_FACTOR, MIN_SCALE_FACTOR};
+use super::hit_region::{MAX_SCALE_FACTOR, MIN_SCALE_FACTOR};
 #[cfg(windows)]
 use windows::core::{BOOL, PCWSTR};
 #[cfg(windows)]

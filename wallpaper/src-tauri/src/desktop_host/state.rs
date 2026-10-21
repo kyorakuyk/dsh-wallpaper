@@ -2,7 +2,7 @@ use super::hit_region::InteractionRegionState;
 use std::sync::{OnceLock, RwLock};
 
 #[cfg(windows)]
-use super::WallpaperHostStatus;
+use crate::app_core::WallpaperHostStatus;
 #[cfg(windows)]
 use std::sync::atomic::AtomicBool;
 

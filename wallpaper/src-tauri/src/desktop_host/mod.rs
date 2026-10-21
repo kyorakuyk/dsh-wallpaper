@@ -1,7 +1,4 @@
 #[cfg(windows)]
-use crate::app_core::WallpaperHostStatus;
-
-#[cfg(windows)]
 mod events;
 #[cfg(windows)]
 pub(crate) use events::{dispatch_system_action, emit_system_session, emit_to_background};
@@ -56,8 +53,6 @@ pub(crate) use hit_region::{
 #[allow(unused_imports)]
 pub(crate) use hit_region::ISLAND_REGION_ID;
 #[cfg(windows)]
-use hit_region::{MAX_SCALE_FACTOR, MIN_SCALE_FACTOR};
-#[cfg(windows)]
 #[allow(unused_imports)]
 pub(crate) use workspace::{desktop_icon_layer, desktop_point_verdict};
 #[cfg(windows)]
@@ -88,21 +83,4 @@ pub(crate) use workerw::{ball_window_handle_now, publish_ball_window_handle};
 #[cfg(windows)]
 pub(crate) use workerw::{
     publish_current_window_channels, request_wallpaper_worker, visible_wallpaper_worker,
-};
-
-#[cfg(windows)]
-#[allow(unused_imports)]
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
-};
-use windows::{
-    Win32::{
-        System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER},
-        UI::{
-            Accessibility::{CUIAutomation, IUIAutomation, UIA_ListItemControlTypeId},
-            WindowsAndMessaging::{
-                GetForegroundWindow, WindowFromPoint,
-            },
-        },
-    },
 };
