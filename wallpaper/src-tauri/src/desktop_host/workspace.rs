@@ -82,7 +82,7 @@ fn desktop_icon_list_view_in_layer(icon_layer: HWND) -> Option<HWND> {
 }
 
 #[cfg(windows)]
-pub(super) fn set_desktop_icons_visible(visible: bool) -> Result<(), String> {
+pub(crate) fn set_desktop_icons_visible(visible: bool) -> Result<(), String> {
     let icon_layer = desktop_icon_layer().ok_or("未找到 Explorer 桌面图标层")?;
     // SAFETY: `icon_layer` is a non-null handle returned by the lookup above and `icon_list` is the child found under it; ShowWindow only requests a visibility state and shares no Rust memory.
     unsafe {

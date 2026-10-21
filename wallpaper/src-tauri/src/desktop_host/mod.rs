@@ -58,10 +58,12 @@ pub(crate) use hit_region::ISLAND_REGION_ID;
 #[cfg(windows)]
 use hit_region::{interaction_regions, MAX_SCALE_FACTOR, MIN_SCALE_FACTOR};
 #[cfg(windows)]
-use workspace::set_desktop_icons_visible;
-#[cfg(windows)]
 #[allow(unused_imports)]
 pub(crate) use workspace::{desktop_icon_layer, desktop_point_verdict};
+#[cfg(windows)]
+pub(crate) use workspace::set_desktop_icons_visible;
+#[cfg(windows)]
+pub(crate) use crate::desktop_repair::repair_desktop_after_abnormal_exit;
 #[allow(unused_imports)]
 pub(crate) use workspace::{DesktopPointVerdict, PairState, pair_transition};
 #[cfg_attr(feature = "lite", allow(unused_imports))]
@@ -94,80 +96,18 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
 };
 use windows::{
-    core::w,
     Win32::{
         Foundation::POINT,
         System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER},
         UI::{
             Accessibility::{CUIAutomation, IUIAutomation, UIA_ListItemControlTypeId},
             WindowsAndMessaging::{
-                FindWindowW, GetCursorPos, GetDesktopWindow, GetForegroundWindow, WindowFromPoint,
+                GetCursorPos, GetForegroundWindow, WindowFromPoint,
             },
         },
     },
 };
 
-/// Undo every desktop mutation this process may have left behind, from a process
-/// that did not make them.
-///
-/// `restore_desktop_icons` is enough when the caller is the wallpaper itself: it
-/// also clears this process's own inner-workspace flag, and its own WebView would
-/// hide the icons again immediately anyway. A separate repair helper has neither
-/// concern, so it must additionally repaint the desktop host — killing a process
-/// that had taken over the desktop's own input can leave the host showing a stale
-/// frame with no icons and an unresponsive hit test until something invalidates
-/// it. Redrawing is what makes the desktop usable again without a sign-out.
-///
-/// Idempotent by construction: showing an already-visible window and invalidating
-/// an already-valid one are both no-ops that cannot fail into a loop. That is the
-/// property this whole repair path depends on.
-#[cfg(windows)]
-pub fn repair_desktop_after_abnormal_exit() -> Vec<String> {
-    let mut notes = Vec::new();
-
-    // 1. The icon layer the wallpaper hides while the inner workspace is active.
-    match set_desktop_icons_visible(true) {
-        Ok(()) => notes.push("icons-restored".into()),
-        Err(error) => notes.push(format!("icons-failed:{error}")),
-    }
-
-    // 2. Force the desktop host to repaint, so a stale composited frame cannot
-    //    keep hiding the icons or an outdated hit test cannot keep eating input.
-    use windows::Win32::Graphics::Gdi::{
-        RedrawWindow, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW,
-    };
-    // SAFETY: both window handles are resolved here and only passed to RedrawWindow, whose other arguments are None and integer flags; a missing desktop handle is detected by is_invalid and never used.
-    unsafe {
-        let desktop = GetDesktopWindow();
-        if !desktop.is_invalid() {
-            let _ = RedrawWindow(
-                Some(desktop),
-                None,
-                None,
-                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASE,
-            );
-            notes.push("desktop-repainted".into());
-        } else {
-            notes.push("desktop-handle-missing".into());
-        }
-
-        // Progman owns the desktop background and the icon view in the degraded
-        // host mode this machine uses, so it needs the invalidation explicitly.
-        if let Ok(program_manager) = FindWindowW(w!("Progman"), None) {
-            if !program_manager.is_invalid() {
-                let _ = RedrawWindow(
-                    Some(program_manager),
-                    None,
-                    None,
-                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASE,
-                );
-                notes.push("progman-repainted".into());
-            }
-        }
-    }
-
-    notes
-}
 /// 「点功能组件却切回表桌面」只可能是三个输入里有一个不成立，而热区是前端按元素 rect
 /// 发布的：光标落在哪个矩形之外、UI Automation 认为桌面是否空白，必须留痕，否则只能猜。
 #[cfg(windows)]
