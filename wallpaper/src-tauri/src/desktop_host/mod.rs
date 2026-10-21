@@ -56,7 +56,7 @@ pub(crate) use hit_region::{
 #[allow(unused_imports)]
 pub(crate) use hit_region::ISLAND_REGION_ID;
 #[cfg(windows)]
-use hit_region::{interaction_regions, MAX_SCALE_FACTOR, MIN_SCALE_FACTOR};
+use hit_region::{MAX_SCALE_FACTOR, MIN_SCALE_FACTOR};
 #[cfg(windows)]
 #[allow(unused_imports)]
 pub(crate) use workspace::{desktop_icon_layer, desktop_point_verdict};
@@ -97,47 +97,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::{
     Win32::{
-        Foundation::POINT,
         System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER},
         UI::{
             Accessibility::{CUIAutomation, IUIAutomation, UIA_ListItemControlTypeId},
             WindowsAndMessaging::{
-                GetCursorPos, GetForegroundWindow, WindowFromPoint,
+                GetForegroundWindow, WindowFromPoint,
             },
         },
     },
 };
-
-/// 「点功能组件却切回表桌面」只可能是三个输入里有一个不成立，而热区是前端按元素 rect
-/// 发布的：光标落在哪个矩形之外、UI Automation 认为桌面是否空白，必须留痕，否则只能猜。
-#[cfg(windows)]
-fn log_workspace_toggle_decision(hits_interaction: bool, automation_blank: bool) {
-    let mut cursor = POINT::default();
-    // SAFETY: `cursor` is a local POINT written by this call; a failure maps to the sentinel instead of reading it.
-    let (cursor_x, cursor_y) = unsafe {
-        if GetCursorPos(&mut cursor).is_err() {
-            (i32::MIN, i32::MIN)
-        } else {
-            (cursor.x, cursor.y)
-        }
-    };
-    let rects = interaction_regions()
-        .read()
-        .map(|state| {
-            state
-                .regions
-                .iter()
-                .map(|region| {
-                    format!(
-                        "({},{})-({},{})",
-                        region.left, region.top, region.right, region.bottom
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .unwrap_or_else(|_| "<poisoned>".into());
-    log::info!(
-        "workspace toggle armed: cursor=({cursor_x},{cursor_y}) hits_interaction_region={hits_interaction} automation_blank={automation_blank} rects=[{rects}]"
-    );
-}

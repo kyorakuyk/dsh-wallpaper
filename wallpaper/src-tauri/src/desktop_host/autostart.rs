@@ -584,18 +584,6 @@ fn run_entry_refusal(check: &RunEntryCheck) -> String {
     }
 }
 
-/// Whether the per-user Run entry launches this exact build. A recorded path
-/// is not evidence of working autostart by itself: it may name a `WindowsApps`
-/// directory that a package update has already deleted.
-#[cfg(windows)]
-pub(crate) fn run_entry_matches_current_build() -> Result<bool, String> {
-    let check = check_run_entry();
-    match check.error {
-        Some(error) => Err(error),
-        None => Ok(check.matches),
-    }
-}
-
 /// The exact `reg.exe` invocation that records the entry. Kept apart from the
 /// spawn so a unit test can pin that the path names the hive: `reg.exe` rejects
 /// one that does not, and that rejection left autostart unfixed after a package
