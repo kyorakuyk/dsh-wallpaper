@@ -67,6 +67,15 @@
 - Commit `1c8d030cb51e62e2f104e9e103aa35e6798631a3` has the reviewed tree; local tag `checkpoint/background-window-label` points to it; push read-back matched. GitHub CI run `39529441215` completed successfully on that head (Rust full, Lite, Frontend/bridge).
 - Not verified: real Windows GUI acceptance remains user-owned; `docs/blog/` remains excluded and untouched.
 
+## B10.3 — remove the two unreferenced helpers
+
+- Rechecked the taskbook's two named dead-code candidates (`report-r3.md` J.0) with a repository-wide Rust-source search before editing. Neither `log_workspace_toggle_decision` nor `run_entry_matches_current_build` had a caller; `check_run_entry` remains used. Deleted only those functions and the logger-only `interaction_regions`, `POINT`, and `GetCursorPos` imports. No remaining implementation or test body changed.
+- Frozen base `ac8fe9c6464c4db9965ee5decf908b59c70d10d4` (parent `d76c771b8b0605579a67eed27017a089bfa5fa49`); reviewed index tree `b7e6f0dcc48d6955b21317170f1bafa17c565499`; diff SHA-256 `d207cfd5418d47c5e2f6968575b75d3fbf4660293f0a916307a1a6cd26352c59`, 3,557 bytes. Two independent exact-snapshot reviews passed with empty security/logic findings.
+- Source counts: SAFETY364→363 and unsafe blocks327→326 (the one deleted logger); unsafe functions32 and test attrs402 unchanged; windows cfg488→486 (the two removed function attributes). Full and Lite warnings decreased without changing integration warning counts.
+- Local gates passed: Windows full 407 passed/14 ignored plus integration binaries 10/8/3/14/13; Lite124/2; Full/Lite debug/release checks and undocumented-unsafe clippy; frontend604, bridge96/1 skipped, typechecks/builds, Lite boundary 4 web files/5 resources, diff checks. Warnings: Full lib/test42/38, integration5/28/53/50/80; Lite144/lib-test68.
+- Commit `342bd30b52ddebd4f8eb01a7e7df5f0534fbfc74` matches the reviewed tree; annotated tag `checkpoint/dead-code-cleanup` points to it and explicitly remains unverified pending GUI acceptance. Push read-back matched. CI run `39531363142` passed on that exact head (Rust full, Lite, Frontend/bridge).
+- Not verified: real Windows GUI checklist remains user-owned; the separate B9 session-event `AppHandle` lifecycle concern is unchanged; `docs/blog/` remains excluded and untouched.
+
 ## Next
 
-Per taskbook §2.4.3, remove `log_workspace_toggle_decision` and `run_entry_matches_current_build` together in their own dead-code deletion commit, after rechecking all call sites. Keep the B9 session-event `AppHandle` lifecycle concern as a separate, unmodified follow-up.
+Close the final structure acceptance in taskbook §§J.1/2.5: audit every remaining import in `desktop_host/mod.rs` against its child-owner use, and make the facade contain only module declarations, explicit re-exports, and necessary module-level comments. Keep this separate from the completed dead-code commit and do not infer the unnamed J.4 “four residues” from the count alone.
