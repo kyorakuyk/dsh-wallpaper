@@ -76,7 +76,14 @@ describe('native exit lifecycle', () => {
     const stopManaged = harness.slice(harness.indexOf('fn shutdown_managed_dsh'))
     expect(stopManaged).toContain('stop_process_tree(')
     expect(stopManaged).toContain('std::mem::take(&mut *managed)')
-    expect(stopManaged).toMatch(/for \(_, mut process\) in std::mem::take\(&mut \*managed\)/)
+    expect(stopManaged).toContain('in_memory.remove(&key)')
+    expect(stopManaged).toContain('harness_launch::forget_instance(&key)')
+    expect(stopManaged).toContain('harness_launch::owned_instances_all()')
+    const memoryStop = stopManaged.indexOf('crate::client_window::stop_process_tree(process.child.id())')
+    const persistedRead = stopManaged.indexOf('harness_launch::owned_instances_all()')
+    expect(memoryStop).toBeGreaterThanOrEqual(0)
+    expect(persistedRead).toBeGreaterThan(memoryStop)
+    expect(stopManaged).toContain('harness_launch::forget_instance(&child.instance_key)')
     // 而且要**安静地**停：taskkill 是控制台程序，从 GUI 进程起它时若不带 CREATE_NO_WINDOW，
     // 退出时会闪一个黑框；用 `.output()` 还会为它建管道并一直等到它结束。
     const clientWindow = await readNative('src/client_window.rs')

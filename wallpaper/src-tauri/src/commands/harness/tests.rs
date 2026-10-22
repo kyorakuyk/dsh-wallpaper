@@ -1,6 +1,7 @@
 use super::discovery::resolve_dsh_launcher;
 use super::managed::{
-    classify_dsh_launch_failure, merge_managed_instances, stop_targets, ManagedDshInstance,
+    classify_dsh_launch_failure, merge_managed_instances, shutdown_targets, stop_targets,
+    ManagedDshInstance,
 };
 use crate::harness_launch::{self, ManagedChild};
 
@@ -105,6 +106,47 @@ fn stopping_names_one_instance_or_all_of_them_and_never_the_shell() {
     assert!(stop_targets(None, vec![recorded("shell:com.deepseek.dsh", "shell:com.deepseek.dsh", 1, None)])
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn shutdown_targets_includes_instances_held_in_memory() {
+    let key = r"D:\Family\DeepSeekHarness\deepseek-harness";
+
+    assert_eq!(shutdown_targets(vec![key.to_string()], Vec::new()), vec![key.to_string()]);
+}
+
+#[test]
+fn shutdown_targets_recovers_recorded_instances_after_restart() {
+    let key = r"D:\Users\u\AppData\Roaming\npm\dsh.cmd";
+
+    assert_eq!(
+        shutdown_targets(Vec::new(), vec![recorded(key, key, 222, Some(3080))]),
+        vec![key.to_string()]
+    );
+}
+
+#[test]
+fn shutdown_targets_deduplicates_instances_present_in_both_sources() {
+    let key = r"D:\Family\DeepSeekHarness\deepseek-harness";
+
+    assert_eq!(
+        shutdown_targets(
+            vec![key.to_string()],
+            vec![recorded(key, key, 111, Some(3080))],
+        ),
+        vec![key.to_string()]
+    );
+}
+
+#[test]
+fn shutdown_targets_excludes_the_official_shell_record() {
+    let shell = "shell:com.deepseek.dsh";
+
+    assert!(shutdown_targets(
+        Vec::new(),
+        vec![recorded(shell, shell, 444, Some(19387))],
+    )
+    .is_empty());
 }
 
 /// 用户要看的那份清单：**同一个主体的两个实例都在**，而且官壳永远不在。
