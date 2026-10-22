@@ -637,18 +637,66 @@ pub(crate) async fn stop_managed_dsh(
 
 #[cfg(not(feature = "lite"))]
 pub(crate) fn shutdown_managed_dsh(app: &tauri::AppHandle) {
+    let mut in_memory_keys = Vec::new();
     if let Some(state) = app.try_state::<ManagedDshState>() {
         if let Ok(mut managed) = state.0.lock() {
-            for (_, mut process) in std::mem::take(&mut *managed) {
+            let mut in_memory = std::mem::take(&mut *managed);
+            in_memory_keys = in_memory.keys().cloned().collect();
+            for key in shutdown_targets(in_memory_keys.clone(), Vec::new()) {
+                let Some(mut process) = in_memory.remove(&key) else {
+                    continue;
+                };
                 crate::client_window::stop_process_tree(process.child.id());
                 #[cfg(not(windows))]
                 {
                     let _ = process.child.kill();
                 }
                 let _ = process.child.wait();
+                harness_launch::forget_instance(&key);
             }
         }
     }
+
+    // 先停内存孩子并忘掉对应记录，再读落盘记录；即使 forget 写入失败，owned_instances_all
+    // 也会按 PID + 创建时间复核，已停进程自然不会再进第二轮。
+    let recorded = harness_launch::owned_instances_all();
+    let target_keys = shutdown_targets(in_memory_keys, recorded.clone())
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    for child in recorded {
+        if !target_keys.contains(&child.instance_key) {
+            continue;
+        }
+        if crate::client_window::stop_process_tree(child.pid) {
+            harness_launch::forget_instance(&child.instance_key);
+        } else {
+            log::warn!("managed DSH stop failed for pid {}", child.pid);
+        }
+    }
+}
+
+/// The process keys this normal exit is authorized to stop: in-memory children
+/// plus already-validated persisted children, deduplicated and excluding the shell.
+#[cfg(not(feature = "lite"))]
+pub(super) fn shutdown_targets(
+    in_memory_keys: Vec<String>,
+    recorded: Vec<harness_launch::ManagedChild>,
+) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut targets = Vec::new();
+    for key in in_memory_keys {
+        if harness_launch::is_managed_by_us(&key) && seen.insert(key.clone()) {
+            targets.push(key);
+        }
+    }
+    for child in recorded {
+        if harness_launch::is_managed_by_us(&child.subject_id)
+            && seen.insert(child.instance_key.clone())
+        {
+            targets.push(child.instance_key);
+        }
+    }
+    targets
 }
 
 /// 这一次要停哪些实例。纯函数，因为它是"停哪一个"与"绝不碰官壳"两条规则的落点。

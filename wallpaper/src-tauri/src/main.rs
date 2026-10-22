@@ -17,7 +17,9 @@ fn main() {
             .nth(2)
             .and_then(|value| value.parse::<u32>().ok())
             .unwrap_or(0);
-        let outcome = dsh_wallpaper_lib::desktop_repair::run_repair_helper(parent);
+        let run_id = std::env::args().nth(3);
+        let outcome =
+            dsh_wallpaper_lib::desktop_repair::run_repair_helper(parent, run_id.as_deref());
         dsh_wallpaper_lib::desktop_repair::record_repair_outcome(&outcome);
         return;
     }

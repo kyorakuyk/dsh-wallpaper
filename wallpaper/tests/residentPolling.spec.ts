@@ -63,19 +63,27 @@ describe('native exit lifecycle', () => {
       readNative('src/commands/harness_status.rs'),
     ])
 
-    // The run loop handles both exit events through one idempotent function.
-    expect(lib).toMatch(/\.run\(\|app, event\| \{[\s\S]*?RunEvent::ExitRequested[\s\S]*?RunEvent::Exit[\s\S]*?shutdown_native_state\(app\)/)
+    // Preserve the exit code so a controlled restart does not stop managed DSH.
+    expect(lib).toMatch(/\.run\(\|app, event\| match event \{[\s\S]*?RunEvent::ExitRequested \{ code, \.\. \} => shutdown_native_state\(app, code\),[\s\S]*?RunEvent::Exit => shutdown_native_state\(app, None\)/)
     const shutdown = lib.slice(lib.indexOf('fn shutdown_native_state'))
     expect(shutdown).toContain('restore_desktop_icons()')
     expect(shutdown).toContain('native_bootstrap::destroy()')
     expect(shutdown).toContain('unregister_session_events(app)')
+    expect(shutdown).toMatch(/if wallpaper_restart::should_shutdown_managed_dsh\(exit_code\) \{[\s\S]*?commands::harness::shutdown_managed_dsh\(app\)/)
     // Only the DSH instances this process launched are stopped — and now that means
     // **every one of them**: parallel instances put more than one child in the map, and
     // leaving one behind would leave a host nobody owns after the wallpaper exits.
     const stopManaged = harness.slice(harness.indexOf('fn shutdown_managed_dsh'))
     expect(stopManaged).toContain('stop_process_tree(')
     expect(stopManaged).toContain('std::mem::take(&mut *managed)')
-    expect(stopManaged).toMatch(/for \(_, mut process\) in std::mem::take\(&mut \*managed\)/)
+    expect(stopManaged).toContain('in_memory.remove(&key)')
+    expect(stopManaged).toContain('harness_launch::forget_instance(&key)')
+    expect(stopManaged).toContain('harness_launch::owned_instances_all()')
+    const memoryStop = stopManaged.indexOf('crate::client_window::stop_process_tree(process.child.id())')
+    const persistedRead = stopManaged.indexOf('harness_launch::owned_instances_all()')
+    expect(memoryStop).toBeGreaterThanOrEqual(0)
+    expect(persistedRead).toBeGreaterThan(memoryStop)
+    expect(stopManaged).toContain('harness_launch::forget_instance(&child.instance_key)')
     // 而且要**安静地**停：taskkill 是控制台程序，从 GUI 进程起它时若不带 CREATE_NO_WINDOW，
     // 退出时会闪一个黑框；用 `.output()` 还会为它建管道并一直等到它结束。
     const clientWindow = await readNative('src/client_window.rs')
@@ -95,6 +103,30 @@ describe('native exit lifecycle', () => {
     expect(shutdown).toContain('SHUTDOWN.call_once')
     // The tray "hide" item is an action dispatch, not an exit.
     expect(lib).toMatch(/"hide" => \{\s*\n\s*commands::desktop::dispatch_ui_action\(app, AppAction::SetInteractionEnabled\(false\), false\)/)
+  })
+
+  it('runs native cleanup before requesting a controlled Tauri restart', async () => {
+    const [lib, integration] = await Promise.all([
+      readNative('src/lib.rs'),
+      readNative('src/windows_integration.rs'),
+    ])
+    const restart = lib.slice(lib.indexOf('fn request_controlled_restart'))
+
+    expect(restart).toContain('shutdown_native_state(app, Some(tauri::RESTART_EXIT_CODE))')
+    expect(restart.indexOf('shutdown_native_state')).toBeLessThan(restart.indexOf('app.request_restart()'))
+    expect(integration).toContain('crate::request_controlled_restart(&recovery_app)')
+  })
+
+  it('lets restart recovery stabilize on Progman when no visible WorkerW exists', async () => {
+    const [restart, integration] = await Promise.all([
+      readNative('src/wallpaper_restart.rs'),
+      readNative('src/windows_integration.rs'),
+    ])
+
+    expect(restart).toContain('stable_restart_host')
+    expect(integration).toContain('visible_program_manager()')
+    expect(integration).toContain('stable_restart_host(worker, progman)')
+    expect(integration).toContain('gate.observe_host(stable_host)')
   })
 
   it('releases the session notification registration it installed', async () => {
